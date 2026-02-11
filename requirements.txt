@@ -1,0 +1,14 @@
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+python-multipart
+requests
+httpx>=0.24.0
+qdrant-client>=1.7.0
+fastembed>=0.2.0
+kuzu>=0.4.0
+# Tray application
+pystray>=0.19.0
+Pillow>=10.0.0
+# Optional but recommended for local LLM
+# ollama  <-- Install separately: pip install ollama

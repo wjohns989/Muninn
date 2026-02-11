@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""
+Muninn Memory Server — Native Local Backend
+=============================================
+
+Architecture (Muninn-native, Mem0-free):
+- Memory Engine: muninn.core.MuninnMemory
+- Embeddings: FastEmbed or Ollama nomic-embed-text (768 dims)
+- Vector Store: Qdrant local (on_disk, cosine)
+- Graph Store: Kuzu embedded (entity/relation knowledge graph)
+- Metadata: SQLite (WAL mode, importance scoring, bi-temporal)
+- Extraction: 3-tier pipeline (rules → xLAM → Ollama)
+- Retrieval: Hybrid (vector + graph + BM25 + temporal) with RRF
+- Reranking: Jina Tiny cross-encoder (fastembed)
+- Consolidation: Background daemon (decay/merge/promote/replay)
+
+Total VRAM: ~1.4GB (with xLAM) or ~0.5GB (embeddings only)
+
+Usage:
+    python server.py              # Start server on localhost:42069
+    python server.py --port 8000  # Custom port
+"""
+
+import os
+import sys
+import argparse
+import logging
+import time
+import asyncio
+from typing import Optional, Dict, Any, List
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from contextlib import asynccontextmanager
+
+from muninn.core.memory import MuninnMemory
+from muninn.core.config import MuninnConfig
+from muninn.core.types import (
+    AddMemoryRequest,
+    SearchMemoryRequest,
+    UpdateMemoryRequest,
+    MemoryType,
+    Provenance,
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("muninn_server.log", mode="a"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger("Muninn")
+
+# --- Global State ---
+memory: Optional[MuninnMemory] = None
+GLOBAL_LOCK: Optional[asyncio.Lock] = None
+
+
+# --- Pydantic Models (API compatibility) ---
+from pydantic import BaseModel
+
+
+class DeleteMemoryRequest(BaseModel):
+    memory_id: str
+
+
+class DeleteAllRequest(BaseModel):
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+
+
+class DeleteBatchRequest(BaseModel):
+    memory_ids: List[str]
+
+
+class HandoverRequest(BaseModel):
+    source_agent_id: str
+    target_agent_id: str
+    memory_id: str
+    reason: Optional[str] = "Handover for context alignment"
+
+
+class SynthesisRequest(BaseModel):
+    namespaces: List[str]
+    target_namespace: str = "global"
+    query: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+# --- Application Lifecycle ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global memory, GLOBAL_LOCK
+
+    logger.info("Muninn Server starting...")
+
+    try:
+        # Initialize configuration from environment
+        config = MuninnConfig.from_env()
+
+        # Initialize memory engine
+        memory = MuninnMemory(config)
+        await memory.initialize()
+
+        GLOBAL_LOCK = asyncio.Lock()
+        logger.info("Global concurrency lock initialized")
+
+        yield
+    finally:
+        logger.info("Shutting down Muninn Server...")
+        if memory:
+            await memory.shutdown()
+        logger.info("Muninn Server stopped.")
+
+
+app = FastAPI(
+    title="Muninn Memory Server",
+    description="Local-first persistent memory for AI agents — Muninn native engine",
+    version="3.0.0",
+    lifespan=lifespan,
+)
+
+
+# --- Endpoints ---
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    if memory is None:
+        return {"status": "initializing", "backend": "muninn-native"}
+
+    try:
+        health = await memory.health()
+        return health
+    except Exception as e:
+        logger.error("Health check failed: %s", e)
+        return {"status": "error", "error": str(e), "backend": "muninn-native"}
+
+
+@app.post("/add")
+async def add_memory_endpoint(req: AddMemoryRequest):
+    """Add a memory to the store with entity extraction and auto-indexing."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+
+        async with GLOBAL_LOCK:
+            # Support both messages list and simple content string
+            if req.messages:
+                # Convert messages to a single content string
+                content = " ".join(
+                    msg.get("content", "") for msg in req.messages
+                    if msg.get("role") in ("user", "assistant")
+                )
+            elif req.content:
+                content = req.content
+            else:
+                raise HTTPException(
+                    status_code=400, detail="Either 'messages' or 'content' required"
+                )
+
+            if not content.strip():
+                raise HTTPException(status_code=400, detail="Content cannot be empty")
+
+            # Determine provenance
+            provenance = Provenance.AUTO_EXTRACTED
+            if req.metadata and req.metadata.get("provenance"):
+                try:
+                    provenance = Provenance(req.metadata["provenance"])
+                except ValueError:
+                    pass
+
+            # Chunking for long content
+            if len(content) > 1000:
+                logger.info("Content > 1000 chars, applying semantic splitting...")
+                import re
+                chunks = re.split(r"\n\n|(?<!\s\w)\.\s", content)
+                merged_chunks = []
+                current = ""
+                for c in chunks:
+                    if len(current) + len(c) < 800:
+                        current += " " + c
+                    else:
+                        if current.strip():
+                            merged_chunks.append(current.strip())
+                        current = c
+                if current.strip():
+                    merged_chunks.append(current.strip())
+
+                results = []
+                for chunk in merged_chunks:
+                    result = await memory.add(
+                        content=chunk,
+                        user_id=req.user_id or "global_user",
+                        agent_id=req.agent_id,
+                        metadata=req.metadata,
+                        namespace=req.namespace or "global",
+                        provenance=provenance,
+                    )
+                    results.append(result)
+                return {"success": True, "data": {"chunks_added": len(results), "results": results}}
+
+            result = await memory.add(
+                content=content,
+                user_id=req.user_id or "global_user",
+                agent_id=req.agent_id,
+                metadata=req.metadata,
+                namespace=req.namespace or "global",
+                provenance=provenance,
+            )
+
+            logger.info("Added memory for user %s", req.user_id)
+            return {"success": True, "data": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error adding memory: %s", e)
+        err_msg = str(e).lower()
+        if "validation" in err_msg or "argument" in err_msg:
+            raise HTTPException(status_code=400, detail=str(e))
+        elif "lock" in err_msg or "access" in err_msg:
+            raise HTTPException(status_code=503, detail="Database busy, please retry")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search")
+async def search_memory_endpoint(req: SearchMemoryRequest):
+    """Search for relevant memories using hybrid multi-signal retrieval."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        results = await memory.search(
+            query=req.query,
+            user_id=req.user_id or "global_user",
+            agent_id=req.agent_id,
+            limit=req.limit,
+            rerank=req.rerank,
+            filters=req.filters,
+            namespaces=req.namespaces,
+        )
+
+        return {"success": True, "data": results}
+    except Exception as e:
+        logger.error("Error searching memories: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/get_all")
+async def get_all_memories_endpoint(
+    user_id: Optional[str] = "global_user",
+    agent_id: Optional[str] = None,
+    limit: int = 10,
+):
+    """Get all memories for a user."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        memories = await memory.get_all(
+            user_id=user_id or "global_user",
+            agent_id=agent_id,
+            limit=limit,
+        )
+        return {"success": True, "data": memories}
+    except Exception as e:
+        logger.error("Error getting memories: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/update")
+async def update_memory_endpoint(req: UpdateMemoryRequest):
+    """Update a specific memory."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.update(req.memory_id, req.data)
+            return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error updating memory: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/delete/{memory_id}")
+async def delete_memory_endpoint(memory_id: str):
+    """Delete a specific memory."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.delete(memory_id)
+            return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error deleting memory: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/delete_all")
+async def delete_all_endpoint(req: DeleteAllRequest):
+    """Delete all memories for a user."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.delete_all(user_id=req.user_id or "global_user")
+            return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error deleting all memories: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/delete_batch")
+async def delete_batch_endpoint(req: DeleteBatchRequest):
+    """Delete a batch of memories."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            results = []
+            for mem_id in req.memory_ids:
+                try:
+                    await memory.delete(mem_id)
+                    results.append({"id": mem_id, "status": "deleted"})
+                except Exception as e:
+                    logger.warning("Failed to delete %s: %s", mem_id, e)
+                    results.append({"id": mem_id, "status": "failed", "error": str(e)})
+            return {"success": True, "data": results}
+    except Exception as e:
+        logger.error("Error batch deleting memories: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/graph")
+async def get_graph_endpoint(user_id: Optional[str] = "global_user"):
+    """Get the memory graph (entities and relationships)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        entities = memory._graph.get_all_entities()
+        return {
+            "success": True,
+            "data": {
+                "entities": entities,
+                "entity_count": len(entities),
+            },
+        }
+    except Exception as e:
+        logger.error("Error getting graph: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/handover")
+async def context_handover_endpoint(req: HandoverRequest):
+    """Context handover between agents."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        # Retrieve the source memory
+        records = memory._metadata.get_by_ids([req.memory_id])
+        if not records:
+            raise HTTPException(status_code=404, detail="Memory not found")
+
+        record = records[0]
+
+        # Create a copy in the target agent's namespace
+        metadata = record.metadata.copy()
+        metadata["handed_over_from"] = req.source_agent_id
+        metadata["handover_reason"] = req.reason
+
+        result = await memory.add(
+            content=record.content,
+            agent_id=req.target_agent_id,
+            metadata=metadata,
+            namespace=req.target_agent_id,
+        )
+
+        logger.info("Handover: %s -> %s", req.source_agent_id, req.target_agent_id)
+        return {"success": True, "transferred_id": result.get("id")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Handover failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/federated/search")
+async def federated_search_endpoint(req: SearchMemoryRequest):
+    """Federated search across namespaces."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        results = await memory.search(
+            query=req.query,
+            user_id=req.user_id or "global_user",
+            limit=req.limit,
+            rerank=req.rerank,
+            filters=req.filters,
+            namespaces=req.namespaces,
+        )
+        return {"success": True, "data": results}
+    except Exception as e:
+        logger.error("Federated search failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/consolidation/run")
+async def trigger_consolidation():
+    """Manually trigger a consolidation cycle."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if memory._consolidation:
+            result = await memory._consolidation.run_cycle()
+            return {"success": True, "data": result}
+        return {"success": False, "error": "Consolidation daemon not available"}
+    except Exception as e:
+        logger.error("Consolidation trigger failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/consolidation/status")
+async def consolidation_status():
+    """Get consolidation daemon status."""
+    if memory is None:
+        return {"status": "not_initialized"}
+
+    if memory._consolidation:
+        return {"success": True, "data": memory._consolidation.status}
+    return {"success": False, "data": {"running": False}}
+
+
+# --- Main ---
+
+def main():
+    config = MuninnConfig.from_env()
+
+    parser = argparse.ArgumentParser(description="Muninn Memory Server")
+    parser.add_argument("--host", default=config.server.host, help="Host to bind to")
+    parser.add_argument("--port", type=int, default=config.server.port, help="Port to bind to")
+    parser.add_argument("--reload", action="store_true", help="Enable hot reload")
+    args = parser.parse_args()
+
+    logger.info("Starting Muninn Memory Server on %s:%d", args.host, args.port)
+
+    uvicorn.run(
+        "server:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_level=config.server.log_level,
+    )
+
+
+if __name__ == "__main__":
+    main()
