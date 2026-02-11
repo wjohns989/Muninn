@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muninn-mcp"
+version = "3.0.0"
+description = "Local-first, assistant-agnostic persistent memory for AI agents via MCP — Muninn native engine"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Antigravity Labs"}
+]
+keywords = ["mcp", "memory", "ai", "agents", "rag", "knowledge-graph"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+    "Operating System :: Microsoft :: Windows",
+]
+
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "pydantic>=2.0.0",
+    "python-multipart",
+    "requests",
+    "httpx>=0.24.0",
+    "qdrant-client>=1.7.0",
+    "fastembed>=0.2.0",
+    "kuzu>=0.4.0",
+]
+
+[project.optional-dependencies]
+tray = [
+    "pystray>=0.19.0",
+    "Pillow>=10.0.0",
+]
+service = [
+    "pywin32>=306",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+muninn-server = "server:main"
+muninn-tray = "tray_app:main"
+
+[project.urls]
+Homepage = "https://github.com/AntigravityLabs/muninn-mcp"
+Repository = "https://github.com/AntigravityLabs/muninn-mcp"
+Issues = "https://github.com/AntigravityLabs/muninn-mcp/issues"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

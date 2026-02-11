@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs (all)
+*.log
+
+# Debug / temporary / verification scripts
+debug_*.py
+debug_*.log
+inspect_*.py
+inspect_*.txt
+verify_*.py
+manual_inspect.txt
+test_memory.json
+test_kuzu_db
+test_kuzu_db/
+download_models.py
+
+# Runtime logs (explicit)
+mcp_wrapper.log
+muninn_server.log
+consolidation.log
+server_debug.log
+monitor.log
+
+# Models (large binary files — download separately)
+models/
+*.gguf
+
+# Loki / session state
+.loki/
+
+# Pytest
+.pytest_cache/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Data directory (user-specific, stored in ~/.muninn/)
+data/
+
+# Temporary kill/service scripts
+kill_server.ps1
