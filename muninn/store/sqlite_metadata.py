@@ -78,9 +78,9 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
 
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db_path):
+        self.db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
         self._initialize()
 

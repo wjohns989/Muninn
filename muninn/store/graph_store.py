@@ -17,8 +17,8 @@ logger = logging.getLogger("Muninn.Graph")
 class GraphStore:
     """Manages entity/relation knowledge graph in embedded Kuzu."""
 
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
+    def __init__(self, db_path):
+        self.db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
         self._db: Optional[kuzu.Database] = None
         self._conn: Optional[kuzu.Connection] = None
         self._initialize()

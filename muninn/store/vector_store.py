@@ -31,11 +31,11 @@ class VectorStore:
 
     def __init__(
         self,
-        data_path: Path,
+        data_path,
         collection_name: str = DEFAULT_COLLECTION,
         embedding_dims: int = DEFAULT_DIMS,
     ):
-        self.data_path = data_path
+        self.data_path = Path(data_path) if not isinstance(data_path, Path) else data_path
         self.collection_name = collection_name
         self.embedding_dims = embedding_dims
         self._client: Optional[QdrantClient] = None
