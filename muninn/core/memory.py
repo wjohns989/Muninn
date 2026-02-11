@@ -106,10 +106,9 @@ class MuninnMemory:
         # Initialize stores
         self._metadata = SQLiteMetadataStore(self.config.metadata.path)
         self._vectors = VectorStore(
-            path=self.config.vector.path,
+            data_path=self.config.vector.path,
             collection_name=self.config.vector.collection,
-            vector_size=self.config.vector.dimensions,
-            on_disk=self.config.vector.on_disk,
+            embedding_dims=self.config.vector.dimensions,
         )
         self._graph = GraphStore(self.config.graph.path)
         self._bm25 = BM25Index()
@@ -126,9 +125,7 @@ class MuninnMemory:
         # Initialize extraction pipeline
         self._extraction = ExtractionPipeline(
             xlam_url=self.config.extraction.xlam_url if self.config.extraction.enable_xlam else None,
-            xlam_model=self.config.extraction.xlam_model,
             ollama_url=self.config.extraction.ollama_url if self.config.extraction.enable_ollama_fallback else None,
-            ollama_model=self.config.extraction.ollama_model,
         )
 
         # Initialize hybrid retriever
@@ -245,9 +242,9 @@ class MuninnMemory:
 
         # Store embedding in vector store (Qdrant)
         self._vectors.upsert(
-            doc_id=record.id,
-            vector=embedding,
-            payload={
+            memory_id=record.id,
+            embedding=embedding,
+            metadata={
                 "content": content[:500],
                 "memory_type": memory_type.value,
                 "namespace": namespace,
@@ -397,9 +394,9 @@ class MuninnMemory:
         # Update stores
         self._metadata.update(record)
         self._vectors.upsert(
-            doc_id=record.id,
-            vector=embedding,
-            payload={
+            memory_id=record.id,
+            embedding=embedding,
+            metadata={
                 "content": data[:500],
                 "memory_type": record.memory_type.value,
                 "namespace": record.namespace,
@@ -438,7 +435,7 @@ class MuninnMemory:
         self._check_initialized()
 
         self._metadata.delete(memory_id)
-        self._vectors.delete([memory_id])
+        self._vectors.delete(memory_id)
         self._graph.delete_memory_references(memory_id)
         self._bm25.remove(memory_id)
 
@@ -524,7 +521,7 @@ class MuninnMemory:
     async def _extract(self, content: str) -> ExtractionResult:
         """Run extraction pipeline on content."""
         if self._extraction:
-            return await self._extraction.extract(content)
+            return self._extraction.extract(content)
         return ExtractionResult()
 
     async def _rebuild_bm25(self) -> None:
