@@ -24,10 +24,12 @@ import requests
 
 # --- Configuration ---
 PROJECT_NAME = "Muninn"
-SERVER_URL = "http://localhost:8000"
+SERVER_PORT = int(os.environ.get("MUNINN_PORT", "42069"))
+SERVER_URL = os.environ.get("MUNINN_SERVER_URL", f"http://localhost:{SERVER_PORT}")
 HEALTH_URL = f"{SERVER_URL}/health"
-OLLAMA_URL = "http://localhost:11434"
+OLLAMA_URL = os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434")
 CWD = Path(__file__).parent.resolve()
+ASSETS_DIR = CWD / "assets"
 SERVER_SCRIPT = CWD / "server.py"
 LOG_FILE = CWD / "tray_app.log"
 PYTHON_EXE = sys.executable
@@ -139,14 +141,26 @@ class MuninnTrayApp:
         return image
 
     def _load_custom_icon(self) -> Optional[Image.Image]:
-        """Try to load a custom icon file if one exists."""
-        for name in ("muninn.ico", "muninn.png", "muninn_raven.png", "muninn_raven.ico"):
-            icon_path = CWD / name
-            if icon_path.exists():
-                try:
-                    return Image.open(icon_path)
-                except Exception:
-                    pass
+        """Try to load a custom icon file if one exists.
+        Searches assets/ directory first, then project root."""
+        search_dirs = [ASSETS_DIR, CWD]
+        search_names = (
+            "muninn_tray_icon.png", "muninn_tray_icon.ico",
+            "muninn.ico", "muninn.png",
+            "muninn_raven.png", "muninn_raven.ico",
+        )
+        for search_dir in search_dirs:
+            for name in search_names:
+                icon_path = search_dir / name
+                if icon_path.exists():
+                    try:
+                        img = Image.open(icon_path)
+                        # Resize to 64x64 for tray icon if needed
+                        if img.size != (64, 64):
+                            img = img.resize((64, 64), Image.Resampling.LANCZOS)
+                        return img
+                    except Exception:
+                        pass
         return None
 
     # --- Server Lifecycle ---
@@ -193,7 +207,7 @@ class MuninnTrayApp:
                     self.status = ServerStatus.ONLINE
                 else:
                     self.status = ServerStatus.DEGRADED
-            elif self._check_port(8000):
+            elif self._check_port(SERVER_PORT):
                 # Port open but health check failed — starting or error
                 self.status = ServerStatus.STARTING
             else:
@@ -227,8 +241,8 @@ class MuninnTrayApp:
 
     def start_server(self):
         """Start the Muninn server as a detached process."""
-        if self._check_port(8000):
-            logger.info("Server already running on port 8000")
+        if self._check_port(SERVER_PORT):
+            logger.info("Server already running on port %d", SERVER_PORT)
             self._update_status()
             return
 
@@ -255,8 +269,8 @@ class MuninnTrayApp:
 
             # Wait for server to become responsive (up to 30s)
             for i in range(60):
-                if self._check_port(8000):
-                    logger.info("Server is now accepting connections")
+                if self._check_port(SERVER_PORT):
+                    logger.info("Server is now accepting connections on port %d", SERVER_PORT)
                     break
                 time.sleep(0.5)
 
