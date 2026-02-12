@@ -24,9 +24,16 @@ Ethereal Blue:  #4A6FA5  (accents)
 
 ## Files
 
-- `muninn_logo_runic.webp` - Square logo (GitHub avatar, favicons)
-- `muninn_banner.webp` - Repository banner (1280x256px)
+- `muninn_tray_icon.png` - System tray icon (Norse raven with purple crystal wings)
+- `muninn_banner.png` - Project banner (full-resolution marketing asset)
+
+> **Note**: Image files are gitignored due to size. Place your copies in this directory after cloning.
+> The tray application will auto-detect `muninn_tray_icon.png` from this `assets/` directory.
 
 ## Usage
 
-For detailed branding guidelines, see [DESIGN_BRIEF.md](../DESIGN_BRIEF.md)
+The tray application (`tray_app.py`) searches for icons in this order:
+1. `assets/muninn_tray_icon.png`
+2. `assets/muninn.ico`
+3. `assets/muninn.png`
+4. Falls back to a generated Mannaz rune icon with status-colored indicators

@@ -75,3 +75,9 @@ run_muninn.bat
 
 # Agent skill configs (user-specific)
 skills/
+
+# Large asset binaries (download separately or use Git LFS)
+assets/*.png
+assets/*.jpg
+assets/*.ico
+!assets/README.md
