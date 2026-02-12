@@ -61,3 +61,17 @@ data/
 
 # Temporary kill/service scripts
 kill_server.ps1
+service_wrapper.py
+
+# Internal design docs (not for public repo)
+DESIGN_BRIEF.md
+
+# Claude / agent session artifacts
+.claude/
+claudedocs/
+
+# User-specific scripts (hardcoded paths)
+run_muninn.bat
+
+# Agent skill configs (user-specific)
+skills/

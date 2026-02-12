@@ -10,20 +10,79 @@
      ᛗ The Persistent Memory MCP ᚱ
 ```
 
-Muninn is a **local-first, assistant-agnostic memory layer** for AI agents. It decouples memory from any single assistant (Claude, Gemini, Codex, and others) and provides persistent, searchable memory via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+**Local-first, assistant-agnostic persistent memory for AI agents via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).**
 
-> **v3.0 — Muninn Native Engine**: Fully replaces the Mem0 dependency with a purpose-built memory framework featuring neuroscience-inspired consolidation, multi-factor importance scoring, and LLM-free extraction.
+Muninn decouples memory from any single AI assistant — Claude, Gemini, Codex, and others — and provides persistent, searchable, cross-session memory that lives entirely on your machine.
 
-## Key Features
+> **v3.0 — Native Engine**: Purpose-built memory framework with neuroscience-inspired consolidation, multi-factor importance scoring, 4-signal hybrid retrieval, and LLM-free extraction. Zero cloud calls. Zero data leaves your machine.
 
-- **Assistant Agnostic**: Works with Claude Code, Gemini CLI, Codex CLI, Claude Desktop, and any MCP-compatible client
-- **100% Local**: Qdrant vectors + Kuzu graph + SQLite metadata. Zero cloud calls, zero data leaves your machine
-- **Hybrid Search**: Vector similarity + BM25 keyword search + graph traversal with Reciprocal Rank Fusion and cross-encoder reranking
-- **Memory Lifecycle**: Neuroscience-inspired 4-tier memory hierarchy (Working → Episodic → Semantic → Procedural) with automatic consolidation
-- **Importance Scoring**: Multi-factor importance combining recency decay, access frequency, graph centrality, novelty, and provenance
-- **LLM-Free Extraction**: Rule-based entity/relation extraction (Tier 1) with optional xLAM chain-of-extraction (Tier 2) and Ollama fallback (Tier 3)
-- **Background Consolidation**: Daemon that decays, merges, promotes, and replays memories on a configurable schedule
-- **Silent Operation**: Runs invisibly in the background with optional Windows system tray control
+---
+
+## Why Muninn?
+
+Every AI assistant forgets between sessions. Muninn solves this with a shared memory layer that:
+
+- **Remembers across assistants** — Switch between Claude Code, Gemini CLI, and Codex CLI without losing context
+- **Runs 100% locally** — Your data never leaves your machine. No API keys, no cloud services, no telemetry
+- **Requires no LLM for extraction** — Rule-based entity/relation extraction at zero latency (with optional LLM tiers for deeper analysis)
+- **Manages memory intelligently** — Memories decay, merge, promote, and consolidate automatically like biological memory
+
+### How Muninn Compares
+
+| Capability | Muninn | Mem0 | Basic MCP Memory |
+|---|:---:|:---:|:---:|
+| Local-first (zero cloud) | **Yes** | Partial | Varies |
+| LLM-free extraction | **Yes** | No | No |
+| Multi-signal hybrid search | **4 signals + reranker** | Vector only | Vector/keyword |
+| Knowledge graph | **Kuzu embedded** | Neo4j (external) | None |
+| Memory lifecycle | **4-tier hierarchy** | Flat | Flat |
+| Importance scoring | **5-factor formula** | None | None |
+| Background consolidation | **Async daemon** | None | None |
+| Cross-encoder reranking | **Jina reranker** | None | None |
+| Assistant agnostic | **Any MCP client** | API-specific | Varies |
+
+---
+
+## Features
+
+### 4-Signal Hybrid Retrieval
+Vector similarity (Qdrant HNSW) + BM25 keyword search + graph traversal (Kuzu) + temporal recency, fused via Reciprocal Rank Fusion and refined by a Jina cross-encoder reranker.
+
+### Neuroscience-Inspired Memory Hierarchy
+Modeled after Complementary Learning Systems (CLS) theory:
+
+```
+Working Memory     (ephemeral, 24h TTL)
+       ↓  importance threshold
+Episodic Memory    (specific events, decisions)
+       ↓  pattern extraction
+Semantic Memory    (distilled facts, knowledge)
+       ↓  repeated access
+Procedural Memory  (workflows, habits, patterns)
+```
+
+### 3-Tier Extraction Pipeline
+1. **Rules** (Tier 1) — Regex-based extraction for tech terms, file paths, URLs, preferences, dependencies. Zero latency, zero cost.
+2. **xLAM** (Tier 2) — Salesforce xLAM function-calling model for structured chain-of-extraction. Local via Ollama.
+3. **Ollama fallback** (Tier 3) — General-purpose local LLM for complex extraction scenarios.
+
+### Multi-Factor Importance Scoring
+Each memory receives a composite importance score from 5 weighted factors:
+- **Recency decay** (25%) — Exponential time-based decay
+- **Access frequency** (15%) — How often the memory is retrieved
+- **Graph centrality** (20%) — Connectedness in the knowledge graph
+- **Novelty** (25%) — Information gain relative to existing memories
+- **Provenance** (15%) — Source reliability (user-explicit > assistant-confirmed > auto-extracted)
+
+### Background Consolidation
+An async daemon runs 5 lifecycle phases on a configurable schedule:
+- **Decay** — Apply time-based importance reduction
+- **Merge** — Deduplicate near-identical memories (cosine threshold 0.92)
+- **Promote** — Advance memories through the type hierarchy based on access patterns
+- **Replay** — Strengthen important memories via simulated retrieval
+- **Statistics** — Track system health and memory distribution
+
+---
 
 ## Architecture
 
@@ -31,52 +90,49 @@ Muninn is a **local-first, assistant-agnostic memory layer** for AI agents. It d
 muninn_mcp/
 ├── muninn/                    # Core framework package
 │   ├── core/                  # Memory engine, types, config
-│   │   ├── memory.py          # Main MuninnMemory class
+│   │   ├── memory.py          # MuninnMemory class (add, search, update, delete)
 │   │   ├── types.py           # Pydantic models & enums
-│   │   └── config.py          # Centralized configuration
+│   │   └── config.py          # Centralized configuration (env + YAML)
 │   ├── store/                 # Storage backends
-│   │   ├── vector_store.py    # Qdrant HNSW vectors
-│   │   ├── graph_store.py     # Kuzu knowledge graph
-│   │   └── sqlite_metadata.py # SQLite memory records
+│   │   ├── vector_store.py    # Qdrant HNSW vectors (768-dim, cosine)
+│   │   ├── graph_store.py     # Kuzu embedded knowledge graph
+│   │   └── sqlite_metadata.py # SQLite WAL-mode metadata
 │   ├── extraction/            # Entity & relation extraction
-│   │   ├── rules.py           # Rule-based (zero-latency)
+│   │   ├── rules.py           # Rule-based zero-latency extraction
 │   │   └── pipeline.py        # Tiered extraction orchestrator
 │   ├── retrieval/             # Multi-signal search
 │   │   ├── hybrid.py          # RRF fusion retriever
-│   │   ├── bm25.py            # In-memory BM25 index
+│   │   ├── bm25.py            # In-memory BM25 index (K1=1.2, B=0.75)
 │   │   └── reranker.py        # Jina cross-encoder reranker
 │   ├── scoring/               # Importance scoring
 │   │   └── importance.py      # Multi-factor importance formula
 │   └── consolidation/         # Background memory lifecycle
-│       ├── daemon.py          # Consolidation loop
+│       ├── daemon.py          # Async consolidation loop
 │       ├── merge.py           # Near-duplicate merging
 │       └── promote.py         # Memory type promotion
-├── server.py                  # FastAPI backend
+├── server.py                  # FastAPI backend (REST API)
 ├── mcp_wrapper.py             # MCP stdio bridge (auto-starts server)
 ├── tray_app.py                # Windows system tray application
 ├── dashboard.html             # Web dashboard for memory visualization
-├── ingest_history.py          # History ingestion from multiple assistants
-├── pyproject.toml             # Package metadata
-└── requirements.txt           # Dependencies
+├── ingest_history.py          # Multi-assistant history ingestion
+└── pyproject.toml             # Package metadata & dependencies
 ```
 
-**Data Directory**: `~/.muninn/data/` (platform-independent, user-level)
-**Server**: `http://localhost:42069` (FastAPI)
-**Embeddings**: Ollama `nomic-embed-text` (768-dim, local)
+---
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.10+
-- [Ollama](https://ollama.com) with `nomic-embed-text` model pulled
-- (Optional) xLAM function-calling model for advanced entity extraction
+- **Python 3.10+**
+- **[Ollama](https://ollama.com)** with `nomic-embed-text` model pulled
+- (Optional) xLAM model for advanced entity extraction
 
-### Install
+### Setup
 
 ```bash
-git clone https://github.com/yourusername/muninn_mcp.git
-cd muninn_mcp
+git clone https://github.com/AntigravityLabs/muninn-mcp.git
+cd muninn-mcp
 pip install -r requirements.txt
 ```
 
@@ -86,12 +142,14 @@ pip install -r requirements.txt
 ollama pull nomic-embed-text
 ```
 
+---
+
 ## Configuration
 
 ### Claude Code
 
 ```bash
-claude mcp add muninn -s user -- python /path/to/muninn_mcp/mcp_wrapper.py
+claude mcp add muninn -s user -- python /path/to/muninn-mcp/mcp_wrapper.py
 ```
 
 ### Claude Desktop (`claude_desktop_config.json`)
@@ -101,7 +159,20 @@ claude mcp add muninn -s user -- python /path/to/muninn_mcp/mcp_wrapper.py
   "mcpServers": {
     "muninn": {
       "command": "python",
-      "args": ["/path/to/muninn_mcp/mcp_wrapper.py"]
+      "args": ["/path/to/muninn-mcp/mcp_wrapper.py"]
+    }
+  }
+}
+```
+
+### Cursor (`~/.cursor/mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "muninn": {
+      "command": "python",
+      "args": ["/path/to/muninn-mcp/mcp_wrapper.py"]
     }
   }
 }
@@ -114,7 +185,7 @@ claude mcp add muninn -s user -- python /path/to/muninn_mcp/mcp_wrapper.py
   "mcpServers": {
     "muninn": {
       "command": "python",
-      "args": ["/path/to/muninn_mcp/mcp_wrapper.py"]
+      "args": ["/path/to/muninn-mcp/mcp_wrapper.py"]
     }
   }
 }
@@ -125,10 +196,10 @@ claude mcp add muninn -s user -- python /path/to/muninn_mcp/mcp_wrapper.py
 ```toml
 [mcp_servers.muninn]
 command = "python"
-args = ["/path/to/muninn_mcp/mcp_wrapper.py"]
+args = ["/path/to/muninn-mcp/mcp_wrapper.py"]
 ```
 
-> **Note:** Replace `/path/to/muninn_mcp/` with the actual path to your installation. On Windows, use the full path to your Python executable (e.g., `C:\\Python313\\python.exe`).
+> **Note:** Replace `/path/to/muninn-mcp/` with the actual path to your installation. On Windows, use the full path to your Python executable (e.g., `C:\Python313\python.exe`).
 
 ### Environment Variables
 
@@ -142,46 +213,51 @@ args = ["/path/to/muninn_mcp/mcp_wrapper.py"]
 | `MUNINN_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
 | `MUNINN_RERANKER_ENABLED` | `true` | Enable cross-encoder reranking |
 | `MUNINN_CONSOLIDATION_ENABLED` | `true` | Enable background consolidation |
-| `MUNINN_SERVER_URL` | `http://localhost:42069` | Server URL (for mcp_wrapper) |
+| `MUNINN_SERVER_URL` | `http://localhost:42069` | Server URL for MCP wrapper |
+
+---
 
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `add_memory` | Store a new memory with optional metadata |
-| `search_memory` | Hybrid search with reranking |
-| `get_all_memories` | Retrieve all stored memories |
+| `add_memory` | Store a new memory with optional metadata tags |
+| `search_memory` | Hybrid search across all 4 signals with reranking |
+| `get_all_memories` | Retrieve all stored memories (paginated) |
 | `update_memory` | Update an existing memory by ID |
 | `delete_memory` | Delete a specific memory by ID |
 | `delete_all_memories` | Delete all memories (requires confirmation) |
 
-## Memory Type Hierarchy
+---
 
-Inspired by Complementary Learning Systems (CLS) theory from neuroscience:
+## REST API
 
-```
-Working Memory (ephemeral, session-scoped, 24h TTL)
-    │
-    │  ── promotion via importance threshold ──>
-    │
-Episodic Memory (specific events, conversations, decisions)
-    │
-    │  ── consolidation via pattern extraction ──>
-    │
-Semantic Memory (distilled facts, preferences, knowledge)
-    │
-    │  ── formalization via repeated access ──>
-    │
-Procedural Memory (workflows, tool usage patterns, habits)
-```
+When the server is running (`http://localhost:42069`):
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Server and subsystem health check |
+| `POST` | `/add` | Add a new memory |
+| `POST` | `/search` | Hybrid search with query |
+| `GET` | `/get_all` | Retrieve all memories |
+| `PUT` | `/update` | Update memory by ID |
+| `DELETE` | `/delete` | Delete memory by ID |
+| `GET` | `/graph` | Knowledge graph statistics |
+| `POST` | `/handover` | Generate cross-assistant handover context |
+| `POST` | `/consolidation/trigger` | Manually trigger consolidation |
+| `GET` | `/consolidation/stats` | Consolidation statistics |
+
+---
 
 ## Dashboard
 
-Visit `http://localhost:42069` when the server is running to visualize your memory graph and browse stored memories.
+Visit `http://localhost:42069` when the server is running to access the web dashboard for memory visualization and knowledge graph exploration.
+
+---
 
 ## History Ingestion
 
-Import existing conversation history from your assistants:
+Import existing conversation history from your AI assistants:
 
 ```bash
 # Dry run to see what would be ingested
@@ -193,17 +269,59 @@ python ingest_history.py --agent codex
 python ingest_history.py --agent antigravity
 ```
 
+---
+
 ## Testing
 
 ```bash
+# Run all tests
 python -m pytest tests/ -v
+
+# Run specific test module
+python -m pytest tests/test_bm25.py -v
 ```
+
+---
+
+## Data Storage
+
+All data is stored locally in `~/.muninn/data/` by default:
+
+```
+~/.muninn/data/
+├── vectors/        # Qdrant vector index (HNSW, on-disk)
+├── graph/          # Kuzu knowledge graph database
+├── metadata.db     # SQLite metadata store (WAL mode)
+└── bm25_index/     # BM25 inverted index cache
+```
+
+---
+
+## Roadmap
+
+See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadmap. Planned features include:
+
+- **Explainable recall traces** — Transparency into why each memory was retrieved
+- **Conflict detection** — NLI-based contradiction detection between memories
+- **Semantic deduplication** — Embedding-based near-duplicate prevention
+- **Adaptive retrieval weights** — Entropy-based dynamic signal weighting
+- **Memory chains** — Temporal/causal linking of related memories
+- **Multi-source ingestion** — PDF, Markdown, and structured document import
+- **Python SDK** — Programmatic API for non-MCP integration
+- **Cross-platform support** — Linux and macOS path resolution
+
+---
 
 ## Documentation
 
 - [Architecture Deep Dive](docs/ARCHITECTURE.md) — Full design document with research references
-- [Citations](CITATIONS.md) — Academic sources and cross-domain inspiration
+- [Citations & Credits](CITATIONS.md) — Academic sources and open-source attribution
+- [SOTA+ Roadmap](SOTA_PLUS_PLAN.md) — Next-generation feature implementation plan
+
+---
 
 ## License
 
-Apache License 2.0
+[Apache License 2.0](LICENSE)
+
+Copyright 2025 Antigravity Labs
