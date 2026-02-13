@@ -2,13 +2,18 @@
 Muninn Core Types
 -----------------
 Pydantic models and enums for the Muninn memory framework.
+
+v3.1.0: Added RecallTrace support in SearchResult for explainable recall.
 """
 
 import uuid
 import time
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from muninn.core.recall_trace import RecallTrace
 
 
 class MemoryType(str, Enum):
@@ -65,7 +70,12 @@ class MemoryRecord(BaseModel):
 class SearchResult(BaseModel):
     memory: MemoryRecord
     score: float = 0.0
-    source: str = "vector"  # vector|graph|bm25|temporal
+    source: str = "vector"  # vector|graph|bm25|temporal|hybrid|hybrid+rerank
+    trace: Optional["RecallTrace"] = Field(
+        default=None,
+        description="RecallTrace explaining why this memory was retrieved (v3.1.0). "
+        "Set when explain=True in search request and explainable_recall flag is ON.",
+    )
 
 
 class Entity(BaseModel):
@@ -109,6 +119,10 @@ class SearchMemoryRequest(BaseModel):
     rerank: bool = True
     filters: Optional[Dict[str, Any]] = None
     namespaces: Optional[List[str]] = None
+    explain: bool = Field(
+        default=False,
+        description="When True, include RecallTrace explaining retrieval signals (v3.1.0).",
+    )
 
 
 class UpdateMemoryRequest(BaseModel):

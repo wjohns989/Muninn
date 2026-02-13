@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Muninn Memory Server",
     description="Local-first persistent memory for AI agents — Muninn native engine",
-    version="3.0.0",
+    version="3.1.0",
     lifespan=lifespan,
 )
 
@@ -246,6 +246,7 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
             rerank=req.rerank,
             filters=req.filters,
             namespaces=req.namespaces,
+            explain=req.explain,
         )
 
         return {"success": True, "data": results}

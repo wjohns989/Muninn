@@ -92,6 +92,8 @@ def is_server_running() -> bool:
 
 def check_and_start_ollama():
     """Check if Ollama is running, and start it if not."""
+    from muninn.platform import spawn_detached_process, find_ollama_executable
+
     try:
         # Quick check if Ollama is responsive
         requests.get("http://localhost:11434", timeout=0.5)
@@ -101,29 +103,22 @@ def check_and_start_ollama():
         logger.warning("Ollama is not responding. Attempting to start...")
 
     try:
-        # Attempt to start Ollama in the background (Windows specific)
-        DETACHED_PROCESS = 0x00000008
-        CREATE_NEW_PROCESS_GROUP = 0x00000200
-        CREATE_NO_WINDOW = 0x08000000
-        
-        # SOTA: Silent Launch (shell=False prevents cmd.exe wrapper)
-        subprocess.Popen(
-            ["ollama", "serve"],
-            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
-            close_fds=True,
-            shell=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+        ollama_path = find_ollama_executable()
+        if not ollama_path:
+            logger.error("Ollama executable not found on this system.")
+            return False
+
+        spawn_detached_process([ollama_path, "serve"])
+
         # Wait for Ollama to become responsive
-        for _ in range(20): # 10 seconds wait
+        for _ in range(20):  # 10 seconds wait
             try:
                 requests.get("http://localhost:11434", timeout=0.5)
                 logger.info("Ollama started successfully.")
                 return True
             except requests.RequestException:
                 time.sleep(0.5)
-        
+
         logger.error("Timed out waiting for Ollama to start.")
         return False
     except Exception as e:
@@ -131,30 +126,21 @@ def check_and_start_ollama():
         return False
 
 def start_server():
-    """Start the Muninn server in a detached process."""
+    """Start the Muninn server in a detached process (cross-platform)."""
+    from muninn.platform import spawn_detached_process, find_python_executable
+
     logger.info("Starting Muninn server...")
-    
-    # Windows specific flags for detached process
-    DETACHED_PROCESS = 0x00000008
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    CREATE_NO_WINDOW = 0x08000000
-    
-    # Use pythonw.exe for windowless execution if available, else python.exe
-    python_executable = sys.executable.replace("python.exe", "pythonw.exe") if "python.exe" in sys.executable else sys.executable
+
+    python_executable = find_python_executable()
 
     try:
-        subprocess.Popen(
+        spawn_detached_process(
             [python_executable, str(SERVER_SCRIPT)],
-            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
             cwd=str(GLOBAL_MEMORY_DIR),
-            close_fds=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
         )
-        # SOTA: Don't block waiting for full startup here. 
+        # Don't block waiting for full startup here.
         # The first tool call will trigger a retry loop if needed.
-        # Just give it a split second to spawn.
-        time.sleep(2) 
+        time.sleep(2)
         return True
     except Exception as e:
         logger.error(f"Failed to start server: {e}")
@@ -186,7 +172,7 @@ def handle_initialize(msg_id: Any):
             },
             "serverInfo": {
                 "name": "muninn-mcp",
-                "version": "3.0.0"
+                "version": "3.1.0"
             }
         }
     })
@@ -231,6 +217,11 @@ def handle_list_tools(msg_id: Any):
                         "type": "boolean",
                         "description": "Enable SOTA reranking for precision (default true)",
                         "default": True
+                    },
+                    "explain": {
+                        "type": "boolean",
+                        "description": "Include per-result recall trace explaining retrieval signals (v3.1.0)",
+                        "default": False
                     }
                 },
                 "required": ["query"]
@@ -350,12 +341,14 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             if "project" not in filters:
                 filters["project"] = git_info["project"]
 
+            explain = arguments.get("explain", False)
             payload = {
                 "query": arguments.get("query"),
                 "limit": arguments.get("limit", 5),
                 "rerank": arguments.get("rerank", True),
                 "user_id": "global_user",
-                "filters": filters
+                "filters": filters,
+                "explain": explain,
             }
             resp = make_request_with_retry("POST", f"{SERVER_URL}/search", json=payload, timeout=10)
             result = resp.json()
@@ -363,12 +356,23 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             formatted_results = []
             if result.get("success") and result.get("data"):
                 for item in result["data"]:
-                    # Muninn native returns: id, content, score, memory_type, metadata
                     content = str(item.get('content', item.get('memory', 'Unknown content')))
                     score = item.get('score', '')
                     mem_type = item.get('memory_type', '')
                     prefix = f"[{mem_type}:{score:.2f}] " if score and mem_type else ""
-                    formatted_results.append(f"- {prefix}{content}")
+                    line = f"- {prefix}{content}"
+
+                    # Append recall trace explanation if present (v3.1.0)
+                    trace = item.get("trace")
+                    if trace and explain:
+                        explanation = trace.get("explanation", "")
+                        dominant = trace.get("dominant_signal", "")
+                        if explanation:
+                            line += f"\n  Why: {explanation}"
+                        elif dominant:
+                            line += f"\n  Dominant signal: {dominant}"
+
+                    formatted_results.append(line)
                 text_response = "\n".join(formatted_results) if formatted_results else "No relevant memories found."
             else:
                 text_response = f"Error or no data: {result}"
