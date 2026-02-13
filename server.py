@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Muninn Memory Server",
     description="Local-first persistent memory for AI agents — Muninn native engine",
-    version="3.1.0",
+    version="3.2.0",
     lifespan=lifespan,
 )
 
