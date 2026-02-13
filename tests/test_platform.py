@@ -65,14 +65,14 @@ class TestDataDir:
             assert result == Path("/custom/data")
 
     def test_default_is_path(self):
-        with patch.dict(os.environ, {}, clear=False):
+        with patch.dict(os.environ, {}, clear=False), patch("muninn.platform.is_running_in_docker", return_value=False):
             os.environ.pop("MUNINN_DATA_DIR", None)
             result = get_data_dir()
             assert isinstance(result, Path)
             assert "muninn" in str(result).lower()
 
     def test_docker_default(self):
-        with patch.dict(os.environ, {"MUNINN_DOCKER": "1"}):
+        with patch.dict(os.environ, {}, clear=False), patch("muninn.platform.is_running_in_docker", return_value=True):
             os.environ.pop("MUNINN_DATA_DIR", None)
             result = get_data_dir()
             assert result == Path("/data")
