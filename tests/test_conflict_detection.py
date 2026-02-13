@@ -415,3 +415,16 @@ class TestConflictResolver:
         resolver.vectors.upsert.assert_called_once()
         vector_payload = resolver.vectors.upsert.call_args[1]["metadata"]
         assert vector_payload["user_id"] == "user-123"
+
+    def test_merge_uses_existing_user_scope_when_user_id_not_passed(self):
+        existing = _make_record("old content", memory_id="mem-old")
+        existing.metadata = {"user_id": "user-from-metadata"}
+        resolver = self._make_resolver(existing_record=existing)
+        resolver.embed_fn = lambda _content: [0.1, 0.2, 0.3]
+
+        conflict = self._make_conflict(ConflictResolution.MERGE)
+        resolver.resolve(conflict)
+
+        resolver.vectors.upsert.assert_called_once()
+        vector_payload = resolver.vectors.upsert.call_args[1]["metadata"]
+        assert vector_payload["user_id"] == "user-from-metadata"
