@@ -25,3 +25,28 @@ def test_user_scope_backfill_failure_ledger(tmp_path: Path):
 
     assert store.count_user_scope_backfill_failures() == 1
     assert store.get_user_scope_backfill_failures() == ["mem-2"]
+
+from muninn.core.types import MemoryRecord, MemoryType, Provenance
+
+
+def _record(memory_id: str, metadata: dict):
+    return MemoryRecord(
+        id=memory_id,
+        content=f"content-{memory_id}",
+        memory_type=MemoryType.EPISODIC,
+        provenance=Provenance.AUTO_EXTRACTED,
+        namespace="project-a",
+        metadata=metadata,
+    )
+
+
+def test_count_and_fetch_missing_user_id(tmp_path: Path):
+    store = SQLiteMetadataStore(tmp_path / "missing.db")
+    store.add(_record("m1", {}))
+    store.add(_record("m2", {"user_id": "user-1"}))
+    store.add(_record("m3", {"other": True}))
+
+    missing = store.get_missing_user_id_records(limit=10)
+
+    assert store.count_missing_user_id() == 2
+    assert {r.id for r in missing} == {"m1", "m3"}
