@@ -115,6 +115,19 @@ class VectorStore:
             if hit.payload and "memory_id" in hit.payload
         ]
 
+    def set_payload(self, memory_id: str, payload: Dict[str, Any]) -> bool:
+        """Update payload fields for an existing vector point by memory ID."""
+        if not payload:
+            return False
+        client = self._get_client()
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
+        client.set_payload(
+            collection_name=self.collection_name,
+            payload=payload,
+            points=[point_id],
+        )
+        return True
+
     def delete(self, memory_id: str) -> bool:
         """Delete a vector by memory_id."""
         client = self._get_client()
