@@ -9,11 +9,9 @@ v3.1.0: Added RecallTrace support in SearchResult for explainable recall.
 import uuid
 import time
 from enum import Enum
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
-
-if TYPE_CHECKING:
-    from muninn.core.recall_trace import RecallTrace
+from muninn.core.recall_trace import RecallTrace
 
 
 class MemoryType(str, Enum):
@@ -71,7 +69,7 @@ class SearchResult(BaseModel):
     memory: MemoryRecord
     score: float = 0.0
     source: str = "vector"  # vector|graph|bm25|temporal|hybrid|hybrid+rerank
-    trace: Optional["RecallTrace"] = Field(
+    trace: Optional[RecallTrace] = Field(
         default=None,
         description="RecallTrace explaining why this memory was retrieved (v3.1.0). "
         "Set when explain=True in search request and explainable_recall flag is ON.",
@@ -136,3 +134,4 @@ class HealthResponse(BaseModel):
     graph_nodes: int = 0
     reranker: str = "inactive"
     backend: str = "muninn-native"
+
