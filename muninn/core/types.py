@@ -71,7 +71,7 @@ class SearchResult(BaseModel):
     memory: MemoryRecord
     score: float = 0.0
     source: str = "vector"  # vector|graph|bm25|temporal|hybrid|hybrid+rerank
-    trace: Optional[Any] = Field(
+    trace: Optional["RecallTrace"] = Field(
         default=None,
         description="RecallTrace explaining why this memory was retrieved (v3.1.0). "
         "Set when explain=True in search request and explainable_recall flag is ON.",
