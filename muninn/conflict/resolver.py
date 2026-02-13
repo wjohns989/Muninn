@@ -20,6 +20,8 @@ from muninn.conflict.detector import ConflictResult, ConflictResolution
 logger = logging.getLogger("Muninn.ConflictResolver")
 
 SUPERSEDED_IMPORTANCE_FACTOR = 0.1
+VECTOR_CONTENT_PREVIEW_LIMIT = 500
+GRAPH_SUMMARY_LIMIT = 200
 
 
 class ConflictResolver:
@@ -49,6 +51,7 @@ class ConflictResolver:
         conflict: ConflictResult,
         new_record: Optional[MemoryRecord] = None,
         new_embedding: Optional[list] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Execute the suggested resolution strategy for a conflict.
@@ -57,6 +60,7 @@ class ConflictResolver:
             conflict: The conflict detection result.
             new_record: The new MemoryRecord (needed for SUPERSEDE/MERGE).
             new_embedding: The new memory's embedding vector.
+            user_id: Owner identifier for scoped vector metadata updates.
 
         Returns:
             Dict with resolution outcome details.
@@ -66,7 +70,7 @@ class ConflictResolver:
         if strategy == ConflictResolution.SUPERSEDE:
             return self._resolve_supersede(conflict, new_record, new_embedding)
         elif strategy == ConflictResolution.MERGE:
-            return self._resolve_merge(conflict, new_record, new_embedding)
+            return self._resolve_merge(conflict, new_record, new_embedding, user_id)
         elif strategy == ConflictResolution.KEEP_EXISTING:
             return self._resolve_keep_existing(conflict)
         elif strategy == ConflictResolution.FLAG_FOR_REVIEW:
@@ -119,6 +123,7 @@ class ConflictResolver:
         conflict: ConflictResult,
         new_record: Optional[MemoryRecord],
         new_embedding: Optional[list],
+        user_id: Optional[str],
     ) -> Dict[str, Any]:
         """
         MERGE: Combine conflicting memories into a unified version.
@@ -160,20 +165,21 @@ class ConflictResolver:
                 memory_id=old_id,
                 embedding=merged_embedding,
                 metadata={
-                    "content": merged_content[:500],
+                    "content": merged_content[:VECTOR_CONTENT_PREVIEW_LIMIT],
                     "memory_type": old_record.memory_type.value,
                     "namespace": old_record.namespace,
                     "importance": old_record.importance,
+                    "user_id": user_id or "global_user",
                 },
             )
-        self.graph.add_memory_node(old_id, merged_content[:200])
+        self.graph.add_memory_node(old_id, merged_content[:GRAPH_SUMMARY_LIMIT])
 
         logger.info("MERGE: Memory %s merged with new content", old_id)
 
         return {
             "resolution": "merge",
             "merged_memory_id": old_id,
-            "merged_content": merged_content[:200],
+            "merged_content": merged_content[:GRAPH_SUMMARY_LIMIT],
             "action": "Existing memory updated with merged content; new memory will not be stored separately",
             "skip_new_storage": True,
         }
