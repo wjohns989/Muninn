@@ -130,7 +130,7 @@ class InstructorExtractor:
                     {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
                     {
                         "role": "user",
-                        "content": f"Extract structured facts from this text:\n\n{truncated}",
+                        "content": f"Extract structured facts from the following text delimited by triple backticks:\n\n```\n{truncated}\n```",
                     },
                 ],
             )
