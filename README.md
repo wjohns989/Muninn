@@ -1,3 +1,5 @@
+![Muninn Banner](assets/muninn_banner.png)
+
 # Muninn: Persistent Memory for AI Agents
 
 ```text
@@ -29,26 +31,28 @@ Every AI assistant forgets between sessions. Muninn solves this with a shared me
 
 ### How Muninn Compares
 
-| Capability | Muninn | Mem0 | Basic MCP Memory |
+| Capability | Muninn | Others | Standard Implementations |
 |---|:---:|:---:|:---:|
 | Local-first (zero cloud) | **Yes** | Partial | Varies |
 | LLM-free extraction | **Yes** | No | No |
 | Multi-signal hybrid search | **4 signals + reranker** | Vector only | Vector/keyword |
-| Knowledge graph | **Kuzu embedded** | Neo4j (external) | None |
+| Knowledge graph | **Kuzu embedded** | Partial | None |
 | Memory lifecycle | **4-tier hierarchy** | Flat | Flat |
 | Importance scoring | **5-factor formula** | None | None |
 | Background consolidation | **Async daemon** | None | None |
 | Cross-encoder reranking | **Jina reranker** | None | None |
-| Assistant agnostic | **Any MCP client** | API-specific | Varies |
+| Assistant agnostic | **Any MCP client** | Varies | Varies |
 
 ---
 
 ## Features
 
 ### 4-Signal Hybrid Retrieval
+
 Vector similarity (Qdrant HNSW) + BM25 keyword search + graph traversal (Kuzu) + temporal recency, fused via Reciprocal Rank Fusion and refined by a Jina cross-encoder reranker.
 
 ### Neuroscience-Inspired Memory Hierarchy
+
 Modeled after Complementary Learning Systems (CLS) theory:
 
 ```
@@ -62,12 +66,15 @@ Procedural Memory  (workflows, habits, patterns)
 ```
 
 ### 3-Tier Extraction Pipeline
+
 1. **Rules** (Tier 1) — Regex-based extraction for tech terms, file paths, URLs, preferences, dependencies. Zero latency, zero cost.
 2. **xLAM** (Tier 2) — Salesforce xLAM function-calling model for structured chain-of-extraction. Local via Ollama.
 3. **Ollama fallback** (Tier 3) — General-purpose local LLM for complex extraction scenarios.
 
 ### Multi-Factor Importance Scoring
+
 Each memory receives a composite importance score from 5 weighted factors:
+
 - **Recency decay** (25%) — Exponential time-based decay
 - **Access frequency** (15%) — How often the memory is retrieved
 - **Graph centrality** (20%) — Connectedness in the knowledge graph
@@ -75,7 +82,9 @@ Each memory receives a composite importance score from 5 weighted factors:
 - **Provenance** (15%) — Source reliability (user-explicit > assistant-confirmed > auto-extracted)
 
 ### Background Consolidation
+
 An async daemon runs 5 lifecycle phases on a configurable schedule:
+
 - **Decay** — Apply time-based importance reduction
 - **Merge** — Deduplicate near-identical memories (cosine threshold 0.92)
 - **Promote** — Advance memories through the type hierarchy based on access patterns
@@ -324,4 +333,4 @@ See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadm
 
 [Apache License 2.0](LICENSE)
 
-Copyright 2025 Antigravity Labs
+W.Johns All Rights reserved

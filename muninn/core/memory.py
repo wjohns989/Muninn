@@ -291,6 +291,7 @@ class MuninnMemory:
         rerank: bool = True,
         filters: Optional[Dict[str, Any]] = None,
         namespaces: Optional[List[str]] = None,
+        explain: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Search memories using hybrid multi-signal retrieval.
@@ -303,6 +304,7 @@ class MuninnMemory:
             rerank: Whether to apply cross-encoder reranking.
             filters: Additional metadata filters.
             namespaces: Namespace filter list.
+            explain: When True, include RecallTrace per result (v3.1.0).
 
         Returns:
             List of memory dicts with scores.
@@ -316,10 +318,12 @@ class MuninnMemory:
             filters=filters,
             rerank=rerank,
             namespaces=namespaces,
+            explain=explain,
         )
 
-        return [
-            {
+        output = []
+        for r in results:
+            item = {
                 "id": r.memory.id,
                 "memory": r.memory.content,
                 "score": r.score,
@@ -329,8 +333,10 @@ class MuninnMemory:
                 "created_at": r.memory.created_at,
                 "metadata": r.memory.metadata,
             }
-            for r in results
-        ]
+            if explain and r.trace is not None:
+                item["trace"] = r.trace.model_dump()
+            output.append(item)
+        return output
 
     async def get_all(
         self,

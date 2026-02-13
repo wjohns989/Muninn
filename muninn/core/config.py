@@ -3,6 +3,8 @@ Muninn Configuration
 --------------------
 Centralized configuration management for all Muninn components.
 Loads from environment variables and YAML config files.
+
+v3.1.0: Uses platform abstraction for cross-platform path resolution.
 """
 
 import os
@@ -11,10 +13,12 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 
+from muninn.platform import get_data_dir
+
 logger = logging.getLogger("Muninn.Config")
 
-# Default data directory
-DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".muninn", "data")
+# Default data directory — now cross-platform via platform.py
+DEFAULT_DATA_DIR = str(get_data_dir())
 
 
 class EmbeddingConfig(BaseModel):
@@ -51,6 +55,12 @@ class ExtractionConfig(BaseModel):
     enable_ollama_fallback: bool = True
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2:3b"
+    # Instructor-based extraction (v3.1.0)
+    enable_instructor: bool = True
+    instructor_provider: str = "ollama"  # "ollama" | "xlam" | "openai" | "custom"
+    instructor_base_url: str = "http://localhost:11434/v1"
+    instructor_model: str = "llama3.2:3b"
+    instructor_api_key: str = "not-needed"
 
 
 class RerankerConfig(BaseModel):
@@ -132,6 +142,12 @@ class MuninnConfig(BaseModel):
                 xlam_url=os.environ.get("MUNINN_XLAM_URL", "http://localhost:8001/v1"),
                 enable_ollama_fallback=True,
                 ollama_url=ollama_url,
+                # Instructor extraction (v3.1.0)
+                enable_instructor=os.environ.get("MUNINN_INSTRUCTOR_ENABLED", "true").lower() == "true",
+                instructor_provider=os.environ.get("MUNINN_INSTRUCTOR_PROVIDER", "ollama"),
+                instructor_base_url=os.environ.get("MUNINN_INSTRUCTOR_URL", f"{ollama_url}/v1"),
+                instructor_model=os.environ.get("MUNINN_INSTRUCTOR_MODEL", "llama3.2:3b"),
+                instructor_api_key=os.environ.get("MUNINN_INSTRUCTOR_API_KEY", "not-needed"),
             ),
             reranker=RerankerConfig(
                 enabled=os.environ.get("MUNINN_RERANKER_ENABLED", "true").lower() == "true",
