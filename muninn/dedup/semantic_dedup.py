@@ -28,6 +28,9 @@ from muninn.core.types import MemoryRecord
 
 logger = logging.getLogger("Muninn.Dedup")
 
+NOVEL_TOKEN_RATIO_THRESHOLD = 0.2
+FUZZY_SENTENCE_OVERLAP_THRESHOLD = 0.8
+
 
 class DedupStrategy(str, Enum):
     """Resolution strategy for detected duplicates."""
@@ -92,6 +95,7 @@ class SemanticDedup:
         vector_store,
         metadata_store,
         exclude_ids: Optional[List[str]] = None,
+        filters: Optional[Dict[str, str]] = None,
     ) -> Optional[DedupResult]:
         """
         Check if an embedding is a near-duplicate of existing memories.
@@ -114,6 +118,7 @@ class SemanticDedup:
                 query_embedding=embedding,
                 limit=5,
                 score_threshold=self.threshold,
+                filters=filters,
             )
         except Exception as e:
             logger.warning("Dedup vector search failed: %s", e)
@@ -153,8 +158,7 @@ class SemanticDedup:
                     strategy=strategy,
                     explanation=(
                         f"Semantic duplicate detected: "
-                        f"cosine={score:.3f}, token_overlap={overlap:.2f}. "
-                        f"Existing memory: {existing.content[:80]}..."
+                        f"cosine={score:.3f}, token_overlap={overlap:.2f}."
                     ),
                 )
 
@@ -184,8 +188,8 @@ class SemanticDedup:
         existing_tokens = set(existing_record.content.lower().split())
         novel_tokens = new_tokens - existing_tokens
 
-        # If new content has >20% novel tokens, update existing
-        if len(novel_tokens) > len(new_tokens) * 0.2:
+        # If new content has enough novel tokens, update existing
+        if len(novel_tokens) > len(new_tokens) * NOVEL_TOKEN_RATIO_THRESHOLD:
             return DedupStrategy.UPDATE_EXISTING
 
         return DedupStrategy.SKIP
@@ -240,10 +244,10 @@ class SemanticDedup:
         novel = []
         for sentence in new_sentences:
             if sentence not in existing_sentences:
-                # Check fuzzy match (>80% token overlap = same sentence)
+                # Check fuzzy match (high token overlap = same sentence)
                 is_duplicate = False
                 for existing_s in existing_sentences:
-                    if self._content_overlap(sentence, existing_s) > 0.8:
+                    if self._content_overlap(sentence, existing_s) > FUZZY_SENTENCE_OVERLAP_THRESHOLD:
                         is_duplicate = True
                         break
                 if not is_duplicate:
