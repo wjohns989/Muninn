@@ -159,6 +159,7 @@ class ConflictResolver:
         self.bm25.add(old_id, merged_content)
 
         # Refresh vector and graph indexes so merged content is immediately retrievable
+        merged_user_id = user_id or old_record.metadata.get("user_id", "global_user")
         if self.embed_fn:
             merged_embedding = self.embed_fn(merged_content)
             self.vectors.upsert(
@@ -169,7 +170,7 @@ class ConflictResolver:
                     "memory_type": old_record.memory_type.value,
                     "namespace": old_record.namespace,
                     "importance": old_record.importance,
-                    "user_id": user_id or "global_user",
+                    "user_id": merged_user_id,
                 },
             )
         self.graph.add_memory_node(old_id, merged_content[:GRAPH_SUMMARY_LIMIT])
