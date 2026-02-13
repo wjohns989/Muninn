@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muninn-mcp"
-version = "3.0.0"
+version = "3.1.0"
 description = "Local-first, assistant-agnostic persistent memory for AI agents via MCP — Muninn native engine"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 authors = [
     {name = "Antigravity Labs"}
 ]
-keywords = ["mcp", "memory", "ai", "agents", "rag", "knowledge-graph"]
+keywords = ["mcp", "memory", "ai", "agents", "rag", "knowledge-graph", "local-first"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -37,9 +37,16 @@ dependencies = [
     "qdrant-client>=1.7.0",
     "fastembed>=0.2.0",
     "kuzu>=0.4.0",
+    # v3.1.0: Cross-platform path resolution
+    "platformdirs>=4.0.0",
 ]
 
 [project.optional-dependencies]
+# Instructor-based structured extraction (v3.1.0)
+instructor = [
+    "instructor>=1.0.0",
+    "openai>=1.0.0",
+]
 tray = [
     "pystray>=0.19.0",
     "Pillow>=10.0.0",
@@ -52,15 +59,18 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
 ]
+all = [
+    "muninn-mcp[instructor,tray,dev]",
+]
 
 [project.scripts]
 muninn-server = "server:main"
 muninn-tray = "tray_app:main"
 
 [project.urls]
-Homepage = "https://github.com/AntigravityLabs/muninn-mcp"
-Repository = "https://github.com/AntigravityLabs/muninn-mcp"
-Issues = "https://github.com/AntigravityLabs/muninn-mcp/issues"
+Homepage = "https://github.com/wjohns989/Muninn"
+Repository = "https://github.com/wjohns989/Muninn"
+Issues = "https://github.com/wjohns989/Muninn/issues"
 
 [tool.ruff]
 target-version = "py310"

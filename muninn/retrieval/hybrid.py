@@ -10,6 +10,8 @@ Signals:
 3. Temporal Filtering (SQLite bi-temporal queries)
 4. BM25 Keyword (in-memory inverted index)
 
+v3.1.0: Added explainable recall traces (per-signal attribution).
+
 Inspired by:
 - ColBERT late interaction for fine-grained matching
 - Reciprocal Rank Fusion for multi-signal combination
@@ -22,6 +24,10 @@ from typing import List, Optional, Dict, Any, Tuple
 from collections import defaultdict
 
 from muninn.core.types import MemoryRecord, SearchResult
+from muninn.core.recall_trace import (
+    RecallTrace, create_signal_contribution,
+)
+from muninn.core.feature_flags import get_flags
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 from muninn.store.vector_store import VectorStore
 from muninn.store.graph_store import GraphStore
@@ -74,6 +80,7 @@ class HybridRetriever:
         filters: Optional[Dict[str, Any]] = None,
         rerank: bool = True,
         namespaces: Optional[List[str]] = None,
+        explain: bool = False,
     ) -> List[SearchResult]:
         """
         Execute multi-signal hybrid search with RRF fusion.
@@ -85,11 +92,16 @@ class HybridRetriever:
             filters: Optional metadata filters.
             rerank: Whether to apply cross-encoder reranking.
             namespaces: Optional namespace filter list.
+            explain: Whether to generate recall traces (v3.1.0).
 
         Returns:
             List of SearchResult sorted by relevance.
         """
         t0 = time.time()
+
+        # Check if explainable recall is enabled via feature flags
+        flags = get_flags()
+        generate_traces = explain and flags.is_enabled("explainable_recall")
 
         # Generate query embedding
         query_embedding = await self._get_embedding(query)
@@ -104,19 +116,28 @@ class HybridRetriever:
         bm25_results = self._bm25_search(query, limit * 2)
         temporal_results = self._temporal_search(filters, namespaces, limit * 2)
 
-        # --- Reciprocal Rank Fusion ---
-        fused_scores = self._rrf_fusion(
-            vector_results=vector_results,
-            graph_results=graph_results,
-            bm25_results=bm25_results,
-            temporal_results=temporal_results,
-        )
+        # --- Reciprocal Rank Fusion (with optional trace tracking) ---
+        if generate_traces:
+            fused_scores, traces = self._rrf_fusion_with_traces(
+                vector_results=vector_results,
+                graph_results=graph_results,
+                bm25_results=bm25_results,
+                temporal_results=temporal_results,
+            )
+        else:
+            fused_scores = self._rrf_fusion(
+                vector_results=vector_results,
+                graph_results=graph_results,
+                bm25_results=bm25_results,
+                temporal_results=temporal_results,
+            )
+            traces = {}
 
         if not fused_scores:
             return []
 
         # --- Apply importance weighting ---
-        weighted = self._apply_importance_weighting(fused_scores)
+        weighted = self._apply_importance_weighting(fused_scores, traces)
 
         # --- Sort and select candidates ---
         candidates = sorted(weighted.items(), key=lambda x: x[1], reverse=True)
@@ -128,9 +149,11 @@ class HybridRetriever:
 
         # --- Reranking ---
         if rerank and self.reranker and self.reranker.is_available and records:
-            results = self._rerank_candidates(query, candidates[:limit * 2], record_map, limit)
+            results = self._rerank_candidates(
+                query, candidates[:limit * 2], record_map, limit, traces
+            )
         else:
-            results = self._build_results(candidates[:limit], record_map)
+            results = self._build_results(candidates[:limit], record_map, traces)
 
         # --- Record access for accessed memories ---
         for r in results:
@@ -238,7 +261,60 @@ class HybridRetriever:
 
         return dict(scores)
 
-    def _apply_importance_weighting(self, rrf_scores: Dict[str, float]) -> Dict[str, float]:
+    def _rrf_fusion_with_traces(
+        self,
+        vector_results: List[Tuple[str, int]],
+        graph_results: List[Tuple[str, int]],
+        bm25_results: List[Tuple[str, int]],
+        temporal_results: List[Tuple[str, int]],
+    ) -> Tuple[Dict[str, float], Dict[str, RecallTrace]]:
+        """
+        RRF fusion with per-signal attribution tracking.
+
+        Returns both the fused scores AND RecallTrace objects for each
+        document, enabling explainable recall.
+
+        v3.1.0: Unique differentiator — no competitor provides this.
+        """
+        scores: Dict[str, float] = defaultdict(float)
+        traces: Dict[str, RecallTrace] = {}
+
+        signal_data = [
+            ("vector", vector_results, SIGNAL_WEIGHTS["vector"]),
+            ("graph", graph_results, SIGNAL_WEIGHTS["graph"]),
+            ("bm25", bm25_results, SIGNAL_WEIGHTS["bm25"]),
+            ("temporal", temporal_results, SIGNAL_WEIGHTS["temporal"]),
+        ]
+
+        for signal_name, results, weight in signal_data:
+            for doc_id, rank in results:
+                rrf_contrib = weight / (RRF_K + rank + 1)
+                scores[doc_id] += rrf_contrib
+
+                # Initialize trace if needed
+                if doc_id not in traces:
+                    traces[doc_id] = RecallTrace(memory_id=doc_id)
+
+                # Record this signal's contribution
+                # raw_score is the rank for now; vector/bm25 store actual
+                # scores but graph/temporal only provide ranks
+                traces[doc_id].signals.append(
+                    create_signal_contribution(
+                        signal=signal_name,
+                        raw_score=float(rank),  # Rank as proxy for raw score
+                        rank=rank,
+                        rrf_contribution=rrf_contrib,
+                        weight=weight,
+                    )
+                )
+
+        return dict(scores), traces
+
+    def _apply_importance_weighting(
+        self,
+        rrf_scores: Dict[str, float],
+        traces: Optional[Dict[str, RecallTrace]] = None,
+    ) -> Dict[str, float]:
         """
         Apply importance-based boosting to RRF scores.
 
@@ -250,7 +326,12 @@ class HybridRetriever:
             record = self.metadata.get(mem_id)
             if record:
                 importance = record.importance
-                weighted[mem_id] = rrf_score * (0.7 + 0.3 * importance)
+                boost_factor = 0.7 + 0.3 * importance
+                weighted[mem_id] = rrf_score * boost_factor
+
+                # Track importance boost in trace
+                if traces and mem_id in traces:
+                    traces[mem_id].importance_boost = 0.3 * importance
             else:
                 weighted[mem_id] = rrf_score * 0.7
 
@@ -262,6 +343,7 @@ class HybridRetriever:
         candidates: List[Tuple[str, float]],
         record_map: Dict[str, MemoryRecord],
         limit: int,
+        traces: Optional[Dict[str, RecallTrace]] = None,
     ) -> List[SearchResult]:
         """Apply cross-encoder reranking to candidate set."""
         doc_ids = []
@@ -284,10 +366,17 @@ class HybridRetriever:
         results = []
         for doc_id, score in reranked:
             if doc_id in record_map:
+                trace = None
+                if traces and doc_id in traces:
+                    traces[doc_id].rerank_score = score
+                    traces[doc_id].finalize()
+                    trace = traces[doc_id]
+
                 results.append(SearchResult(
                     memory=record_map[doc_id],
                     score=score,
                     source="hybrid+rerank",
+                    trace=trace,
                 ))
 
         return results
@@ -296,15 +385,22 @@ class HybridRetriever:
         self,
         candidates: List[Tuple[str, float]],
         record_map: Dict[str, MemoryRecord],
+        traces: Optional[Dict[str, RecallTrace]] = None,
     ) -> List[SearchResult]:
         """Build SearchResult list from scored candidates."""
         results = []
         for mem_id, score in candidates:
             if mem_id in record_map:
+                trace = None
+                if traces and mem_id in traces:
+                    traces[mem_id].finalize()
+                    trace = traces[mem_id]
+
                 results.append(SearchResult(
                     memory=record_map[mem_id],
                     score=score,
                     source="hybrid",
+                    trace=trace,
                 ))
         return results
 
