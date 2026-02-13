@@ -180,6 +180,7 @@ class MuninnMemory:
                         vector_store=self._vectors,
                         graph_store=self._graph,
                         bm25_index=self._bm25,
+                        embed_fn=self._embed,
                     )
                     logger.info("Conflict detection enabled (model=%s)", self.config.conflict_detection.model_name)
                 else:
@@ -245,6 +246,17 @@ class MuninnMemory:
         # Generate embedding
         embedding = self._embed(content)
 
+        # Create record early so conflict resolution can reference the new ID
+        record = MemoryRecord(
+            content=content,
+            memory_type=memory_type,
+            provenance=provenance,
+            source_agent=agent_id or "unknown",
+            namespace=namespace,
+            metadata=metadata or {},
+            novelty_score=0.0,
+        )
+
         # --- Phase 2: Semantic Deduplication (v3.2.0) ---
         dedup_result = None
         if self._dedup and self._vectors.count() > 0:
@@ -254,6 +266,7 @@ class MuninnMemory:
                 content=content,
                 vector_store=self._vectors,
                 metadata_store=self._metadata,
+                filters={"namespace": namespace, "user_id": user_id},
             )
             if dedup_result and dedup_result.is_duplicate:
                 if dedup_result.strategy == DedupStrategy.SKIP:
@@ -305,6 +318,7 @@ class MuninnMemory:
                     embedding,
                     limit=5,
                     score_threshold=self.config.conflict_detection.similarity_prefilter,
+                    filters={"namespace": namespace, "user_id": user_id},
                 )
                 if similar_for_conflict:
                     candidate_ids = [mid for mid, _score in similar_for_conflict]
@@ -312,9 +326,15 @@ class MuninnMemory:
                     if candidate_records:
                         conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)
                         if conflicts and self._conflict_resolver:
-                            # Resolve the first (highest-scoring) conflict
+                            # Resolve the highest-scoring conflict first
+                            conflicts.sort(key=lambda c: c.contradiction_score, reverse=True)
                             conflict = conflicts[0]
-                            resolution = self._conflict_resolver.resolve(conflict)
+                            resolution = self._conflict_resolver.resolve(
+                                conflict,
+                                new_record=record,
+                                new_embedding=embedding,
+                                user_id=user_id,
+                            )
                             conflict_info = {
                                 "conflict_detected": True,
                                 "resolution": resolution,
@@ -344,15 +364,7 @@ class MuninnMemory:
                 pass
 
         # Calculate initial importance
-        record = MemoryRecord(
-            content=content,
-            memory_type=memory_type,
-            provenance=provenance,
-            source_agent=agent_id or "unknown",
-            namespace=namespace,
-            metadata=metadata or {},
-            novelty_score=calculate_novelty(max_similarity),
-        )
+        record.novelty_score = calculate_novelty(max_similarity)
 
         # Get centrality from graph (if entities exist)
         centrality = 0.0
