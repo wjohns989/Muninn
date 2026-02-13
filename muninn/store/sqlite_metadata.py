@@ -281,6 +281,7 @@ class SQLiteMetadataStore:
         project: Optional[str] = None,
         namespace: Optional[str] = None,
         memory_type: Optional[MemoryType] = None,
+        user_id: Optional[str] = None,
     ) -> List[MemoryRecord]:
         conn = self._get_conn()
         conditions = []
@@ -295,6 +296,9 @@ class SQLiteMetadataStore:
         if memory_type:
             conditions.append("memory_type = ?")
             params.append(memory_type.value)
+        if user_id:
+            conditions.append("metadata LIKE ?")
+            params.append(f'%"user_id": "{user_id}"%')
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"

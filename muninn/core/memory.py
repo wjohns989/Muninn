@@ -530,6 +530,7 @@ class MuninnMemory:
         records = self._metadata.get_all(
             limit=limit,
             namespace=namespace,
+            user_id=user_id,
         )
 
         return [
@@ -572,7 +573,7 @@ class MuninnMemory:
         embedding = self._embed(data)
 
         # Update stores
-        self._metadata.update(record)
+        self._metadata.update(record.id, content=record.content, metadata=record.metadata)
         self._vectors.upsert(
             memory_id=record.id,
             embedding=embedding,

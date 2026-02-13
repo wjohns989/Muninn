@@ -50,3 +50,13 @@ def test_count_and_fetch_missing_user_id(tmp_path: Path):
 
     assert store.count_missing_user_id() == 2
     assert {r.id for r in missing} == {"m1", "m3"}
+
+
+def test_get_all_filters_by_user_id(tmp_path: Path):
+    store = SQLiteMetadataStore(tmp_path / "scope.db")
+    store.add(_record("u1", {"user_id": "user-1"}))
+    store.add(_record("u2", {"user_id": "user-2"}))
+
+    rows = store.get_all(limit=10, user_id="user-1")
+
+    assert [r.id for r in rows] == ["u1"]
