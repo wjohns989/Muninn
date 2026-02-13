@@ -165,7 +165,11 @@ def get_flags() -> FeatureFlags:
     """
     global _global_flags
     if _global_flags is None:
-        _global_flags = FeatureFlags.from_env()
+        from threading import Lock
+        _lock = Lock()
+        with _lock:
+            if _global_flags is None:
+                _global_flags = FeatureFlags.from_env()
     return _global_flags
 
 
