@@ -134,14 +134,10 @@ def test_run_user_scope_migration_updates_metadata_and_vector_payload():
     legacy.metadata = {}
     scoped = _record("scoped-1", namespace="project-a", user_id="user-1")
 
-    memory._metadata.get_all.side_effect = [[legacy, scoped], []]
-
     memory._metadata.get_user_scope_backfill_failures.return_value = []
     memory._metadata.count_user_scope_backfill_failures.return_value = 0
-    memory._metadata.get_all.side_effect = [[legacy, scoped], [], [
-        _record("legacy-1", namespace="project-a", user_id="global_user"),
-        _record("scoped-1", namespace="project-a", user_id="user-1"),
-    ], []]
+    memory._metadata.get_missing_user_id_records.side_effect = [[legacy], []]
+    memory._metadata.count_missing_user_id.return_value = 0
 
     stats = memory._run_user_scope_migration(default_user_id="global_user", batch_size=500, max_batches=5)
 
@@ -151,7 +147,7 @@ def test_run_user_scope_migration_updates_metadata_and_vector_payload():
     assert stats["complete"] == 1
 
 
-def test_conflict_prefilter_is_lenient_until_migration_complete():
+def test_conflict_prefilter_stays_strict_until_migration_complete():
     memory = MuninnMemory()
     memory._initialized = True
     memory._user_scope_migration_complete = False
@@ -185,5 +181,5 @@ def test_conflict_prefilter_is_lenient_until_migration_complete():
     result = asyncio.run(memory.add("new memory", namespace="project-a", user_id="user-1"))
 
     assert result["event"] == "ADD"
-    assert memory._conflict_detector.detect_conflicts.call_count == 1
+    assert memory._conflict_detector.detect_conflicts.call_count == 0
 

@@ -345,11 +345,7 @@ class MuninnMemory:
                         candidate
                         for candidate in self._metadata.get_by_ids(candidate_ids)
                         if candidate.namespace == namespace
-                        and (
-                            candidate.metadata.get("user_id") == user_id
-                            if self._user_scope_migration_complete
-                            else candidate.metadata.get("user_id", user_id) == user_id
-                        )
+                        and candidate.metadata.get("user_id") == user_id
                     ]
                     if candidate_records:
                         conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)
@@ -736,16 +732,12 @@ class MuninnMemory:
                 except Exception as e:
                     self._metadata.record_user_scope_backfill_failure(memory_id, str(e))
 
-        offset = 0
         for _ in range(max_batches):
-            records = self._metadata.get_all(limit=batch_size, offset=offset)
+            records = self._metadata.get_missing_user_id_records(limit=batch_size)
             if not records:
                 break
 
             for record in records:
-                if record.metadata.get("user_id"):
-                    continue
-
                 updated_metadata = {**record.metadata, "user_id": default_user_id}
                 self._metadata.update(record.id, metadata=updated_metadata)
 
@@ -757,19 +749,8 @@ class MuninnMemory:
 
                 updated += 1
 
-            if len(records) < batch_size:
-                break
-            offset += len(records)
-
         # Determine completion based on remaining records missing user_id and retry failures.
-        remaining_missing = 0
-        offset = 0
-        while True:
-            records = self._metadata.get_all(limit=batch_size, offset=offset)
-            if not records:
-                break
-            remaining_missing += sum(1 for record in records if not record.metadata.get("user_id"))
-            offset += len(records)
+        remaining_missing = self._metadata.count_missing_user_id()
 
         remaining_failures = self._metadata.count_user_scope_backfill_failures()
         complete = remaining_missing == 0 and remaining_failures == 0

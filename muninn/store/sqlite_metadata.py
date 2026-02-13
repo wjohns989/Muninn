@@ -179,6 +179,29 @@ class SQLiteMetadataStore:
         row = conn.execute("SELECT COUNT(*) FROM user_scope_backfill_failures").fetchone()
         return row[0] if row else 0
 
+
+    def get_missing_user_id_records(self, limit: int = 500) -> List[MemoryRecord]:
+        """Fetch a batch of records that do not have metadata.user_id set."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM memories
+            WHERE metadata NOT LIKE '%"user_id"%'
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def count_missing_user_id(self) -> int:
+        """Count records that do not contain metadata.user_id."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE metadata NOT LIKE '%\"user_id\"%'"
+        ).fetchone()
+        return row[0] if row else 0
+
     # --- CRUD Operations ---
 
     def add(self, record: MemoryRecord) -> str:
