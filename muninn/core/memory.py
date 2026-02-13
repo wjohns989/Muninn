@@ -98,6 +98,7 @@ class MuninnMemory:
         # Embedding
         self._embed_model = None
         self._initialized = False
+        self._user_scope_migration_complete = False
 
     async def initialize(self) -> None:
         """
@@ -191,6 +192,20 @@ class MuninnMemory:
                 self._conflict_detector = None
                 self._conflict_resolver = None
 
+        # Controlled migration for legacy records that predate user_id metadata scope.
+        migration_complete = self._metadata.get_meta("user_scope_migration_complete", "0") == "1"
+        if not migration_complete:
+            migration_stats = self._run_user_scope_migration(batch_size=500, max_batches=5)
+            migration_complete = bool(migration_stats["complete"])
+            logger.info(
+                "User scope migration progress: updated=%d retried=%d remaining_failures=%d complete=%s",
+                migration_stats["updated"],
+                migration_stats["retried"],
+                migration_stats["remaining_failures"],
+                migration_complete,
+            )
+        self._user_scope_migration_complete = migration_complete
+
         # Rebuild BM25 index from existing memories
         await self._rebuild_bm25()
 
@@ -208,6 +223,7 @@ class MuninnMemory:
             await self._consolidation.stop()
         logger.info("Muninn shut down")
         self._initialized = False
+        self._user_scope_migration_complete = False
 
     # ==========================================
     # Core Memory Operations (mem0-compatible API)
@@ -240,6 +256,8 @@ class MuninnMemory:
         """
         self._check_initialized()
 
+        scope_filters = {"namespace": namespace, "user_id": user_id}
+
         # Extract entities and relations
         extraction = await self._extract(content)
 
@@ -253,7 +271,7 @@ class MuninnMemory:
             provenance=provenance,
             source_agent=agent_id or "unknown",
             namespace=namespace,
-            metadata=metadata or {},
+            metadata={**(metadata or {}), "user_id": user_id},
             novelty_score=0.0,
         )
 
@@ -266,7 +284,7 @@ class MuninnMemory:
                 content=content,
                 vector_store=self._vectors,
                 metadata_store=self._metadata,
-                filters={"namespace": namespace, "user_id": user_id},
+                filters=scope_filters,
             )
             if dedup_result and dedup_result.is_duplicate:
                 if dedup_result.strategy == DedupStrategy.SKIP:
@@ -297,6 +315,7 @@ class MuninnMemory:
                                 "memory_type": existing.memory_type.value,
                                 "namespace": existing.namespace,
                                 "importance": existing.importance,
+                                "user_id": existing.metadata.get("user_id", "global_user"),
                             },
                         )
                         self._bm25.add(dedup_result.existing_memory_id, merged_content)
@@ -318,11 +337,20 @@ class MuninnMemory:
                     embedding,
                     limit=5,
                     score_threshold=self.config.conflict_detection.similarity_prefilter,
-                    filters={"namespace": namespace, "user_id": user_id},
+                    filters=scope_filters,
                 )
                 if similar_for_conflict:
                     candidate_ids = [mid for mid, _score in similar_for_conflict]
-                    candidate_records = self._metadata.get_by_ids(candidate_ids)
+                    candidate_records = [
+                        candidate
+                        for candidate in self._metadata.get_by_ids(candidate_ids)
+                        if candidate.namespace == namespace
+                        and (
+                            candidate.metadata.get("user_id") == user_id
+                            if self._user_scope_migration_complete
+                            else candidate.metadata.get("user_id", user_id) == user_id
+                        )
+                    ]
                     if candidate_records:
                         conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)
                         if conflicts and self._conflict_resolver:
@@ -357,7 +385,7 @@ class MuninnMemory:
         max_similarity = 0.0
         if self._vectors.count() > 0:
             try:
-                similar = self._vectors.search(embedding, limit=5)
+                similar = self._vectors.search(embedding, limit=5, filters=scope_filters)
                 if similar:
                     max_similarity = similar[0][1]  # Highest score
             except Exception:
@@ -557,6 +585,7 @@ class MuninnMemory:
                 "memory_type": record.memory_type.value,
                 "namespace": record.namespace,
                 "importance": record.importance,
+                "user_id": record.metadata.get("user_id", "global_user"),
             },
         )
 
@@ -685,6 +714,74 @@ class MuninnMemory:
         records = self._metadata.get_all(limit=10000)
         documents = {r.id: r.content for r in records}
         self._bm25.rebuild(documents)
+
+    def _run_user_scope_migration(
+        self,
+        default_user_id: str = "global_user",
+        batch_size: int = 500,
+        max_batches: int = 5,
+    ) -> Dict[str, int]:
+        """Run a bounded migration pass and retry ledger for legacy user scope backfill."""
+        updated = 0
+        retried = 0
+
+        # Retry previous vector payload failures first.
+        retry_ids = self._metadata.get_user_scope_backfill_failures(limit=batch_size)
+        if retry_ids:
+            for memory_id in retry_ids:
+                try:
+                    self._vectors.set_payload(memory_id, {"user_id": default_user_id})
+                    self._metadata.clear_user_scope_backfill_failure(memory_id)
+                    retried += 1
+                except Exception as e:
+                    self._metadata.record_user_scope_backfill_failure(memory_id, str(e))
+
+        offset = 0
+        for _ in range(max_batches):
+            records = self._metadata.get_all(limit=batch_size, offset=offset)
+            if not records:
+                break
+
+            for record in records:
+                if record.metadata.get("user_id"):
+                    continue
+
+                updated_metadata = {**record.metadata, "user_id": default_user_id}
+                self._metadata.update(record.id, metadata=updated_metadata)
+
+                try:
+                    self._vectors.set_payload(record.id, {"user_id": default_user_id})
+                    self._metadata.clear_user_scope_backfill_failure(record.id)
+                except Exception as e:
+                    self._metadata.record_user_scope_backfill_failure(record.id, str(e))
+
+                updated += 1
+
+            if len(records) < batch_size:
+                break
+            offset += len(records)
+
+        # Determine completion based on remaining records missing user_id and retry failures.
+        remaining_missing = 0
+        offset = 0
+        while True:
+            records = self._metadata.get_all(limit=batch_size, offset=offset)
+            if not records:
+                break
+            remaining_missing += sum(1 for record in records if not record.metadata.get("user_id"))
+            offset += len(records)
+
+        remaining_failures = self._metadata.count_user_scope_backfill_failures()
+        complete = remaining_missing == 0 and remaining_failures == 0
+        self._metadata.set_meta("user_scope_migration_complete", "1" if complete else "0")
+
+        return {
+            "updated": updated,
+            "retried": retried,
+            "remaining_missing": remaining_missing,
+            "remaining_failures": remaining_failures,
+            "complete": int(complete),
+        }
 
     def _check_initialized(self) -> None:
         """Raise if not initialized."""

@@ -235,6 +235,25 @@ class TestCheckDuplicate:
         )
         assert result is None
 
+    def test_filters_are_forwarded_to_vector_search(self):
+        dedup = self._dedup(threshold=0.95, overlap=0.5)
+        existing = _make_record("the user prefers dark mode", memory_id="mem-1")
+        vs, ms = self._mock_stores(
+            search_results=[("mem-1", 0.99)],
+            get_record=existing,
+        )
+        dedup.check_duplicate(
+            [0.1, 0.2],
+            "the user prefers dark mode",
+            vs,
+            ms,
+            filters={"namespace": "project-a", "user_id": "user-1"},
+        )
+        assert vs.search.call_args.kwargs["filters"] == {
+            "namespace": "project-a",
+            "user_id": "user-1",
+        }
+
     def test_vector_store_error_returns_none(self):
         dedup = self._dedup()
         vs = MagicMock()
