@@ -28,6 +28,8 @@ from muninn.core.types import MemoryRecord
 
 logger = logging.getLogger("Muninn.Conflict")
 
+SECONDS_IN_A_DAY = 24 * 60 * 60
+
 
 class ConflictResolution(str, Enum):
     """Resolution strategy for detected conflicts."""
@@ -156,11 +158,8 @@ class ConflictDetector:
                 conflicts.append(result)
 
         if conflicts:
-            logger.info(
-                "Detected %d conflict(s) for new content: '%s...'",
-                len(conflicts),
-                new_content[:60],
-            )
+            logger.info("Detected %d conflict(s) for new content", len(conflicts))
+            logger.debug("Conflict new-content preview: '%s...'", new_content[:60])
 
         return conflicts
 
@@ -245,7 +244,7 @@ class ConflictDetector:
         import time as _time
 
         # If existing memory is old (>7 days) and low importance, supersede
-        age_days = (_time.time() - existing.created_at) / 86400.0
+        age_days = (_time.time() - existing.created_at) / SECONDS_IN_A_DAY
         if age_days > 7 and existing.importance < 0.5:
             return ConflictResolution.SUPERSEDE
 
