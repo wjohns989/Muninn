@@ -200,14 +200,10 @@ class HybridRetriever:
     ) -> List[Tuple[str, int]]:
         """Vector similarity search. Returns list of (id, rank)."""
         try:
-            qdrant_filters = None
-            if filters:
-                qdrant_filters = self._build_qdrant_filters(filters)
-
             results = self.vectors.search(
-                query_vector=query_embedding,
+                query_embedding=query_embedding,
                 limit=limit,
-                filter_conditions=qdrant_filters,
+                filters=filters,
             )
             # results are (id, score) tuples from Qdrant
             return [(str(r[0]), rank) for rank, r in enumerate(results)]

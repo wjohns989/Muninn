@@ -183,3 +183,18 @@ def test_conflict_prefilter_stays_strict_until_migration_complete():
     assert result["event"] == "ADD"
     assert memory._conflict_detector.detect_conflicts.call_count == 0
 
+
+
+def test_get_all_scoped_by_user_id_and_namespace():
+    memory = MuninnMemory()
+    memory._initialized = True
+    memory._metadata = MagicMock()
+
+    user_record = _record("mem-user", namespace="project-a", user_id="user-1")
+    memory._metadata.get_all.return_value = [user_record]
+
+    result = asyncio.run(memory.get_all(user_id="user-1", namespace="project-a"))
+
+    memory._metadata.get_all.assert_called_once_with(limit=100, namespace="project-a", user_id="user-1")
+    assert len(result) == 1
+    assert result[0]["id"] == "mem-user"
