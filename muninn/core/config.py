@@ -63,6 +63,19 @@ class ExtractionConfig(BaseModel):
     instructor_api_key: str = "not-needed"
 
 
+class ConflictDetectionConfig(BaseModel):
+    """NLI-based conflict detection configuration (v3.2.0)."""
+    model_name: str = "cross-encoder/nli-deberta-v3-small"
+    contradiction_threshold: float = 0.7
+    similarity_prefilter: float = 0.6
+
+
+class SemanticDedupConfig(BaseModel):
+    """Semantic deduplication configuration (v3.2.0)."""
+    threshold: float = 0.95
+    content_overlap_threshold: float = 0.8
+
+
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
@@ -95,6 +108,8 @@ class MuninnConfig(BaseModel):
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
+    conflict_detection: ConflictDetectionConfig = Field(default_factory=ConflictDetectionConfig)
+    semantic_dedup: SemanticDedupConfig = Field(default_factory=SemanticDedupConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     data_dir: str = DEFAULT_DATA_DIR
 
@@ -155,6 +170,23 @@ class MuninnConfig(BaseModel):
             consolidation=ConsolidationConfig(
                 enabled=os.environ.get("MUNINN_CONSOLIDATION_ENABLED", "true").lower() == "true",
                 interval_hours=float(os.environ.get("MUNINN_CONSOLIDATION_INTERVAL", "6.0")),
+            ),
+            conflict_detection=ConflictDetectionConfig(
+                model_name=os.environ.get(
+                    "MUNINN_CONFLICT_MODEL", "cross-encoder/nli-deberta-v3-small"
+                ),
+                contradiction_threshold=float(
+                    os.environ.get("MUNINN_CONFLICT_THRESHOLD", "0.7")
+                ),
+                similarity_prefilter=float(
+                    os.environ.get("MUNINN_CONFLICT_PREFILTER", "0.6")
+                ),
+            ),
+            semantic_dedup=SemanticDedupConfig(
+                threshold=float(os.environ.get("MUNINN_DEDUP_THRESHOLD", "0.95")),
+                content_overlap_threshold=float(
+                    os.environ.get("MUNINN_DEDUP_OVERLAP", "0.8")
+                ),
             ),
             server=ServerConfig(
                 host=os.environ.get("MUNINN_HOST", "127.0.0.1"),

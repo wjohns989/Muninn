@@ -38,6 +38,7 @@ from muninn.retrieval.hybrid import HybridRetriever
 from muninn.extraction.pipeline import ExtractionPipeline
 from muninn.scoring.importance import calculate_importance, calculate_novelty
 from muninn.consolidation.daemon import ConsolidationDaemon
+from muninn.core.feature_flags import get_flags
 
 logger = logging.getLogger("Muninn")
 
@@ -88,6 +89,11 @@ class MuninnMemory:
         self._retriever: Optional[HybridRetriever] = None
         self._reranker: Optional[Reranker] = None
         self._consolidation: Optional[ConsolidationDaemon] = None
+
+        # Phase 2 engines (v3.2.0)
+        self._dedup = None           # SemanticDedup
+        self._conflict_detector = None  # ConflictDetector
+        self._conflict_resolver = None  # ConflictResolver
 
         # Embedding
         self._embed_model = None
@@ -148,6 +154,42 @@ class MuninnMemory:
             embed_fn=self._embed,
         )
 
+        # Initialize Phase 2 engines (v3.2.0) — gated by feature flags
+        flags = get_flags()
+
+        if flags.is_enabled("semantic_dedup"):
+            from muninn.dedup.semantic_dedup import SemanticDedup
+            self._dedup = SemanticDedup(
+                threshold=self.config.semantic_dedup.threshold,
+                content_overlap_threshold=self.config.semantic_dedup.content_overlap_threshold,
+            )
+            logger.info("Semantic dedup enabled (threshold=%.3f)", self.config.semantic_dedup.threshold)
+
+        if flags.is_enabled("conflict_detection"):
+            try:
+                from muninn.conflict.detector import ConflictDetector
+                from muninn.conflict.resolver import ConflictResolver
+                self._conflict_detector = ConflictDetector(
+                    model_name=self.config.conflict_detection.model_name,
+                    contradiction_threshold=self.config.conflict_detection.contradiction_threshold,
+                    similarity_prefilter=self.config.conflict_detection.similarity_prefilter,
+                )
+                if self._conflict_detector.is_available:
+                    self._conflict_resolver = ConflictResolver(
+                        metadata_store=self._metadata,
+                        vector_store=self._vectors,
+                        graph_store=self._graph,
+                        bm25_index=self._bm25,
+                    )
+                    logger.info("Conflict detection enabled (model=%s)", self.config.conflict_detection.model_name)
+                else:
+                    logger.info("Conflict detection flag ON but NLI model unavailable (install transformers+torch)")
+                    self._conflict_detector = None
+            except Exception as e:
+                logger.warning("Conflict detection initialization failed: %s", e)
+                self._conflict_detector = None
+                self._conflict_resolver = None
+
         # Rebuild BM25 index from existing memories
         await self._rebuild_bm25()
 
@@ -202,6 +244,94 @@ class MuninnMemory:
 
         # Generate embedding
         embedding = self._embed(content)
+
+        # --- Phase 2: Semantic Deduplication (v3.2.0) ---
+        dedup_result = None
+        if self._dedup and self._vectors.count() > 0:
+            from muninn.dedup.semantic_dedup import DedupStrategy
+            dedup_result = self._dedup.check_duplicate(
+                embedding=embedding,
+                content=content,
+                vector_store=self._vectors,
+                metadata_store=self._metadata,
+            )
+            if dedup_result and dedup_result.is_duplicate:
+                if dedup_result.strategy == DedupStrategy.SKIP:
+                    logger.info("Dedup SKIP: duplicate of %s (sim=%.3f)",
+                                dedup_result.existing_memory_id, dedup_result.similarity)
+                    return {
+                        "id": None,
+                        "content": content,
+                        "event": "DEDUP_SKIP",
+                        "dedup": dedup_result.model_dump(),
+                    }
+                elif dedup_result.strategy == DedupStrategy.UPDATE_EXISTING:
+                    merged_content = self._dedup.merge_content(content, "")
+                    existing = self._metadata.get(dedup_result.existing_memory_id)
+                    if existing:
+                        merged_content = self._dedup.merge_content(content, existing.content)
+                        self._metadata.update(
+                            dedup_result.existing_memory_id,
+                            content=merged_content,
+                        )
+                        # Re-embed merged content
+                        merged_embedding = self._embed(merged_content)
+                        self._vectors.upsert(
+                            memory_id=dedup_result.existing_memory_id,
+                            embedding=merged_embedding,
+                            metadata={
+                                "content": merged_content[:500],
+                                "memory_type": existing.memory_type.value,
+                                "namespace": existing.namespace,
+                                "importance": existing.importance,
+                            },
+                        )
+                        self._bm25.add(dedup_result.existing_memory_id, merged_content)
+                        logger.info("Dedup UPDATE_EXISTING: merged into %s",
+                                    dedup_result.existing_memory_id)
+                        return {
+                            "id": dedup_result.existing_memory_id,
+                            "content": merged_content,
+                            "event": "DEDUP_MERGED",
+                            "dedup": dedup_result.model_dump(),
+                        }
+
+        # --- Phase 2: Conflict Detection (v3.2.0) ---
+        conflict_info = None
+        if self._conflict_detector and self._vectors.count() > 0:
+            try:
+                # Pre-filter by vector similarity to find candidates
+                similar_for_conflict = self._vectors.search(
+                    embedding,
+                    limit=5,
+                    score_threshold=self.config.conflict_detection.similarity_prefilter,
+                )
+                if similar_for_conflict:
+                    candidate_ids = [mid for mid, _score in similar_for_conflict]
+                    candidate_records = self._metadata.get_by_ids(candidate_ids)
+                    if candidate_records:
+                        conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)
+                        if conflicts and self._conflict_resolver:
+                            # Resolve the first (highest-scoring) conflict
+                            conflict = conflicts[0]
+                            resolution = self._conflict_resolver.resolve(conflict)
+                            conflict_info = {
+                                "conflict_detected": True,
+                                "resolution": resolution,
+                                "conflict_details": conflict.model_dump(),
+                            }
+                            # If resolution says skip new storage, return early
+                            if resolution.get("skip_new_storage"):
+                                logger.info("Conflict resolution: %s — skipping new storage",
+                                            resolution.get("resolution"))
+                                return {
+                                    "id": None,
+                                    "content": content,
+                                    "event": f"CONFLICT_{resolution['resolution'].upper()}",
+                                    "conflict": conflict_info,
+                                }
+            except Exception as e:
+                logger.warning("Conflict detection failed (non-fatal): %s", e)
 
         # Calculate novelty by checking similarity to existing memories
         max_similarity = 0.0
@@ -272,7 +402,7 @@ class MuninnMemory:
         logger.info("Added memory %s (importance=%.3f, entities=%d, relations=%d)",
                      record.id, importance, len(extraction.entities), len(extraction.relations))
 
-        return {
+        result = {
             "id": record.id,
             "content": content,
             "importance": importance,
@@ -281,6 +411,14 @@ class MuninnMemory:
             "relations": [r.model_dump() for r in extraction.relations],
             "event": "ADD",
         }
+
+        # Attach Phase 2 metadata when present
+        if conflict_info:
+            result["conflict"] = conflict_info
+        if dedup_result:
+            result["dedup"] = dedup_result.model_dump()
+
+        return result
 
     async def search(
         self,
