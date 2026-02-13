@@ -333,6 +333,7 @@ class MuninnMemory:
                                 conflict,
                                 new_record=record,
                                 new_embedding=embedding,
+                                user_id=user_id,
                             )
                             conflict_info = {
                                 "conflict_detected": True,

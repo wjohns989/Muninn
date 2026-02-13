@@ -29,6 +29,8 @@ from muninn.core.types import MemoryRecord
 logger = logging.getLogger("Muninn.Conflict")
 
 SECONDS_IN_A_DAY = 24 * 60 * 60
+SUPERSEDE_AGE_THRESHOLD_DAYS = 7
+SUPERSEDE_IMPORTANCE_THRESHOLD = 0.5
 
 
 class ConflictResolution(str, Enum):
@@ -245,7 +247,7 @@ class ConflictDetector:
 
         # If existing memory is old (>7 days) and low importance, supersede
         age_days = (_time.time() - existing.created_at) / SECONDS_IN_A_DAY
-        if age_days > 7 and existing.importance < 0.5:
+        if age_days > SUPERSEDE_AGE_THRESHOLD_DAYS and existing.importance < SUPERSEDE_IMPORTANCE_THRESHOLD:
             return ConflictResolution.SUPERSEDE
 
         # If both contradicting and partially entailing, merge
