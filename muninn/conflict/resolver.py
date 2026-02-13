@@ -19,6 +19,8 @@ from muninn.conflict.detector import ConflictResult, ConflictResolution
 
 logger = logging.getLogger("Muninn.ConflictResolver")
 
+SUPERSEDED_IMPORTANCE_FACTOR = 0.1
+
 
 class ConflictResolver:
     """
@@ -28,7 +30,7 @@ class ConflictResolver:
     resolution actions (archive, merge, flag, discard).
     """
 
-    def __init__(self, metadata_store, vector_store, graph_store, bm25_index):
+    def __init__(self, metadata_store, vector_store, graph_store, bm25_index, embed_fn=None):
         """
         Args:
             metadata_store: SQLiteMetadataStore instance.
@@ -40,6 +42,7 @@ class ConflictResolver:
         self.vectors = vector_store
         self.graph = graph_store
         self.bm25 = bm25_index
+        self.embed_fn = embed_fn
 
     def resolve(
         self,
@@ -96,7 +99,7 @@ class ConflictResolver:
             )
             self.metadata.update(
                 old_id,
-                importance=old_record.importance * 0.1,  # Drastically reduce importance
+                importance=old_record.importance * SUPERSEDED_IMPORTANCE_FACTOR,  # Drastically reduce importance
                 metadata=old_metadata,
             )
 
@@ -150,8 +153,20 @@ class ConflictResolver:
         # Update BM25 index with new content
         self.bm25.add(old_id, merged_content)
 
-        # Re-embed if we have the embedding function would happen at a higher level
-        # For now, the vector will be updated by the caller
+        # Refresh vector and graph indexes so merged content is immediately retrievable
+        if self.embed_fn:
+            merged_embedding = self.embed_fn(merged_content)
+            self.vectors.upsert(
+                memory_id=old_id,
+                embedding=merged_embedding,
+                metadata={
+                    "content": merged_content[:500],
+                    "memory_type": old_record.memory_type.value,
+                    "namespace": old_record.namespace,
+                    "importance": old_record.importance,
+                },
+            )
+        self.graph.add_memory_node(old_id, merged_content[:200])
 
         logger.info("MERGE: Memory %s merged with new content", old_id)
 

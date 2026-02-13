@@ -64,16 +64,16 @@ class TestDataDir:
             result = get_data_dir()
             assert result == Path("/custom/data")
 
-    def test_default_is_path(self):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("MUNINN_DATA_DIR", None)
+    def test_default_is_path(self, monkeypatch):
+        monkeypatch.delenv("MUNINN_DATA_DIR", raising=False)
+        with patch("muninn.platform.is_running_in_docker", return_value=False):
             result = get_data_dir()
             assert isinstance(result, Path)
             assert "muninn" in str(result).lower()
 
-    def test_docker_default(self):
-        with patch.dict(os.environ, {"MUNINN_DOCKER": "1"}):
-            os.environ.pop("MUNINN_DATA_DIR", None)
+    def test_docker_default(self, monkeypatch):
+        monkeypatch.delenv("MUNINN_DATA_DIR", raising=False)
+        with patch("muninn.platform.is_running_in_docker", return_value=True):
             result = get_data_dir()
             assert result == Path("/data")
 
