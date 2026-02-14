@@ -217,6 +217,7 @@ class SetModelProfilesRequest(BaseModel):
     runtime_model_profile: Optional[str] = Field(default=None, pattern=MODEL_PROFILE_PATTERN)
     ingestion_model_profile: Optional[str] = Field(default=None, pattern=MODEL_PROFILE_PATTERN)
     legacy_ingestion_model_profile: Optional[str] = Field(default=None, pattern=MODEL_PROFILE_PATTERN)
+    source: str = "api"
 
 
 # --- Application Lifecycle ---
@@ -469,7 +470,7 @@ async def set_model_profiles_endpoint(req: SetModelProfilesRequest):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     payload = req.model_dump(exclude_none=True)
-    if not payload:
+    if set(payload.keys()) <= {"source"}:
         raise HTTPException(
             status_code=400,
             detail="Provide at least one profile field to update.",
@@ -487,6 +488,21 @@ async def set_model_profiles_endpoint(req: SetModelProfilesRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Error setting model profiles: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/profiles/model/events")
+async def get_model_profile_events_endpoint(limit: int = 25):
+    """Return recent runtime profile policy mutation events."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    try:
+        result = await memory.get_model_profile_events(limit=limit)
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error getting model profile events: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

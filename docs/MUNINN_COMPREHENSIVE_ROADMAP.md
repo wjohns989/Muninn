@@ -93,9 +93,15 @@ Completed since last update:
    - REST endpoints shipped: `GET /profiles/model` and `POST /profiles/model`,
    - MCP tools shipped: `get_model_profiles`, `set_model_profiles`,
    - SDK parity shipped for sync/async clients (`get_model_profiles`, `set_model_profiles`).
+33. Phase 4G profile-policy audit visibility baseline implemented:
+   - SQLite metadata store now persists profile policy mutation events (`profile_policy_events`),
+   - memory core now records audit events on profile updates and exposes event retrieval,
+   - REST endpoint shipped: `GET /profiles/model/events`,
+   - MCP tool shipped: `get_model_profile_events`,
+   - SDK parity shipped for sync/async clients (`get_model_profile_events`).
 
 Verification:
-- Full suite now passes in-session: `414 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -105,6 +111,7 @@ Verification:
   - `83 passed` across PR-remediation slices (eval/sdk/ingestion/config/MCP protocol tests).
   - `69 passed` across runtime-vs-ingestion profile scheduling surfaces (`config`, `memory_ingestion`, `memory_update_path`, `mcp_wrapper_protocol`, `extraction_pipeline`).
   - `45 passed` across runtime profile-control surfaces (`memory_profiles`, `mcp_wrapper_protocol`, `sdk_client`).
+  - `49 passed` across runtime profile-control + audit surfaces (`memory_profiles`, `sqlite_profile_policy_events`, `mcp_wrapper_protocol`, `sdk_client`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
@@ -130,7 +137,7 @@ Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
 3. Profile-level promotion criteria remain open: routing is implemented, but per-profile eval gates and telemetry-backed auto-default policy are still pending.
-4. Profile-level promotion criteria remain open: runtime profile control API is now implemented, but profile-aware eval thresholds + telemetry-backed default-promotion policy are still pending.
+4. Profile-level promotion criteria remain open: runtime profile control API and audit visibility are now implemented, but profile-aware eval thresholds + telemetry-backed default-promotion policy are still pending.
 
 ---
 
@@ -501,6 +508,6 @@ This is core for vibecoders, not optional polish.
 2. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
 3. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
 4. Implement Phase 4 profile-promotion tranche: add profile-aware eval gates + telemetry thresholds for default-policy promotion.
-5. Add profile-policy mutation audit trail + alert hooks so runtime profile changes become observable and reviewable across sessions.
+5. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
 
 Completing these next actions keeps roadmap progression logically consistent while preserving merge hygiene, SOTA evidence quality, and operational ROI.

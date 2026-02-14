@@ -183,6 +183,7 @@ def test_sync_set_model_profiles_payload():
     payload = stub.calls[0]["json"]
     assert payload["runtime_model_profile"] == "low_latency"
     assert payload["ingestion_model_profile"] == "balanced"
+    assert payload["source"] == "sdk"
 
 
 def test_sync_set_model_profiles_requires_field():
@@ -191,6 +192,23 @@ def test_sync_set_model_profiles_requires_field():
 
     with pytest.raises(ValueError, match="at least one profile field"):
         client.set_model_profiles()
+
+
+def test_sync_get_model_profile_events_payload():
+    stub = _StubSession(
+        {
+            ("GET", "/profiles/model/events"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "MODEL_PROFILE_EVENTS", "count": 1, "events": [{"id": 1}]}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.get_model_profile_events(limit=10)
+
+    assert result["event"] == "MODEL_PROFILE_EVENTS"
+    assert stub.calls[0]["method"] == "GET"
+    assert stub.calls[0]["params"]["limit"] == 10
 
 
 def test_sync_health_unwrapped_payload():
@@ -335,6 +353,7 @@ async def test_async_get_and_set_model_profiles_payload():
         if request.method == "POST" and request.url.path == "/profiles/model":
             body = json.loads(request.content.decode("utf-8"))
             assert body["runtime_model_profile"] == "low_latency"
+            assert body["source"] == "sdk_async"
             return httpx.Response(
                 200,
                 json={"success": True, "data": {"event": "MODEL_PROFILE_POLICY_UPDATED"}},
@@ -356,6 +375,24 @@ async def test_async_set_model_profiles_requires_field():
         client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
         with pytest.raises(ValueError, match="at least one profile field"):
             await client.set_model_profiles()
+
+
+@pytest.mark.asyncio
+async def test_async_get_model_profile_events_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/profiles/model/events"
+        assert request.url.params.get("limit") == "7"
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"event": "MODEL_PROFILE_EVENTS", "count": 0, "events": []}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.get_model_profile_events(limit=7)
+        assert result["event"] == "MODEL_PROFILE_EVENTS"
 
 
 def test_mem0_style_alias_exports():
