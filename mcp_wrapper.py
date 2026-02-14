@@ -172,7 +172,7 @@ def handle_initialize(msg_id: Any):
             },
             "serverInfo": {
                 "name": "muninn-mcp",
-                "version": "3.1.0"
+                "version": "3.2.0"
             }
         }
     })
