@@ -25,6 +25,7 @@ Evaluator: Codex
 - **Phase 4A is now started with production code**: browser control center preferences are now persistent (auto-save/save/reset) and model-profile tags are attached to ingestion operations.
 - **Phase 4B baseline is now implemented in core extraction path**: profile-based Instructor route selection (`low_latency`, `balanced`, `high_reasoning`) is wired, with deterministic xLAM/Ollama fallback ordering and config/env controls.
 - **Phase 4C startup/session adaptation baseline is now implemented**: MCP initialize now performs dependency readiness checks (Muninn + Ollama), auto-starts when possible, emits explicit startup prompts when not, and honors assistant-session profile overrides via `MUNINN_OPERATOR_MODEL_PROFILE`.
+- **Phase 4D VRAM-aware policy baseline is now implemented**: extraction defaults are now budget-aware via `MUNINN_VRAM_BUDGET_GB`, with 16GB-safe high-reasoning defaults (14B-class) and 30B/32B limited to explicit high-budget tiers.
 
 ## Status vs Plan
 
@@ -76,7 +77,7 @@ Evaluator: Codex
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `395 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `398 passed, 2 skipped, 0 warnings`.
 - Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and no open PR/comment backlog remained after restart.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
@@ -91,6 +92,7 @@ Evaluator: Codex
   - `40 passed` (`memory_chains`, `hybrid_retriever`, `memory_update_path`, `config`, `memory_feedback`)
   - `40 passed` (`recall_trace`, `feature_flags`)
   - `20 passed` (`mcp_wrapper_protocol` startup/session-profile coverage)
+  - `36 passed` (`config`, `extraction_pipeline` VRAM-policy coverage)
 - Compile checks passed on all touched modules/tests.
 
 ## Newly Resolved Inaccuracies
@@ -166,7 +168,7 @@ Research notes and implementation guidance are documented in:
 Research-backed recommendation for SOTA+ operator profiles is to keep **caliber-based model selection** (not only think-level toggles):
 1. `low_latency`: low-VRAM local model (`llama3.2:3b` baseline, optional `qwen3:4b`).
 2. `balanced`: `qwen3:8b` default for quality/latency tradeoff.
-3. `high_reasoning`: `qwen3:32b` (or `deepseek-r1:32b` where acceptable latency/VRAM exists).
+3. `high_reasoning`: `qwen3:14b` default for 16GB-class workflows; reserve `qwen3:30b/32b` (or `deepseek-r1:32b`) for explicit high-VRAM opt-in sessions.
 4. Keep xLAM as optional specialist endpoint for structured extraction/tool-calling workloads, not as mandatory global default.
 
 Primary references for this recommendation:
