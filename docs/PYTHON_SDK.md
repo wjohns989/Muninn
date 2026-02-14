@@ -71,6 +71,8 @@ The sync and async clients expose equivalent methods:
 - `import_handoff(...)`
 - `record_retrieval_feedback(...)`
 - `ingest_sources(...)`
+- `discover_legacy_sources(...)`
+- `ingest_legacy_sources(...)`
 - `get_all(...)`
 - `update(...)`
 - `delete(...)`
@@ -81,6 +83,8 @@ The sync and async clients expose equivalent methods:
 - `federated_search(...)`
 - `run_consolidation()`
 - `consolidation_status()`
+
+For ingestion methods, use `chronological_order` (`none`, `oldest_first`, `newest_first`) when you need timeline-preserving imports.
 
 ## Error Handling
 
