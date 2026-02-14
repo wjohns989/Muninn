@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Dict, Iterable, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 import requests
@@ -33,7 +33,7 @@ def _coerce_error_detail(payload: Any, fallback: str) -> str:
         if detail is not None:
             try:
                 return json.dumps(detail, sort_keys=True)
-            except Exception:
+            except (TypeError, ValueError):
                 return str(detail)
     if isinstance(payload, str):
         return payload
@@ -49,6 +49,11 @@ class _BaseMuninnClient:
         if not path.startswith("/"):
             path = f"/{path}"
         return f"{self.base_url}{path}"
+
+    def _encode_path_segment(self, value: str, *, field_name: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} must be a non-empty string")
+        return quote(value, safe="")
 
     def _validate_add_inputs(
         self,
@@ -77,7 +82,9 @@ class _BaseMuninnClient:
             if response.get("success") is False:
                 detail = _coerce_error_detail(response, "Muninn API returned success=false")
                 raise MuninnAPIError(detail, status_code=status_code, path=path, payload=response)
-            return response.get("data")
+            if "data" in response:
+                return response.get("data")
+            return response
 
         return response
 
@@ -338,6 +345,7 @@ class MuninnClient(_BaseMuninnClient):
         namespace: str = "global",
         metadata: Optional[Dict[str, Any]] = None,
         recursive: bool = False,
+        chronological_order: str = "none",
         max_file_size_bytes: Optional[int] = None,
         chunk_size_chars: Optional[int] = None,
         chunk_overlap_chars: Optional[int] = None,
@@ -355,6 +363,71 @@ class MuninnClient(_BaseMuninnClient):
                 "project": project,
                 "metadata": metadata or {},
                 "recursive": recursive,
+                "chronological_order": chronological_order,
+                "max_file_size_bytes": max_file_size_bytes,
+                "chunk_size_chars": chunk_size_chars,
+                "chunk_overlap_chars": chunk_overlap_chars,
+                "min_chunk_chars": min_chunk_chars,
+            },
+        )
+
+    def discover_legacy_sources(
+        self,
+        *,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+    ) -> Dict[str, Any]:
+        return self._request(
+            "POST",
+            "/ingest/legacy/discover",
+            json_body={
+                "roots": roots or [],
+                "providers": providers or [],
+                "include_unsupported": include_unsupported,
+                "max_results_per_provider": max_results_per_provider,
+            },
+        )
+
+    def ingest_legacy_sources(
+        self,
+        *,
+        selected_source_ids: Optional[List[str]] = None,
+        selected_paths: Optional[List[str]] = None,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+        project: str = "global",
+        user_id: str = "global_user",
+        namespace: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        chronological_order: str = "none",
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not (selected_source_ids or selected_paths):
+            raise ValueError("Provide selected_source_ids and/or selected_paths")
+        return self._request(
+            "POST",
+            "/ingest/legacy/import",
+            json_body={
+                "selected_source_ids": selected_source_ids or [],
+                "selected_paths": selected_paths or [],
+                "roots": roots or [],
+                "providers": providers or [],
+                "include_unsupported": include_unsupported,
+                "max_results_per_provider": max_results_per_provider,
+                "user_id": user_id,
+                "namespace": namespace,
+                "project": project,
+                "metadata": metadata or {},
+                "recursive": recursive,
+                "chronological_order": chronological_order,
                 "max_file_size_bytes": max_file_size_bytes,
                 "chunk_size_chars": chunk_size_chars,
                 "chunk_overlap_chars": chunk_overlap_chars,
@@ -383,7 +456,8 @@ class MuninnClient(_BaseMuninnClient):
         return self._request("PUT", "/update", json_body={"memory_id": memory_id, "data": data})
 
     def delete(self, memory_id: str) -> Dict[str, Any]:
-        return self._request("DELETE", f"/delete/{memory_id}")
+        encoded_memory_id = self._encode_path_segment(memory_id, field_name="memory_id")
+        return self._request("DELETE", f"/delete/{encoded_memory_id}")
 
     def delete_all(
         self,
@@ -683,6 +757,7 @@ class AsyncMuninnClient(_BaseMuninnClient):
         namespace: str = "global",
         metadata: Optional[Dict[str, Any]] = None,
         recursive: bool = False,
+        chronological_order: str = "none",
         max_file_size_bytes: Optional[int] = None,
         chunk_size_chars: Optional[int] = None,
         chunk_overlap_chars: Optional[int] = None,
@@ -700,6 +775,71 @@ class AsyncMuninnClient(_BaseMuninnClient):
                 "project": project,
                 "metadata": metadata or {},
                 "recursive": recursive,
+                "chronological_order": chronological_order,
+                "max_file_size_bytes": max_file_size_bytes,
+                "chunk_size_chars": chunk_size_chars,
+                "chunk_overlap_chars": chunk_overlap_chars,
+                "min_chunk_chars": min_chunk_chars,
+            },
+        )
+
+    async def discover_legacy_sources(
+        self,
+        *,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+    ) -> Dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/ingest/legacy/discover",
+            json_body={
+                "roots": roots or [],
+                "providers": providers or [],
+                "include_unsupported": include_unsupported,
+                "max_results_per_provider": max_results_per_provider,
+            },
+        )
+
+    async def ingest_legacy_sources(
+        self,
+        *,
+        selected_source_ids: Optional[List[str]] = None,
+        selected_paths: Optional[List[str]] = None,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+        project: str = "global",
+        user_id: str = "global_user",
+        namespace: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        chronological_order: str = "none",
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not (selected_source_ids or selected_paths):
+            raise ValueError("Provide selected_source_ids and/or selected_paths")
+        return await self._request(
+            "POST",
+            "/ingest/legacy/import",
+            json_body={
+                "selected_source_ids": selected_source_ids or [],
+                "selected_paths": selected_paths or [],
+                "roots": roots or [],
+                "providers": providers or [],
+                "include_unsupported": include_unsupported,
+                "max_results_per_provider": max_results_per_provider,
+                "user_id": user_id,
+                "namespace": namespace,
+                "project": project,
+                "metadata": metadata or {},
+                "recursive": recursive,
+                "chronological_order": chronological_order,
                 "max_file_size_bytes": max_file_size_bytes,
                 "chunk_size_chars": chunk_size_chars,
                 "chunk_overlap_chars": chunk_overlap_chars,
@@ -728,7 +868,8 @@ class AsyncMuninnClient(_BaseMuninnClient):
         return await self._request("PUT", "/update", json_body={"memory_id": memory_id, "data": data})
 
     async def delete(self, memory_id: str) -> Dict[str, Any]:
-        return await self._request("DELETE", f"/delete/{memory_id}")
+        encoded_memory_id = self._encode_path_segment(memory_id, field_name="memory_id")
+        return await self._request("DELETE", f"/delete/{encoded_memory_id}")
 
     async def delete_all(
         self,
