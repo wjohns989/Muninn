@@ -80,6 +80,16 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
    - https://requests.readthedocs.io/en/latest/user/advanced/
 31. HTTPX client lifecycle guidance (sync/async client reuse):
    - https://www.python-httpx.org/advanced/clients/
+32. OWASP file upload hardening guidance (applicable to ingestion safety):
+   - https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html
+33. Python CSV standard-library behavior and limits:
+   - https://docs.python.org/3/library/csv.html
+34. Python HTML parser standard-library reference:
+   - https://docs.python.org/3/library/html.parser.html
+35. pypdf extraction and memory caveats:
+   - https://pypdf.readthedocs.io/en/latest/user/extract-text.html
+36. python-docx document API quickstart:
+   - https://python-docx.readthedocs.io/en/latest/user/quickstart.html
 
 ## New Missing Features Identified (Beyond Current Plan)
 
@@ -247,3 +257,18 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
 - Lower overhead for high-frequency programmatic integrations.
 - Cleaner integration path for async agent runtimes.
 - Better operability via typed connection/API error semantics.
+
+### Ingestion safety + fail-open parsing (high ROI, correctness + operability)
+
+**Issue found:** Phase 3B ingestion gap prevented controlled parsing of heterogeneous sources and increased risk of parser-coupled pipeline failure.
+
+**Upgrade implemented:**
+- Added feature-gated multi-source ingestion package (`muninn/ingestion`) with parser adapters for `txt/md/json/csv/tsv/html` and optional `pdf/docx`.
+- Added source-level fail-open behavior: parser failures, missing paths, and oversize files are isolated per source without aborting the full run.
+- Added provenance-rich chunk metadata (`source_path`, `source_type`, `source_sha256`, byte size, chunk offsets/count).
+- Added strict chunking invariants (`overlap < chunk_size`, minimum chunk length) and bounded file-size controls.
+
+**Ecosystem impact:**
+- Reduces ingestion blast radius by turning source/parser failures into auditable partial failures.
+- Improves forensic and dedup workflows through deterministic source checksums + chunk offset metadata.
+- Creates a direct path for safe MCP/SDK ingestion automation while preserving local-first guarantees.

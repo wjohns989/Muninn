@@ -81,9 +81,14 @@
     - mem0-style aliases exported at package root (`Memory`, `AsyncMemory`),
     - typed SDK exceptions (`MuninnConnectionError`, `MuninnAPIError`),
     - method parity across health/add/search/goal/handoff/feedback/admin endpoints.
+26. Phase 3B multi-source ingestion tranche is now implemented:
+    - new feature-gated `muninn/ingestion` package with fail-open parser pipeline for `txt/md/json/csv/tsv/html` and optional `pdf/docx`,
+    - chunk-level provenance metadata (`source_sha256`, byte size, chunk offsets, source path/type),
+    - `MuninnMemory.ingest_sources(...)` orchestration with per-source/per-chunk failure isolation,
+    - REST `/ingest`, MCP `ingest_sources` tool wiring, and SDK `ingest_sources(...)` sync/async coverage.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `344 passed, 2 skipped, 2 warnings`.
+- Full-suite verification now green in-session: `353 passed, 2 skipped, 2 warnings`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -94,6 +99,7 @@
   - `27 passed` (`tests/test_memory_feedback.py`, `tests/test_config.py`)
 - Compile verification passed on all touched modules and tests.
 - SDK tranche verification: `7 passed` (`tests/test_sdk_client.py`).
+- Ingestion tranche verification: `51 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`, `tests/test_config.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -110,6 +116,7 @@
 12. **Artifact ops scalability**: one-shot `verify --all` preserves integrity/reproducibility guarantees as benchmark bundles grow, reducing CI and release-maintenance overhead.
 13. **Telemetry privacy hardening**: bounded capture length and explicit runbook policy reduce sensitive-data spill risk while preserving incident-debug capability.
 14. **SDK integration throughput + reliability**: reusable sync/async transports with typed error channels reduce connection churn and improve deterministic handling in agent runtime loops.
+15. **Ingestion blast-radius reduction**: per-source fail-open parsing with strict chunking invariants prevents single bad files from halting batch ingestion while preserving auditability.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
@@ -128,7 +135,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 
 **Still open gaps:**
 1. Memory chains package (`muninn/chains`)
-2. Multi-source ingestion package (`muninn/ingestion`) and ingest endpoint/tooling
+2. Ingestion hardening follow-ups (sandbox/process isolation for untrusted binary parser backends and broader corpus adapters)
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
@@ -136,6 +143,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 7. NLI-based conflict detection (UNIQUE — no competitor has this)
 8. Semantic deduplication at ingestion + consolidation
 9. Python SDK sync/async interoperability layer
+10. Multi-source ingestion with provenance-rich fail-open parsing
 
 **After all features, Muninn will be the ONLY memory system that combines:**
 - Local-first architecture (no cloud dependency)

@@ -70,6 +70,7 @@ The sync and async clients expose equivalent methods:
 - `export_handoff(...)`
 - `import_handoff(...)`
 - `record_retrieval_feedback(...)`
+- `ingest_sources(...)`
 - `get_all(...)`
 - `update(...)`
 - `delete(...)`

@@ -148,6 +148,7 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     by_name = {tool["name"]: tool for tool in tools}
     assert "record_retrieval_feedback" in by_name
     assert "search_memory" in by_name
+    assert "ingest_sources" in by_name
 
     for tool in tools:
         schema = tool["inputSchema"]
@@ -157,9 +158,12 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
 
     assert by_name["search_memory"]["annotations"]["readOnlyHint"] is True
     assert by_name["record_retrieval_feedback"]["annotations"]["readOnlyHint"] is False
+    assert by_name["ingest_sources"]["annotations"]["readOnlyHint"] is False
     feedback_props = by_name["record_retrieval_feedback"]["inputSchema"]["properties"]
     assert "rank" in feedback_props
     assert "sampling_prob" in feedback_props
+    ingest_props = by_name["ingest_sources"]["inputSchema"]["properties"]
+    assert "sources" in ingest_props
 
 
 def test_tool_schemas_have_consistent_contract(monkeypatch):
@@ -177,3 +181,45 @@ def test_tool_schemas_have_consistent_contract(monkeypatch):
         assert isinstance(schema.get("properties"), dict)
         for required_field in schema.get("required", []):
             assert required_field in schema["properties"]
+
+
+def test_ingest_sources_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "INGEST_COMPLETED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-ingest",
+        {
+            "name": "ingest_sources",
+            "arguments": {
+                "sources": ["/tmp/a.txt"],
+                "recursive": True,
+                "chunk_size_chars": 500,
+            },
+        },
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/ingest")
+    assert captured["json"]["sources"] == ["/tmp/a.txt"]
+    assert captured["json"]["project"] == "muninn"
+    assert captured["json"]["recursive"] is True
+    assert captured["json"]["chunk_size_chars"] == 500
+    assert sent
+    assert sent[0]["id"] == "req-ingest"

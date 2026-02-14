@@ -43,6 +43,7 @@ from muninn.consolidation.daemon import ConsolidationDaemon
 from muninn.core.feature_flags import get_flags
 from muninn.goal import GoalCompass
 from muninn.observability import OTelGenAITracer
+from muninn.ingestion import IngestionPipeline
 
 logger = logging.getLogger("Muninn")
 
@@ -95,6 +96,7 @@ class MuninnMemory:
         self._consolidation: Optional[ConsolidationDaemon] = None
         self._goal_compass: Optional[GoalCompass] = None
         self._otel = OTelGenAITracer(enabled=False)
+        self._ingestion: Optional[IngestionPipeline] = None
 
         # Phase 2 engines (v3.2.0)
         self._dedup = None           # SemanticDedup
@@ -188,6 +190,20 @@ class MuninnMemory:
                 "Goal compass enabled (drift_threshold=%.3f, signal_weight=%.3f)",
                 self.config.goal_compass.drift_threshold,
                 self.config.goal_compass.signal_weight,
+            )
+
+        if flags.is_enabled("multi_source_ingestion"):
+            self._ingestion = IngestionPipeline(
+                max_file_size_bytes=self.config.ingestion.max_file_size_bytes,
+                chunk_size_chars=self.config.ingestion.chunk_size_chars,
+                chunk_overlap_chars=self.config.ingestion.chunk_overlap_chars,
+                min_chunk_chars=self.config.ingestion.min_chunk_chars,
+            )
+            logger.info(
+                "Multi-source ingestion enabled (max_file_size_bytes=%d, chunk=%d/%d)",
+                self.config.ingestion.max_file_size_bytes,
+                self.config.ingestion.chunk_size_chars,
+                self.config.ingestion.chunk_overlap_chars,
             )
 
         if flags.is_enabled("semantic_dedup"):
@@ -980,6 +996,109 @@ class MuninnMemory:
             "imported": imported,
             "skipped": skipped,
             "checksum_verified": True,
+        }
+
+    async def ingest_sources(
+        self,
+        *,
+        sources: List[str],
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ingest multiple file sources with fail-open behavior.
+
+        Each source is parsed independently. Parser/source failures are recorded
+        and ingestion continues for remaining sources.
+        """
+        self._check_initialized()
+        if not sources:
+            raise ValueError("sources must be a non-empty list")
+
+        flags = get_flags()
+        flags.require("multi_source_ingestion")
+        if self._ingestion is None:
+            raise RuntimeError("Ingestion pipeline is unavailable")
+
+        report = self._ingestion.ingest(
+            sources,
+            recursive=recursive,
+            max_file_size_bytes=max_file_size_bytes,
+            chunk_size_chars=chunk_size_chars,
+            chunk_overlap_chars=chunk_overlap_chars,
+            min_chunk_chars=min_chunk_chars,
+        )
+
+        source_payloads: List[Dict[str, Any]] = []
+        added_memories = 0
+        skipped_chunks = 0
+        failed_chunks = 0
+
+        base_metadata = dict(metadata or {})
+        base_metadata.setdefault("project", project)
+        base_metadata.setdefault("kind", "ingested_source_chunk")
+
+        for source_result in report.source_results:
+            source_record: Dict[str, Any] = {
+                "source_path": source_result.source_path,
+                "source_type": source_result.source_type,
+                "status": source_result.status,
+                "errors": list(source_result.errors),
+                "skipped_reason": source_result.skipped_reason,
+                "chunks_discovered": len(source_result.chunks),
+                "chunks_added": 0,
+                "chunks_skipped": 0,
+                "chunks_failed": 0,
+            }
+            if source_result.status != "processed":
+                source_payloads.append(source_record)
+                continue
+
+            for chunk in source_result.chunks:
+                chunk_metadata = dict(base_metadata)
+                chunk_metadata.update(chunk.metadata)
+                try:
+                    add_result = await self.add(
+                        content=chunk.content,
+                        user_id=user_id,
+                        namespace=namespace,
+                        metadata=chunk_metadata,
+                        provenance=Provenance.INGESTED,
+                    )
+                except Exception as exc:
+                    failed_chunks += 1
+                    source_record["chunks_failed"] += 1
+                    source_record["errors"].append(
+                        f"chunk[{chunk.chunk_index}] add failed: {exc}"
+                    )
+                    continue
+
+                if add_result.get("event") in {"DEDUP_SKIP", "CONFLICT_SKIP"}:
+                    skipped_chunks += 1
+                    source_record["chunks_skipped"] += 1
+                else:
+                    added_memories += 1
+                    source_record["chunks_added"] += 1
+
+            source_payloads.append(source_record)
+
+        return {
+            "event": "INGEST_COMPLETED",
+            "total_sources": report.total_sources,
+            "processed_sources": report.processed_sources,
+            "skipped_sources": report.skipped_sources,
+            "total_chunks_discovered": report.total_chunks,
+            "added_memories": added_memories,
+            "skipped_chunks": skipped_chunks,
+            "failed_chunks": failed_chunks,
+            "source_results": source_payloads,
         }
 
     async def update(self, memory_id: str, data: str) -> Dict[str, Any]:
