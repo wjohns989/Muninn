@@ -10,7 +10,7 @@ v3.1.0: Uses platform abstraction for cross-platform path resolution.
 import os
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
 from muninn.platform import get_data_dir
@@ -103,6 +103,7 @@ class IngestionConfig(BaseModel):
     chunk_size_chars: int = 1200
     chunk_overlap_chars: int = 150
     min_chunk_chars: int = 120
+    allowed_roots: List[str] = Field(default_factory=list)
 
 
 class RerankerConfig(BaseModel):
@@ -270,6 +271,11 @@ class MuninnConfig(BaseModel):
                 min_chunk_chars=int(
                     os.environ.get("MUNINN_INGESTION_MIN_CHUNK_CHARS", "120")
                 ),
+                allowed_roots=[
+                    part.strip()
+                    for part in os.environ.get("MUNINN_INGESTION_ALLOWED_ROOTS", "").split(os.pathsep)
+                    if part.strip()
+                ],
             ),
             server=ServerConfig(
                 host=os.environ.get("MUNINN_HOST", "127.0.0.1"),

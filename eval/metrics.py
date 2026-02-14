@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, Sequence, Mapping, Any
 
 
@@ -9,8 +10,8 @@ def recall_at_k(relevant_ids: set[str], ranked_ids: Sequence[str], k: int) -> fl
     """Compute Recall@k with binary relevance."""
     if k <= 0 or not relevant_ids:
         return 0.0
-    top_k = ranked_ids[:k]
-    hits = sum(1 for item in top_k if item in relevant_ids)
+    top_k_unique = set(ranked_ids[:k])
+    hits = len(top_k_unique.intersection(relevant_ids))
     return hits / len(relevant_ids)
 
 
@@ -31,14 +32,14 @@ def ndcg_at_k(relevant_ids: set[str], ranked_ids: Sequence[str], k: int) -> floa
 
     def _discount(position_1_based: int) -> float:
         # log2(pos + 1) in denominator
-        import math
-
         return 1.0 / math.log2(position_1_based + 1)
 
     dcg = 0.0
+    seen_relevant: set[str] = set()
     for idx, item in enumerate(ranked_ids[:k], start=1):
-        if item in relevant_ids:
+        if item in relevant_ids and item not in seen_relevant:
             dcg += _discount(idx)
+            seen_relevant.add(item)
 
     ideal_hits = min(k, len(relevant_ids))
     idcg = sum(_discount(i) for i in range(1, ideal_hits + 1))
