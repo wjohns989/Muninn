@@ -303,7 +303,7 @@ Implementation impact:
   - `balanced` (default),
   - `high_reasoning` (higher compute/higher quality).
 - Expose profile choice in browser UI and assistant-session config; treat think-level toggles as optional secondary controls.
-- Implementation status: baseline profile routing + browser profile persistence + assistant-session profile override are now implemented; helper-first runtime-vs-ingestion profile scheduling is now implemented; remaining work is profile-level eval/telemetry gating for default-policy promotion.
+- Implementation status: baseline profile routing + browser profile persistence + assistant-session profile override are now implemented; helper-first runtime-vs-ingestion profile scheduling is now implemented; runtime profile control APIs are now implemented (memory core + REST + MCP + SDK parity); remaining work is profile-level eval/telemetry gating for default-policy promotion.
 
 ## Critical Issues/Accuracy Corrections
 
@@ -441,6 +441,7 @@ Primary sources:
 3. Measure profile promotion with per-profile eval gates before changing defaults.
 4. Treat think-level controls as secondary tuning knobs, not the primary product abstraction.
 5. Keep helper runtime profile low-latency by default and split ingest/import profiles so heavy models are opt-in for offline/high-context operations.
+6. Expose runtime policy mutation through stable control APIs so assistants/IDEs can change profile posture without process restarts.
 
 ### Fresh release scan (as-of 2026-02-14)
 
