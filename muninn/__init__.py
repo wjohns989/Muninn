@@ -2,4 +2,6 @@
 Muninn: Persistent Memory for AI Agents
 """
 
-__version__ = "3.0.0"
+from muninn.version import __version__
+
+__all__ = ["__version__"]

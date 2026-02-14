@@ -76,6 +76,27 @@ class SemanticDedupConfig(BaseModel):
     content_overlap_threshold: float = 0.8
 
 
+class GoalCompassConfig(BaseModel):
+    """Goal compass configuration (v3.1.2)."""
+    drift_threshold: float = 0.55
+    signal_weight: float = 0.65
+    reminder_max_chars: int = 240
+
+
+class RetrievalFeedbackConfig(BaseModel):
+    """Retrieval feedback calibration configuration (v3.2.0)."""
+    enabled: bool = False
+    lookback_days: int = 30
+    min_total_signal_weight: float = 3.0
+    estimator: str = "weighted_mean"
+    propensity_floor: float = 0.05
+    min_effective_samples: float = 2.0
+    default_sampling_prob: float = 1.0
+    cache_ttl_seconds: int = 30
+    multiplier_floor: float = 0.75
+    multiplier_ceiling: float = 1.25
+
+
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
@@ -110,6 +131,8 @@ class MuninnConfig(BaseModel):
     consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
     conflict_detection: ConflictDetectionConfig = Field(default_factory=ConflictDetectionConfig)
     semantic_dedup: SemanticDedupConfig = Field(default_factory=SemanticDedupConfig)
+    goal_compass: GoalCompassConfig = Field(default_factory=GoalCompassConfig)
+    retrieval_feedback: RetrievalFeedbackConfig = Field(default_factory=RetrievalFeedbackConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     data_dir: str = DEFAULT_DATA_DIR
 
@@ -186,6 +209,43 @@ class MuninnConfig(BaseModel):
                 threshold=float(os.environ.get("MUNINN_DEDUP_THRESHOLD", "0.95")),
                 content_overlap_threshold=float(
                     os.environ.get("MUNINN_DEDUP_OVERLAP", "0.8")
+                ),
+            ),
+            goal_compass=GoalCompassConfig(
+                drift_threshold=float(
+                    os.environ.get("MUNINN_GOAL_DRIFT_THRESHOLD", "0.55")
+                ),
+                signal_weight=float(
+                    os.environ.get("MUNINN_GOAL_SIGNAL_WEIGHT", "0.65")
+                ),
+                reminder_max_chars=int(
+                    os.environ.get("MUNINN_GOAL_REMINDER_MAX_CHARS", "240")
+                ),
+            ),
+            retrieval_feedback=RetrievalFeedbackConfig(
+                enabled=os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_ENABLED", "false").lower() == "true",
+                lookback_days=int(os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_LOOKBACK_DAYS", "30")),
+                min_total_signal_weight=float(
+                    os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_MIN_TOTAL_WEIGHT", "3.0")
+                ),
+                estimator=os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_ESTIMATOR", "weighted_mean"),
+                propensity_floor=float(
+                    os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_PROPENSITY_FLOOR", "0.05")
+                ),
+                min_effective_samples=float(
+                    os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_MIN_EFFECTIVE_SAMPLES", "2.0")
+                ),
+                default_sampling_prob=float(
+                    os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_DEFAULT_SAMPLING_PROB", "1.0")
+                ),
+                cache_ttl_seconds=int(
+                    os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_CACHE_TTL", "30")
+                ),
+                multiplier_floor=float(
+                    os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_FLOOR", "0.75")
+                ),
+                multiplier_ceiling=float(
+                    os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_CEILING", "1.25")
                 ),
             ),
             server=ServerConfig(

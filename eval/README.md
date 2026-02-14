@@ -1,0 +1,123 @@
+# Muninn Eval Harness (Phase 1.1B Starter)
+
+This directory contains the first production-grade baseline for retrieval evaluation.
+
+## Inputs
+
+- `dataset.jsonl`: one object per line with:
+  - `query_id` (string)
+  - `relevant_ids` (array of memory IDs)
+  - `track` (optional string competency label, e.g. `accurate_retrieval`)
+- `predictions.jsonl`: one object per line with:
+  - `query_id` (string)
+  - `ranked_ids` (ordered array of retrieved memory IDs)
+  - `latency_ms` (optional numeric query latency for budget checks)
+
+## Run
+
+```bash
+python -m eval.run --dataset dataset.jsonl --predictions predictions.jsonl --ks 5,10
+
+# Regression/budget gate mode
+python -m eval.run \
+  --dataset dataset.jsonl \
+  --predictions predictions.jsonl \
+  --baseline-report reports/baseline.json \
+  --max-metric-regression 0.01 \
+  --max-p95-latency-ms 120
+
+# Preset-based policy profile (MemoryAgentBench-style coverage gates)
+python -m eval.run \
+  --preset vibecoder_memoryagentbench_v1 \
+  --dataset current_dataset_override.jsonl \
+  --predictions current_predictions_override.jsonl \
+  --required-track accurate_retrieval:22 \
+  --required-track test_time_learning:6 \
+  --required-track long_range_understanding:110 \
+  --required-track conflict_resolution:8
+
+# Run canonical baseline report directly from preset artifact paths
+python -m eval.run --preset vibecoder_memoryagentbench_v1
+python -m eval.run --preset vibecoder_memoryagentbench_stress_v1
+
+# Refresh baseline output intentionally without comparing to existing baseline report
+python -m eval.run --preset vibecoder_memoryagentbench_v1 --skip-baseline-compare
+
+# Paired significance/effect-size analysis against baseline predictions
+python -m eval.run \
+  --dataset dataset.jsonl \
+  --predictions current_predictions.jsonl \
+  --baseline-predictions baseline_predictions.jsonl \
+  --gate-significant-regressions \
+  --significance-correction holm \
+  --significance-correction-family by_track \
+  --significance-alpha 0.05 \
+  --bootstrap-samples 2000 \
+  --permutation-rounds 4000
+```
+
+## Output
+
+The report includes:
+- `Recall@k`
+- `MRR@k`
+- `nDCG@k`
+- optional per-track breakdowns (`tracks`) when dataset rows include `track`
+- optional paired significance/effect-size report (`significance`) when `--baseline-predictions` is supplied
+  - includes raw and adjusted significance fields (`p_value`, `p_value_adjusted`, `significant_raw`, `significant`)
+- latency summary (`avg`, `p50`, `p95`)
+- case and match counts
+- gate verdict (`passed`, `violations`) when baseline/budget args are provided
+- explicit gate policy echo (`gate_config`) for auditability
+
+This is intentionally lightweight and dependency-free so it can run in CI before larger benchmark integrations are added.
+
+## Preset Gate Policy
+
+- `vibecoder_memoryagentbench_v1`
+  - Targeted to memory-agent competency slices inspired by MemoryAgentBench.
+  - Default artifact paths:
+    - `dataset`: `eval/artifacts/vibecoder_memoryagentbench_v1/dataset.jsonl`
+    - `predictions`: `eval/artifacts/vibecoder_memoryagentbench_v1/baseline_predictions.jsonl`
+    - `baseline report`: `eval/artifacts/vibecoder_memoryagentbench_v1/baseline_report.json`
+  - Defaults:
+    - `ks=5,10`
+    - `max_metric_regression=0.01` (global cutoffs)
+    - `max_track_metric_regression=0.015` (per-track cutoffs)
+    - `max_p95_latency_ms=120`
+    - `significance_correction=holm`
+    - `significance_correction_family=by_track`
+    - required track case minimums:
+      - `accurate_retrieval`: 22
+      - `test_time_learning`: 6
+      - `long_range_understanding`: 110
+      - `conflict_resolution`: 8
+
+- `vibecoder_memoryagentbench_stress_v1`
+  - Cross-track robustness slice with hard negatives and elevated latency pressure.
+  - Default artifact paths:
+    - `dataset`: `eval/artifacts/vibecoder_memoryagentbench_stress_v1/dataset.jsonl`
+    - `predictions`: `eval/artifacts/vibecoder_memoryagentbench_stress_v1/baseline_predictions.jsonl`
+    - `baseline report`: `eval/artifacts/vibecoder_memoryagentbench_stress_v1/baseline_report.json`
+  - Defaults:
+    - `ks=5,10`
+    - `max_metric_regression=0.015` (global cutoffs)
+    - `max_track_metric_regression=0.02` (per-track cutoffs)
+    - `max_p95_latency_ms=170`
+    - `significance_correction=holm`
+    - `significance_correction_family=by_track`
+    - required track case minimums:
+      - `accurate_retrieval`: 16
+      - `test_time_learning`: 6
+      - `long_range_understanding`: 30
+      - `conflict_resolution`: 8
+
+## Canonical Artifact Verification
+
+```bash
+python -m eval.artifacts verify --preset vibecoder_memoryagentbench_v1
+python -m eval.artifacts verify --preset vibecoder_memoryagentbench_stress_v1
+python -m eval.artifacts verify --all
+```
+
+This command validates checksums, dataset contract invariants, and baseline report reproducibility against current eval code.

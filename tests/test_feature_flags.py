@@ -18,6 +18,7 @@ class TestFeatureFlagsDefaults:
         assert flags.explainable_recall is True
         assert flags.instructor_extraction is True
         assert flags.platform_abstraction is True
+        assert flags.goal_compass is True
 
     def test_phase2_flags_default_off(self):
         """Phase 2 features should be OFF by default (higher cost, opt-in)."""
@@ -25,6 +26,7 @@ class TestFeatureFlagsDefaults:
         assert flags.conflict_detection is False
         assert flags.semantic_dedup is False
         assert flags.adaptive_weights is False
+        assert flags.retrieval_feedback is False
 
     def test_phase3_flags_default_off(self):
         """Phase 3 features should be OFF by default (require additional deps)."""
@@ -32,6 +34,7 @@ class TestFeatureFlagsDefaults:
         assert flags.memory_chains is False
         assert flags.multi_source_ingestion is False
         assert flags.python_sdk is False
+        assert flags.otel_genai is False
 
 
 class TestFeatureFlagsFromEnv:
@@ -115,7 +118,9 @@ class TestFeatureFlagsUtilities:
         assert "explainable_recall" in active
         assert "instructor_extraction" in active
         assert "platform_abstraction" in active
+        assert "goal_compass" in active
         assert "conflict_detection" not in active
+        assert "retrieval_feedback" not in active
 
     def test_to_dict(self):
         flags = FeatureFlags()
@@ -123,7 +128,7 @@ class TestFeatureFlagsUtilities:
         assert isinstance(d, dict)
         assert d["explainable_recall"] is True
         assert d["conflict_detection"] is False
-        assert len(d) == 9  # 3 phase1 + 3 phase2 + 3 phase3
+        assert len(d) == 12  # 4 phase1 + 4 phase2 + 4 phase3
 
 
 class TestSingletonBehavior:

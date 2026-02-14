@@ -15,12 +15,21 @@ import subprocess
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from muninn.version import __version__
 
 # Configure logging to file since stdout is used for MCP protocol
 GLOBAL_MEMORY_DIR = Path(__file__).parent.resolve()
 LOG_FILE = GLOBAL_MEMORY_DIR / "mcp_wrapper.log"
 
 import functools
+
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2024-11-05")
+JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
+_SESSION_STATE = {
+    "negotiated": False,
+    "initialized": False,
+    "protocol_version": SUPPORTED_PROTOCOL_VERSIONS[0],
+}
 
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
@@ -158,13 +167,55 @@ def send_json_rpc(message: Dict[str, Any]):
     print(json.dumps(message))
     sys.stdout.flush()
 
-def handle_initialize(msg_id: Any):
+
+def _send_json_rpc_error(msg_id: Any, code: int, message: str):
+    """Send a JSON-RPC error response."""
+    send_json_rpc({
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    })
+
+def _negotiate_protocol_version(requested: Optional[str]) -> Optional[str]:
+    """Return requested protocol version only when explicitly supported."""
+    if requested and requested in SUPPORTED_PROTOCOL_VERSIONS:
+        return requested
+    if requested is None:
+        return SUPPORTED_PROTOCOL_VERSIONS[0]
+    return None
+
+
+def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     """Handle the initialize request from the client."""
+    requested = None
+    if params:
+        requested = params.get("protocolVersion")
+    negotiated = _negotiate_protocol_version(requested)
+    if negotiated is None:
+        send_json_rpc({
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "error": {
+                "code": -32602,
+                "message": (
+                    f"Unsupported protocol version: {requested}. "
+                    f"Supported versions: {', '.join(SUPPORTED_PROTOCOL_VERSIONS)}"
+                ),
+            },
+        })
+        return
+    _SESSION_STATE["negotiated"] = True
+    _SESSION_STATE["initialized"] = False
+    _SESSION_STATE["protocol_version"] = negotiated
+
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
         "result": {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": negotiated,
             "capabilities": {
                 "tools": {
                     "listChanged": False
@@ -172,10 +223,109 @@ def handle_initialize(msg_id: Any):
             },
             "serverInfo": {
                 "name": "muninn-mcp",
-                "version": "3.2.0"
-            }
+                "version": __version__
+            },
+            "instructions": (
+                "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
+                "for cross-assistant continuity."
+            ),
         }
     })
+
+
+def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
+    """
+    Handle a single parsed JSON-RPC message.
+
+    Conformance notes:
+    - Unknown request methods (with id) return -32601.
+    - Unknown notifications (no id) are ignored.
+    - notifications/initialized is only accepted after successful initialize.
+    """
+    msg_id = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params", {})
+
+    if not isinstance(method, str):
+        if msg_id is not None:
+            _send_json_rpc_error(msg_id, -32600, "Invalid Request: missing method")
+        return
+
+    if method == "initialize":
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: initialize params must be an object")
+            return
+        handle_initialize(msg_id, params)
+        return
+
+    if method == "notifications/initialized":
+        if _SESSION_STATE["negotiated"]:
+            _SESSION_STATE["initialized"] = True
+            logger.info("Client initialized connection")
+        else:
+            logger.warning("Ignored notifications/initialized before successful initialize")
+        return
+
+    if method == "ping":
+        if msg_id is not None:
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {}
+            })
+        return
+
+    if method == "tools/list":
+        if not _SESSION_STATE["initialized"]:
+            if msg_id is not None:
+                _send_json_rpc_error(
+                    msg_id,
+                    -32600,
+                    "Server not initialized. Send initialize then notifications/initialized.",
+                )
+            return
+        if msg_id is None:
+            logger.debug("Ignoring tools/list notification without id")
+            return
+        handle_list_tools(msg_id)
+        return
+
+    if method == "tools/call":
+        if not _SESSION_STATE["initialized"]:
+            if msg_id is not None:
+                _send_json_rpc_error(
+                    msg_id,
+                    -32600,
+                    "Server not initialized. Send initialize then notifications/initialized.",
+                )
+            return
+        if msg_id is None:
+            logger.debug("Ignoring tools/call notification without id")
+            return
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call params must be an object")
+            return
+        name = params.get("name")
+        arguments = params.get("arguments", {})
+        if not isinstance(name, str) or not name:
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call requires non-empty string name")
+            return
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call arguments must be an object")
+            return
+        handle_call_tool(msg_id, {"name": name, "arguments": arguments})
+        return
+
+    if msg_id is not None:
+        _send_json_rpc_error(msg_id, -32601, f"Method not found: {method}")
+    else:
+        logger.debug(f"Ignoring unknown notification method: {method}")
 
 def handle_list_tools(msg_id: Any):
     """Return list of available tools."""
@@ -287,9 +437,158 @@ def handle_list_tools(msg_id: Any):
                 },
                 "required": ["confirm"]
             }
+        },
+        {
+            "name": "set_project_goal",
+            "description": "Set or update project north-star goal/constraints for drift checks and goal-aware retrieval.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "goal_statement": {
+                        "type": "string",
+                        "description": "Canonical objective statement for this project."
+                    },
+                    "constraints": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional constraints/non-goals that must be preserved."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Optional namespace scope (default: global).",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override; defaults to current git repo."
+                    }
+                },
+                "required": ["goal_statement"]
+            }
+        },
+        {
+            "name": "get_project_goal",
+            "description": "Fetch the active project goal for current repository/namespace scope.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override."
+                    }
+                }
+            }
+        },
+        {
+            "name": "export_handoff",
+            "description": "Export deterministic cross-assistant handoff bundle for this project.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 25,
+                        "description": "Number of top memories to include."
+                    }
+                }
+            }
+        },
+        {
+            "name": "import_handoff",
+            "description": "Import a handoff bundle idempotently using event ledger checks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "bundle": {
+                        "type": "object",
+                        "description": "Handoff bundle produced by export_handoff."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override."
+                    },
+                    "source": {
+                        "type": "string",
+                        "default": "mcp_import"
+                    }
+                },
+                "required": ["bundle"]
+            }
+        },
+        {
+            "name": "record_retrieval_feedback",
+            "description": "Record retrieval outcome feedback to improve adaptive signal weighting over time.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The query that produced the retrieved memory."
+                    },
+                    "memory_id": {
+                        "type": "string",
+                        "description": "Identifier of the memory being rated."
+                    },
+                    "outcome": {
+                        "type": "number",
+                        "description": "Feedback score in [0,1] where 1 means helpful/accepted."
+                    },
+                    "rank": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional 1-based displayed rank position for counterfactual calibration."
+                    },
+                    "sampling_prob": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1,
+                        "description": "Optional probability that this result was shown/clicked under the logging policy."
+                    },
+                    "signals": {
+                        "type": "object",
+                        "description": "Optional signal contribution map, e.g. {\"vector\":0.8,\"bm25\":0.1}."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override."
+                    },
+                    "source": {
+                        "type": "string",
+                        "default": "mcp_feedback"
+                    }
+                },
+                "required": ["query", "memory_id", "outcome"]
+            }
         }
     ]
     
+    read_only_tools = {"search_memory", "get_all_memories", "get_project_goal", "export_handoff"}
+    for tool in tools:
+        schema = tool.get("inputSchema", {})
+        if isinstance(schema, dict) and "$schema" not in schema:
+            schema["$schema"] = JSON_SCHEMA_2020_12
+        tool["annotations"] = {"readOnlyHint": tool.get("name") in read_only_tools}
+
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
@@ -466,6 +765,113 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                     }]
                 }
             })
+        elif name == "set_project_goal":
+            git_info = get_git_info()
+            payload = {
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+                "goal_statement": arguments.get("goal_statement"),
+                "constraints": arguments.get("constraints", []),
+            }
+            resp = make_request_with_retry("POST", f"{SERVER_URL}/goal/set", json=payload, timeout=15)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "get_project_goal":
+            git_info = get_git_info()
+            params = {
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+            }
+            resp = make_request_with_retry("GET", f"{SERVER_URL}/goal/get", params=params, timeout=10)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "export_handoff":
+            git_info = get_git_info()
+            payload = {
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+                "limit": arguments.get("limit", 25),
+            }
+            resp = make_request_with_retry("POST", f"{SERVER_URL}/handoff/export", json=payload, timeout=30)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "import_handoff":
+            git_info = get_git_info()
+            payload = {
+                "bundle": arguments.get("bundle"),
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+                "source": arguments.get("source", "mcp_import"),
+            }
+            resp = make_request_with_retry("POST", f"{SERVER_URL}/handoff/import", json=payload, timeout=30)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "record_retrieval_feedback":
+            git_info = get_git_info()
+            payload = {
+                "query": arguments.get("query"),
+                "memory_id": arguments.get("memory_id"),
+                "outcome": arguments.get("outcome"),
+                "rank": arguments.get("rank"),
+                "sampling_prob": arguments.get("sampling_prob"),
+                "signals": arguments.get("signals", {}),
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+                "source": arguments.get("source", "mcp_feedback"),
+            }
+            resp = make_request_with_retry("POST", f"{SERVER_URL}/feedback/retrieval", json=payload, timeout=15)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
             
         else:
             raise ValueError(f"Unknown tool: {name}")
@@ -492,28 +898,9 @@ def main():
                 break
             
             msg = json.loads(line)
-            msg_id = msg.get("id")
-            method = msg.get("method")
-            
-            if method == "initialize":
-                handle_initialize(msg_id)
-            elif method == "tools/list":
-                handle_list_tools(msg_id)
-            elif method == "tools/call":
-                handle_call_tool(msg_id, msg.get("params", {}))
-            elif method == "notifications/initialized":
-                # Client acknowledging initialization
-                logger.info("Client initialized connection")
-            elif method == "ping":
-                # Respond to ping
-                send_json_rpc({
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "result": {}
-                })
-            else:
-                # Basic initialization or unknown methods
-                logger.debug(f"Ignoring unknown method: {method}")
+            if not isinstance(msg, dict):
+                continue
+            _dispatch_rpc_message(msg)
                 
         except json.JSONDecodeError:
             continue
