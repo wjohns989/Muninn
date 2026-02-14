@@ -4,6 +4,7 @@ Fail-open multi-source ingestion pipeline.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Set
 
@@ -31,7 +32,37 @@ class IngestionPipeline:
         self.chunk_overlap_chars = chunk_overlap_chars
         self.min_chunk_chars = min_chunk_chars
 
-    def _expand_sources(self, sources: Iterable[str], recursive: bool) -> List[Path]:
+    def _sort_paths(self, paths: List[Path], chronological_order: str) -> List[Path]:
+        if chronological_order not in {"none", "oldest_first", "newest_first"}:
+            raise ValueError(
+                "chronological_order must be one of: none, oldest_first, newest_first"
+            )
+
+        if chronological_order == "none":
+            return sorted(paths, key=lambda p: str(p))
+
+        existing: List[Path] = []
+        missing: List[Path] = []
+        for path in paths:
+            if path.exists():
+                existing.append(path)
+            else:
+                missing.append(path)
+
+        reverse = chronological_order == "newest_first"
+        existing.sort(
+            key=lambda p: (p.stat().st_mtime, str(p)),
+            reverse=reverse,
+        )
+        missing.sort(key=lambda p: str(p))
+        return [*existing, *missing]
+
+    def _expand_sources(
+        self,
+        sources: Iterable[str],
+        recursive: bool,
+        chronological_order: str,
+    ) -> List[Path]:
         resolved: List[Path] = []
         seen: Set[str] = set()
         for source in sources:
@@ -62,14 +93,14 @@ class IngestionPipeline:
                     resolved.append(child.resolve())
                     seen.add(key)
 
-        resolved.sort(key=lambda p: str(p))
-        return resolved
+        return self._sort_paths(resolved, chronological_order)
 
     def ingest(
         self,
         sources: Iterable[str],
         *,
         recursive: bool = False,
+        chronological_order: str = "none",
         max_file_size_bytes: int | None = None,
         chunk_size_chars: int | None = None,
         chunk_overlap_chars: int | None = None,
@@ -82,13 +113,17 @@ class IngestionPipeline:
         )
         min_chunk = min_chunk_chars if min_chunk_chars is not None else self.min_chunk_chars
 
-        expanded = self._expand_sources(sources, recursive)
+        expanded = self._expand_sources(
+            sources,
+            recursive,
+            chronological_order,
+        )
         source_results: List[IngestionSourceResult] = []
         processed_sources = 0
         skipped_sources = 0
         total_chunks = 0
 
-        for path in expanded:
+        for source_order, path in enumerate(expanded):
             source_type = infer_source_type(path)
             result = IngestionSourceResult(
                 source_path=str(path),
@@ -125,6 +160,10 @@ class IngestionPipeline:
             try:
                 text = parse_source(path, source_type)
                 source_sha256 = compute_file_sha256(path)
+                source_mtime = path.stat().st_mtime
+                source_mtime_iso = datetime.fromtimestamp(
+                    source_mtime, tz=timezone.utc
+                ).isoformat().replace("+00:00", "Z")
                 chunks = build_chunks(
                     path=path,
                     source_type=source_type,
@@ -139,6 +178,11 @@ class IngestionPipeline:
                     result.skipped_reason = "empty_content"
                     skipped_sources += 1
                 else:
+                    for chunk in chunks:
+                        chunk.metadata["source_mtime_epoch"] = source_mtime
+                        chunk.metadata["source_mtime_iso"] = source_mtime_iso
+                        chunk.metadata["source_ingest_order"] = source_order
+                        chunk.metadata["chronological_order"] = chronological_order
                     result.status = "processed"
                     result.chunks = chunks
                     processed_sources += 1

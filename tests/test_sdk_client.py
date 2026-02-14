@@ -98,6 +98,7 @@ def test_sync_ingest_sources_payload():
     assert payload["project"] == "muninn"
     assert payload["recursive"] is True
     assert payload["chunk_size_chars"] == 500
+    assert payload["chronological_order"] == "none"
 
 
 def test_sync_discover_legacy_sources_payload():
@@ -135,6 +136,7 @@ def test_sync_ingest_legacy_sources_payload():
         selected_source_ids=["src_abc"],
         project="muninn",
         chunk_size_chars=700,
+        chronological_order="oldest_first",
     )
 
     assert result["event"] == "LEGACY_INGEST_COMPLETED"
@@ -142,6 +144,7 @@ def test_sync_ingest_legacy_sources_payload():
     assert payload["selected_source_ids"] == ["src_abc"]
     assert payload["project"] == "muninn"
     assert payload["chunk_size_chars"] == 700
+    assert payload["chronological_order"] == "oldest_first"
 
 
 def test_sync_health_unwrapped_payload():

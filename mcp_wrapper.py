@@ -596,6 +596,12 @@ def handle_list_tools(msg_id: Any):
                         "default": False,
                         "description": "Recursively traverse directory sources."
                     },
+                    "chronological_order": {
+                        "type": "string",
+                        "enum": ["none", "oldest_first", "newest_first"],
+                        "default": "none",
+                        "description": "Process source files in deterministic path order or by file modification time."
+                    },
                     "namespace": {
                         "type": "string",
                         "default": "global"
@@ -696,6 +702,11 @@ def handle_list_tools(msg_id: Any):
                     "recursive": {
                         "type": "boolean",
                         "default": False
+                    },
+                    "chronological_order": {
+                        "type": "string",
+                        "enum": ["none", "oldest_first", "newest_first"],
+                        "default": "none"
                     },
                     "namespace": {
                         "type": "string",
@@ -1025,6 +1036,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             payload = {
                 "sources": arguments.get("sources", []),
                 "recursive": arguments.get("recursive", False),
+                "chronological_order": arguments.get("chronological_order", "none"),
                 "user_id": "global_user",
                 "namespace": arguments.get("namespace", "global"),
                 "project": arguments.get("project", git_info["project"]),
@@ -1080,6 +1092,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "include_unsupported": arguments.get("include_unsupported", False),
                 "max_results_per_provider": arguments.get("max_results_per_provider", 100),
                 "recursive": arguments.get("recursive", False),
+                "chronological_order": arguments.get("chronological_order", "none"),
                 "user_id": "global_user",
                 "namespace": arguments.get("namespace", "global"),
                 "project": arguments.get("project", git_info["project"]),

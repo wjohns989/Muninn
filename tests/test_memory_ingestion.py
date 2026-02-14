@@ -39,6 +39,21 @@ class _Pipeline:
         )
 
 
+class _CapturePipeline:
+    def __init__(self):
+        self.kwargs = {}
+
+    def ingest(self, sources, **kwargs):
+        self.kwargs = dict(kwargs)
+        return IngestionReport(
+            total_sources=0,
+            processed_sources=0,
+            skipped_sources=0,
+            total_chunks=0,
+            source_results=[],
+        )
+
+
 class _LegacyPipeline:
     def __init__(self):
         self.last_sources = []
@@ -113,6 +128,25 @@ async def test_memory_ingest_sources_counts_skips(monkeypatch):
 
     assert result["added_memories"] == 0
     assert result["skipped_chunks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_ingest_sources_passes_chronological_order(monkeypatch):
+    memory = MuninnMemory()
+    memory._initialized = True
+    pipeline = _CapturePipeline()
+    memory._ingestion = pipeline
+
+    monkeypatch.setattr("muninn.core.memory.get_flags", lambda: _Flags())
+
+    result = await memory.ingest_sources(
+        sources=["/tmp/a.txt"],
+        project="muninn",
+        chronological_order="oldest_first",
+    )
+
+    assert result["event"] == "INGEST_COMPLETED"
+    assert pipeline.kwargs["chronological_order"] == "oldest_first"
 
 
 @pytest.mark.asyncio

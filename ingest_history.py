@@ -79,6 +79,11 @@ def main() -> int:
     parser.add_argument("--project", default=Path.cwd().name)
     parser.add_argument("--namespace", default="global")
     parser.add_argument("--recursive", action="store_true")
+    parser.add_argument(
+        "--chronological-order",
+        choices=["none", "oldest_first", "newest_first"],
+        default="none",
+    )
     parser.add_argument("--chunk-size", type=int, default=None)
     parser.add_argument("--chunk-overlap", type=int, default=None)
     parser.add_argument("--min-chunk", type=int, default=None)
@@ -149,6 +154,7 @@ def main() -> int:
         "project": args.project,
         "namespace": args.namespace,
         "recursive": args.recursive,
+        "chronological_order": args.chronological_order,
         "max_file_size_bytes": args.max_file_size_bytes,
         "chunk_size_chars": args.chunk_size,
         "chunk_overlap_chars": args.chunk_overlap,

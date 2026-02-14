@@ -1087,6 +1087,7 @@ class MuninnMemory:
         project: str = "global",
         metadata: Optional[Dict[str, Any]] = None,
         recursive: bool = False,
+        chronological_order: str = "none",
         max_file_size_bytes: Optional[int] = None,
         chunk_size_chars: Optional[int] = None,
         chunk_overlap_chars: Optional[int] = None,
@@ -1107,6 +1108,7 @@ class MuninnMemory:
         report = ingestion.ingest(
             sources,
             recursive=recursive,
+            chronological_order=chronological_order,
             max_file_size_bytes=max_file_size_bytes,
             chunk_size_chars=chunk_size_chars,
             chunk_overlap_chars=chunk_overlap_chars,
@@ -1180,6 +1182,7 @@ class MuninnMemory:
         project: str = "global",
         metadata: Optional[Dict[str, Any]] = None,
         recursive: bool = False,
+        chronological_order: str = "none",
         max_file_size_bytes: Optional[int] = None,
         chunk_size_chars: Optional[int] = None,
         chunk_overlap_chars: Optional[int] = None,
@@ -1265,6 +1268,7 @@ class MuninnMemory:
         report = ingestion.ingest(
             sources,
             recursive=recursive,
+            chronological_order=chronological_order,
             max_file_size_bytes=max_file_size_bytes,
             chunk_size_chars=chunk_size_chars,
             chunk_overlap_chars=chunk_overlap_chars,
