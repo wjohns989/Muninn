@@ -36,6 +36,7 @@ from contextlib import asynccontextmanager
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig
+from muninn.version import __version__
 from muninn.core.types import (
     AddMemoryRequest,
     SearchMemoryRequest,
@@ -62,6 +63,7 @@ GLOBAL_LOCK: Optional[asyncio.Lock] = None
 
 # --- Pydantic Models (API compatibility) ---
 from pydantic import BaseModel
+from pydantic import Field
 
 
 class DeleteMemoryRequest(BaseModel):
@@ -89,6 +91,42 @@ class SynthesisRequest(BaseModel):
     target_namespace: str = "global"
     query: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+
+
+class SetProjectGoalRequest(BaseModel):
+    user_id: str = "global_user"
+    namespace: str = "global"
+    project: str
+    goal_statement: str
+    constraints: List[str] = Field(default_factory=list)
+
+
+class ExportHandoffRequest(BaseModel):
+    user_id: str = "global_user"
+    namespace: str = "global"
+    project: str
+    limit: int = 25
+
+
+class ImportHandoffRequest(BaseModel):
+    bundle: Dict[str, Any]
+    user_id: str = "global_user"
+    namespace: str = "global"
+    project: str
+    source: str = "handoff_import"
+
+
+class RetrievalFeedbackRequest(BaseModel):
+    query: str
+    memory_id: str
+    outcome: float
+    rank: Optional[int] = Field(default=None, ge=1)
+    sampling_prob: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+    user_id: str = "global_user"
+    namespace: str = "global"
+    project: str = "global"
+    signals: Dict[str, float] = Field(default_factory=dict)
+    source: str = "manual"
 
 
 # --- Application Lifecycle ---
@@ -120,7 +158,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Muninn Memory Server",
     description="Local-first persistent memory for AI agents — Muninn native engine",
-    version="3.2.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -252,6 +290,121 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
         return {"success": True, "data": results}
     except Exception as e:
         logger.error("Error searching memories: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/goal/set")
+async def set_project_goal_endpoint(req: SetProjectGoalRequest):
+    """Set/update active project goal used for drift checks and retrieval prior."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.set_project_goal(
+                user_id=req.user_id or "global_user",
+                namespace=req.namespace or "global",
+                project=req.project,
+                goal_statement=req.goal_statement,
+                constraints=req.constraints,
+            )
+            return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error setting project goal: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/goal/get")
+async def get_project_goal_endpoint(
+    user_id: str = "global_user",
+    namespace: str = "global",
+    project: str = "global",
+):
+    """Fetch active project goal for a scope."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        result = await memory.get_project_goal(
+            user_id=user_id or "global_user",
+            namespace=namespace or "global",
+            project=project or "global",
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error getting project goal: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/handoff/export")
+async def export_handoff_endpoint(req: ExportHandoffRequest):
+    """Export portable handoff bundle for cross-assistant continuity."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        result = await memory.export_handoff(
+            user_id=req.user_id or "global_user",
+            namespace=req.namespace or "global",
+            project=req.project,
+            limit=req.limit,
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error exporting handoff: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/handoff/import")
+async def import_handoff_endpoint(req: ImportHandoffRequest):
+    """Import portable handoff bundle (idempotent via event ledger)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.import_handoff(
+                bundle=req.bundle,
+                user_id=req.user_id or "global_user",
+                namespace=req.namespace or "global",
+                project=req.project,
+                source=req.source,
+            )
+            return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error importing handoff: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/feedback/retrieval")
+async def retrieval_feedback_endpoint(req: RetrievalFeedbackRequest):
+    """Record retrieval feedback for adaptive weighting calibration."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.record_retrieval_feedback(
+                query=req.query,
+                memory_id=req.memory_id,
+                outcome=req.outcome,
+                user_id=req.user_id or "global_user",
+                namespace=req.namespace or "global",
+                project=req.project or "global",
+                rank=req.rank,
+                sampling_prob=req.sampling_prob,
+                signals=req.signals,
+                source=req.source,
+            )
+            return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error recording retrieval feedback: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

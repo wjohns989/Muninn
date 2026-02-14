@@ -9,6 +9,8 @@ from muninn.core.config import (
     GraphConfig,
     MetadataConfig,
     ExtractionConfig,
+    GoalCompassConfig,
+    RetrievalFeedbackConfig,
     RerankerConfig,
     ConsolidationConfig,
     ServerConfig,
@@ -126,6 +128,29 @@ class TestRerankerConfig:
         assert cfg.model == "jinaai/jina-reranker-v1-tiny-en"
 
 
+class TestGoalCompassConfig:
+    def test_defaults(self):
+        cfg = GoalCompassConfig()
+        assert cfg.drift_threshold == 0.55
+        assert cfg.signal_weight == 0.65
+        assert cfg.reminder_max_chars == 240
+
+
+class TestRetrievalFeedbackConfig:
+    def test_defaults(self):
+        cfg = RetrievalFeedbackConfig()
+        assert cfg.enabled is False
+        assert cfg.lookback_days == 30
+        assert cfg.min_total_signal_weight == 3.0
+        assert cfg.estimator == "weighted_mean"
+        assert cfg.propensity_floor == 0.05
+        assert cfg.min_effective_samples == 2.0
+        assert cfg.default_sampling_prob == 1.0
+        assert cfg.cache_ttl_seconds == 30
+        assert cfg.multiplier_floor == 0.75
+        assert cfg.multiplier_ceiling == 1.25
+
+
 class TestConfigFromEnv:
     def test_env_override_port(self, monkeypatch):
         monkeypatch.setenv("MUNINN_PORT", "9999")
@@ -156,3 +181,35 @@ class TestConfigFromEnv:
         monkeypatch.setenv("MUNINN_CONSOLIDATION_ENABLED", "false")
         config = MuninnConfig.from_env()
         assert config.consolidation.enabled is False
+
+    def test_env_override_goal_compass(self, monkeypatch):
+        monkeypatch.setenv("MUNINN_GOAL_DRIFT_THRESHOLD", "0.61")
+        monkeypatch.setenv("MUNINN_GOAL_SIGNAL_WEIGHT", "0.72")
+        monkeypatch.setenv("MUNINN_GOAL_REMINDER_MAX_CHARS", "180")
+        config = MuninnConfig.from_env()
+        assert config.goal_compass.drift_threshold == 0.61
+        assert config.goal_compass.signal_weight == 0.72
+        assert config.goal_compass.reminder_max_chars == 180
+
+    def test_env_override_retrieval_feedback(self, monkeypatch):
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_ENABLED", "true")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_LOOKBACK_DAYS", "14")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_MIN_TOTAL_WEIGHT", "5.5")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_ESTIMATOR", "snips")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_PROPENSITY_FLOOR", "0.08")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_MIN_EFFECTIVE_SAMPLES", "4.0")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_DEFAULT_SAMPLING_PROB", "0.9")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_CACHE_TTL", "45")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_FLOOR", "0.8")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_CEILING", "1.2")
+        config = MuninnConfig.from_env()
+        assert config.retrieval_feedback.enabled is True
+        assert config.retrieval_feedback.lookback_days == 14
+        assert config.retrieval_feedback.min_total_signal_weight == 5.5
+        assert config.retrieval_feedback.estimator == "snips"
+        assert config.retrieval_feedback.propensity_floor == 0.08
+        assert config.retrieval_feedback.min_effective_samples == 4.0
+        assert config.retrieval_feedback.default_sampling_prob == 0.9
+        assert config.retrieval_feedback.cache_ttl_seconds == 45
+        assert config.retrieval_feedback.multiplier_floor == 0.8
+        assert config.retrieval_feedback.multiplier_ceiling == 1.2

@@ -1,12 +1,113 @@
 # Muninn SOTA+ Implementation Plan
 
-> **Version**: v3.1.0 → v3.3.0 Roadmap
-> **Status**: Research Complete, Ready for Implementation
+> **Version**: v3.1.1 → v3.3.0 Roadmap
+> **Status**: Active implementation (ROI-first tranche in progress)
 > **Estimated Effort**: 22–32 developer-days across 3 phases
 > **License Constraint**: Apache-2.0 — all dependencies verified compatible
 > **Backward Compatibility**: 100% — all enhancements are additive & optional
 
 ---
+
+## Accuracy + Execution Update (2026-02-14)
+
+### ROI-first execution order (current)
+1. Goal Compass + drift guardrail + goal-aware retrieval signal.
+2. Cross-assistant handoff export/import with checksum + idempotency ledger.
+3. Eval gate hardening (nDCG/Recall/MRR + latency budgets).
+4. MCP 2025-11 compatibility and OpenTelemetry GenAI instrumentation.
+
+### Completed in this implementation slice
+1. Instructor config is now fully wired from `MuninnConfig` into `ExtractionPipeline`.
+2. Docker path contract fixed: `get_data_dir/get_config_dir/get_log_dir` now honor runtime Docker detection, not only `MUNINN_DOCKER=1`.
+3. Recall trace fidelity improved: traces now record native per-signal raw scores (vector cosine, BM25, graph/temporal signal scores), not rank proxies.
+4. Adaptive weight entropy now uses score distributions instead of rank-derived pseudo-scores.
+5. Version consistency fixed with single source of truth (`muninn/version.py`) and synchronized package/server/MCP versions.
+6. Additional retrieval correctness fix: graph signal now passes entity lists correctly and uses deterministic scoring.
+7. Additional scope-safety fix: final retrieval result filtering now enforces `user_id`/namespace constraints.
+8. Goal Compass is now implemented end-to-end (goal persistence, drift checks, retrieval signal, API + MCP tools).
+9. Cross-assistant handoff export/import is implemented with deterministic SHA-256 checksum verification and idempotent replay ledger.
+10. Eval gate upgraded with latency summaries (`avg/p50/p95`) plus regression/budget checks (`--baseline-report`, `--max-metric-regression`, `--max-p95-latency-ms`).
+11. MCP lifecycle hardening added: explicit protocol negotiation (`2025-11-25`, `2025-06-18`, `2024-11-05`), initialization gating, JSON Schema 2020-12 tags in tool schemas, read-only tool annotations.
+12. Optional OpenTelemetry GenAI instrumentation added behind feature flag `MUNINN_OTEL_GENAI=1` with privacy-safe default (`MUNINN_OTEL_CAPTURE_CONTENT=0`).
+13. SQLite user scoping now uses exact JSON filtering (`json_extract`) with fallback to LIKE for non-JSON1 builds; this removes false misses on quoted IDs and improves query correctness/perf.
+14. Retrieval feedback persistence loop implemented end-to-end:
+    - `retrieval_feedback` SQLite table + scoped index,
+    - `record_retrieval_feedback` API/MCP surface,
+    - adaptive weight calibration path via bounded per-signal multipliers,
+    - short-TTL scoped cache with invalidation on new feedback.
+15. Retrieval feedback calibration upgraded with a counterfactual path:
+    - optional `rank` + `sampling_prob` persisted per feedback event,
+    - SNIPS-style estimator option (`weighted_mean`/`snips`) with propensity clipping + effective-sample safeguards,
+    - config-driven policy (`estimator`, propensity floor, minimum effective samples, default sampling probability).
+16. Eval harness now supports benchmark competency tracks:
+    - optional dataset `track` labels,
+    - per-track `Recall/MRR/nDCG` and latency summaries,
+    - compatible with MemoryAgentBench-style slices (accurate retrieval, selective forgetting, etc.).
+17. Eval release gating now supports preset policy profiles + track coverage enforcement:
+    - new preset catalog (`vibecoder_memoryagentbench_v1`) with default regression/latency budgets,
+    - per-track regression gates against baseline reports,
+    - required track case-count gates (`--required-track TRACK:MIN_CASES`),
+    - auditable gate configuration emitted in reports (`gate_config`).
+18. Eval now supports paired statistical rigor against baseline predictions:
+    - permutation-test p-values and bootstrap CIs on per-query paired deltas,
+    - effect-size signal (`cohens_d`) for practical impact,
+    - optional significant-regression gate (`--gate-significant-regressions`) across global and track metrics.
+19. Canonical benchmark artifact discipline is now implemented for the vibecoder preset:
+    - committed dataset/predictions/baseline report artifacts (`146` cases across MemoryAgentBench-aligned tracks),
+    - SHA-256 manifest integrity contract,
+    - reproducibility verifier CLI (`python -m eval.artifacts verify --preset vibecoder_memoryagentbench_v1`).
+20. Eval significance gates now include configurable multiple-comparison correction:
+    - supported methods: `none`, `bonferroni`, `holm`, `bh`,
+    - configurable family scope: `all` or `by_track`,
+    - gate decisions now consume corrected p-values (`p_value_adjusted`) with raw/adjusted signals both preserved for auditability.
+21. MCP conformance hardening tranche completed:
+    - strict JSON-RPC method handling now returns `-32601` for unknown request methods (notification methods remain no-op),
+    - `notifications/initialized` is now accepted only after successful `initialize` negotiation,
+    - `tools/call` and `initialize` param shape validation now returns explicit `-32602` for invalid parameter contracts,
+    - schema contract coverage expanded with protocol tests for tool-name uniqueness, object schema shape, and required-property consistency.
+22. Canonical artifact coverage is expanded beyond a single bundle:
+    - new robustness slice preset `vibecoder_memoryagentbench_stress_v1` with committed `dataset/predictions/baseline_report/manifest`,
+    - deterministic 60-case cross-track stress corpus (`16/6/30/8`) with hard-negative ranking pressure and elevated latency profile,
+    - aggregate verifier command added: `python -m eval.artifacts verify --all` for multi-bundle CI integrity checks.
+23. OTel operationalization tranche is now implemented:
+    - production runbook added (`docs/OTEL_GENAI_OBSERVABILITY.md`) with collector setup, smoke-test workflow, and environment profile examples,
+    - collector config example added (`examples/otel/collector-config.yaml`) for local OTLP bring-up,
+    - privacy policy controls documented for default-safe deployment and bounded diagnostic capture.
+24. OTel content-capture guardrail improved in code:
+    - added `MUNINN_OTEL_CAPTURE_CONTENT_MAX_CHARS` with bounded parsing and safe fallback,
+    - tracer now uses dynamic package version (`muninn.version.__version__`) instead of hardcoded instrumentation version.
+
+### Verification evidence
+- Full-suite verification now green in-session: `337 passed, 2 skipped, 2 warnings`.
+- Targeted tests for this tranche now pass:
+  - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
+  - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `23 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_statistics.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_gates.py`, `tests/test_eval_metrics.py`)
+  - `21 passed` (`tests/test_eval_statistics.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_gates.py`, `tests/test_eval_metrics.py`)
+  - `15 passed` (`tests/test_eval_gates.py`, `tests/test_eval_metrics.py`, `tests/test_eval_run.py`)
+  - `48 passed` (`tests/test_sqlite_feedback.py`, `tests/test_eval_metrics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_weight_adapter.py`, `tests/test_eval_gates.py`)
+  - `27 passed` (`tests/test_memory_feedback.py`, `tests/test_config.py`)
+- Compile verification passed on all touched modules and tests.
+
+### Newly discovered ROI optimizations (implemented)
+1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
+2. **Release gate enforceability**: eval CLI now supports fail-fast gate semantics for metric regressions and latency budget breaches.
+3. **Interop resilience**: MCP version negotiation now explicitly handles protocol mismatches and avoids silent drift.
+4. **Adaptive relevance tuning loop**: persisted implicit feedback now calibrates retrieval signal weights per `(user, namespace, project)` with bounded online multipliers.
+5. **Counterfactual calibration option**: SNIPS-style inverse-propensity normalization reduces policy-exposure bias when rank/sampling probabilities are captured.
+6. **Competency-aware eval reporting**: per-track metrics expose where retrieval quality improves or regresses instead of masking with only global averages.
+7. **Reproducible gate policy profiles**: preset-based defaults reduce evaluation drift across environments and make release criteria machine-auditable.
+8. **Statistical gate hardening**: paired significance + CI/effect-size reduces false promotion/rejection caused by topic-sample noise.
+9. **Artifact integrity hardening**: checksum + reproducibility verification catches silent benchmark drift before release gating.
+10. **Multiple-testing control for gate trust**: corrected p-values now reduce false positives from large track/cutoff/metric hypothesis families.
+11. **Protocol diagnosability + standards alignment**: explicit JSON-RPC method/param errors remove silent MCP integration failure modes and improve interoperability debugging ROI.
+12. **Artifact ops scalability**: one-shot `verify --all` preserves integrity/reproducibility guarantees as benchmark bundles grow, reducing CI and release-maintenance overhead.
+13. **Telemetry privacy hardening**: bounded capture length and explicit runbook policy reduce sensitive-data spill risk while preserving incident-debug capability.
+
+### High-ROI SOTA additions from web research now required in roadmap
+1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
+2. Memory-specific benchmark gate using MemoryAgentBench competencies (accurate retrieval, test-time learning, long-range understanding, selective forgetting).
+3. GenAI observability tranche using OpenTelemetry GenAI semantic conventions (opt-in content capture + privacy-aware controls).
 
 ## Executive Summary
 
@@ -547,6 +648,15 @@ class SemanticDedup:
 |---|---|
 | `muninn/retrieval/hybrid.py` | Use `WeightAdapter` instead of fixed `SIGNAL_WEIGHTS` |
 | `muninn/store/sqlite_metadata.py` | Add `retrieval_feedback` table |
+
+**Implementation status update (2026-02-14):**
+- Retrieval feedback loop is now wired in:
+  - persistence in SQLite (`retrieval_feedback`),
+  - scoped multiplier computation,
+  - `MuninnMemory.record_retrieval_feedback(...)`,
+  - server endpoint `POST /feedback/retrieval`,
+  - MCP tool `record_retrieval_feedback`,
+  - adaptive retrieval path consumes feedback multipliers when enabled.
 
 **Technical Design:**
 

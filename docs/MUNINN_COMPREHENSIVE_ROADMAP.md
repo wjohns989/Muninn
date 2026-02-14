@@ -1,4 +1,4 @@
-# Muninn Comprehensive Implementation Roadmap (v3.1.0 → v3.3.0+)
+# Muninn Comprehensive Implementation Roadmap (v3.1.1 → v3.3.0+)
 
 **Date:** 2026-02-14  
 **Audience:** Core maintainers and contributors  
@@ -21,18 +21,57 @@ Muninn should become the best **local-first cross-assistant memory substrate** f
 
 ## 2) Current-State Reality (Gap Baseline)
 
+### Execution status update (2026-02-14, tranche progress)
+Completed since last update:
+1. Goal Compass implemented and wired into add/search with drift diagnostics and goal-aware retrieval signal.
+2. Handoff export/import implemented with checksum verification and idempotent ledger replay.
+3. Eval harness now includes latency summaries and CI-grade gate checks for regressions/budgets.
+4. MCP compatibility hardening added (protocol negotiation + lifecycle initialization gating + schema annotations).
+5. Optional OTel GenAI instrumentation added behind feature flag with privacy-safe defaults.
+6. Metadata scoping upgraded from `LIKE` to JSON1 exact matching (with fallback), eliminating edge-case user filter misses.
+7. Retrieval feedback persistence and adaptive calibration path implemented (storage + API/MCP + adaptive weight multipliers).
+8. Retrieval feedback calibration upgraded with optional SNIPS estimator, using inverse-propensity normalization with bounded propensity clipping and effective-sample safeguards.
+9. Feedback API/MCP surface extended with optional `rank` and `sampling_prob` fields for counterfactual calibration.
+10. Eval harness extended with optional per-track metrics and latency summaries for competency-sliced benchmarking.
+11. Eval runner now supports preset policy profiles + required track coverage gates, with auditable `gate_config` in output reports.
+12. Eval runner now supports paired significance/effect-size analysis against baseline predictions, with optional significant-regression gate enforcement.
+13. Canonical vibecoder benchmark artifacts are now committed with checksum manifest and reproducibility verifier CLI (`eval.artifacts`).
+14. Eval significance gating now supports multiple-comparison correction policies (`none`/`bonferroni`/`holm`/`bh`) with configurable family scope (`all`/`by_track`) and adjusted p-value audit fields.
+15. MCP conformance behavior is now hardened and tested:
+   - unknown JSON-RPC request methods now return `-32601`,
+   - premature `notifications/initialized` is ignored before successful `initialize`,
+   - invalid `initialize`/`tools/call` param shapes now return `-32602`,
+   - protocol test suite now asserts lifecycle ordering and schema contract consistency.
+16. Canonical benchmark artifact coverage now includes a second robustness slice preset (`vibecoder_memoryagentbench_stress_v1`) and aggregate verifier support (`python -m eval.artifacts verify --all`).
+17. OTel operational runbook and example collector configuration are now committed, including privacy policy defaults and smoke-test guidance.
+
+Verification:
+- Full suite now passes in-session: `337 passed, 2 skipped, 2 warnings`.
+- Targeted verification for changed areas:
+  - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
+  - `21 passed` across eval statistics/presets/run/gates/metrics tests.
+  - `15 passed` across eval run/gate/metric policy tests.
+  - `48 passed` across eval/adaptive/MCP protocol tests.
+  - `27 passed` across feedback-memory/config/hybrid-flag tests.
+- Compile checks passed for all touched modules/tests.
+
 ### What already exists (partially or fully)
 - Platform abstraction, feature flags, recall trace primitives, conflict detection, semantic dedup, adaptive weight adapter, Docker assets.
 - Existing gap audit identified key correctness issues and phase-completion mismatches.
 
-### Highest-priority correctness gaps
-1. Instructor config is not fully wired through memory initialization path.
-2. Docker path behavior contract is inconsistent with current tests and detection semantics.
-3. Recall trace `raw_score` fidelity is weakened by rank-proxy use.
-4. Adaptive weighting confidence is rank-derived rather than score-derived.
-5. Version numbers are inconsistent across package/server/wrapper.
+### Highest-priority correctness status (2026-02-14 update)
+Fixed in current implementation slice:
+1. Instructor config wiring through memory initialization.
+2. Docker path behavior contract (`is_running_in_docker()` honored by default path resolution).
+3. Recall trace `raw_score` fidelity (native score attribution).
+4. Adaptive weighting entropy inputs (score-derived, not rank-derived).
+5. Version consistency across package/server/MCP wrapper via single source of truth.
+6. Graph retrieval argument mismatch (entity list vs string) and deterministic score output.
+7. Final retrieval scope enforcement for user/namespace constraints.
 
-These are blockers for trustworthy SOTA claims and should be fixed before deeper feature expansion.
+Still open and blocking SOTA claims:
+1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
+2. Phase 3 ecosystem packages (chains/ingestion/sdk) still missing.
 
 ---
 
@@ -50,11 +89,12 @@ Reference set used to shape this roadmap:
 - Pinecone hybrid search tradeoffs.
 - BEIR retrieval benchmarking framing.
 - Self-RAG retrieval+reflection paradigm.
-- MCP specification for interop.
+- MCP specification for interop (latest 2025-11 revision).
 - Anthropic agent workflow guidance.
 - Idempotent receiver pattern.
 - LangSmith evaluation patterns.
-- OpenTelemetry tracing concepts.
+- OpenTelemetry tracing + GenAI semantic conventions.
+- MemoryAgentBench-style competency framing for memory systems.
 
 (Links are consolidated in `docs/WEB_RESEARCH_VIBECODER_SOTA.md`.)
 
@@ -74,6 +114,12 @@ After this roadmap, Muninn should provide:
 
 ## 5) Phased Delivery Plan
 
+### ROI-first order (active execution)
+1. Goal Compass + drift reminders + goal retrieval signal.
+2. Handoff bundle export/import with checksum + idempotent replay.
+3. Eval gate completion and benchmark baselines.
+4. MCP 2025-11 compatibility + OTel GenAI instrumentation.
+
 ## Phase 1 (v3.1.0) — Foundation (already partially implemented)
 
 ### Scope
@@ -92,6 +138,8 @@ After this roadmap, Muninn should provide:
 ## Phase 1.1 (v3.1.1) — Stabilization & Measurement Gate (hard blocker)
 
 **Objective:** Convert partial implementation into production-grade correctness and measurable quality.
+
+**Execution status:** `1.1A` and `1.1C` are completed in code. `1.1B` remains pending (benchmark corpus + repeatable reports).
 
 ### 1.1A Correctness Fix Bundle
 
@@ -125,6 +173,10 @@ self._extraction = ExtractionPipeline(
 #### Work item A4 — Version unification
 - Single source of truth for versioning.
 - Validate parity in `pyproject.toml`, package `__version__`, server metadata, MCP wrapper.
+
+#### Work item A5 — Retrieval Scope + Graph Correctness
+- Enforce user/namespace constraints in final search candidate filtering.
+- Fix graph signal call contract and produce deterministic score outputs.
 
 ### 1.1B Retrieval Evaluation Gate
 
@@ -168,6 +220,30 @@ Introduce a `ProjectGoal` memory primitive plus drift checks at add/search time.
 
 ---
 
+## Phase 1.2 (v3.1.2) — Interop & Observability Gate (new)
+
+### 1.2A MCP 2025-11 Compatibility Tranche
+- Validate wrapper behavior against latest MCP specification/changelog impacts:
+  - schema assumptions (JSON Schema 2020-12 expectations),
+  - evolving elicitation/task workflow compatibility path,
+  - tool metadata and error semantics alignment.
+
+### 1.2B OpenTelemetry GenAI Instrumentation (opt-in)
+- Emit structured spans/events for retrieval stages and extraction calls.
+- Add privacy-safe mode with content redaction controls for sensitive payloads.
+- Track latency and confidence diagnostics required by release gates.
+- Status update: feature-flagged instrumentation is implemented and operational docs/examples now exist (`docs/OTEL_GENAI_OBSERVABILITY.md`, `examples/otel/collector-config.yaml`); next step is backend-specific dashboards/alerts.
+
+### 1.2C Memory-Agent Benchmark Extension
+- Extend eval harness with competency tracks inspired by MemoryAgentBench:
+  - accurate retrieval,
+  - test-time learning,
+  - long-range understanding,
+  - selective forgetting.
+- Status update: track-level reporting is now implemented; remaining work is benchmark corpus coverage and CI baseline curation.
+
+---
+
 ## Phase 2 (v3.2.0) — Intelligence
 
 ### 2A Conflict detection
@@ -185,7 +261,7 @@ Introduce a `ProjectGoal` memory primitive plus drift checks at add/search time.
 ### 2C Adaptive retrieval weights
 - Replace rank-derived entropy with score-derived entropy where scores exist.
 - Add fallback normalization strategy for scoreless channels.
-- Add online feedback hooks but keep disabled by default until sufficient signal quality exists.
+- Retrieval feedback loop is now implemented (persisted feedback + bounded per-signal multipliers) and remains disabled by default until sufficient signal quality exists.
 
 ### Phase 2 exit criteria
 1. Quality uplift over fixed baseline demonstrated on eval harness.
@@ -307,17 +383,18 @@ This is core for vibecoders, not optional polish.
 
 - **Weeks 1–2:** Phase 1 hardening verification and remaining wiring checks.
 - **Week 3:** Phase 1.1 stabilization + evaluation gate + Goal Compass MVP.
-- **Weeks 4–5:** Phase 2 intelligence features with measured A/B validation.
-- **Weeks 6–8:** Phase 3 ecosystem (ingestion, SDK, chains, handoff interop).
+- **Week 4:** Phase 1.2 MCP compatibility + OpenTelemetry GenAI instrumentation baseline.
+- **Weeks 5–6:** Phase 2 intelligence features with measured A/B validation.
+- **Weeks 7–9:** Phase 3 ecosystem (ingestion, SDK, chains, handoff interop).
 
 ---
 
 ## 10) Immediate Next Actions (Execution Checklist)
 
-1. Implement Phase 1.1 A1–A4 fixes.
-2. Stand up eval harness + baseline report.
+1. Mark Phase 1.1 correctness bundle complete in release notes (A1–A5 now implemented).
+2. Stand up eval harness + baseline report (BEIR-style retrieval metrics + vibecoder suites).
 3. Implement Goal Compass in feature-flagged mode.
-4. Define handoff bundle schema v1 and conformance tests.
-5. Align versioning and release process to one source of truth.
+4. Add Phase 1.2 MCP 2025-11 conformance checklist and OTel GenAI opt-in tracing.
+5. Define handoff bundle schema v1 and conformance tests.
 
 If these five actions are completed with passing metrics, Muninn can credibly claim a robust SOTA+ trajectory for the intended vibecoder use case.
