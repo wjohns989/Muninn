@@ -44,9 +44,10 @@ Completed since last update:
    - protocol test suite now asserts lifecycle ordering and schema contract consistency.
 16. Canonical benchmark artifact coverage now includes a second robustness slice preset (`vibecoder_memoryagentbench_stress_v1`) and aggregate verifier support (`python -m eval.artifacts verify --all`).
 17. OTel operational runbook and example collector configuration are now committed, including privacy policy defaults and smoke-test guidance.
+18. Phase 3C Python SDK is now implemented (`muninn/sdk`) with sync+async clients, typed errors, mem0-style aliases, and dedicated tests/docs.
 
 Verification:
-- Full suite now passes in-session: `337 passed, 2 skipped, 2 warnings`.
+- Full suite now passes in-session: `344 passed, 2 skipped, 2 warnings`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -71,7 +72,7 @@ Fixed in current implementation slice:
 
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
-2. Phase 3 ecosystem packages (chains/ingestion/sdk) still missing.
+2. Phase 3 ecosystem packages are still incomplete (`chains` and `ingestion` missing).
 
 ---
 
@@ -285,6 +286,7 @@ Introduce a `ProjectGoal` memory primitive plus drift checks at add/search time.
 - Sync + async clients.
 - Context manager ergonomics.
 - Mem0-style compatibility surface where possible.
+- Status update: implemented (`MuninnClient`, `AsyncMuninnClient`, `Memory`, `AsyncMemory`) with typed exception hierarchy and SDK tests.
 
 ### 3D Cross-assistant handoff + interop pack
 
