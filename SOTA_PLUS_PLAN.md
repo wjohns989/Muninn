@@ -138,9 +138,12 @@
     - design documented in `docs/plans/2026-02-14-phase4f-profile-control-design.md`,
     - runtime get/set profile APIs now shipped in memory core + REST + MCP + SDK,
     - profile mutations now work without server restarts for active assistant/IDE workflows.
+39. Phase 4G profile-policy audit visibility baseline implemented:
+    - runtime profile mutations are now persisted in metadata audit events,
+    - profile mutation history is now queryable via memory core + REST + MCP + SDK.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `414 passed, 2 skipped, 0 warnings`.
+- Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -159,6 +162,7 @@
 - Phase 4D VRAM-policy verification: `36 passed` (`tests/test_config.py`, `tests/test_extraction_pipeline.py`).
 - Phase 4E runtime-vs-ingestion profile scheduling verification: `69 passed` (`tests/test_config.py`, `tests/test_memory_ingestion.py`, `tests/test_memory_update_path.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_extraction_pipeline.py`).
 - Phase 4F runtime profile-control verification: `45 passed` (`tests/test_memory_profiles.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
+- Phase 4G profile-policy audit visibility verification: `49 passed` (`tests/test_memory_profiles.py`, `tests/test_sqlite_profile_policy_events.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -181,6 +185,7 @@
 18. **Causal-context continuity ROI**: memory-chain edge persistence + retrieval expansion improves multi-step incident/debug recall, reducing repeated root-cause rediscovery across sessions.
 19. **Helper-first VRAM budget control ROI**: decoupling runtime extraction profile from ingestion profiles preserves low-latency memory assist during active coding while still allowing higher-caliber offline ingest/import passes.
 20. **Live policy adaptation ROI**: runtime profile control API removes restart overhead and enables assistant/IDE orchestration to adjust helper vs ingest compute posture in-session.
+21. **Operational traceability ROI**: profile-policy mutation events make dynamic runtime tuning auditable across sessions and assistants, reducing silent drift risk.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
