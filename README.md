@@ -1,4 +1,4 @@
-![Muninn Banner](assets/muninn_banner.png)
+![Muninn Banner](assets/muninn_banner.jpeg)
 
 # Muninn: Persistent Memory for AI Agents
 
