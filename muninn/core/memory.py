@@ -329,9 +329,9 @@ class MuninnMemory:
                                 metadata={
                                     "content": merged_content[:500],
                                     "memory_type": existing.memory_type.value,
-                                    "namespace": existing.namespace,
+                                    "namespace": namespace,
                                     "importance": existing.importance,
-                                    "user_id": existing.metadata.get("user_id", "global_user"),
+                                    "user_id": user_id,
                                 },
                             )
                             self._bm25.add(dedup_result.existing_memory_id, merged_content)
