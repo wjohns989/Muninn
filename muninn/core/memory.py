@@ -144,7 +144,12 @@ class MuninnMemory:
         # Initialize extraction pipeline
         self._extraction = ExtractionPipeline(
             xlam_url=self.config.extraction.xlam_url if self.config.extraction.enable_xlam else None,
+            xlam_model=self.config.extraction.xlam_model,
             ollama_url=self.config.extraction.ollama_url if self.config.extraction.enable_ollama_fallback else None,
+            ollama_model=self.config.extraction.ollama_model,
+            ollama_balanced_model=self.config.extraction.ollama_balanced_model,
+            ollama_high_reasoning_model=self.config.extraction.ollama_high_reasoning_model,
+            model_profile=self.config.extraction.model_profile,
             instructor_base_url=(
                 self.config.extraction.instructor_base_url
                 if self.config.extraction.enable_instructor
@@ -429,7 +434,14 @@ class MuninnMemory:
             if project_value:
                 scope_filters["project"] = project
 
-            extraction = await self._extract(content)
+            extraction_profile = str(
+                scoped_metadata.get("operator_model_profile")
+                or self.config.extraction.model_profile
+            )
+            extraction = await self._extract_with_profile(
+                content,
+                model_profile=extraction_profile,
+            )
             entity_names = self._extract_entity_names(extraction)
             if entity_names:
                 scoped_metadata["entity_names"] = entity_names
@@ -1460,7 +1472,10 @@ class MuninnMemory:
         record.content = data
 
         # Re-extract entities
-        extraction = await self._extract(data)
+        extraction = await self._extract_with_profile(
+            data,
+            model_profile=self.config.extraction.model_profile,
+        )
         entity_names = self._extract_entity_names(extraction)
         updated_metadata = dict(record.metadata or {})
         if entity_names:
@@ -1635,11 +1650,30 @@ class MuninnMemory:
             # Return zero vector as absolute fallback
             return [0.0] * self.config.embedding.dimensions
 
-    async def _extract(self, content: str) -> ExtractionResult:
+    async def _extract(self, content: str, model_profile: Optional[str] = None) -> ExtractionResult:
         """Run extraction pipeline on content."""
         if self._extraction:
-            return self._extraction.extract(content)
+            return self._extraction.extract(content, model_profile=model_profile)
         return ExtractionResult()
+
+    async def _extract_with_profile(
+        self,
+        content: str,
+        model_profile: Optional[str] = None,
+    ) -> ExtractionResult:
+        """
+        Invoke extraction with graceful backward compatibility for tests/mocks.
+
+        Some tests monkeypatch `self._extract` with a legacy one-argument
+        coroutine. If keyword profile routing is unsupported by that stub,
+        retry without `model_profile`.
+        """
+        try:
+            return await self._extract(content, model_profile=model_profile)
+        except TypeError as e:
+            if "model_profile" not in str(e):
+                raise
+            return await self._extract(content)
 
     async def _rebuild_bm25(self) -> None:
         """Rebuild BM25 index from all metadata records."""
