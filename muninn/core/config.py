@@ -97,6 +97,14 @@ class RetrievalFeedbackConfig(BaseModel):
     multiplier_ceiling: float = 1.25
 
 
+class IngestionConfig(BaseModel):
+    """Multi-source ingestion configuration (v3.3.0)."""
+    max_file_size_bytes: int = 5 * 1024 * 1024
+    chunk_size_chars: int = 1200
+    chunk_overlap_chars: int = 150
+    min_chunk_chars: int = 120
+
+
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
@@ -133,6 +141,7 @@ class MuninnConfig(BaseModel):
     semantic_dedup: SemanticDedupConfig = Field(default_factory=SemanticDedupConfig)
     goal_compass: GoalCompassConfig = Field(default_factory=GoalCompassConfig)
     retrieval_feedback: RetrievalFeedbackConfig = Field(default_factory=RetrievalFeedbackConfig)
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     data_dir: str = DEFAULT_DATA_DIR
 
@@ -246,6 +255,20 @@ class MuninnConfig(BaseModel):
                 ),
                 multiplier_ceiling=float(
                     os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_CEILING", "1.25")
+                ),
+            ),
+            ingestion=IngestionConfig(
+                max_file_size_bytes=int(
+                    os.environ.get("MUNINN_INGESTION_MAX_FILE_BYTES", str(5 * 1024 * 1024))
+                ),
+                chunk_size_chars=int(
+                    os.environ.get("MUNINN_INGESTION_CHUNK_SIZE_CHARS", "1200")
+                ),
+                chunk_overlap_chars=int(
+                    os.environ.get("MUNINN_INGESTION_CHUNK_OVERLAP_CHARS", "150")
+                ),
+                min_chunk_chars=int(
+                    os.environ.get("MUNINN_INGESTION_MIN_CHUNK_CHARS", "120")
                 ),
             ),
             server=ServerConfig(

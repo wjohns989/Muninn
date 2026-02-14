@@ -18,7 +18,7 @@ Evaluator: Codex
 - **Canonical benchmark artifact discipline is now available** (committed bundle + checksum manifest + reproducibility verifier).
 - **Canonical artifact coverage is now multi-bundle** (baseline + robustness stress slice) with aggregate verification (`verify --all`).
 - **OTel operational enablement is now documented** (runbook + collector config + privacy controls).
-- **Phase 3 is partially implemented**: Python SDK is now shipped; memory chains and multi-source ingestion packages remain missing.
+- **Phase 3 is substantially advanced**: Python SDK and multi-source ingestion are now shipped; memory chains package remains missing.
 
 ## Status vs Plan
 
@@ -53,7 +53,7 @@ Evaluator: Codex
 | Plan item | Status | Evidence |
 |---|---|---|
 | 3A Memory chains | **Missing** | No `muninn/chains/` package in repository tree. |
-| 3B Multi-source ingestion | **Missing** | No `muninn/ingestion/` package, no `/ingest` server endpoint, no MCP ingest tool. |
+| 3B Multi-source ingestion | **Implemented** | `muninn/ingestion/` now provides fail-open parser pipeline with provenance metadata; REST `/ingest`, MCP `ingest_sources`, and SDK ingestion methods are wired. |
 | 3C Python SDK | **Implemented** | `muninn/sdk/` now ships sync+async clients with typed errors; top-level exports include `Memory` and `AsyncMemory`. |
 
 ## High-Impact Issues Discovered
@@ -65,7 +65,7 @@ Evaluator: Codex
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `344 passed, 2 skipped, 2 warnings`.
+- Full suite now passes in-session: `353 passed, 2 skipped, 2 warnings`.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
   - `23 passed` (`eval_artifacts`, `eval_statistics`, `eval_presets`, `eval_run`, `eval_gates`, `eval_metrics`)

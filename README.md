@@ -118,6 +118,9 @@ muninn_mcp/
 │   ├── sdk/                   # Python SDK (sync + async REST clients)
 │   │   ├── client.py          # MuninnClient / AsyncMuninnClient / aliases
 │   │   └── errors.py          # SDK exception hierarchy
+│   ├── ingestion/             # Multi-source ingestion (v3.3.0)
+│   │   ├── pipeline.py        # Fail-open source ingestion orchestrator
+│   │   └── parser.py          # Safe parser adapters (txt/md/json/csv/html/pdf/docx)
 │   └── consolidation/         # Background memory lifecycle
 │       ├── daemon.py          # Async consolidation loop
 │       ├── merge.py           # Near-duplicate merging
@@ -239,6 +242,7 @@ args = ["/path/to/muninn-mcp/mcp_wrapper.py"]
 | `update_memory` | Update an existing memory by ID |
 | `delete_memory` | Delete a specific memory by ID |
 | `delete_all_memories` | Delete all memories (requires confirmation) |
+| `ingest_sources` | Ingest local files/directories with provenance-rich fail-open parsing |
 
 ---
 
@@ -251,13 +255,19 @@ When the server is running (`http://localhost:42069`):
 | `GET` | `/health` | Server and subsystem health check |
 | `POST` | `/add` | Add a new memory |
 | `POST` | `/search` | Hybrid search with query |
+| `POST` | `/ingest` | Multi-source ingestion (feature-gated) |
+| `POST` | `/goal/set` | Set project north-star goal |
+| `GET` | `/goal/get` | Get active project goal |
+| `POST` | `/handoff/export` | Export deterministic handoff bundle |
+| `POST` | `/handoff/import` | Import handoff bundle idempotently |
+| `POST` | `/feedback/retrieval` | Record retrieval feedback for adaptive calibration |
 | `GET` | `/get_all` | Retrieve all memories |
 | `PUT` | `/update` | Update memory by ID |
-| `DELETE` | `/delete` | Delete memory by ID |
+| `DELETE` | `/delete/{memory_id}` | Delete memory by ID |
 | `GET` | `/graph` | Knowledge graph statistics |
 | `POST` | `/handover` | Generate cross-assistant handover context |
-| `POST` | `/consolidation/trigger` | Manually trigger consolidation |
-| `GET` | `/consolidation/stats` | Consolidation statistics |
+| `POST` | `/consolidation/run` | Manually trigger consolidation |
+| `GET` | `/consolidation/status` | Consolidation status |
 
 ---
 
@@ -356,7 +366,7 @@ See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadm
 - **Semantic deduplication** — Embedding-based near-duplicate prevention
 - **Adaptive retrieval weights** — Entropy-based dynamic signal weighting
 - **Memory chains** — Temporal/causal linking of related memories
-- **Multi-source ingestion** — PDF, Markdown, and structured document import
+- **Multi-source ingestion** — PDF, Markdown, and structured document import (**implemented**: feature-gated fail-open pipeline)
 - **Python SDK** — Programmatic API for non-MCP integration (**implemented**: sync + async clients)
 - **Cross-platform support** — Linux and macOS path resolution
 
@@ -369,6 +379,7 @@ See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadm
 - [SOTA+ Roadmap](SOTA_PLUS_PLAN.md) — Next-generation feature implementation plan
 - [OTel GenAI Runbook](docs/OTEL_GENAI_OBSERVABILITY.md) — Trace export setup and privacy controls
 - [Python SDK Guide](docs/PYTHON_SDK.md) — Sync/async client usage and mem0-style aliases
+- [Ingestion Guide](docs/INGESTION_PIPELINE.md) — Feature-gated multi-source ingestion setup and safety profile
 
 ---
 
