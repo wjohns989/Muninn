@@ -22,6 +22,7 @@ DEFAULT_DATA_DIR = str(get_data_dir())
 DEFAULT_LOW_LATENCY_MODEL = "llama3.2:3b"
 DEFAULT_BALANCED_MODEL = "qwen3:8b"
 DEFAULT_HIGH_REASONING_MODEL = "qwen3:14b"
+SUPPORTED_MODEL_PROFILES = ("low_latency", "balanced", "high_reasoning")
 
 
 def _parse_optional_float_env(name: str) -> Optional[float]:
@@ -87,6 +88,20 @@ def _select_profile_models_for_vram(vram_budget_gb: Optional[float]) -> Dict[str
     }
 
 
+def _normalize_model_profile(profile: Optional[str], default: str) -> str:
+    candidate = (profile or "").strip()
+    if candidate in SUPPORTED_MODEL_PROFILES:
+        return candidate
+    if candidate:
+        logger.warning(
+            "Unsupported model profile '%s'; expected one of %s. Falling back to '%s'.",
+            candidate,
+            SUPPORTED_MODEL_PROFILES,
+            default,
+        )
+    return default
+
+
 class EmbeddingConfig(BaseModel):
     """Embedding model configuration."""
     provider: str = "ollama"
@@ -122,6 +137,9 @@ class ExtractionConfig(BaseModel):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2:3b"  # low-latency baseline
     model_profile: str = "balanced"  # low_latency | balanced | high_reasoning
+    runtime_model_profile: str = "low_latency"
+    ingestion_model_profile: str = "balanced"
+    legacy_ingestion_model_profile: str = "balanced"
     ollama_balanced_model: str = DEFAULT_BALANCED_MODEL
     ollama_high_reasoning_model: str = DEFAULT_HIGH_REASONING_MODEL
     vram_budget_gb: Optional[float] = None
@@ -249,6 +267,22 @@ class MuninnConfig(BaseModel):
         ollama_url = os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434")
         vram_budget_gb = _parse_optional_float_env("MUNINN_VRAM_BUDGET_GB")
         profile_models = _select_profile_models_for_vram(vram_budget_gb)
+        default_model_profile = _normalize_model_profile(
+            os.environ.get("MUNINN_MODEL_PROFILE"),
+            "balanced",
+        )
+        runtime_model_profile = _normalize_model_profile(
+            os.environ.get("MUNINN_RUNTIME_MODEL_PROFILE"),
+            "low_latency",
+        )
+        ingestion_model_profile = _normalize_model_profile(
+            os.environ.get("MUNINN_INGESTION_MODEL_PROFILE"),
+            "balanced",
+        )
+        legacy_ingestion_model_profile = _normalize_model_profile(
+            os.environ.get("MUNINN_LEGACY_INGESTION_MODEL_PROFILE"),
+            ingestion_model_profile,
+        )
         embedding_model = os.environ.get("MUNINN_EMBEDDING_MODEL", "nomic-embed-text")
         embedding_dims = int(os.environ.get("MUNINN_EMBEDDING_DIMS", "768"))
 
@@ -276,7 +310,10 @@ class MuninnConfig(BaseModel):
                 enable_ollama_fallback=True,
                 ollama_url=ollama_url,
                 ollama_model=os.environ.get("MUNINN_OLLAMA_MODEL", profile_models["low_latency"]),
-                model_profile=os.environ.get("MUNINN_MODEL_PROFILE", "balanced"),
+                model_profile=default_model_profile,
+                runtime_model_profile=runtime_model_profile,
+                ingestion_model_profile=ingestion_model_profile,
+                legacy_ingestion_model_profile=legacy_ingestion_model_profile,
                 ollama_balanced_model=os.environ.get(
                     "MUNINN_OLLAMA_BALANCED_MODEL", profile_models["balanced"]
                 ),

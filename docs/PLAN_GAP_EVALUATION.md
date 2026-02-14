@@ -26,6 +26,7 @@ Evaluator: Codex
 - **Phase 4B baseline is now implemented in core extraction path**: profile-based Instructor route selection (`low_latency`, `balanced`, `high_reasoning`) is wired, with deterministic xLAM/Ollama fallback ordering and config/env controls.
 - **Phase 4C startup/session adaptation baseline is now implemented**: MCP initialize now performs dependency readiness checks (Muninn + Ollama), auto-starts when possible, emits explicit startup prompts when not, and honors assistant-session profile overrides via `MUNINN_OPERATOR_MODEL_PROFILE`.
 - **Phase 4D VRAM-aware policy baseline is now implemented**: extraction defaults are now budget-aware via `MUNINN_VRAM_BUDGET_GB`, with 16GB-safe high-reasoning defaults (14B-class) and 30B/32B limited to explicit high-budget tiers.
+- **Phase 4E helper-first profile scheduling baseline is now implemented**: runtime/add/update defaults now stay on low-latency profile while ingestion/legacy-ingestion can use independently configured profiles (`MUNINN_RUNTIME_MODEL_PROFILE`, `MUNINN_INGESTION_MODEL_PROFILE`, `MUNINN_LEGACY_INGESTION_MODEL_PROFILE`) plus operation-specific MCP env overrides.
 
 ## Status vs Plan
 
@@ -73,11 +74,11 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing, UI profile persistence, and session-level profile override wiring are now implemented, but profile-level eval/telemetry gates still need completion before default-policy promotion.
+8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, and operation-scoped runtime/ingestion profile defaults are now implemented, but profile-level eval/telemetry gates still need completion before default-policy promotion.
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `398 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `403 passed, 2 skipped, 0 warnings`.
 - Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and no open PR/comment backlog remained after restart.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
@@ -93,6 +94,7 @@ Evaluator: Codex
   - `40 passed` (`recall_trace`, `feature_flags`)
   - `20 passed` (`mcp_wrapper_protocol` startup/session-profile coverage)
   - `36 passed` (`config`, `extraction_pipeline` VRAM-policy coverage)
+  - `69 passed` (`config`, `memory_ingestion`, `memory_update_path`, `mcp_wrapper_protocol`, `extraction_pipeline`)
 - Compile checks passed on all touched modules/tests.
 
 ## Newly Resolved Inaccuracies
@@ -170,6 +172,7 @@ Research-backed recommendation for SOTA+ operator profiles is to keep **caliber-
 2. `balanced`: `qwen3:8b` default for quality/latency tradeoff.
 3. `high_reasoning`: `qwen3:14b` default for 16GB-class workflows; reserve `qwen3:30b/32b` (or `deepseek-r1:32b`) for explicit high-VRAM opt-in sessions.
 4. Keep xLAM as optional specialist endpoint for structured extraction/tool-calling workloads, not as mandatory global default.
+5. For active coding sessions, pin runtime extraction to low-latency by default and split ingestion/legacy import into separate configurable profiles so background memory continuity does not consume planning-grade VRAM.
 
 Primary references for this recommendation:
 - Ollama model availability/size envelopes (`qwen3`, `llama3.2`, `deepseek-r1`) and OpenAI-compatible API surface.
