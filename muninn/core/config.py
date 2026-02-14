@@ -54,7 +54,10 @@ class ExtractionConfig(BaseModel):
     xlam_model: str = "xLAM"
     enable_ollama_fallback: bool = True
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2:3b"
+    ollama_model: str = "llama3.2:3b"  # low-latency baseline
+    model_profile: str = "balanced"  # low_latency | balanced | high_reasoning
+    ollama_balanced_model: str = "qwen3:8b"
+    ollama_high_reasoning_model: str = "qwen3:32b"
     # Instructor-based extraction (v3.1.0)
     enable_instructor: bool = True
     instructor_provider: str = "ollama"  # "ollama" | "xlam" | "openai" | "custom"
@@ -200,8 +203,17 @@ class MuninnConfig(BaseModel):
             extraction=ExtractionConfig(
                 enable_xlam=os.environ.get("MUNINN_XLAM_ENABLED", "true").lower() == "true",
                 xlam_url=os.environ.get("MUNINN_XLAM_URL", "http://localhost:8001/v1"),
+                xlam_model=os.environ.get("MUNINN_XLAM_MODEL", "xLAM"),
                 enable_ollama_fallback=True,
                 ollama_url=ollama_url,
+                ollama_model=os.environ.get("MUNINN_OLLAMA_MODEL", "llama3.2:3b"),
+                model_profile=os.environ.get("MUNINN_MODEL_PROFILE", "balanced"),
+                ollama_balanced_model=os.environ.get(
+                    "MUNINN_OLLAMA_BALANCED_MODEL", "qwen3:8b"
+                ),
+                ollama_high_reasoning_model=os.environ.get(
+                    "MUNINN_OLLAMA_HIGH_REASONING_MODEL", "qwen3:32b"
+                ),
                 # Instructor extraction (v3.1.0)
                 enable_instructor=os.environ.get("MUNINN_INSTRUCTOR_ENABLED", "true").lower() == "true",
                 instructor_provider=os.environ.get("MUNINN_INSTRUCTOR_PROVIDER", "ollama"),

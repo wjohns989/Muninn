@@ -118,9 +118,13 @@
 33. Phase 4A operator adaptation baseline started:
     - `dashboard.html` now persists control-center preferences in browser storage,
     - model profile selection is displayed in UI and carried into ingestion metadata for traceability.
+34. Phase 4B extraction routing baseline implemented:
+    - profile-based Instructor routing now supports `low_latency` / `balanced` / `high_reasoning` paths,
+    - deterministic xLAM/Ollama fallback chains are now constructed from config/env policy,
+    - add/update extraction calls now accept operator model-profile hints with backward-compatible fallback behavior for legacy mocks/tests.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `384 passed, 2 skipped, 0 warnings`.
+- Full-suite verification now green in-session: `390 passed, 2 skipped, 0 warnings`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -176,7 +180,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 **Still open gaps:**
 1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
 2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
-3. Operator-facing model policy + browser preference controls (quality/latency/compute profile selection) still needs implementation
+3. Profile-level promotion gates still need implementation (routing exists; profile-specific eval + telemetry thresholds remain open)
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
