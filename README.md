@@ -115,6 +115,9 @@ muninn_mcp/
 │   │   └── reranker.py        # Jina cross-encoder reranker
 │   ├── scoring/               # Importance scoring
 │   │   └── importance.py      # Multi-factor importance formula
+│   ├── sdk/                   # Python SDK (sync + async REST clients)
+│   │   ├── client.py          # MuninnClient / AsyncMuninnClient / aliases
+│   │   └── errors.py          # SDK exception hierarchy
 │   └── consolidation/         # Background memory lifecycle
 │       ├── daemon.py          # Async consolidation loop
 │       ├── merge.py           # Near-duplicate merging
@@ -258,6 +261,40 @@ When the server is running (`http://localhost:42069`):
 
 ---
 
+## Python SDK
+
+Muninn includes first-party sync + async clients for REST integration:
+
+```python
+from muninn import Memory
+
+client = Memory(base_url="http://localhost:42069")
+client.add(content="User prefers deterministic CI gates", metadata={"project": "muninn"})
+results = client.search("What does the user prefer?", explain=True)
+print(results[0]["memory"]["content"])
+```
+
+```python
+import asyncio
+from muninn import AsyncMemory
+
+async def main():
+    async with AsyncMemory() as client:
+        await client.set_project_goal(
+            project="muninn",
+            goal_statement="Ship Phase 3 safely with tests",
+            constraints=["backward-compatible", "local-first"],
+        )
+        goal = await client.get_project_goal(project="muninn")
+        print(goal)
+
+asyncio.run(main())
+```
+
+See `docs/PYTHON_SDK.md` for full method coverage and error handling.
+
+---
+
 ## Dashboard
 
 Visit `http://localhost:42069` when the server is running to access the web dashboard for memory visualization and knowledge graph exploration.
@@ -320,7 +357,7 @@ See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadm
 - **Adaptive retrieval weights** — Entropy-based dynamic signal weighting
 - **Memory chains** — Temporal/causal linking of related memories
 - **Multi-source ingestion** — PDF, Markdown, and structured document import
-- **Python SDK** — Programmatic API for non-MCP integration
+- **Python SDK** — Programmatic API for non-MCP integration (**implemented**: sync + async clients)
 - **Cross-platform support** — Linux and macOS path resolution
 
 ---
@@ -331,6 +368,7 @@ See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadm
 - [Citations & Credits](CITATIONS.md) — Academic sources and open-source attribution
 - [SOTA+ Roadmap](SOTA_PLUS_PLAN.md) — Next-generation feature implementation plan
 - [OTel GenAI Runbook](docs/OTEL_GENAI_OBSERVABILITY.md) — Trace export setup and privacy controls
+- [Python SDK Guide](docs/PYTHON_SDK.md) — Sync/async client usage and mem0-style aliases
 
 ---
 
