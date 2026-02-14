@@ -168,6 +168,7 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert "sampling_prob" in feedback_props
     ingest_props = by_name["ingest_sources"]["inputSchema"]["properties"]
     assert "sources" in ingest_props
+    assert "chronological_order" in ingest_props
     legacy_discover_props = by_name["discover_legacy_sources"]["inputSchema"]["properties"]
     assert "roots" in legacy_discover_props
     legacy_ingest_props = by_name["ingest_legacy_sources"]["inputSchema"]["properties"]
@@ -229,6 +230,7 @@ def test_ingest_sources_tool_call_payload(monkeypatch):
     assert captured["json"]["project"] == "muninn"
     assert captured["json"]["recursive"] is True
     assert captured["json"]["chunk_size_chars"] == 500
+    assert captured["json"]["chronological_order"] == "none"
     assert sent
     assert sent[0]["id"] == "req-ingest"
 
@@ -298,6 +300,7 @@ def test_ingest_legacy_sources_tool_call_payload(monkeypatch):
             "arguments": {
                 "selected_source_ids": ["src_123"],
                 "chunk_size_chars": 700,
+                "chronological_order": "oldest_first",
             },
         },
     )
@@ -307,5 +310,6 @@ def test_ingest_legacy_sources_tool_call_payload(monkeypatch):
     assert captured["json"]["selected_source_ids"] == ["src_123"]
     assert captured["json"]["project"] == "muninn"
     assert captured["json"]["chunk_size_chars"] == 700
+    assert captured["json"]["chronological_order"] == "oldest_first"
     assert sent
     assert sent[0]["id"] == "req-legacy-import"
