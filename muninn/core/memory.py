@@ -436,6 +436,7 @@ class MuninnMemory:
 
             extraction_profile = str(
                 scoped_metadata.get("operator_model_profile")
+                or self.config.extraction.runtime_model_profile
                 or self.config.extraction.model_profile
             )
             extraction = await self._extract_with_profile(
@@ -1242,6 +1243,10 @@ class MuninnMemory:
         base_metadata = dict(metadata or {})
         base_metadata.setdefault("project", project)
         base_metadata.setdefault("kind", "ingested_source_chunk")
+        base_metadata.setdefault(
+            "operator_model_profile",
+            self.config.extraction.ingestion_model_profile,
+        )
         result = await self._persist_ingestion_report(
             report=report,
             user_id=user_id,
@@ -1431,6 +1436,10 @@ class MuninnMemory:
         base_metadata = dict(metadata or {})
         base_metadata.setdefault("project", project)
         base_metadata.setdefault("kind", "legacy_ingested_source_chunk")
+        base_metadata.setdefault(
+            "operator_model_profile",
+            self.config.extraction.legacy_ingestion_model_profile,
+        )
         result = await self._persist_ingestion_report(
             report=report,
             user_id=user_id,
@@ -1474,7 +1483,7 @@ class MuninnMemory:
         # Re-extract entities
         extraction = await self._extract_with_profile(
             data,
-            model_profile=self.config.extraction.model_profile,
+            model_profile=self.config.extraction.runtime_model_profile,
         )
         entity_names = self._extract_entity_names(extraction)
         updated_metadata = dict(record.metadata or {})
