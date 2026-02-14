@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 """
 
+USER_SCOPE_BACKFILL_FAILURES = """
+CREATE TABLE IF NOT EXISTS user_scope_backfill_failures (
+    memory_id TEXT PRIMARY KEY,
+    attempts  INTEGER DEFAULT 1,
+    last_error TEXT,
+    updated_at REAL NOT NULL
+);
+"""
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -99,6 +108,7 @@ class SQLiteMetadataStore:
         for idx in CREATE_INDEXES:
             conn.execute(idx)
         conn.execute(SCHEMA_META)
+        conn.execute(USER_SCOPE_BACKFILL_FAILURES)
         conn.execute(
             "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)",
             ("version", str(SCHEMA_VERSION))
@@ -119,6 +129,78 @@ class SQLiteMetadataStore:
         except ValueError:
             d["provenance"] = Provenance.AUTO_EXTRACTED
         return MemoryRecord(**d)
+
+
+    def set_meta(self, key: str, value: str) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        conn.commit()
+
+    def get_meta(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        conn = self._get_conn()
+        row = conn.execute("SELECT value FROM schema_meta WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return default
+        return row[0]
+
+    def record_user_scope_backfill_failure(self, memory_id: str, error: str) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT INTO user_scope_backfill_failures (memory_id, attempts, last_error, updated_at)
+            VALUES (?, 1, ?, ?)
+            ON CONFLICT(memory_id) DO UPDATE SET
+                attempts = attempts + 1,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
+            """,
+            (memory_id, error[:500], time.time()),
+        )
+        conn.commit()
+
+    def clear_user_scope_backfill_failure(self, memory_id: str) -> None:
+        conn = self._get_conn()
+        conn.execute("DELETE FROM user_scope_backfill_failures WHERE memory_id = ?", (memory_id,))
+        conn.commit()
+
+    def get_user_scope_backfill_failures(self, limit: int = 1000) -> List[str]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT memory_id FROM user_scope_backfill_failures ORDER BY updated_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def count_user_scope_backfill_failures(self) -> int:
+        conn = self._get_conn()
+        row = conn.execute("SELECT COUNT(*) FROM user_scope_backfill_failures").fetchone()
+        return row[0] if row else 0
+
+
+    def get_missing_user_id_records(self, limit: int = 500) -> List[MemoryRecord]:
+        """Fetch a batch of records that do not have metadata.user_id set."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM memories
+            WHERE metadata NOT LIKE '%"user_id"%'
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def count_missing_user_id(self) -> int:
+        """Count records that do not contain metadata.user_id."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE metadata NOT LIKE '%\"user_id\"%'"
+        ).fetchone()
+        return row[0] if row else 0
 
     # --- CRUD Operations ---
 
@@ -199,6 +281,7 @@ class SQLiteMetadataStore:
         project: Optional[str] = None,
         namespace: Optional[str] = None,
         memory_type: Optional[MemoryType] = None,
+        user_id: Optional[str] = None,
     ) -> List[MemoryRecord]:
         conn = self._get_conn()
         conditions = []
@@ -213,6 +296,9 @@ class SQLiteMetadataStore:
         if memory_type:
             conditions.append("memory_type = ?")
             params.append(memory_type.value)
+        if user_id:
+            conditions.append("metadata LIKE ?")
+            params.append(f'%"user_id": "{user_id}"%')
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
