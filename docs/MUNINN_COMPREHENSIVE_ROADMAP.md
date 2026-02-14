@@ -68,6 +68,9 @@ Completed since last update:
    - repository integrity re-verified (`git fsck --full`) with no corruption findings,
    - full suite warning source remediated in conflict resolver tests,
    - no open PR/comment backlog remained before starting next phase branch.
+27. Phase 4A baseline started:
+   - browser control center now persists operator preferences in local storage (profile, ingestion defaults, verbosity, and workflow toggles),
+   - model profile is now surfaced in UI and tagged into ingestion metadata for operational traceability.
 
 Verification:
 - Full suite now passes in-session: `384 passed, 2 skipped, 0 warnings`.
@@ -374,6 +377,7 @@ This is core for vibecoders, not optional polish.
   - saved ingestion presets (chunking policy, chronology mode, recursion),
   - visibility toggles for advanced controls/log verbosity.
 - Support explicit "safe mode" defaults for higher-risk actions (legacy import, broad-path ingest).
+- Status update: local browser preference persistence is now implemented in `dashboard.html` with auto-save, explicit save/reset controls, and profile chip display.
 
 ### 4B Adjustable Thinking-Level Model Profiles
 - Add extraction profile abstraction with explicit tradeoff modes:
