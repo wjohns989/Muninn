@@ -71,6 +71,8 @@ The sync and async clients expose equivalent methods:
 - `import_handoff(...)`
 - `record_retrieval_feedback(...)`
 - `ingest_sources(...)`
+- `discover_legacy_sources(...)`
+- `ingest_legacy_sources(...)`
 - `get_all(...)`
 - `update(...)`
 - `delete(...)`

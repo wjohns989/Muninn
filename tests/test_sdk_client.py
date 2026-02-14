@@ -100,6 +100,50 @@ def test_sync_ingest_sources_payload():
     assert payload["chunk_size_chars"] == 500
 
 
+def test_sync_discover_legacy_sources_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/ingest/legacy/discover"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "LEGACY_DISCOVERY_COMPLETED", "total_discovered": 3}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.discover_legacy_sources(
+        providers=["codex_cli", "serena_memory"],
+        max_results_per_provider=25,
+    )
+
+    assert result["event"] == "LEGACY_DISCOVERY_COMPLETED"
+    payload = stub.calls[0]["json"]
+    assert payload["providers"] == ["codex_cli", "serena_memory"]
+    assert payload["max_results_per_provider"] == 25
+
+
+def test_sync_ingest_legacy_sources_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/ingest/legacy/import"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "LEGACY_INGEST_COMPLETED", "added_memories": 4}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.ingest_legacy_sources(
+        selected_source_ids=["src_abc"],
+        project="muninn",
+        chunk_size_chars=700,
+    )
+
+    assert result["event"] == "LEGACY_INGEST_COMPLETED"
+    payload = stub.calls[0]["json"]
+    assert payload["selected_source_ids"] == ["src_abc"]
+    assert payload["project"] == "muninn"
+    assert payload["chunk_size_chars"] == 700
+
+
 def test_sync_health_unwrapped_payload():
     stub = _StubSession(
         {

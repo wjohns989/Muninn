@@ -46,9 +46,10 @@ Completed since last update:
 17. OTel operational runbook and example collector configuration are now committed, including privacy policy defaults and smoke-test guidance.
 18. Phase 3C Python SDK is now implemented (`muninn/sdk`) with sync+async clients, typed errors, mem0-style aliases, and dedicated tests/docs.
 19. Phase 3B multi-source ingestion is now implemented with feature-gated fail-open parsing, provenance-rich chunk metadata, REST/MCP/SDK surface wiring, and targeted tests.
+20. Legacy assistant/MCP migration flow is now implemented with discovery + selection-based import, including parser support for chat JSONL and sqlite-backed state stores.
 
 Verification:
-- Full suite now passes in-session: `353 passed, 2 skipped, 2 warnings`.
+- Full suite now passes in-session: `362 passed, 2 skipped, 1 warning`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -282,7 +283,7 @@ Introduce a `ProjectGoal` memory primitive plus drift checks at add/search time.
 - Parser adapters for txt/md/pdf/docx/html/json/csv.
 - Fail-open by source item (skip bad files, continue pipeline).
 - Mandatory provenance metadata per ingested chunk.
-- Status update: implemented with feature-gated fail-open pipeline (`muninn/ingestion`), per-source/per-chunk reporting, and REST (`/ingest`) + MCP (`ingest_sources`) + SDK method parity.
+- Status update: implemented with feature-gated fail-open pipeline (`muninn/ingestion`), per-source/per-chunk reporting, chat-context adapters for `.jsonl/.ndjson`, sqlite-backed parser support (`.vscdb/.db/.sqlite*`), and REST/MCP/SDK parity for both baseline ingestion and legacy discovery/import flows.
 
 ### 3C Python SDK
 - Sync + async clients.

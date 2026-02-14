@@ -149,6 +149,8 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert "record_retrieval_feedback" in by_name
     assert "search_memory" in by_name
     assert "ingest_sources" in by_name
+    assert "discover_legacy_sources" in by_name
+    assert "ingest_legacy_sources" in by_name
 
     for tool in tools:
         schema = tool["inputSchema"]
@@ -159,11 +161,17 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert by_name["search_memory"]["annotations"]["readOnlyHint"] is True
     assert by_name["record_retrieval_feedback"]["annotations"]["readOnlyHint"] is False
     assert by_name["ingest_sources"]["annotations"]["readOnlyHint"] is False
+    assert by_name["discover_legacy_sources"]["annotations"]["readOnlyHint"] is True
+    assert by_name["ingest_legacy_sources"]["annotations"]["readOnlyHint"] is False
     feedback_props = by_name["record_retrieval_feedback"]["inputSchema"]["properties"]
     assert "rank" in feedback_props
     assert "sampling_prob" in feedback_props
     ingest_props = by_name["ingest_sources"]["inputSchema"]["properties"]
     assert "sources" in ingest_props
+    legacy_discover_props = by_name["discover_legacy_sources"]["inputSchema"]["properties"]
+    assert "roots" in legacy_discover_props
+    legacy_ingest_props = by_name["ingest_legacy_sources"]["inputSchema"]["properties"]
+    assert "selected_source_ids" in legacy_ingest_props
 
 
 def test_tool_schemas_have_consistent_contract(monkeypatch):
@@ -223,3 +231,81 @@ def test_ingest_sources_tool_call_payload(monkeypatch):
     assert captured["json"]["chunk_size_chars"] == 500
     assert sent
     assert sent[0]["id"] == "req-ingest"
+
+
+def test_discover_legacy_sources_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "LEGACY_DISCOVERY_COMPLETED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-legacy-discover",
+        {
+            "name": "discover_legacy_sources",
+            "arguments": {
+                "providers": ["codex_cli", "serena_memory"],
+                "max_results_per_provider": 25,
+            },
+        },
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/ingest/legacy/discover")
+    assert captured["json"]["providers"] == ["codex_cli", "serena_memory"]
+    assert captured["json"]["max_results_per_provider"] == 25
+    assert sent
+    assert sent[0]["id"] == "req-legacy-discover"
+
+
+def test_ingest_legacy_sources_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "LEGACY_INGEST_COMPLETED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-legacy-import",
+        {
+            "name": "ingest_legacy_sources",
+            "arguments": {
+                "selected_source_ids": ["src_123"],
+                "chunk_size_chars": 700,
+            },
+        },
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/ingest/legacy/import")
+    assert captured["json"]["selected_source_ids"] == ["src_123"]
+    assert captured["json"]["project"] == "muninn"
+    assert captured["json"]["chunk_size_chars"] == 700
+    assert sent
+    assert sent[0]["id"] == "req-legacy-import"
