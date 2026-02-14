@@ -28,6 +28,7 @@ Evaluator: Codex
 - **Phase 4D VRAM-aware policy baseline is now implemented**: extraction defaults are now budget-aware via `MUNINN_VRAM_BUDGET_GB`, with 16GB-safe high-reasoning defaults (14B-class) and 30B/32B limited to explicit high-budget tiers.
 - **Phase 4E helper-first profile scheduling baseline is now implemented**: runtime/add/update defaults now stay on low-latency profile while ingestion/legacy-ingestion can use independently configured profiles (`MUNINN_RUNTIME_MODEL_PROFILE`, `MUNINN_INGESTION_MODEL_PROFILE`, `MUNINN_LEGACY_INGESTION_MODEL_PROFILE`) plus operation-specific MCP env overrides.
 - **Phase 4F runtime profile-control tranche is now implemented**: profile policy can now be read/updated at runtime through memory core + REST (`/profiles/model`) + MCP tools (`get_model_profiles`, `set_model_profiles`) + SDK sync/async parity.
+- **Phase 4G profile-policy audit visibility baseline is now implemented**: runtime profile mutations are now persisted as audit events and exposed through memory core + REST (`/profiles/model/events`) + MCP (`get_model_profile_events`) + SDK sync/async.
 
 ## Status vs Plan
 
@@ -75,11 +76,11 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, and runtime profile mutation API are now implemented, but profile-level eval/telemetry gates still need completion before default-policy promotion.
+8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, and mutation audit events are now implemented, but profile-level eval/telemetry promotion gates and alerting thresholds still need completion before default-policy promotion.
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `414 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
 - Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and no open PR/comment backlog remained after restart.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
@@ -97,6 +98,7 @@ Evaluator: Codex
   - `36 passed` (`config`, `extraction_pipeline` VRAM-policy coverage)
   - `69 passed` (`config`, `memory_ingestion`, `memory_update_path`, `mcp_wrapper_protocol`, `extraction_pipeline`)
   - `45 passed` (`memory_profiles`, `mcp_wrapper_protocol`, `sdk_client`)
+  - `49 passed` (`memory_profiles`, `sqlite_profile_policy_events`, `mcp_wrapper_protocol`, `sdk_client`)
 - Compile checks passed on all touched modules/tests.
 
 ## Newly Resolved Inaccuracies

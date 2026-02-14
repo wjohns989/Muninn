@@ -122,6 +122,16 @@ CREATE TABLE IF NOT EXISTS retrieval_feedback (
 );
 """
 
+PROFILE_POLICY_EVENTS = """
+CREATE TABLE IF NOT EXISTS profile_policy_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    updates_json TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+"""
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -157,10 +167,14 @@ class SQLiteMetadataStore:
         conn.execute(PROJECT_GOALS)
         conn.execute(HANDOFF_EVENT_LEDGER)
         conn.execute(RETRIEVAL_FEEDBACK)
+        conn.execute(PROFILE_POLICY_EVENTS)
         self._ensure_column_exists(conn, "retrieval_feedback", "rank", "INTEGER")
         self._ensure_column_exists(conn, "retrieval_feedback", "sampling_prob", "REAL")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_feedback_scope_time ON retrieval_feedback(user_id, namespace, project, created_at DESC);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_profile_policy_events_created ON profile_policy_events(created_at DESC);"
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)",
@@ -237,6 +251,65 @@ class SQLiteMetadataStore:
         if row is None:
             return default
         return row[0]
+
+    def record_profile_policy_event(
+        self,
+        *,
+        source: str,
+        updates: Dict[str, Any],
+        policy: Dict[str, Any],
+    ) -> int:
+        """Persist runtime profile-policy change event and return event id."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            INSERT INTO profile_policy_events (source, updates_json, policy_json, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                source or "unknown",
+                json.dumps(updates or {}),
+                json.dumps(policy or {}),
+                time.time(),
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+    def get_profile_policy_events(self, *, limit: int = 25) -> List[Dict[str, Any]]:
+        """Return recent runtime profile-policy change events."""
+        safe_limit = max(1, min(500, int(limit)))
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT id, source, updates_json, policy_json, created_at
+            FROM profile_policy_events
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+
+        events: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                updates = json.loads(row["updates_json"] or "{}")
+            except json.JSONDecodeError:
+                updates = {}
+            try:
+                policy = json.loads(row["policy_json"] or "{}")
+            except json.JSONDecodeError:
+                policy = {}
+            events.append(
+                {
+                    "id": int(row["id"]),
+                    "source": row["source"],
+                    "updates": updates if isinstance(updates, dict) else {},
+                    "policy": policy if isinstance(policy, dict) else {},
+                    "created_at": float(row["created_at"]),
+                }
+            )
+        return events
 
     def set_project_goal(
         self,
