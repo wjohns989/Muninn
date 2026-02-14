@@ -257,6 +257,43 @@ Implementation impact:
 - Evolve from per-signal scalar multipliers to feature-aware off-policy updates (e.g., doubly robust estimators over trace features).
 - Expand canonical artifacts from two bundles to broader multi-domain suites (e.g., codebase-scale, temporal drift, and adversarial-noise slices) with the same manifest and reproducibility contract.
 
+## Incremental Research Update (2026-02-14): xLAM vs Ollama Profile Strategy
+
+### Primary-source findings
+
+1. **xLAM is strong but not universally best in current BFCL snapshots.**
+   - Latest BFCL aggregate table (2025-12-16) places `xLAM-2-32b-fc-r` at `54.66%` overall (rank 18) and `xLAM-2-70b-fc-r` at `53.07%` (rank 22), while multiple proprietary and some open models score higher on aggregate.
+   - Source: `BFCL-Result` published score table:
+     - https://raw.githubusercontent.com/HuanzhiMao/BFCL-Result/main/2025-12-16/score/data_overall.csv
+
+2. **xLAM remains a valid function-calling specialist option, but license constraints matter.**
+   - Salesforce xLAM model cards document tool-calling focus but also non-commercial license terms (`cc-by-nc-4.0`) for the xLAM-2 family.
+   - Source:
+     - https://huggingface.co/Salesforce/xLAM-2-32b-fc-r
+
+3. **Ollama now supports explicit thinking-level controls and tool-capable model families.**
+   - Ollama supports per-request reasoning control (`think: low|medium|high`) on supported models.
+   - Qwen3 on Ollama is explicitly listed with tools + thinking support.
+   - Sources:
+     - https://docs.ollama.com/capabilities/thinking
+     - https://ollama.com/library/qwen3
+     - https://docs.ollama.com/capabilities/tool-calling
+
+4. **Qwen official docs expose direct think/no-think toggles.**
+   - Qwen3 docs include operational controls for thinking behavior (`/think`, `/no_think`), supporting the practical "adjustable thinking level" UX requirement.
+   - Source:
+     - https://qwen.readthedocs.io/en/latest/inference/transformers.html
+
+### Decision update
+
+- **Do not hardcode xLAM as default-best.**
+- Keep xLAM as an optional high-capability provider path.
+- Add a **profile-based model policy** with deterministic fallback routing and explicit tradeoff tiers:
+  - `low_latency` (fast/low compute),
+  - `balanced` (default),
+  - `high_reasoning` (higher compute/thinking).
+- Expose profile choice in browser UI, config, and API for operator control.
+
 ## Critical Issues/Accuracy Corrections
 
 1. **Adaptive entropy currently rank-derived** (not score-derived): weak confidence semantics. ✅ Fixed in current code slice.
