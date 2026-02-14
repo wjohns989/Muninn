@@ -229,6 +229,15 @@ class MuninnMemory:
     # Core Memory Operations (mem0-compatible API)
     # ==========================================
 
+    def _record_matches_scope(self, record: MemoryRecord, namespace: str, user_id: str) -> bool:
+        """Return True when a record belongs to the provided namespace/user scope."""
+        if record.namespace != namespace:
+            return False
+
+        metadata = record.metadata or {}
+        record_user_id = metadata.get("user_id")
+        return record_user_id == user_id
+
     async def add(
         self,
         content: str,
@@ -297,36 +306,43 @@ class MuninnMemory:
                         "dedup": dedup_result.model_dump(),
                     }
                 elif dedup_result.strategy == DedupStrategy.UPDATE_EXISTING:
-                    merged_content = self._dedup.merge_content(content, "")
                     existing = self._metadata.get(dedup_result.existing_memory_id)
                     if existing:
-                        merged_content = self._dedup.merge_content(content, existing.content)
-                        self._metadata.update(
-                            dedup_result.existing_memory_id,
-                            content=merged_content,
-                        )
-                        # Re-embed merged content
-                        merged_embedding = self._embed(merged_content)
-                        self._vectors.upsert(
-                            memory_id=dedup_result.existing_memory_id,
-                            embedding=merged_embedding,
-                            metadata={
-                                "content": merged_content[:500],
-                                "memory_type": existing.memory_type.value,
-                                "namespace": existing.namespace,
-                                "importance": existing.importance,
-                                "user_id": existing.metadata.get("user_id", "global_user"),
-                            },
-                        )
-                        self._bm25.add(dedup_result.existing_memory_id, merged_content)
-                        logger.info("Dedup UPDATE_EXISTING: merged into %s",
-                                    dedup_result.existing_memory_id)
-                        return {
-                            "id": dedup_result.existing_memory_id,
-                            "content": merged_content,
-                            "event": "DEDUP_MERGED",
-                            "dedup": dedup_result.model_dump(),
-                        }
+                        if not self._record_matches_scope(existing, namespace, user_id):
+                            logger.warning(
+                                "Dedup UPDATE_EXISTING scope mismatch: memory_id=%s namespace=%s user_id=%s",
+                                dedup_result.existing_memory_id,
+                                existing.namespace,
+                                (existing.metadata or {}).get("user_id"),
+                            )
+                        else:
+                            merged_content = self._dedup.merge_content(content, existing.content)
+                            self._metadata.update(
+                                dedup_result.existing_memory_id,
+                                content=merged_content,
+                            )
+                            # Re-embed merged content
+                            merged_embedding = self._embed(merged_content)
+                            self._vectors.upsert(
+                                memory_id=dedup_result.existing_memory_id,
+                                embedding=merged_embedding,
+                                metadata={
+                                    "content": merged_content[:500],
+                                    "memory_type": existing.memory_type.value,
+                                    "namespace": existing.namespace,
+                                    "importance": existing.importance,
+                                    "user_id": existing.metadata.get("user_id", "global_user"),
+                                },
+                            )
+                            self._bm25.add(dedup_result.existing_memory_id, merged_content)
+                            logger.info("Dedup UPDATE_EXISTING: merged into %s",
+                                        dedup_result.existing_memory_id)
+                            return {
+                                "id": dedup_result.existing_memory_id,
+                                "content": merged_content,
+                                "event": "DEDUP_MERGED",
+                                "dedup": dedup_result.model_dump(),
+                            }
 
         # --- Phase 2: Conflict Detection (v3.2.0) ---
         conflict_info = None
@@ -344,8 +360,7 @@ class MuninnMemory:
                     candidate_records = [
                         candidate
                         for candidate in self._metadata.get_by_ids(candidate_ids)
-                        if candidate.namespace == namespace
-                        and candidate.metadata.get("user_id") == user_id
+                        if self._record_matches_scope(candidate, namespace, user_id)
                     ]
                     if candidate_records:
                         conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)

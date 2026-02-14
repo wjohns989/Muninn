@@ -185,6 +185,88 @@ def test_conflict_prefilter_stays_strict_until_migration_complete():
 
 
 
+def test_conflict_prefilter_ignores_candidates_with_none_metadata():
+    memory = MuninnMemory()
+    memory._initialized = True
+    memory._user_scope_migration_complete = True
+
+    async def _extract(_content):
+        return ExtractionResult()
+
+    memory._extract = _extract
+    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+
+    memory._vectors = MagicMock()
+    memory._vectors.count.return_value = 1
+    memory._vectors.search.side_effect = [[("legacy", 0.95)], []]
+    memory._vectors.upsert = MagicMock()
+
+    legacy = _record("legacy", namespace="project-a", user_id="user-1")
+    legacy.metadata = None
+
+    memory._metadata = MagicMock()
+    memory._metadata.get_by_ids.return_value = [legacy]
+    memory._metadata.add = MagicMock()
+
+    memory._conflict_detector = MagicMock()
+    memory._conflict_detector.detect_conflicts.return_value = []
+    memory._conflict_resolver = MagicMock()
+
+    memory._graph = MagicMock()
+    memory._bm25 = MagicMock()
+    memory._dedup = None
+
+    result = asyncio.run(memory.add("new memory", namespace="project-a", user_id="user-1"))
+
+    assert result["event"] == "ADD"
+    assert memory._conflict_detector.detect_conflicts.call_count == 0
+
+
+
+def test_dedup_update_existing_scope_mismatch_falls_back_to_add():
+    memory = MuninnMemory()
+    memory._initialized = True
+    memory._user_scope_migration_complete = True
+
+    async def _extract(_content):
+        return ExtractionResult()
+
+    memory._extract = _extract
+    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+
+    memory._vectors = MagicMock()
+    memory._vectors.count.return_value = 1
+    memory._vectors.search.return_value = []
+    memory._vectors.upsert = MagicMock()
+
+    memory._dedup = MagicMock()
+    memory._dedup.merge_content.side_effect = lambda new, old: f"{old} {new}".strip()
+    memory._dedup.check_duplicate.return_value = DedupResult(
+        is_duplicate=True,
+        existing_memory_id="mem-other-scope",
+        similarity=0.97,
+        strategy="update_existing",
+    )
+
+    scoped_elsewhere = _record("mem-other-scope", namespace="project-b", user_id="user-2")
+    memory._metadata = MagicMock()
+    memory._metadata.get.return_value = scoped_elsewhere
+    memory._metadata.add = MagicMock()
+    memory._metadata.update = MagicMock()
+
+    memory._conflict_detector = None
+    memory._graph = MagicMock()
+    memory._bm25 = MagicMock()
+
+    result = asyncio.run(memory.add("new memory", namespace="project-a", user_id="user-1"))
+
+    assert result["event"] == "ADD"
+    assert memory._metadata.update.call_count == 0
+    assert memory._dedup.merge_content.call_count == 0
+    assert memory._vectors.upsert.call_count == 1
+
+
+
 def test_get_all_scoped_by_user_id_and_namespace():
     memory = MuninnMemory()
     memory._initialized = True
