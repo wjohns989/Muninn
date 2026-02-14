@@ -254,6 +254,45 @@ class TestCheckDuplicate:
             "user_id": "user-1",
         }
 
+    def test_filters_enforced_against_metadata_scope_mismatch(self):
+        dedup = self._dedup(threshold=0.95, overlap=0.5)
+        existing = _make_record("the user prefers dark mode", memory_id="mem-1")
+        existing.namespace = "project-b"
+        existing.metadata = {"user_id": "user-2"}
+        vs, ms = self._mock_stores(
+            search_results=[("mem-1", 0.99)],
+            get_record=existing,
+        )
+        result = dedup.check_duplicate(
+            [0.1, 0.2],
+            "the user prefers dark mode",
+            vs,
+            ms,
+            filters={"namespace": "project-a", "user_id": "user-1"},
+        )
+        assert result is None
+
+    def test_duplicate_debug_log_does_not_include_memory_content(self, caplog):
+        dedup = self._dedup(threshold=0.95, overlap=0.5)
+        sensitive = "api key is sk-secret-123"
+        existing = _make_record(sensitive, memory_id="mem-1", namespace="project-a", metadata={"user_id": "user-1"})
+        vs, ms = self._mock_stores(
+            search_results=[("mem-1", 0.99)],
+            get_record=existing,
+        )
+
+        with caplog.at_level("DEBUG", logger="Muninn.Dedup"):
+            dedup.check_duplicate(
+                [0.1, 0.2],
+                sensitive,
+                vs,
+                ms,
+                filters={"namespace": "project-a", "user_id": "user-1"},
+            )
+
+        assert "Semantic duplicate match found" in caplog.text
+        assert sensitive not in caplog.text
+
     def test_vector_store_error_returns_none(self):
         dedup = self._dedup()
         vs = MagicMock()
