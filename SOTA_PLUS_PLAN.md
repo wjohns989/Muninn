@@ -111,9 +111,13 @@
     - graph-store support for first-class memory-to-memory `PRECEDES` / `CAUSES` edges with confidence + provenance fields,
     - chain-link persistence wired into `add` and `update` paths with scoped candidate scans and entity-overlap reasoning,
     - hybrid retrieval fusion now includes optional chain signal (`memory_chains` feature flag) with explainable trace attribution.
+32. Post-restart stability + quality hygiene tranche completed:
+    - repository integrity verified after crash/restart (`git fsck --full` clean),
+    - conflict-resolver test warning source removed,
+    - branch workflow moved to one-open-PR-per-phase policy.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `384 passed, 2 skipped, 1 warning`.
+- Full-suite verification now green in-session: `384 passed, 2 skipped, 0 warnings`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -154,6 +158,7 @@
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
 2. Memory-specific benchmark gate using MemoryAgentBench competencies (accurate retrieval, test-time learning, long-range understanding, selective forgetting).
 3. GenAI observability tranche using OpenTelemetry GenAI semantic conventions (opt-in content capture + privacy-aware controls).
+4. Adaptive model-profile routing: keep xLAM as optional provider but add profile-based fallback chains (e.g., Qwen3 tiers on Ollama) and expose adjustable "thinking level".
 
 ## Executive Summary
 
@@ -168,6 +173,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 **Still open gaps:**
 1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
 2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
+3. Operator-facing model policy + browser preference controls (quality/latency/compute profile selection) still needs implementation
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
