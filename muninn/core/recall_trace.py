@@ -7,7 +7,7 @@ This is a UNIQUE differentiator — no competitor (Mem0, Graphiti, Memento,
 MemoryGraph) provides per-signal retrieval explanations.
 
 RecallTrace objects describe the contribution of each retrieval signal
-(vector, bm25, graph, temporal) to a memory's final ranking, enabling:
+(vector, bm25, graph, temporal, goal, chain) to a memory's final ranking, enabling:
 - Debugging: Why was an irrelevant memory returned?
 - Trust: Users can verify retrieval logic is sound.
 - Tuning: Adjust signal weights based on attribution data.
@@ -25,11 +25,11 @@ class SignalContribution(BaseModel):
     """
     Contribution of a single retrieval signal to a memory's final score.
 
-    Each signal (vector, bm25, graph, temporal) that contributed to finding
+    Each signal (vector, bm25, graph, temporal, goal, chain) that contributed to finding
     a memory gets one SignalContribution entry.
     """
     signal: str = Field(
-        description="Signal type: 'vector' | 'bm25' | 'graph' | 'temporal' | 'goal'"
+        description="Signal type: 'vector' | 'bm25' | 'graph' | 'temporal' | 'goal' | 'chain'"
     )
     raw_score: float = Field(
         description="Original score from that signal (cosine sim, BM25 score, etc.)"
@@ -175,6 +175,11 @@ def explain_goal_signal(raw_score: float, rank: int) -> str:
     return f"Aligned with active project goal (score {raw_score:.2f}, rank #{rank})"
 
 
+def explain_chain_signal(raw_score: float, rank: int) -> str:
+    """Generate explanation for memory-chain expansion signal."""
+    return f"Related via memory chain links (score {raw_score:.2f}, rank #{rank})"
+
+
 # Signal name → explanation function mapping
 SIGNAL_EXPLAINERS = {
     "vector": explain_vector_signal,
@@ -182,6 +187,7 @@ SIGNAL_EXPLAINERS = {
     "graph": explain_graph_signal,
     "temporal": explain_temporal_signal,
     "goal": explain_goal_signal,
+    "chain": explain_chain_signal,
 }
 
 
