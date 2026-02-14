@@ -112,6 +112,16 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
    - https://caniuse.com/mdn-api_window_showdirectorypicker
 47. FastAPI response class guidance for serving HTML:
    - https://fastapi.tiangolo.com/advanced/custom-response/
+48. Hugging Face model API (latest-updated model discovery):
+   - https://huggingface.co/api/models?sort=lastModified&direction=-1&limit=50
+49. Qwen3-Coder-Next model card (recent coding-agent release details):
+   - https://huggingface.co/Qwen/Qwen3-Coder-Next
+50. Qwen3-Coder-Next-GGUF model card (recent release + local deployment notes):
+   - https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF
+51. DeepSeek-OCR-2 model card (recent DeepSeek org update reference):
+   - https://huggingface.co/deepseek-ai/DeepSeek-OCR-2
+52. Ollama context-length guidance:
+   - https://docs.ollama.com/context-length
 
 ## Legacy Chat/Memory Storage Research (2026-02-14)
 
@@ -404,8 +414,8 @@ Primary sources:
    - Default: `qwen3:8b`.
    - Goal: strong all-around extraction/reasoning at moderate resource cost.
 3. `high_reasoning`
-   - Default: `qwen3:32b`.
-   - Optional alternative: `deepseek-r1:32b` for reasoning-heavy phases.
+   - Default: `qwen3:14b` for 16GB-class active development workflows.
+   - Optional alternatives: `qwen3:30b/32b` or `deepseek-r1:32b` only for explicit high-VRAM sessions.
    - Goal: planning/refactoring-heavy phases with higher compute budgets.
 4. `xlam_specialist` route (optional provider path, not default)
    - Use xLAM endpoint as first or second fallback for tool-calling-centric extraction flows when deployed.
@@ -416,3 +426,16 @@ Primary sources:
 2. Preserve cross-assistant portability through OpenAI-compatible transport and metadata-tagged profile context.
 3. Measure profile promotion with per-profile eval gates before changing defaults.
 4. Treat think-level controls as secondary tuning knobs, not the primary product abstraction.
+
+### Fresh release scan (as-of 2026-02-14)
+
+Primary-source checks show:
+1. Hugging Face global feed has many same-day updates, but mostly community forks/fine-tunes rather than universally deployable MCP baselines.
+2. Official org updates include:
+   - `Qwen/Qwen3-Coder-Next` (lastModified `2026-02-03`) and `Qwen/Qwen3-Coder-Next-GGUF` (`2026-02-04`), with README stating “Today, we're announcing Qwen3-Coder-Next.”
+   - `deepseek-ai/DeepSeek-OCR-2` (lastModified `2026-02-03`), but this is multimodal OCR, not the best fit for memory-extraction MCP workloads.
+3. Qwen3-Coder-Next-GGUF quant files remain very large (`Q4_K_M ≈ 45.09 GB`, `Q5_K_M ≈ 52.82 GB`), which is not viable for 16GB active-dev GPU budgets.
+
+Implication:
+- “Newest” is not automatically “best” for local MCP memory workflows.
+- For 16GB users, sustained quality comes from right-sized 3B/4B/8B/14B profile ladders with deterministic fallback, not from latest massive releases.

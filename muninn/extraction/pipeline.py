@@ -42,7 +42,7 @@ class ExtractionPipeline:
         ollama_url: Optional[str] = None,
         ollama_model: str = "llama3.2:3b",
         ollama_balanced_model: str = "qwen3:8b",
-        ollama_high_reasoning_model: str = "qwen3:32b",
+        ollama_high_reasoning_model: str = "qwen3:14b",
         model_profile: str = "balanced",
         instructor_base_url: Optional[str] = None,
         instructor_model: Optional[str] = None,

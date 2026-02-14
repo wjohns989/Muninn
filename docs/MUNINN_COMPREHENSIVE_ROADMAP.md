@@ -79,9 +79,13 @@ Completed since last update:
    - MCP wrapper initialize now runs startup dependency readiness checks and attempts auto-start for Muninn/Ollama when enabled,
    - initialize instructions now include actionable startup prompts when dependencies are unavailable,
    - assistant-session profile override is now supported via `MUNINN_OPERATOR_MODEL_PROFILE` and injected into metadata when absent.
+30. Phase 4D VRAM-aware model policy baseline implemented:
+   - extraction config now accepts `MUNINN_VRAM_BUDGET_GB` for budget-tier model selection,
+   - default high-reasoning baseline is reduced to 14B-class for active-development viability on 16GB GPUs,
+   - 30B/32B profiles are now selected only for explicit high-VRAM budgets.
 
 Verification:
-- Full suite now passes in-session: `395 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `398 passed, 2 skipped, 0 warnings`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -395,7 +399,7 @@ This is core for vibecoders, not optional polish.
   - `high_reasoning` (higher compute, deeper reasoning).
 - Route each profile to configurable provider/model fallback chains (xLAM + Ollama candidates).
 - Expose profile selection in config + browser UI; add API/runtime mutation in follow-up tranche.
-- Status update: config + extraction routing are implemented; assistant-session override is now available via `MUNINN_OPERATOR_MODEL_PROFILE`.
+- Status update: config + extraction routing are implemented; assistant-session override is available via `MUNINN_OPERATOR_MODEL_PROFILE`; VRAM-budget auto-selection is available via `MUNINN_VRAM_BUDGET_GB`.
 
 ### 4C Model Routing Safety + Observability
 - Add health/routing checks to avoid dead endpoints and unsupported model capabilities.
