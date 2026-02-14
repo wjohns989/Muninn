@@ -147,6 +147,52 @@ def test_sync_ingest_legacy_sources_payload():
     assert payload["chronological_order"] == "oldest_first"
 
 
+def test_sync_get_model_profiles_payload():
+    stub = _StubSession(
+        {
+            ("GET", "/profiles/model"): _requests_response(
+                200,
+                {"success": True, "data": {"active": {"runtime_model_profile": "low_latency"}}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.get_model_profiles()
+
+    assert result["active"]["runtime_model_profile"] == "low_latency"
+    assert stub.calls[0]["method"] == "GET"
+    assert stub.calls[0]["path"] == "/profiles/model"
+
+
+def test_sync_set_model_profiles_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/profiles/model"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "MODEL_PROFILE_POLICY_UPDATED"}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.set_model_profiles(
+        runtime_model_profile="low_latency",
+        ingestion_model_profile="balanced",
+    )
+
+    assert result["event"] == "MODEL_PROFILE_POLICY_UPDATED"
+    payload = stub.calls[0]["json"]
+    assert payload["runtime_model_profile"] == "low_latency"
+    assert payload["ingestion_model_profile"] == "balanced"
+
+
+def test_sync_set_model_profiles_requires_field():
+    stub = _StubSession({})
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+
+    with pytest.raises(ValueError, match="at least one profile field"):
+        client.set_model_profiles()
+
+
 def test_sync_health_unwrapped_payload():
     stub = _StubSession(
         {
@@ -276,6 +322,40 @@ async def test_async_delete_url_encodes_memory_id():
         client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
         result = await client.delete("mem/alpha?v=1")
         assert result["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_async_get_and_set_model_profiles_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/profiles/model":
+            return httpx.Response(
+                200,
+                json={"success": True, "data": {"active": {"runtime_model_profile": "low_latency"}}},
+            )
+        if request.method == "POST" and request.url.path == "/profiles/model":
+            body = json.loads(request.content.decode("utf-8"))
+            assert body["runtime_model_profile"] == "low_latency"
+            return httpx.Response(
+                200,
+                json={"success": True, "data": {"event": "MODEL_PROFILE_POLICY_UPDATED"}},
+            )
+        return httpx.Response(404, json={"detail": "not found"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        profiles = await client.get_model_profiles()
+        assert profiles["active"]["runtime_model_profile"] == "low_latency"
+        result = await client.set_model_profiles(runtime_model_profile="low_latency")
+        assert result["event"] == "MODEL_PROFILE_POLICY_UPDATED"
+
+
+@pytest.mark.asyncio
+async def test_async_set_model_profiles_requires_field():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(500))) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        with pytest.raises(ValueError, match="at least one profile field"):
+            await client.set_model_profiles()
 
 
 def test_mem0_style_alias_exports():

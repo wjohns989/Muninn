@@ -30,7 +30,7 @@ from muninn.core.types import (
     MemoryRecord, MemoryType, Provenance, SearchResult,
     ExtractionResult, Entity, Relation,
 )
-from muninn.core.config import MuninnConfig
+from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 from muninn.store.vector_store import VectorStore
 from muninn.store.graph_store import GraphStore
@@ -1607,6 +1607,79 @@ class MuninnMemory:
             "reranker": "active" if (self._reranker and self._reranker.is_available) else "inactive",
             "consolidation": self._consolidation.status if self._consolidation else {"running": False},
             "backend": "muninn-native",
+        }
+
+    async def get_model_profiles(self) -> Dict[str, Any]:
+        """Return active extraction profile policy and supported profile values."""
+        self._check_initialized()
+
+        extraction = self.config.extraction
+        return {
+            "supported_profiles": list(SUPPORTED_MODEL_PROFILES),
+            "active": {
+                "model_profile": extraction.model_profile,
+                "runtime_model_profile": extraction.runtime_model_profile,
+                "ingestion_model_profile": extraction.ingestion_model_profile,
+                "legacy_ingestion_model_profile": extraction.legacy_ingestion_model_profile,
+            },
+            "models": {
+                "low_latency": extraction.ollama_model,
+                "balanced": extraction.ollama_balanced_model,
+                "high_reasoning": extraction.ollama_high_reasoning_model,
+            },
+            "vram_budget_gb": extraction.vram_budget_gb,
+        }
+
+    async def set_model_profiles(
+        self,
+        *,
+        model_profile: Optional[str] = None,
+        runtime_model_profile: Optional[str] = None,
+        ingestion_model_profile: Optional[str] = None,
+        legacy_ingestion_model_profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update active extraction profile policy at runtime.
+
+        Notes:
+        - Values must be one of SUPPORTED_MODEL_PROFILES.
+        - This mutates in-memory policy for the current server process.
+        """
+        self._check_initialized()
+
+        extraction = self.config.extraction
+        requested = {
+            "model_profile": model_profile,
+            "runtime_model_profile": runtime_model_profile,
+            "ingestion_model_profile": ingestion_model_profile,
+            "legacy_ingestion_model_profile": legacy_ingestion_model_profile,
+        }
+        updates: Dict[str, Dict[str, str]] = {}
+
+        for field_name, raw_value in requested.items():
+            if raw_value is None:
+                continue
+            candidate = raw_value.strip()
+            if candidate not in SUPPORTED_MODEL_PROFILES:
+                raise ValueError(
+                    f"Unsupported {field_name} '{raw_value}'. "
+                    f"Expected one of {SUPPORTED_MODEL_PROFILES}."
+                )
+
+            current = str(getattr(extraction, field_name))
+            if current != candidate:
+                setattr(extraction, field_name, candidate)
+                updates[field_name] = {"from": current, "to": candidate}
+
+        # Keep extraction pipeline default route aligned with configured base profile.
+        if self._extraction is not None:
+            self._extraction.model_profile = extraction.model_profile
+
+        event = "MODEL_PROFILE_POLICY_UPDATED" if updates else "MODEL_PROFILE_POLICY_UNCHANGED"
+        return {
+            "event": event,
+            "updates": updates,
+            "policy": await self.get_model_profiles(),
         }
 
     # ==========================================
