@@ -43,7 +43,9 @@ from muninn.consolidation.daemon import ConsolidationDaemon
 from muninn.core.feature_flags import get_flags
 from muninn.goal import GoalCompass
 from muninn.observability import OTelGenAITracer
-from muninn.ingestion import IngestionPipeline
+from muninn.chains import MemoryChainDetector
+from muninn.ingestion import IngestionPipeline, discover_legacy_sources as discover_legacy_sources_catalog
+from muninn.ingestion.parser import infer_source_type
 
 logger = logging.getLogger("Muninn")
 
@@ -97,6 +99,7 @@ class MuninnMemory:
         self._goal_compass: Optional[GoalCompass] = None
         self._otel = OTelGenAITracer(enabled=False)
         self._ingestion: Optional[IngestionPipeline] = None
+        self._chain_detector: Optional[MemoryChainDetector] = None
 
         # Phase 2 engines (v3.2.0)
         self._dedup = None           # SemanticDedup
@@ -160,6 +163,9 @@ class MuninnMemory:
             reranker=self._reranker,
             embed_fn=self._embed,
             telemetry=self._otel,
+            chain_signal_weight=self.config.memory_chains.retrieval_signal_weight,
+            chain_expansion_limit=self.config.memory_chains.retrieval_expansion_limit,
+            chain_max_seed_memories=self.config.memory_chains.retrieval_seed_limit,
         )
 
         # Initialize consolidation daemon
@@ -198,12 +204,26 @@ class MuninnMemory:
                 chunk_size_chars=self.config.ingestion.chunk_size_chars,
                 chunk_overlap_chars=self.config.ingestion.chunk_overlap_chars,
                 min_chunk_chars=self.config.ingestion.min_chunk_chars,
+                allowed_roots=self.config.ingestion.allowed_roots,
             )
             logger.info(
                 "Multi-source ingestion enabled (max_file_size_bytes=%d, chunk=%d/%d)",
                 self.config.ingestion.max_file_size_bytes,
                 self.config.ingestion.chunk_size_chars,
                 self.config.ingestion.chunk_overlap_chars,
+            )
+
+        if flags.is_enabled("memory_chains"):
+            self._chain_detector = MemoryChainDetector(
+                threshold=self.config.memory_chains.detection_threshold,
+                max_hours_apart=self.config.memory_chains.max_hours_apart,
+                max_links_per_memory=self.config.memory_chains.max_links_per_memory,
+            )
+            logger.info(
+                "Memory chains enabled (threshold=%.3f, max_hours=%.1f, max_links=%d)",
+                self.config.memory_chains.detection_threshold,
+                self.config.memory_chains.max_hours_apart,
+                self.config.memory_chains.max_links_per_memory,
             )
 
         if flags.is_enabled("semantic_dedup"):
@@ -287,6 +307,76 @@ class MuninnMemory:
         record_user_id = metadata.get("user_id")
         return record_user_id == user_id
 
+    @staticmethod
+    def _extract_entity_names(extraction: ExtractionResult) -> List[str]:
+        """Derive unique entity names from extraction output, preserving order."""
+        names: List[str] = []
+        seen = set()
+        for entity in extraction.entities:
+            raw_name = getattr(entity, "name", None)
+            if not isinstance(raw_name, str):
+                continue
+            clean = raw_name.strip()
+            if not clean:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(clean)
+        return names
+
+    def _upsert_memory_chain_links(
+        self,
+        *,
+        successor_record: MemoryRecord,
+        successor_content: str,
+        successor_entity_names: List[str],
+    ) -> int:
+        """Detect and persist memory-chain links for a memory record."""
+        if (
+            self._chain_detector is None
+            or self._metadata is None
+            or self._graph is None
+            or not successor_entity_names
+        ):
+            return 0
+
+        metadata = successor_record.metadata or {}
+        user_id = str(metadata.get("user_id") or "global_user")
+
+        try:
+            candidate_records = self._metadata.get_all(
+                limit=self.config.memory_chains.candidate_scan_limit,
+                project=successor_record.project,
+                namespace=successor_record.namespace,
+                user_id=user_id,
+            )
+            links = self._chain_detector.detect_links(
+                successor_record=successor_record,
+                successor_content=successor_content,
+                successor_entity_names=successor_entity_names,
+                candidate_records=candidate_records,
+            )
+
+            persisted = 0
+            for link in links:
+                created = self._graph.add_chain_link(
+                    predecessor_id=link.predecessor_id,
+                    successor_id=link.successor_id,
+                    relation_type=link.relation_type,
+                    confidence=link.confidence,
+                    reason=link.reason,
+                    shared_entities=link.shared_entities,
+                    hours_apart=link.hours_apart,
+                )
+                if created:
+                    persisted += 1
+            return persisted
+        except Exception as e:
+            logger.warning("Memory-chain linking failed (non-fatal): %s", e)
+            return 0
+
     async def add(
         self,
         content: str,
@@ -340,6 +430,9 @@ class MuninnMemory:
                 scope_filters["project"] = project
 
             extraction = await self._extract(content)
+            entity_names = self._extract_entity_names(extraction)
+            if entity_names:
+                scoped_metadata["entity_names"] = entity_names
             embedding = self._embed(content)
 
             record = MemoryRecord(
@@ -515,13 +608,20 @@ class MuninnMemory:
                     relation.confidence,
                 )
 
+            chain_links_created = self._upsert_memory_chain_links(
+                successor_record=record,
+                successor_content=content,
+                successor_entity_names=entity_names,
+            )
+
             self._bm25.add(record.id, content)
             logger.info(
-                "Added memory %s (importance=%.3f, entities=%d, relations=%d)",
+                "Added memory %s (importance=%.3f, entities=%d, relations=%d, chains=%d)",
                 record.id,
                 importance,
                 len(extraction.entities),
                 len(extraction.relations),
+                chain_links_created,
             )
 
             result = {
@@ -531,6 +631,7 @@ class MuninnMemory:
                 "memory_type": memory_type.value,
                 "entities": [e.model_dump() for e in extraction.entities],
                 "relations": [r.model_dump() for r in extraction.relations],
+                "chain_links_created": chain_links_created,
                 "event": "ADD",
             }
             if conflict_info:
@@ -998,52 +1099,39 @@ class MuninnMemory:
             "checksum_verified": True,
         }
 
-    async def ingest_sources(
-        self,
-        *,
-        sources: List[str],
-        user_id: str = "global_user",
-        namespace: str = "global",
-        project: str = "global",
-        metadata: Optional[Dict[str, Any]] = None,
-        recursive: bool = False,
-        max_file_size_bytes: Optional[int] = None,
-        chunk_size_chars: Optional[int] = None,
-        chunk_overlap_chars: Optional[int] = None,
-        min_chunk_chars: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """
-        Ingest multiple file sources with fail-open behavior.
-
-        Each source is parsed independently. Parser/source failures are recorded
-        and ingestion continues for remaining sources.
-        """
-        self._check_initialized()
-        if not sources:
-            raise ValueError("sources must be a non-empty list")
-
+    def _require_ingestion_pipeline(self) -> IngestionPipeline:
         flags = get_flags()
         flags.require("multi_source_ingestion")
         if self._ingestion is None:
             raise RuntimeError("Ingestion pipeline is unavailable")
+        return self._ingestion
 
-        report = self._ingestion.ingest(
-            sources,
-            recursive=recursive,
-            max_file_size_bytes=max_file_size_bytes,
-            chunk_size_chars=chunk_size_chars,
-            chunk_overlap_chars=chunk_overlap_chars,
-            min_chunk_chars=min_chunk_chars,
-        )
+    def _normalize_discovery_roots(
+        self,
+        *,
+        ingestion: IngestionPipeline,
+        roots: Optional[List[str]],
+    ) -> List[str]:
+        normalized_roots: List[str] = []
+        for root in roots or []:
+            resolved = ingestion.ensure_allowed_path(root)
+            normalized_roots.append(str(resolved))
+        return normalized_roots
 
+    async def _persist_ingestion_report(
+        self,
+        *,
+        report,
+        user_id: str,
+        namespace: str,
+        base_metadata: Dict[str, Any],
+        source_context_by_path: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         source_payloads: List[Dict[str, Any]] = []
         added_memories = 0
         skipped_chunks = 0
         failed_chunks = 0
-
-        base_metadata = dict(metadata or {})
-        base_metadata.setdefault("project", project)
-        base_metadata.setdefault("kind", "ingested_source_chunk")
+        source_context_by_path = source_context_by_path or {}
 
         for source_result in report.source_results:
             source_record: Dict[str, Any] = {
@@ -1061,8 +1149,10 @@ class MuninnMemory:
                 source_payloads.append(source_record)
                 continue
 
+            source_context = source_context_by_path.get(source_result.source_path, {})
             for chunk in source_result.chunks:
                 chunk_metadata = dict(base_metadata)
+                chunk_metadata.update(source_context)
                 chunk_metadata.update(chunk.metadata)
                 try:
                     add_result = await self.add(
@@ -1090,7 +1180,6 @@ class MuninnMemory:
             source_payloads.append(source_record)
 
         return {
-            "event": "INGEST_COMPLETED",
             "total_sources": report.total_sources,
             "processed_sources": report.processed_sources,
             "skipped_sources": report.skipped_sources,
@@ -1100,6 +1189,255 @@ class MuninnMemory:
             "failed_chunks": failed_chunks,
             "source_results": source_payloads,
         }
+
+    async def ingest_sources(
+        self,
+        *,
+        sources: List[str],
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        chronological_order: str = "none",
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ingest multiple file sources with fail-open behavior.
+
+        Each source is parsed independently. Parser/source failures are recorded
+        and ingestion continues for remaining sources.
+        """
+        self._check_initialized()
+        if not sources:
+            raise ValueError("sources must be a non-empty list")
+
+        ingestion = self._require_ingestion_pipeline()
+
+        report = ingestion.ingest(
+            sources,
+            recursive=recursive,
+            chronological_order=chronological_order,
+            max_file_size_bytes=max_file_size_bytes,
+            chunk_size_chars=chunk_size_chars,
+            chunk_overlap_chars=chunk_overlap_chars,
+            min_chunk_chars=min_chunk_chars,
+        )
+
+        base_metadata = dict(metadata or {})
+        base_metadata.setdefault("project", project)
+        base_metadata.setdefault("kind", "ingested_source_chunk")
+        result = await self._persist_ingestion_report(
+            report=report,
+            user_id=user_id,
+            namespace=namespace,
+            base_metadata=base_metadata,
+        )
+        result["event"] = "INGEST_COMPLETED"
+        return result
+
+    async def discover_legacy_sources(
+        self,
+        *,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+    ) -> Dict[str, Any]:
+        self._check_initialized()
+        ingestion = self._require_ingestion_pipeline()
+        normalized_roots = self._normalize_discovery_roots(
+            ingestion=ingestion,
+            roots=roots,
+        )
+
+        discovered = discover_legacy_sources_catalog(
+            roots=normalized_roots,
+            include_unsupported=include_unsupported,
+            max_results_per_provider=max_results_per_provider,
+        )
+        discovered = [
+            item
+            for item in discovered
+            if ingestion.is_path_allowed(Path(str(item.get("path", ""))))
+        ]
+        if providers:
+            allowed = {p.strip().lower() for p in providers if p and p.strip()}
+            discovered = [
+                item
+                for item in discovered
+                if str(item.get("provider", "")).lower() in allowed
+            ]
+
+        provider_counts: Dict[str, int] = {}
+        parser_supported = 0
+        for item in discovered:
+            provider = str(item.get("provider", "unknown"))
+            provider_counts[provider] = provider_counts.get(provider, 0) + 1
+            if item.get("parser_supported"):
+                parser_supported += 1
+
+        return {
+            "event": "LEGACY_DISCOVERY_COMPLETED",
+            "total_discovered": len(discovered),
+            "parser_supported": parser_supported,
+            "parser_unsupported": len(discovered) - parser_supported,
+            "provider_counts": provider_counts,
+            "sources": discovered,
+        }
+
+    async def ingest_legacy_sources(
+        self,
+        *,
+        selected_source_ids: Optional[List[str]] = None,
+        selected_paths: Optional[List[str]] = None,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        chronological_order: str = "none",
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        self._check_initialized()
+        ingestion = self._require_ingestion_pipeline()
+        normalized_roots = self._normalize_discovery_roots(
+            ingestion=ingestion,
+            roots=roots,
+        )
+
+        catalog = discover_legacy_sources_catalog(
+            roots=normalized_roots,
+            include_unsupported=True,
+            max_results_per_provider=max_results_per_provider,
+        )
+        catalog = [
+            item
+            for item in catalog
+            if ingestion.is_path_allowed(Path(str(item.get("path", ""))))
+        ]
+        if providers:
+            allowed = {p.strip().lower() for p in providers if p and p.strip()}
+            catalog = [
+                item
+                for item in catalog
+                if str(item.get("provider", "")).lower() in allowed
+            ]
+
+        by_id = {str(item["source_id"]): item for item in catalog}
+        by_path = {str(item["path"]): item for item in catalog}
+        missing_source_ids: List[str] = []
+        selected: List[Dict[str, Any]] = []
+        seen_paths: set[str] = set()
+
+        for source_id in selected_source_ids or []:
+            item = by_id.get(source_id)
+            if item is None:
+                missing_source_ids.append(source_id)
+                continue
+            path = str(item["path"])
+            if path in seen_paths:
+                continue
+            selected.append(item)
+            seen_paths.add(path)
+
+        for path in selected_paths or []:
+            norm = str(ingestion.ensure_allowed_path(path))
+            item = by_path.get(norm)
+            if item is None:
+                source_type = infer_source_type(Path(norm))
+                parser_supported = source_type != "unsupported"
+                size_bytes = 0
+                try:
+                    size_bytes = Path(norm).stat().st_size
+                except OSError:
+                    pass
+                item = {
+                    "source_id": f"manual:{hashlib.sha1(norm.encode('utf-8', errors='replace')).hexdigest()[:16]}",
+                    "provider": "manual_selection",
+                    "category": "assistant_chat",
+                    "path": norm,
+                    "source_type": source_type,
+                    "parser_supported": parser_supported,
+                    "confidence": "manual",
+                    "size_bytes": size_bytes,
+                    "notes": "Explicit path selected by user",
+                }
+            if item["path"] in seen_paths:
+                continue
+            selected.append(item)
+            seen_paths.add(str(item["path"]))
+
+        if not selected:
+            raise ValueError("No legacy sources selected. Provide selected_source_ids and/or selected_paths.")
+
+        supported_selected = [
+            item
+            for item in selected
+            if item.get("parser_supported") is True
+        ]
+        unsupported_selected = [
+            item
+            for item in selected
+            if item.get("parser_supported") is not True
+        ]
+        unsupported_payload = unsupported_selected if include_unsupported else []
+
+        sources = [str(item["path"]) for item in supported_selected]
+
+        report = ingestion.ingest(
+            sources,
+            recursive=recursive,
+            chronological_order=chronological_order,
+            max_file_size_bytes=max_file_size_bytes,
+            chunk_size_chars=chunk_size_chars,
+            chunk_overlap_chars=chunk_overlap_chars,
+            min_chunk_chars=min_chunk_chars,
+        )
+
+        source_context_by_path: Dict[str, Dict[str, Any]] = {}
+        for item in supported_selected:
+            source_context_by_path[str(item["path"])] = {
+                "legacy_import": True,
+                "legacy_source_id": item.get("source_id"),
+                "legacy_source_provider": item.get("provider"),
+                "legacy_source_category": item.get("category"),
+                "legacy_source_confidence": item.get("confidence"),
+                "legacy_source_notes": item.get("notes"),
+            }
+
+        base_metadata = dict(metadata or {})
+        base_metadata.setdefault("project", project)
+        base_metadata.setdefault("kind", "legacy_ingested_source_chunk")
+        result = await self._persist_ingestion_report(
+            report=report,
+            user_id=user_id,
+            namespace=namespace,
+            base_metadata=base_metadata,
+            source_context_by_path=source_context_by_path,
+        )
+        result.update(
+            {
+                "event": "LEGACY_INGEST_COMPLETED",
+                "discovery_candidates": len(catalog),
+                "selected_sources": len(selected),
+                "selected_supported_sources": len(supported_selected),
+                "selected_unsupported_sources": len(unsupported_selected),
+                "missing_source_ids": missing_source_ids,
+                "unsupported_sources": unsupported_payload,
+            }
+        )
+        return result
 
     async def update(self, memory_id: str, data: str) -> Dict[str, Any]:
         """
@@ -1123,6 +1461,13 @@ class MuninnMemory:
 
         # Re-extract entities
         extraction = await self._extract(data)
+        entity_names = self._extract_entity_names(extraction)
+        updated_metadata = dict(record.metadata or {})
+        if entity_names:
+            updated_metadata["entity_names"] = entity_names
+        else:
+            updated_metadata.pop("entity_names", None)
+        record.metadata = updated_metadata
 
         # Re-embed
         embedding = self._embed(data)
@@ -1157,15 +1502,22 @@ class MuninnMemory:
                 relation.object, record.id, relation.confidence,
             )
 
+        chain_links_created = self._upsert_memory_chain_links(
+            successor_record=record,
+            successor_content=data,
+            successor_entity_names=entity_names,
+        )
+
         # Update BM25
         self._bm25.add(record.id, data)
 
-        logger.info("Updated memory %s", memory_id)
+        logger.info("Updated memory %s (chains=%d)", memory_id, chain_links_created)
 
         return {
             "id": record.id,
             "content": data,
             "previous_content": old_content,
+            "chain_links_created": chain_links_created,
             "event": "UPDATE",
         }
 

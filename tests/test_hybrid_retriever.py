@@ -72,8 +72,44 @@ def test_rrf_includes_goal_signal_weight():
         bm25_results=[],
         goal_results=[("mem-1", 0.91)],
         temporal_results=[],
+        chain_results=[],
         goal_signal_weight=0.5,
     )
 
     assert "mem-1" in scores
     assert scores["mem-1"] > 0
+
+
+def test_rrf_includes_chain_signal_weight():
+    retriever = _retriever()
+
+    scores = retriever._rrf_fusion(
+        vector_results=[],
+        graph_results=[],
+        bm25_results=[],
+        goal_results=[],
+        temporal_results=[],
+        chain_results=[("mem-chain", 0.73)],
+        chain_signal_weight=0.7,
+    )
+
+    assert "mem-chain" in scores
+    assert scores["mem-chain"] > 0
+
+
+def test_chain_search_uses_graph_store_expansion():
+    retriever = _retriever()
+    retriever.graph.find_chain_related_memories.return_value = [("mem-7", 0.66)]
+
+    results = retriever._chain_search(
+        vector_results=[("mem-1", 0.99)],
+        graph_results=[],
+        bm25_results=[],
+        goal_results=[],
+        temporal_results=[],
+        limit=4,
+        enabled=True,
+    )
+
+    retriever.graph.find_chain_related_memories.assert_called_once()
+    assert results == [("mem-7", 0.66)]

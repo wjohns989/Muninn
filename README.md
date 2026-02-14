@@ -120,7 +120,8 @@ muninn_mcp/
 │   │   └── errors.py          # SDK exception hierarchy
 │   ├── ingestion/             # Multi-source ingestion (v3.3.0)
 │   │   ├── pipeline.py        # Fail-open source ingestion orchestrator
-│   │   └── parser.py          # Safe parser adapters (txt/md/json/csv/html/pdf/docx)
+│   │   ├── parser.py          # Safe parser adapters (txt/md/json/jsonl/csv/html/sqlite/pdf/docx)
+│   │   └── discovery.py       # Legacy assistant/MCP source discovery catalog
 │   └── consolidation/         # Background memory lifecycle
 │       ├── daemon.py          # Async consolidation loop
 │       ├── merge.py           # Near-duplicate merging
@@ -243,6 +244,8 @@ args = ["/path/to/muninn-mcp/mcp_wrapper.py"]
 | `delete_memory` | Delete a specific memory by ID |
 | `delete_all_memories` | Delete all memories (requires confirmation) |
 | `ingest_sources` | Ingest local files/directories with provenance-rich fail-open parsing |
+| `discover_legacy_sources` | Discover reingestable legacy assistant and MCP memory artifacts |
+| `ingest_legacy_sources` | Ingest selected legacy sources with contextual metadata |
 
 ---
 
@@ -256,6 +259,8 @@ When the server is running (`http://localhost:42069`):
 | `POST` | `/add` | Add a new memory |
 | `POST` | `/search` | Hybrid search with query |
 | `POST` | `/ingest` | Multi-source ingestion (feature-gated) |
+| `POST` | `/ingest/legacy/discover` | Discover local legacy assistant/MCP memory artifacts |
+| `POST` | `/ingest/legacy/import` | Import selected legacy artifacts into Muninn |
 | `POST` | `/goal/set` | Set project north-star goal |
 | `GET` | `/goal/get` | Get active project goal |
 | `POST` | `/handoff/export` | Export deterministic handoff bundle |
@@ -307,22 +312,27 @@ See `docs/PYTHON_SDK.md` for full method coverage and error handling.
 
 ## Dashboard
 
-Visit `http://localhost:42069` when the server is running to access the web dashboard for memory visualization and knowledge graph exploration.
+Visit `http://localhost:42069` when the server is running to access the browser control center. It includes:
+
+- Legacy source discovery and checkbox-based reingestion of assistant/MCP memory artifacts.
+- Project-folder ingestion with chronological ordering (`none`, `oldest_first`, `newest_first`).
+- Search and system operations in one UI.
 
 ---
 
 ## History Ingestion
 
-Import existing conversation history from your AI assistants:
+Import existing conversation history from your AI assistants and MCP memory sources:
 
 ```bash
-# Dry run to see what would be ingested
-python ingest_history.py --dry-run --agent all
+# Discover only (no writes)
+python ingest_history.py --discover-only --agent all
 
-# Ingest from a specific assistant
-python ingest_history.py --agent claude
-python ingest_history.py --agent codex
-python ingest_history.py --agent antigravity
+# Import all parser-supported discovered sources for selected providers
+python ingest_history.py --provider codex_cli --provider serena_memory --all-discovered
+
+# Import with chronological ordering
+python ingest_history.py --agent claude --all-discovered --chronological-order oldest_first
 ```
 
 ---

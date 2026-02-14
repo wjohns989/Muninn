@@ -2,7 +2,15 @@
 Muninn: Persistent Memory for AI Agents
 """
 
-from muninn.sdk import AsyncMemory, AsyncMuninnClient, Memory, MuninnClient
+from muninn.sdk import (
+    AsyncMemory,
+    AsyncMuninnClient,
+    Memory,
+    MuninnAPIError,
+    MuninnClient,
+    MuninnConnectionError,
+    MuninnError,
+)
 from muninn.version import __version__
 
 __all__ = [
@@ -11,4 +19,7 @@ __all__ = [
     "AsyncMuninnClient",
     "Memory",
     "AsyncMemory",
+    "MuninnError",
+    "MuninnConnectionError",
+    "MuninnAPIError",
 ]
