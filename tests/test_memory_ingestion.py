@@ -1,5 +1,7 @@
 """Tests for MuninnMemory.ingest_sources feature-gated behavior."""
 
+from pathlib import Path
+
 import pytest
 
 from muninn.core.memory import MuninnMemory
@@ -13,6 +15,12 @@ class _Flags:
 
 
 class _Pipeline:
+    def ensure_allowed_path(self, source: str) -> Path:
+        return Path(source).expanduser().resolve()
+
+    def is_path_allowed(self, path: Path) -> bool:
+        return True
+
     def ingest(self, sources, **kwargs):
         chunk = IngestionChunk(
             source_path="/tmp/a.txt",
@@ -43,6 +51,12 @@ class _CapturePipeline:
     def __init__(self):
         self.kwargs = {}
 
+    def ensure_allowed_path(self, source: str) -> Path:
+        return Path(source).expanduser().resolve()
+
+    def is_path_allowed(self, path: Path) -> bool:
+        return True
+
     def ingest(self, sources, **kwargs):
         self.kwargs = dict(kwargs)
         return IngestionReport(
@@ -57,6 +71,12 @@ class _CapturePipeline:
 class _LegacyPipeline:
     def __init__(self):
         self.last_sources = []
+
+    def ensure_allowed_path(self, source: str) -> Path:
+        return Path(source).expanduser().resolve()
+
+    def is_path_allowed(self, path: Path) -> bool:
+        return True
 
     def ingest(self, sources, **kwargs):
         self.last_sources = list(sources)
@@ -88,6 +108,36 @@ class _LegacyPipeline:
             skipped_sources=0,
             total_chunks=len(chunks),
             source_results=source_results,
+        )
+
+
+class _RestrictedPipeline:
+    def __init__(self, allowed_root: Path):
+        self.allowed_root = allowed_root.expanduser().resolve()
+
+    def _resolve(self, source: str) -> Path:
+        return Path(source).expanduser().resolve()
+
+    def ensure_allowed_path(self, source: str) -> Path:
+        resolved = self._resolve(source)
+        if not self.is_path_allowed(resolved):
+            raise ValueError(f"outside allow-list: {resolved}")
+        return resolved
+
+    def is_path_allowed(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to(self.allowed_root)
+            return True
+        except ValueError:
+            return False
+
+    def ingest(self, sources, **kwargs):
+        return IngestionReport(
+            total_sources=0,
+            processed_sources=0,
+            skipped_sources=0,
+            total_chunks=0,
+            source_results=[],
         )
 
 
@@ -251,3 +301,40 @@ async def test_memory_ingest_legacy_sources_injects_context_metadata(monkeypatch
     assert metadata["legacy_source_provider"] == "serena_memory"
     assert metadata["legacy_source_category"] == "mcp_memory"
     assert metadata["legacy_import"] is True
+
+
+@pytest.mark.asyncio
+async def test_memory_discover_legacy_sources_rejects_root_outside_allow_list(tmp_path, monkeypatch):
+    memory = MuninnMemory()
+    memory._initialized = True
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    memory._ingestion = _RestrictedPipeline(allowed)
+    monkeypatch.setattr("muninn.core.memory.get_flags", lambda: _Flags())
+
+    with pytest.raises(ValueError, match="outside allow-list"):
+        await memory.discover_legacy_sources(roots=[str(outside)])
+
+
+@pytest.mark.asyncio
+async def test_memory_ingest_legacy_sources_rejects_selected_path_outside_allow_list(tmp_path, monkeypatch):
+    memory = MuninnMemory()
+    memory._initialized = True
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    blocked_file = outside / "blocked.txt"
+    blocked_file.write_text("secret", encoding="utf-8")
+    memory._ingestion = _RestrictedPipeline(allowed)
+    monkeypatch.setattr("muninn.core.memory.get_flags", lambda: _Flags())
+
+    monkeypatch.setattr(
+        "muninn.core.memory.discover_legacy_sources_catalog",
+        lambda **kwargs: [],
+    )
+
+    with pytest.raises(ValueError, match="outside allow-list"):
+        await memory.ingest_legacy_sources(selected_paths=[str(blocked_file)])

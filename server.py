@@ -38,6 +38,11 @@ from contextlib import asynccontextmanager
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig
 from muninn.version import __version__
+from muninn.ingestion.pipeline import (
+    MAX_CHUNK_OVERLAP_CHARS,
+    MAX_CHUNK_SIZE_CHARS,
+    MAX_INGEST_FILE_SIZE_BYTES,
+)
 from muninn.core.types import (
     AddMemoryRequest,
     SearchMemoryRequest,
@@ -138,10 +143,26 @@ class IngestSourcesRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     recursive: bool = False
     chronological_order: str = Field(default="none", pattern="^(none|oldest_first|newest_first)$")
-    max_file_size_bytes: Optional[int] = Field(default=None, gt=0)
-    chunk_size_chars: Optional[int] = Field(default=None, gt=0)
-    chunk_overlap_chars: Optional[int] = Field(default=None, ge=0)
-    min_chunk_chars: Optional[int] = Field(default=None, ge=1)
+    max_file_size_bytes: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=MAX_INGEST_FILE_SIZE_BYTES,
+    )
+    chunk_size_chars: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=MAX_CHUNK_SIZE_CHARS,
+    )
+    chunk_overlap_chars: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=MAX_CHUNK_OVERLAP_CHARS,
+    )
+    min_chunk_chars: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=MAX_CHUNK_SIZE_CHARS,
+    )
 
 
 class DiscoverLegacySourcesRequest(BaseModel):
@@ -164,10 +185,26 @@ class IngestLegacySourcesRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     recursive: bool = False
     chronological_order: str = Field(default="none", pattern="^(none|oldest_first|newest_first)$")
-    max_file_size_bytes: Optional[int] = Field(default=None, gt=0)
-    chunk_size_chars: Optional[int] = Field(default=None, gt=0)
-    chunk_overlap_chars: Optional[int] = Field(default=None, ge=0)
-    min_chunk_chars: Optional[int] = Field(default=None, ge=1)
+    max_file_size_bytes: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=MAX_INGEST_FILE_SIZE_BYTES,
+    )
+    chunk_size_chars: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=MAX_CHUNK_SIZE_CHARS,
+    )
+    chunk_overlap_chars: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=MAX_CHUNK_OVERLAP_CHARS,
+    )
+    min_chunk_chars: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=MAX_CHUNK_SIZE_CHARS,
+    )
 
 
 # --- Application Lifecycle ---
@@ -491,6 +528,8 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
                 min_chunk_chars=req.min_chunk_chars,
             )
             return {"success": True, "data": result}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Error ingesting sources: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
