@@ -118,6 +118,9 @@ class TestExtractionConfig:
         assert cfg.xlam_model == "xLAM"
         assert cfg.enable_ollama_fallback is True
         assert cfg.model_profile == "balanced"
+        assert cfg.runtime_model_profile == "low_latency"
+        assert cfg.ingestion_model_profile == "balanced"
+        assert cfg.legacy_ingestion_model_profile == "balanced"
         assert cfg.ollama_balanced_model == "qwen3:8b"
         assert cfg.ollama_high_reasoning_model == "qwen3:14b"
         assert cfg.vram_budget_gb is None
@@ -222,14 +225,25 @@ class TestConfigFromEnv:
 
     def test_env_override_extraction_profile(self, monkeypatch):
         monkeypatch.setenv("MUNINN_MODEL_PROFILE", "high_reasoning")
+        monkeypatch.setenv("MUNINN_RUNTIME_MODEL_PROFILE", "low_latency")
+        monkeypatch.setenv("MUNINN_INGESTION_MODEL_PROFILE", "balanced")
+        monkeypatch.setenv("MUNINN_LEGACY_INGESTION_MODEL_PROFILE", "high_reasoning")
         monkeypatch.setenv("MUNINN_OLLAMA_MODEL", "llama3.2:3b")
         monkeypatch.setenv("MUNINN_OLLAMA_BALANCED_MODEL", "qwen3:8b")
         monkeypatch.setenv("MUNINN_OLLAMA_HIGH_REASONING_MODEL", "qwen3:14b")
         config = MuninnConfig.from_env()
         assert config.extraction.model_profile == "high_reasoning"
+        assert config.extraction.runtime_model_profile == "low_latency"
+        assert config.extraction.ingestion_model_profile == "balanced"
+        assert config.extraction.legacy_ingestion_model_profile == "high_reasoning"
         assert config.extraction.ollama_model == "llama3.2:3b"
         assert config.extraction.ollama_balanced_model == "qwen3:8b"
         assert config.extraction.ollama_high_reasoning_model == "qwen3:14b"
+
+    def test_env_invalid_runtime_profile_falls_back(self, monkeypatch):
+        monkeypatch.setenv("MUNINN_RUNTIME_MODEL_PROFILE", "invalid-profile")
+        config = MuninnConfig.from_env()
+        assert config.extraction.runtime_model_profile == "low_latency"
 
     def test_env_vram_budget_selects_16gb_profile_defaults(self, monkeypatch):
         monkeypatch.delenv("MUNINN_OLLAMA_MODEL", raising=False)

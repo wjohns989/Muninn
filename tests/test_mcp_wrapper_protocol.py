@@ -161,6 +161,17 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
     assert metadata["operator_model_profile"] == "balanced"
 
 
+def test_operation_specific_profile_overrides_generic_profile(monkeypatch):
+    monkeypatch.setenv("MUNINN_OPERATOR_MODEL_PROFILE", "balanced")
+    monkeypatch.setenv("MUNINN_OPERATOR_INGESTION_MODEL_PROFILE", "high_reasoning")
+
+    metadata = mcp_wrapper._inject_operator_profile_metadata({}, operation="ingest")
+    assert metadata["operator_model_profile"] == "high_reasoning"
+
+    runtime_metadata = mcp_wrapper._inject_operator_profile_metadata({}, operation="add")
+    assert runtime_metadata["operator_model_profile"] == "balanced"
+
+
 def test_unknown_request_method_returns_method_not_found(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))

@@ -181,6 +181,29 @@ async def test_memory_ingest_sources_counts_skips(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_memory_ingest_sources_defaults_ingestion_profile(monkeypatch):
+    memory = MuninnMemory()
+    memory._initialized = True
+    memory._ingestion = _Pipeline()
+    memory.config.extraction.ingestion_model_profile = "balanced"
+
+    monkeypatch.setattr("muninn.core.memory.get_flags", lambda: _Flags())
+    captured = []
+
+    async def fake_add(**kwargs):
+        captured.append(kwargs)
+        return {"id": "m1", "event": "ADD"}
+
+    monkeypatch.setattr(memory, "add", fake_add)
+
+    result = await memory.ingest_sources(sources=["/tmp/a.txt"], project="muninn")
+
+    assert result["event"] == "INGEST_COMPLETED"
+    assert captured
+    assert captured[0]["metadata"]["operator_model_profile"] == "balanced"
+
+
+@pytest.mark.asyncio
 async def test_memory_ingest_sources_passes_chronological_order(monkeypatch):
     memory = MuninnMemory()
     memory._initialized = True
@@ -301,6 +324,49 @@ async def test_memory_ingest_legacy_sources_injects_context_metadata(monkeypatch
     assert metadata["legacy_source_provider"] == "serena_memory"
     assert metadata["legacy_source_category"] == "mcp_memory"
     assert metadata["legacy_import"] is True
+
+
+@pytest.mark.asyncio
+async def test_memory_ingest_legacy_sources_defaults_legacy_profile(monkeypatch):
+    memory = MuninnMemory()
+    memory._initialized = True
+    pipeline = _LegacyPipeline()
+    memory._ingestion = pipeline
+    memory.config.extraction.legacy_ingestion_model_profile = "high_reasoning"
+
+    monkeypatch.setattr("muninn.core.memory.get_flags", lambda: _Flags())
+    monkeypatch.setattr(
+        "muninn.core.memory.discover_legacy_sources_catalog",
+        lambda **kwargs: [
+            {
+                "source_id": "src_serena",
+                "provider": "serena_memory",
+                "category": "mcp_memory",
+                "path": "/tmp/serena.md",
+                "source_type": "markdown",
+                "parser_supported": True,
+                "confidence": "high",
+                "size_bytes": 321,
+                "notes": "Serena memory files",
+            },
+        ],
+    )
+
+    captured = []
+
+    async def fake_add(**kwargs):
+        captured.append(kwargs)
+        return {"id": "m1", "event": "ADD"}
+
+    monkeypatch.setattr(memory, "add", fake_add)
+
+    await memory.ingest_legacy_sources(
+        selected_source_ids=["src_serena"],
+        project="muninn",
+    )
+
+    assert captured
+    assert captured[0]["metadata"]["operator_model_profile"] == "high_reasoning"
 
 
 @pytest.mark.asyncio
