@@ -30,6 +30,7 @@ Ingestion is fail-open:
 
 - Missing sources are recorded and skipped.
 - Oversized sources are skipped by policy.
+- Sources outside configured allow-list roots are skipped (`outside_allowed_roots`).
 - Parser failures are isolated per source and do not abort the batch.
 - Add-time failures are isolated per chunk and reported in output.
 - Optional chronological ordering supports timeline-preserving imports:
@@ -56,6 +57,20 @@ Environment variables:
 - `MUNINN_INGESTION_CHUNK_SIZE_CHARS` (default `1200`)
 - `MUNINN_INGESTION_CHUNK_OVERLAP_CHARS` (default `150`)
 - `MUNINN_INGESTION_MIN_CHUNK_CHARS` (default `120`)
+- `MUNINN_INGESTION_ALLOWED_ROOTS` (optional, path-separated list of allowed source roots)
+
+Runtime hard bounds enforced by pipeline:
+
+- `max_file_size_bytes`: `1..104857600` (100 MB)
+- `chunk_size_chars`: `1..20000`
+- `chunk_overlap_chars`: `0..5000`, and must be `< chunk_size_chars`
+- `min_chunk_chars`: `1..chunk_size_chars`
+
+If `MUNINN_INGESTION_ALLOWED_ROOTS` is unset, Muninn defaults to a safe allow-list:
+
+- user home directory,
+- current working directory,
+- system temp directory.
 
 ## REST Example
 
