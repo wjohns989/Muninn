@@ -265,6 +265,28 @@ class MuninnClient(_BaseMuninnClient):
             },
         )
 
+    def get_model_profiles(self) -> Dict[str, Any]:
+        return self._request("GET", "/profiles/model")
+
+    def set_model_profiles(
+        self,
+        *,
+        model_profile: Optional[str] = None,
+        runtime_model_profile: Optional[str] = None,
+        ingestion_model_profile: Optional[str] = None,
+        legacy_ingestion_model_profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload = {
+            "model_profile": model_profile,
+            "runtime_model_profile": runtime_model_profile,
+            "ingestion_model_profile": ingestion_model_profile,
+            "legacy_ingestion_model_profile": legacy_ingestion_model_profile,
+        }
+        filtered_payload = {k: v for k, v in payload.items() if v is not None}
+        if not filtered_payload:
+            raise ValueError("Provide at least one profile field to update.")
+        return self._request("POST", "/profiles/model", json_body=filtered_payload)
+
     def export_handoff(
         self,
         *,
@@ -676,6 +698,28 @@ class AsyncMuninnClient(_BaseMuninnClient):
                 "project": project,
             },
         )
+
+    async def get_model_profiles(self) -> Dict[str, Any]:
+        return await self._request("GET", "/profiles/model")
+
+    async def set_model_profiles(
+        self,
+        *,
+        model_profile: Optional[str] = None,
+        runtime_model_profile: Optional[str] = None,
+        ingestion_model_profile: Optional[str] = None,
+        legacy_ingestion_model_profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload = {
+            "model_profile": model_profile,
+            "runtime_model_profile": runtime_model_profile,
+            "ingestion_model_profile": ingestion_model_profile,
+            "legacy_ingestion_model_profile": legacy_ingestion_model_profile,
+        }
+        filtered_payload = {k: v for k, v in payload.items() if v is not None}
+        if not filtered_payload:
+            raise ValueError("Provide at least one profile field to update.")
+        return await self._request("POST", "/profiles/model", json_body=filtered_payload)
 
     async def export_handoff(
         self,
