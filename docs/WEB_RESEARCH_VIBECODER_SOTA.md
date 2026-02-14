@@ -303,7 +303,7 @@ Implementation impact:
   - `balanced` (default),
   - `high_reasoning` (higher compute/higher quality).
 - Expose profile choice in browser UI and assistant-session config; treat think-level toggles as optional secondary controls.
-- Implementation status: baseline profile routing + browser profile persistence + assistant-session profile override are now implemented; helper-first runtime-vs-ingestion profile scheduling is now implemented; runtime profile control APIs are now implemented (memory core + REST + MCP + SDK parity); remaining work is profile-level eval/telemetry gating for default-policy promotion.
+- Implementation status: baseline profile routing + browser profile persistence + assistant-session profile override are now implemented; helper-first runtime-vs-ingestion profile scheduling is now implemented; runtime profile control APIs are now implemented (memory core + REST + MCP + SDK parity); profile-policy mutation audit events are now implemented; remaining work is profile-level eval/telemetry gating for default-policy promotion.
 
 ## Critical Issues/Accuracy Corrections
 

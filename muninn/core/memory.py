@@ -1637,6 +1637,7 @@ class MuninnMemory:
         runtime_model_profile: Optional[str] = None,
         ingestion_model_profile: Optional[str] = None,
         legacy_ingestion_model_profile: Optional[str] = None,
+        source: str = "runtime_api",
     ) -> Dict[str, Any]:
         """
         Update active extraction profile policy at runtime.
@@ -1676,10 +1677,29 @@ class MuninnMemory:
             self._extraction.model_profile = extraction.model_profile
 
         event = "MODEL_PROFILE_POLICY_UPDATED" if updates else "MODEL_PROFILE_POLICY_UNCHANGED"
+        policy = await self.get_model_profiles()
+        audit_event_id: Optional[int] = None
+        if updates:
+            audit_event_id = self._metadata.record_profile_policy_event(
+                source=source,
+                updates=updates,
+                policy=policy,
+            )
         return {
             "event": event,
             "updates": updates,
-            "policy": await self.get_model_profiles(),
+            "policy": policy,
+            "audit_event_id": audit_event_id,
+        }
+
+    async def get_model_profile_events(self, *, limit: int = 25) -> Dict[str, Any]:
+        """Return recent runtime profile-policy mutation events."""
+        self._check_initialized()
+        events = self._metadata.get_profile_policy_events(limit=limit)
+        return {
+            "event": "MODEL_PROFILE_EVENTS",
+            "events": events,
+            "count": len(events),
         }
 
     # ==========================================
