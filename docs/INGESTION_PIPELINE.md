@@ -7,6 +7,7 @@ Date: 2026-02-14
 Muninn Phase 3B adds feature-gated multi-source ingestion with fail-open behavior.
 
 - Feature flag: `MUNINN_MULTI_SOURCE_INGESTION=1`
+- Browser UI: `GET /` (Control Center for discovery/import and project ingestion)
 - REST endpoint: `POST /ingest`
 - REST endpoints: `POST /ingest/legacy/discover`, `POST /ingest/legacy/import`
 - MCP tool: `ingest_sources`
@@ -31,12 +32,17 @@ Ingestion is fail-open:
 - Oversized sources are skipped by policy.
 - Parser failures are isolated per source and do not abort the batch.
 - Add-time failures are isolated per chunk and reported in output.
+- Optional chronological ordering supports timeline-preserving imports:
+  - `none` (default deterministic path order)
+  - `oldest_first` (by file modification time)
+  - `newest_first` (by file modification time)
 
 Every ingested chunk includes provenance metadata:
 
 - `source_path`, `source_name`, `source_type`
 - `source_sha256`, `source_size_bytes`
 - `chunk_index`, `chunk_count`, `char_start`, `char_end`
+- `source_mtime_epoch`, `source_mtime_iso`, `source_ingest_order`, `chronological_order`
 - Legacy import adds contextual metadata when available:
   - `legacy_import`, `legacy_source_id`, `legacy_source_provider`
   - `legacy_source_category`, `legacy_source_confidence`, `legacy_source_notes`
@@ -59,6 +65,7 @@ curl -X POST "http://localhost:42069/ingest" \
   -d '{
     "sources": ["./docs", "./notes/project.md"],
     "recursive": true,
+    "chronological_order": "oldest_first",
     "project": "muninn",
     "namespace": "global"
   }'
@@ -73,6 +80,7 @@ client = Memory(base_url="http://localhost:42069")
 result = client.ingest_sources(
     sources=["./docs", "./notes/project.md"],
     recursive=True,
+    chronological_order="oldest_first",
     project="muninn",
 )
 print(result["added_memories"], result["skipped_chunks"], result["failed_chunks"])
@@ -94,6 +102,7 @@ curl -X POST "http://localhost:42069/ingest/legacy/import" \
   -H "Content-Type: application/json" \
   -d '{
     "selected_source_ids": ["src_123", "src_456"],
+    "chronological_order": "oldest_first",
     "project": "muninn",
     "namespace": "global"
   }'
@@ -116,6 +125,7 @@ selected = [
 ]
 result = client.ingest_legacy_sources(
     selected_source_ids=selected,
+    chronological_order="oldest_first",
     project="muninn",
 )
 print(result["added_memories"], result["selected_supported_sources"])
