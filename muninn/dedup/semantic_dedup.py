@@ -139,6 +139,18 @@ class SemanticDedup:
             if existing is None:
                 continue
 
+            # Defense in depth: if vector-store filtering is misconfigured,
+            # ensure we still do not deduplicate across scope boundaries.
+            if filters:
+                expected_namespace = filters.get("namespace")
+                if expected_namespace and existing.namespace != expected_namespace:
+                    continue
+
+                expected_user_id = filters.get("user_id")
+                existing_user_id = existing.metadata.get("user_id") if existing.metadata else None
+                if expected_user_id and existing_user_id != expected_user_id:
+                    continue
+
             # Compute token-level content overlap
             overlap = self._content_overlap(content, existing.content)
 
