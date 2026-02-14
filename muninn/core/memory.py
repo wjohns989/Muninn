@@ -199,6 +199,7 @@ class MuninnMemory:
                 chunk_size_chars=self.config.ingestion.chunk_size_chars,
                 chunk_overlap_chars=self.config.ingestion.chunk_overlap_chars,
                 min_chunk_chars=self.config.ingestion.min_chunk_chars,
+                allowed_roots=self.config.ingestion.allowed_roots,
             )
             logger.info(
                 "Multi-source ingestion enabled (max_file_size_bytes=%d, chunk=%d/%d)",
@@ -1006,6 +1007,18 @@ class MuninnMemory:
             raise RuntimeError("Ingestion pipeline is unavailable")
         return self._ingestion
 
+    def _normalize_discovery_roots(
+        self,
+        *,
+        ingestion: IngestionPipeline,
+        roots: Optional[List[str]],
+    ) -> List[str]:
+        normalized_roots: List[str] = []
+        for root in roots or []:
+            resolved = ingestion.ensure_allowed_path(root)
+            normalized_roots.append(str(resolved))
+        return normalized_roots
+
     async def _persist_ingestion_report(
         self,
         *,
@@ -1136,13 +1149,22 @@ class MuninnMemory:
         max_results_per_provider: int = 100,
     ) -> Dict[str, Any]:
         self._check_initialized()
-        self._require_ingestion_pipeline()
+        ingestion = self._require_ingestion_pipeline()
+        normalized_roots = self._normalize_discovery_roots(
+            ingestion=ingestion,
+            roots=roots,
+        )
 
         discovered = discover_legacy_sources_catalog(
-            roots=roots or [],
+            roots=normalized_roots,
             include_unsupported=include_unsupported,
             max_results_per_provider=max_results_per_provider,
         )
+        discovered = [
+            item
+            for item in discovered
+            if ingestion.is_path_allowed(Path(str(item.get("path", ""))))
+        ]
         if providers:
             allowed = {p.strip().lower() for p in providers if p and p.strip()}
             discovered = [
@@ -1190,12 +1212,21 @@ class MuninnMemory:
     ) -> Dict[str, Any]:
         self._check_initialized()
         ingestion = self._require_ingestion_pipeline()
+        normalized_roots = self._normalize_discovery_roots(
+            ingestion=ingestion,
+            roots=roots,
+        )
 
         catalog = discover_legacy_sources_catalog(
-            roots=roots or [],
+            roots=normalized_roots,
             include_unsupported=True,
             max_results_per_provider=max_results_per_provider,
         )
+        catalog = [
+            item
+            for item in catalog
+            if ingestion.is_path_allowed(Path(str(item.get("path", ""))))
+        ]
         if providers:
             allowed = {p.strip().lower() for p in providers if p and p.strip()}
             catalog = [
@@ -1222,7 +1253,7 @@ class MuninnMemory:
             seen_paths.add(path)
 
         for path in selected_paths or []:
-            norm = str(Path(path).expanduser().resolve())
+            norm = str(ingestion.ensure_allowed_path(path))
             item = by_path.get(norm)
             if item is None:
                 source_type = infer_source_type(Path(norm))

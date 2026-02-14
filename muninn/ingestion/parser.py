@@ -12,6 +12,7 @@ import sqlite3
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, List, Tuple
+from urllib.parse import quote
 
 from muninn.ingestion.models import IngestionChunk
 
@@ -77,11 +78,13 @@ def compute_file_sha256(path: Path) -> str:
 
 
 def _read_text_file(path: Path) -> str:
-    # utf-8 first; replace errors to preserve ingestion flow.
+    # Prefer UTF-8, but fail open to latin-1 when decoding errors are encountered.
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
         return path.read_text(encoding="latin-1", errors="replace")
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read text source: {path}") from exc
 
 
 def _stringify_chat_content(value, *, depth: int = 0, max_depth: int = 8) -> str:
@@ -239,7 +242,7 @@ def _parse_docx(path: Path) -> str:
 
 
 def _parse_sqlite(path: Path) -> str:
-    uri = f"file:{path.as_posix()}?mode=ro"
+    uri = f"file:{quote(path.resolve().as_posix(), safe='/:')}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     try:

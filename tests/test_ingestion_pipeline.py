@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from muninn.ingestion.pipeline import IngestionPipeline
 
 
@@ -32,7 +34,12 @@ def test_ingestion_pipeline_fail_open_for_missing_and_oversized(tmp_path):
     big = tmp_path / "big.txt"
     big.write_text("x" * 1024, encoding="utf-8")
 
-    pipeline = IngestionPipeline(max_file_size_bytes=128, chunk_size_chars=100, chunk_overlap_chars=10)
+    pipeline = IngestionPipeline(
+        max_file_size_bytes=128,
+        chunk_size_chars=100,
+        chunk_overlap_chars=10,
+        min_chunk_chars=10,
+    )
     report = pipeline.ingest([str(missing), str(big)])
 
     assert report.total_sources == 2
@@ -92,3 +99,41 @@ def test_ingestion_pipeline_chronological_order_and_metadata(tmp_path):
     assert first_chunk.metadata["source_mtime_epoch"] == older_epoch
     assert first_chunk.metadata["source_ingest_order"] == 0
     assert first_chunk.metadata["chronological_order"] == "oldest_first"
+
+
+def test_ingestion_pipeline_blocks_sources_outside_allowed_roots(tmp_path, tmp_path_factory):
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    blocked_root = tmp_path_factory.mktemp("blocked")
+    blocked_file = blocked_root / "secrets.txt"
+    blocked_file.write_text("do not ingest", encoding="utf-8")
+
+    pipeline = IngestionPipeline(
+        allowed_roots=[str(allowed_root)],
+        chunk_size_chars=64,
+        chunk_overlap_chars=0,
+        min_chunk_chars=1,
+    )
+    report = pipeline.ingest([str(blocked_file)])
+
+    assert report.total_sources == 1
+    assert report.processed_sources == 0
+    assert report.skipped_sources == 1
+    assert report.source_results[0].skipped_reason == "outside_allowed_roots"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"chunk_size_chars": 0}, "chunk_size_chars"),
+        ({"chunk_size_chars": 100, "chunk_overlap_chars": 100}, "chunk_overlap_chars"),
+        ({"chunk_size_chars": 100, "chunk_overlap_chars": 10, "min_chunk_chars": 101}, "min_chunk_chars"),
+    ],
+)
+def test_ingestion_pipeline_rejects_invalid_runtime_limits(tmp_path, kwargs, message):
+    source = tmp_path / "a.txt"
+    source.write_text("hello world", encoding="utf-8")
+    pipeline = IngestionPipeline()
+
+    with pytest.raises(ValueError, match=message):
+        pipeline.ingest([str(source)], **kwargs)

@@ -40,6 +40,21 @@ def test_sqlite_chat_contextualization(tmp_path: Path):
     assert "[assistant] Build is green" in parsed
 
 
+def test_sqlite_parser_handles_uri_special_characters(tmp_path: Path):
+    source = tmp_path / "state#qa.vscdb"
+    conn = sqlite3.connect(str(source))
+    try:
+        conn.execute("CREATE TABLE chatMessages (role TEXT, content TEXT)")
+        conn.execute("INSERT INTO chatMessages(role, content) VALUES ('user', 'hello from special path')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    parsed = parse_source(source, "sqlite")
+
+    assert "hello from special path" in parsed
+
+
 def test_vscdb_extension_maps_to_sqlite(tmp_path: Path):
     source = tmp_path / "state.vscdb"
     source.write_bytes(b"")

@@ -164,6 +164,40 @@ def test_sync_health_unwrapped_payload():
     assert result["memory_count"] == 3
 
 
+def test_sync_unwrap_success_payload_without_data_wrapper():
+    stub = _StubSession(
+        {
+            ("POST", "/delete_all"): _requests_response(
+                200,
+                {"success": True, "event": "DELETE_ALL_COMPLETED", "deleted": 2},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+
+    result = client.delete_all(user_id="u1")
+
+    assert result["event"] == "DELETE_ALL_COMPLETED"
+    assert result["deleted"] == 2
+
+
+def test_sync_delete_url_encodes_memory_id():
+    stub = _StubSession(
+        {
+            ("DELETE", "/delete/mem%2Falpha%3Fv%3D1"): _requests_response(
+                200,
+                {"success": True, "data": {"deleted": True}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+
+    result = client.delete("mem/alpha?v=1")
+
+    assert result["deleted"] is True
+    assert stub.calls[0]["path"] == "/delete/mem%2Falpha%3Fv%3D1"
+
+
 def test_sync_api_error_on_http_failure():
     stub = _StubSession(
         {
@@ -229,6 +263,19 @@ async def test_async_search_and_connection_error():
         client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
         with pytest.raises(MuninnConnectionError, match="Failed to connect"):
             await client.health()
+
+
+@pytest.mark.asyncio
+async def test_async_delete_url_encodes_memory_id():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.raw_path.decode("utf-8") == "/delete/mem%2Falpha%3Fv%3D1"
+        return httpx.Response(200, json={"success": True, "data": {"deleted": True}})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.delete("mem/alpha?v=1")
+        assert result["deleted"] is True
 
 
 def test_mem0_style_alias_exports():

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Dict, Iterable, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 import requests
@@ -33,7 +33,7 @@ def _coerce_error_detail(payload: Any, fallback: str) -> str:
         if detail is not None:
             try:
                 return json.dumps(detail, sort_keys=True)
-            except Exception:
+            except (TypeError, ValueError):
                 return str(detail)
     if isinstance(payload, str):
         return payload
@@ -49,6 +49,11 @@ class _BaseMuninnClient:
         if not path.startswith("/"):
             path = f"/{path}"
         return f"{self.base_url}{path}"
+
+    def _encode_path_segment(self, value: str, *, field_name: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} must be a non-empty string")
+        return quote(value, safe="")
 
     def _validate_add_inputs(
         self,
@@ -77,7 +82,9 @@ class _BaseMuninnClient:
             if response.get("success") is False:
                 detail = _coerce_error_detail(response, "Muninn API returned success=false")
                 raise MuninnAPIError(detail, status_code=status_code, path=path, payload=response)
-            return response.get("data")
+            if "data" in response:
+                return response.get("data")
+            return response
 
         return response
 
@@ -449,7 +456,8 @@ class MuninnClient(_BaseMuninnClient):
         return self._request("PUT", "/update", json_body={"memory_id": memory_id, "data": data})
 
     def delete(self, memory_id: str) -> Dict[str, Any]:
-        return self._request("DELETE", f"/delete/{memory_id}")
+        encoded_memory_id = self._encode_path_segment(memory_id, field_name="memory_id")
+        return self._request("DELETE", f"/delete/{encoded_memory_id}")
 
     def delete_all(
         self,
@@ -860,7 +868,8 @@ class AsyncMuninnClient(_BaseMuninnClient):
         return await self._request("PUT", "/update", json_body={"memory_id": memory_id, "data": data})
 
     async def delete(self, memory_id: str) -> Dict[str, Any]:
-        return await self._request("DELETE", f"/delete/{memory_id}")
+        encoded_memory_id = self._encode_path_segment(memory_id, field_name="memory_id")
+        return await self._request("DELETE", f"/delete/{encoded_memory_id}")
 
     async def delete_all(
         self,

@@ -179,7 +179,16 @@ def _provider_specs(home: Path, roots: Sequence[Path]) -> List[Dict[str, object]
             {
                 "provider": "custom_root",
                 "category": "assistant_chat",
-                "patterns": [root / "**" / "*.jsonl", root / "**" / "*.json", root / "**" / "*.md", root / "**" / "*.txt"],
+                "patterns": [
+                    root / "**" / "*.jsonl",
+                    root / "**" / "*.json",
+                    root / "**" / "*.md",
+                    root / "**" / "*.txt",
+                    root / "**" / "*.sqlite",
+                    root / "**" / "*.sqlite3",
+                    root / "**" / "*.db",
+                    root / "**" / "*.vscdb",
+                ],
                 "confidence": "manual",
                 "notes": "User-supplied root scan",
             }
@@ -198,7 +207,11 @@ def _iter_paths(pattern: Path) -> Iterable[Path]:
                 break
         if not base.exists():
             return []
-        return base.glob(str(pattern).replace(str(base) + os.sep, ""))
+        pattern_parts = pattern.parts
+        base_parts = base.parts
+        glob_parts = pattern_parts[len(base_parts):]
+        glob_expr = os.path.join(*glob_parts) if glob_parts else "*"
+        return base.glob(glob_expr)
 
     if pattern.exists() and pattern.is_file():
         return [pattern]

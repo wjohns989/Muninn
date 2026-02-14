@@ -159,6 +159,7 @@ class TestIngestionConfig:
         assert cfg.chunk_size_chars == 1200
         assert cfg.chunk_overlap_chars == 150
         assert cfg.min_chunk_chars == 120
+        assert cfg.allowed_roots == []
 
 
 class TestConfigFromEnv:
@@ -229,8 +230,13 @@ class TestConfigFromEnv:
         monkeypatch.setenv("MUNINN_INGESTION_CHUNK_SIZE_CHARS", "800")
         monkeypatch.setenv("MUNINN_INGESTION_CHUNK_OVERLAP_CHARS", "80")
         monkeypatch.setenv("MUNINN_INGESTION_MIN_CHUNK_CHARS", "60")
+        monkeypatch.setenv(
+            "MUNINN_INGESTION_ALLOWED_ROOTS",
+            f"/tmp{os.pathsep}/var/tmp",
+        )
         config = MuninnConfig.from_env()
         assert config.ingestion.max_file_size_bytes == 1048576
         assert config.ingestion.chunk_size_chars == 800
         assert config.ingestion.chunk_overlap_chars == 80
         assert config.ingestion.min_chunk_chars == 60
+        assert config.ingestion.allowed_roots == ["/tmp", "/var/tmp"]
