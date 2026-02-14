@@ -24,6 +24,7 @@ Evaluator: Codex
 - **Phase 3 is now functionally complete at core package level**: Python SDK, multi-source ingestion, legacy migration, browser control center, and memory chains are now shipped.
 - **Phase 4A is now started with production code**: browser control center preferences are now persistent (auto-save/save/reset) and model-profile tags are attached to ingestion operations.
 - **Phase 4B baseline is now implemented in core extraction path**: profile-based Instructor route selection (`low_latency`, `balanced`, `high_reasoning`) is wired, with deterministic xLAM/Ollama fallback ordering and config/env controls.
+- **Phase 4C startup/session adaptation baseline is now implemented**: MCP initialize now performs dependency readiness checks (Muninn + Ollama), auto-starts when possible, emits explicit startup prompts when not, and honors assistant-session profile overrides via `MUNINN_OPERATOR_MODEL_PROFILE`.
 
 ## Status vs Plan
 
@@ -71,11 +72,11 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing and UI profile persistence are now implemented, but profile-level eval/telemetry gates still need completion before default-policy promotion.
+8. **Extraction/model policy partially open:** profile routing, UI profile persistence, and session-level profile override wiring are now implemented, but profile-level eval/telemetry gates still need completion before default-policy promotion.
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `390 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `395 passed, 2 skipped, 0 warnings`.
 - Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and no open PR/comment backlog remained after restart.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
@@ -89,6 +90,7 @@ Evaluator: Codex
   - `83 passed` (`eval_metrics`, `sdk_client`, `ingestion_pipeline`, `ingestion_parser`, `ingestion_discovery`, `memory_ingestion`, `config`, `mcp_wrapper_protocol`)
   - `40 passed` (`memory_chains`, `hybrid_retriever`, `memory_update_path`, `config`, `memory_feedback`)
   - `40 passed` (`recall_trace`, `feature_flags`)
+  - `20 passed` (`mcp_wrapper_protocol` startup/session-profile coverage)
 - Compile checks passed on all touched modules/tests.
 
 ## Newly Resolved Inaccuracies
@@ -131,7 +133,7 @@ Evaluator: Codex
 3. Expand Phase 3 to include **ingestion safety hardening** (parser sandboxing, fail-open/skip semantics, and provenance metadata standards).
 4. Add a cross-platform CI matrix + optional-dependency matrix as explicit deliverables before v3.2/v3.3 claims.
 5. Add MCP 2025-11 interoperability and OTel GenAI instrumentation as cross-cutting release criteria.
-6. Add a Phase 4 adaptive operator tranche for browser UI preferences + model profile routing (latency/quality/compute "thinking level" control) with safe defaults.
+6. Add a Phase 4 adaptive operator tranche for browser UI preferences + model profile routing (latency/quality/compute caliber control) with safe defaults.
 7. Enforce single-PR workflow policy operationally: one branch/one open PR per phase, merge before next branch starts, with PR/comment checks at each phase boundary.
 
 
@@ -158,5 +160,18 @@ To align with the product intent (not enterprise-heavy), the highest-ROI additio
 Research notes and implementation guidance are documented in:
 - `docs/WEB_RESEARCH_VIBECODER_SOTA.md`
 - `docs/plans/2026-02-14-browser-ui-model-policy-design.md`
+
+## Model-Caliber Research Update (2026-02-14)
+
+Research-backed recommendation for SOTA+ operator profiles is to keep **caliber-based model selection** (not only think-level toggles):
+1. `low_latency`: low-VRAM local model (`llama3.2:3b` baseline, optional `qwen3:4b`).
+2. `balanced`: `qwen3:8b` default for quality/latency tradeoff.
+3. `high_reasoning`: `qwen3:32b` (or `deepseek-r1:32b` where acceptable latency/VRAM exists).
+4. Keep xLAM as optional specialist endpoint for structured extraction/tool-calling workloads, not as mandatory global default.
+
+Primary references for this recommendation:
+- Ollama model availability/size envelopes (`qwen3`, `llama3.2`, `deepseek-r1`) and OpenAI-compatible API surface.
+- xLAM-2 paper/repository for tool-agent design goals and function-calling orientation.
+- Qwen3 technical report for current open-weight reasoning capability trajectory.
 
 Key references reviewed include Elastic RRF docs, Qdrant/Pinecone hybrid search writeups, BEIR benchmark, Self-RAG, MCP specification, and idempotent receiver patterns.

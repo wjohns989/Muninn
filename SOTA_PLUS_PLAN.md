@@ -122,9 +122,13 @@
     - profile-based Instructor routing now supports `low_latency` / `balanced` / `high_reasoning` paths,
     - deterministic xLAM/Ollama fallback chains are now constructed from config/env policy,
     - add/update extraction calls now accept operator model-profile hints with backward-compatible fallback behavior for legacy mocks/tests.
+35. Phase 4C startup/session adaptation baseline implemented:
+    - MCP initialize now performs startup readiness checks for Muninn/Ollama and attempts autostart when enabled,
+    - initialize instructions now provide explicit startup prompts when dependencies are unavailable,
+    - assistant-specific profile override now works via `MUNINN_OPERATOR_MODEL_PROFILE` with metadata injection defaults.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `390 passed, 2 skipped, 0 warnings`.
+- Full-suite verification now green in-session: `395 passed, 2 skipped, 0 warnings`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -165,7 +169,7 @@
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
 2. Memory-specific benchmark gate using MemoryAgentBench competencies (accurate retrieval, test-time learning, long-range understanding, selective forgetting).
 3. GenAI observability tranche using OpenTelemetry GenAI semantic conventions (opt-in content capture + privacy-aware controls).
-4. Adaptive model-profile routing: keep xLAM as optional provider but add profile-based fallback chains (e.g., Qwen3 tiers on Ollama) and expose adjustable "thinking level".
+4. Adaptive model-caliber routing: keep xLAM as optional provider, maintain profile-based fallback chains (low-latency/balanced/high-reasoning), and expose assistant-session profile selection independent of think-level toggles.
 
 ## Executive Summary
 

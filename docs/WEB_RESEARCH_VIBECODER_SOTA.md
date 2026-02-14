@@ -257,43 +257,43 @@ Implementation impact:
 - Evolve from per-signal scalar multipliers to feature-aware off-policy updates (e.g., doubly robust estimators over trace features).
 - Expand canonical artifacts from two bundles to broader multi-domain suites (e.g., codebase-scale, temporal drift, and adversarial-noise slices) with the same manifest and reproducibility contract.
 
-## Incremental Research Update (2026-02-14): xLAM vs Ollama Profile Strategy
+## Incremental Research Update (2026-02-14): xLAM + Ollama Caliber Strategy
 
 ### Primary-source findings
 
-1. **xLAM is strong but not universally best in current BFCL snapshots.**
-   - Latest BFCL aggregate table (2025-12-16) places `xLAM-2-32b-fc-r` at `54.66%` overall (rank 18) and `xLAM-2-70b-fc-r` at `53.07%` (rank 22), while multiple proprietary and some open models score higher on aggregate.
-   - Source: `BFCL-Result` published score table:
-     - https://raw.githubusercontent.com/HuanzhiMao/BFCL-Result/main/2025-12-16/score/data_overall.csv
-
-2. **xLAM remains a valid function-calling specialist option, but license constraints matter.**
-   - Salesforce xLAM model cards document tool-calling focus but also non-commercial license terms (`cc-by-nc-4.0`) for the xLAM-2 family.
-   - Source:
-     - https://huggingface.co/Salesforce/xLAM-2-32b-fc-r
-
-3. **Ollama now supports explicit thinking-level controls and tool-capable model families.**
-   - Ollama supports per-request reasoning control (`think: low|medium|high`) on supported models.
-   - Qwen3 on Ollama is explicitly listed with tools + thinking support.
+1. **xLAM is purpose-built for agent/tool use and remains a valid specialist route.**
+   - Salesforce’s xLAM research/release materials position the family around function-calling and agent workflows across multiple parameter scales.
    - Sources:
-     - https://docs.ollama.com/capabilities/thinking
-     - https://ollama.com/library/qwen3
-     - https://docs.ollama.com/capabilities/tool-calling
+     - https://github.com/SalesforceAIResearch/xLAM
+     - https://aclanthology.org/2025.naacl-long.578/
 
-4. **Qwen official docs expose direct think/no-think toggles.**
-   - Qwen3 docs include operational controls for thinking behavior (`/think`, `/no_think`), supporting the practical "adjustable thinking level" UX requirement.
+2. **Open-weight model families now provide a practical caliber ladder for local deployment.**
+   - Qwen3 and DeepSeek-R1 are exposed in Ollama with multiple sizes suitable for low-latency through high-reasoning profiles.
+   - Sources:
+     - https://ollama.com/library/qwen3
+     - https://ollama.com/library/deepseek-r1
+     - https://ollama.com/library/llama3.2
+
+3. **Cross-assistant compatibility is best achieved with OpenAI-compatible transport.**
+   - Ollama’s OpenAI-compatible API surface keeps profile policies portable across assistants and IDE clients without provider-specific tool rewrites.
    - Source:
-     - https://qwen.readthedocs.io/en/latest/inference/transformers.html
+     - https://docs.ollama.com/api/openai-compatibility
+
+4. **Qwen3 trajectory supports using it as balanced/high-caliber defaults.**
+   - Qwen3 technical report describes broad parameter ranges and strong reasoning orientation that map well to staged operator profiles.
+   - Source:
+     - https://arxiv.org/abs/2505.09388
 
 ### Decision update
 
 - **Do not hardcode xLAM as default-best.**
-- Keep xLAM as an optional high-capability provider path.
+- Keep xLAM as an optional specialist provider path in deterministic fallbacks.
 - Add a **profile-based model policy** with deterministic fallback routing and explicit tradeoff tiers:
   - `low_latency` (fast/low compute),
   - `balanced` (default),
-  - `high_reasoning` (higher compute/thinking).
-- Expose profile choice in browser UI, config, and API for operator control.
-- Implementation status: baseline profile routing + browser profile persistence are now implemented; remaining work is profile-level eval/telemetry gating for default-policy promotion.
+  - `high_reasoning` (higher compute/higher quality).
+- Expose profile choice in browser UI and assistant-session config; treat think-level toggles as optional secondary controls.
+- Implementation status: baseline profile routing + browser profile persistence + assistant-session profile override are now implemented; remaining work is profile-level eval/telemetry gating for default-policy promotion.
 
 ## Critical Issues/Accuracy Corrections
 
@@ -367,3 +367,52 @@ Implementation impact:
 - Reduces ingestion blast radius by turning source/parser failures into auditable partial failures.
 - Improves forensic and dedup workflows through deterministic source checksums + chunk offset metadata.
 - Creates a direct path for safe MCP/SDK ingestion automation while preserving local-first guarantees.
+
+## Model-Caliber Session-Switching Policy (2026-02-14, revised)
+
+### Research conclusion
+
+The highest-ROI direction is **caliber-based model profiles that are API-compatible and session-selectable**, not a single static model and not a think-toggle-only UX.
+
+Why:
+1. Ollama exposes OpenAI-compatible endpoints (chat/responses/tools), so profile switching can remain assistant-agnostic.
+2. Ollama model catalogs show practical size tiers that map cleanly to VRAM/latency budgets.
+3. xLAM remains a strong function-calling family for tool-agent workloads, but should be an optional route in a fallback chain, not a forced default for every workload.
+
+Primary sources:
+- Ollama OpenAI compatibility + tools support:
+  - https://docs.ollama.com/api/openai-compatibility
+- Ollama Qwen3 model sizes/tiers:
+  - https://ollama.com/library/qwen3
+- Ollama Llama3.2 small-footprint tier:
+  - https://ollama.com/library/llama3.2
+- Ollama DeepSeek-R1 reasoning tiers:
+  - https://ollama.com/library/deepseek-r1
+- xLAM model family/release matrix:
+  - https://github.com/SalesforceAIResearch/xLAM
+- xLAM paper (agent/tool-calling positioning):
+  - https://aclanthology.org/2025.naacl-long.578/
+- Qwen3 technical report (0.6B-235B range and reasoning focus):
+  - https://arxiv.org/abs/2505.09388
+
+### Recommended profile matrix (SOTA+)
+
+1. `low_latency`
+   - Default: `llama3.2:3b` (or `qwen3:4b` when available budget allows).
+   - Goal: minimize VRAM/latency while preserving structured extraction quality.
+2. `balanced`
+   - Default: `qwen3:8b`.
+   - Goal: strong all-around extraction/reasoning at moderate resource cost.
+3. `high_reasoning`
+   - Default: `qwen3:32b`.
+   - Optional alternative: `deepseek-r1:32b` for reasoning-heavy phases.
+   - Goal: planning/refactoring-heavy phases with higher compute budgets.
+4. `xlam_specialist` route (optional provider path, not default)
+   - Use xLAM endpoint as first or second fallback for tool-calling-centric extraction flows when deployed.
+
+### Engineering implication for Muninn
+
+1. Keep profile routing deterministic and explicit (`low_latency`/`balanced`/`high_reasoning`).
+2. Preserve cross-assistant portability through OpenAI-compatible transport and metadata-tagged profile context.
+3. Measure profile promotion with per-profile eval gates before changing defaults.
+4. Treat think-level controls as secondary tuning knobs, not the primary product abstraction.

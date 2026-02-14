@@ -75,9 +75,13 @@ Completed since last update:
    - extraction config now supports `model_profile` plus profile-specific Ollama model slots,
    - extraction pipeline now builds deterministic Instructor route chains by profile (`low_latency`/`balanced`/`high_reasoning`) with xLAM+Ollama fallback ordering,
    - add/update extraction path now supports operator profile hints while preserving backward-compatible test/mocking behavior.
+29. Phase 4C startup/session adaptation baseline implemented:
+   - MCP wrapper initialize now runs startup dependency readiness checks and attempts auto-start for Muninn/Ollama when enabled,
+   - initialize instructions now include actionable startup prompts when dependencies are unavailable,
+   - assistant-session profile override is now supported via `MUNINN_OPERATOR_MODEL_PROFILE` and injected into metadata when absent.
 
 Verification:
-- Full suite now passes in-session: `390 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `395 passed, 2 skipped, 0 warnings`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -110,6 +114,7 @@ Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
 3. Profile-level promotion criteria remain open: routing is implemented, but per-profile eval gates and telemetry-backed auto-default policy are still pending.
+4. Runtime profile control API remains open: current cross-assistant switching works via env+metadata policy, but explicit REST/MCP profile mutation endpoints are still pending.
 
 ---
 
@@ -383,18 +388,20 @@ This is core for vibecoders, not optional polish.
 - Support explicit "safe mode" defaults for higher-risk actions (legacy import, broad-path ingest).
 - Status update: local browser preference persistence is now implemented in `dashboard.html` with auto-save, explicit save/reset controls, and profile chip display.
 
-### 4B Adjustable Thinking-Level Model Profiles
+### 4B Caliber-Based Model Profiles
 - Add extraction profile abstraction with explicit tradeoff modes:
   - `low_latency` (fast/low compute),
   - `balanced` (default),
   - `high_reasoning` (higher compute, deeper reasoning).
 - Route each profile to configurable provider/model fallback chains (xLAM + Ollama candidates).
-- Expose profile selection in config + API + browser UI.
+- Expose profile selection in config + browser UI; add API/runtime mutation in follow-up tranche.
+- Status update: config + extraction routing are implemented; assistant-session override is now available via `MUNINN_OPERATOR_MODEL_PROFILE`.
 
 ### 4C Model Routing Safety + Observability
 - Add health/routing checks to avoid dead endpoints and unsupported model capabilities.
 - Emit per-profile latency/success metrics for evidence-based default tuning.
 - Enforce license-awareness in docs and startup diagnostics for non-commercial model constraints.
+- Status update: MCP initialize startup readiness checks are now implemented with dependency autostart and actionable startup prompts.
 
 ### Phase 4 exit criteria
 1. Users can choose and persist UI preferences without manual JSON edits.
