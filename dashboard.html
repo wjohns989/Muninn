@@ -302,6 +302,7 @@
         <div class="chip"><strong>Status:</strong> <span id="chip-status">checking</span></div>
         <div class="chip"><strong>Backend:</strong> <span id="chip-backend">-</span></div>
         <div class="chip"><strong>Memories:</strong> <span id="chip-count">-</span></div>
+        <div class="chip"><strong>Profile:</strong> <span id="chip-profile">balanced</span></div>
       </div>
     </section>
 
@@ -473,6 +474,41 @@
       </div>
 
       <div class="panel col-12">
+        <h2>Operator Preferences</h2>
+        <p class="desc">Persist browser-side defaults for ingestion workflows and model reasoning profile.</p>
+        <div class="row">
+          <div class="field-3">
+            <label for="pref-model-profile">Model profile</label>
+            <select id="pref-model-profile">
+              <option value="low_latency">low_latency</option>
+              <option value="balanced">balanced</option>
+              <option value="high_reasoning">high_reasoning</option>
+            </select>
+          </div>
+          <div class="field-3">
+            <label for="pref-log-level">Log verbosity</label>
+            <select id="pref-log-level">
+              <option value="normal">normal</option>
+              <option value="verbose">verbose</option>
+            </select>
+          </div>
+          <div class="field-3 checkline">
+            <input id="pref-auto-save" type="checkbox" checked />
+            <span>Auto-save form preferences</span>
+          </div>
+          <div class="field-3">
+            <label for="pref-version">Preference schema</label>
+            <input id="pref-version" type="text" value="v1" readonly />
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="btn-save-preferences" class="secondary">Save Preferences</button>
+          <button id="btn-reset-preferences" class="secondary">Reset Preferences</button>
+        </div>
+        <div class="result" id="preferences-result">Preferences not loaded yet.</div>
+      </div>
+
+      <div class="panel col-12">
         <h2>Activity Log</h2>
         <p class="desc">Live browser action and API result trace.</p>
         <div class="log" id="activity-log"></div>
@@ -483,6 +519,33 @@
   <script>
     const API_BASE = window.location.origin;
     let legacyCatalog = [];
+    const PREFS_KEY = "muninn-control-center-preferences-v1";
+    const PREFS_VERSION = "v1";
+    const PREF_FIELDS = {
+      "pref-model-profile": { type: "value", default: "balanced" },
+      "pref-log-level": { type: "value", default: "normal" },
+      "pref-auto-save": { type: "checked", default: true },
+      "search-limit": { type: "value", default: "8" },
+      "search-explain": { type: "checked", default: false },
+      "ingest-paths": { type: "value", default: "" },
+      "ingest-metadata": { type: "value", default: "" },
+      "ingest-project": { type: "value", default: "global" },
+      "ingest-namespace": { type: "value", default: "global" },
+      "ingest-chronological": { type: "value", default: "none" },
+      "ingest-recursive": { type: "checked", default: true },
+      "ingest-max-bytes": { type: "value", default: "5242880" },
+      "ingest-chunk-size": { type: "value", default: "1200" },
+      "ingest-chunk-overlap": { type: "value", default: "150" },
+      "ingest-min-chunk": { type: "value", default: "120" },
+      "legacy-roots": { type: "value", default: "" },
+      "legacy-providers": { type: "value", default: "" },
+      "legacy-max-results": { type: "value", default: "120" },
+      "legacy-include-unsupported": { type: "checked", default: false },
+      "legacy-project": { type: "value", default: "global" },
+      "legacy-namespace": { type: "value", default: "global" },
+      "legacy-chronological": { type: "value", default: "none" },
+      "legacy-recursive": { type: "checked", default: true },
+    };
 
     function nowStamp() {
       return new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -536,6 +599,84 @@
     function setResult(elId, payload) {
       const el = document.getElementById(elId);
       el.innerHTML = `<pre>${JSON.stringify(payload, null, 2)}</pre>`;
+    }
+
+    function getModelProfile() {
+      return document.getElementById("pref-model-profile").value || "balanced";
+    }
+
+    function updateProfileChip() {
+      document.getElementById("chip-profile").textContent = getModelProfile();
+    }
+
+    function collectPreferences() {
+      const prefs = { version: PREFS_VERSION };
+      Object.entries(PREF_FIELDS).forEach(([id, cfg]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        prefs[id] = cfg.type === "checked" ? !!el.checked : String(el.value ?? "");
+      });
+      return prefs;
+    }
+
+    function applyPreferences(prefs) {
+      Object.entries(PREF_FIELDS).forEach(([id, cfg]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const value = prefs && Object.prototype.hasOwnProperty.call(prefs, id)
+          ? prefs[id]
+          : cfg.default;
+        if (cfg.type === "checked") {
+          el.checked = Boolean(value);
+        } else {
+          el.value = String(value);
+        }
+      });
+      document.getElementById("pref-version").value = PREFS_VERSION;
+      updateProfileChip();
+    }
+
+    function loadPreferences() {
+      try {
+        const raw = window.localStorage.getItem(PREFS_KEY);
+        if (!raw) {
+          applyPreferences(null);
+          setResult("preferences-result", { status: "defaults_loaded", version: PREFS_VERSION });
+          return;
+        }
+        const parsed = JSON.parse(raw);
+        applyPreferences(parsed);
+        setResult("preferences-result", {
+          status: "preferences_loaded",
+          version: parsed.version || PREFS_VERSION,
+        });
+      } catch (err) {
+        applyPreferences(null);
+        setResult("preferences-result", {
+          warning: "Preference payload was invalid. Defaults restored.",
+          error: err.message,
+        });
+      }
+    }
+
+    function savePreferences(showResult = true) {
+      const prefs = collectPreferences();
+      window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+      updateProfileChip();
+      if (showResult) {
+        setResult("preferences-result", {
+          status: "preferences_saved",
+          version: prefs.version,
+          profile: prefs["pref-model-profile"],
+        });
+      }
+    }
+
+    function resetPreferences() {
+      window.localStorage.removeItem(PREFS_KEY);
+      applyPreferences(null);
+      setResult("preferences-result", { status: "preferences_reset", version: PREFS_VERSION });
+      logLine("Preferences reset to defaults.", "warn");
     }
 
     async function refreshHealth() {
@@ -614,6 +755,7 @@
           ...metadata,
           source: metadata.source || "browser_ui_project_ingestion",
           contextual_project_ingestion: true,
+          operator_model_profile: getModelProfile(),
         },
         recursive: document.getElementById("ingest-recursive").checked,
         chronological_order: document.getElementById("ingest-chronological").value,
@@ -750,6 +892,7 @@
         metadata: {
           source: "browser_ui_legacy_import",
           selected_source_count: selectedSourceIds.length,
+          operator_model_profile: getModelProfile(),
         },
       };
 
@@ -768,6 +911,26 @@
       document.getElementById("search-result").textContent = "Search results cleared.";
     }
 
+    function bindPreferenceAutoSave() {
+      Object.keys(PREF_FIELDS).forEach((id) => {
+        if (id === "pref-auto-save") return;
+        const el = document.getElementById(id);
+        if (!el) return;
+        const eventName = el.tagName === "INPUT" && el.type === "text" ? "input" : "change";
+        el.addEventListener(eventName, () => {
+          if (document.getElementById("pref-auto-save").checked) {
+            savePreferences(false);
+          }
+          if (id === "pref-model-profile") {
+            updateProfileChip();
+          }
+        });
+      });
+      document.getElementById("pref-auto-save").addEventListener("change", () => {
+        savePreferences(true);
+      });
+    }
+
     document.getElementById("btn-refresh-health").addEventListener("click", refreshHealth);
     document.getElementById("btn-run-consolidation").addEventListener("click", runConsolidation);
     document.getElementById("btn-search").addEventListener("click", searchMemories);
@@ -777,6 +940,11 @@
     document.getElementById("btn-select-supported").addEventListener("click", selectParserSupported);
     document.getElementById("btn-clear-selection").addEventListener("click", clearLegacySelection);
     document.getElementById("btn-import-legacy").addEventListener("click", importSelectedLegacy);
+    document.getElementById("btn-save-preferences").addEventListener("click", () => {
+      savePreferences(true);
+      logLine("Preferences saved.");
+    });
+    document.getElementById("btn-reset-preferences").addEventListener("click", resetPreferences);
 
     document.getElementById("search-query").addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -785,6 +953,8 @@
       }
     });
 
+    loadPreferences();
+    bindPreferenceAutoSave();
     refreshHealth();
     logLine("Browser control center loaded.");
   </script>
