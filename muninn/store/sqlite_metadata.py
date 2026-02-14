@@ -252,23 +252,38 @@ class SQLiteMetadataStore:
 
         set_clause = ", ".join(f"{k} = ?" for k in kwargs.keys())
         values = list(kwargs.values()) + [memory_id]
-        conn.execute(f"UPDATE memories SET {set_clause} WHERE id = ?", values)
+        cursor = conn.execute(f"UPDATE memories SET {set_clause} WHERE id = ?", values)
         conn.commit()
-        return conn.total_changes > 0
+        return cursor.rowcount > 0
 
     def delete(self, memory_id: str) -> bool:
         conn = self._get_conn()
-        conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         conn.commit()
-        return conn.total_changes > 0
+        return cursor.rowcount > 0
 
     def delete_all(self, user_id: Optional[str] = None, namespace: Optional[str] = None) -> int:
+        """Delete memories, optionally scoped by user_id and/or namespace.
+
+        When user_id is provided, only memories belonging to that user are
+        deleted (matched via the JSON metadata column).  When namespace is
+        also provided the scope narrows to that namespace *and* user.
+        Calling with no arguments deletes **all** memories (dangerous).
+        """
         conn = self._get_conn()
+        conditions: list = []
+        params: list = []
+
         if namespace:
-            conn.execute("DELETE FROM memories WHERE namespace = ?", (namespace,))
-        else:
-            conn.execute("DELETE FROM memories")
-        count = conn.total_changes
+            conditions.append("namespace = ?")
+            params.append(namespace)
+        if user_id:
+            conditions.append("metadata LIKE ?")
+            params.append(f'%"user_id": "{user_id}"%')
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = conn.execute(f"DELETE FROM memories {where}", params)
+        count = cursor.rowcount
         conn.commit()
         return count
 

@@ -624,16 +624,42 @@ class MuninnMemory:
         logger.info("Deleted memory %s", memory_id)
         return {"id": memory_id, "event": "DELETE"}
 
-    async def delete_all(self, user_id: str = "global_user") -> Dict[str, str]:
-        """Delete all memories."""
+    async def delete_all(self, user_id: str = "global_user") -> Dict[str, Any]:
+        """Delete all memories for the given user.
+
+        Scoped by ``user_id`` so that one tenant cannot wipe another's data.
+        Individual vectors and BM25 entries are removed per-record to keep
+        the stores consistent without a full collection nuke.
+        """
         self._check_initialized()
 
-        self._metadata.delete_all()
-        self._vectors.delete_all()
-        self._bm25.clear()
+        # 1. Collect IDs to delete from vector / BM25 stores
+        records = self._metadata.get_all(user_id=user_id, limit=100_000)
+        memory_ids = [r.id for r in records]
 
-        logger.info("Deleted all memories for user %s", user_id)
-        return {"event": "DELETE_ALL", "user_id": user_id}
+        # 2. User-scoped deletion in SQLite
+        count = self._metadata.delete_all(user_id=user_id)
+
+        # 3. Remove matching vectors individually (best-effort)
+        for mid in memory_ids:
+            try:
+                self._vectors.delete(mid)
+            except Exception:
+                logger.debug("Vector delete skipped for %s", mid)
+
+        # 4. Remove matching BM25 documents individually
+        for mid in memory_ids:
+            self._bm25.remove(mid)
+
+        # 5. Clean up graph references
+        for mid in memory_ids:
+            try:
+                self._graph.delete_memory_references(mid)
+            except Exception:
+                logger.debug("Graph cleanup skipped for %s", mid)
+
+        logger.info("Deleted %d memories for user %s", count, user_id)
+        return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
 
     async def health(self) -> Dict[str, Any]:
         """Return system health status."""
