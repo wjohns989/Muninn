@@ -18,6 +18,13 @@ def test_recall_at_k():
     assert recall_at_k(relevant, ranked, 4) == 1.0
 
 
+def test_recall_at_k_ignores_duplicate_hits():
+    relevant = {"a", "b"}
+    ranked = ["a", "a", "a", "b"]
+    assert recall_at_k(relevant, ranked, 3) == 0.5
+    assert recall_at_k(relevant, ranked, 4) == 1.0
+
+
 def test_mrr_at_k():
     relevant = {"a", "b"}
     ranked = ["x", "a", "b"]
@@ -30,6 +37,12 @@ def test_ndcg_at_k_binary():
     ranked = ["a", "x", "b"]
     value = ndcg_at_k(relevant, ranked, 3)
     assert 0.0 < value <= 1.0
+
+
+def test_ndcg_at_k_ignores_duplicate_relevant_ids():
+    relevant = {"a"}
+    ranked = ["a", "a", "a"]
+    assert ndcg_at_k(relevant, ranked, 3) == 1.0
 
 
 def test_evaluate_case():

@@ -75,6 +75,78 @@ def test_sync_add_success_and_payload_shape():
     assert stub.calls[0]["timeout"] == 3.0
 
 
+def test_sync_ingest_sources_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/ingest"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "INGEST_COMPLETED", "added_memories": 2}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.ingest_sources(
+        sources=["/tmp/a.txt"],
+        project="muninn",
+        recursive=True,
+        chunk_size_chars=500,
+    )
+
+    assert result["event"] == "INGEST_COMPLETED"
+    payload = stub.calls[0]["json"]
+    assert payload["sources"] == ["/tmp/a.txt"]
+    assert payload["project"] == "muninn"
+    assert payload["recursive"] is True
+    assert payload["chunk_size_chars"] == 500
+    assert payload["chronological_order"] == "none"
+
+
+def test_sync_discover_legacy_sources_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/ingest/legacy/discover"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "LEGACY_DISCOVERY_COMPLETED", "total_discovered": 3}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.discover_legacy_sources(
+        providers=["codex_cli", "serena_memory"],
+        max_results_per_provider=25,
+    )
+
+    assert result["event"] == "LEGACY_DISCOVERY_COMPLETED"
+    payload = stub.calls[0]["json"]
+    assert payload["providers"] == ["codex_cli", "serena_memory"]
+    assert payload["max_results_per_provider"] == 25
+
+
+def test_sync_ingest_legacy_sources_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/ingest/legacy/import"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "LEGACY_INGEST_COMPLETED", "added_memories": 4}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.ingest_legacy_sources(
+        selected_source_ids=["src_abc"],
+        project="muninn",
+        chunk_size_chars=700,
+        chronological_order="oldest_first",
+    )
+
+    assert result["event"] == "LEGACY_INGEST_COMPLETED"
+    payload = stub.calls[0]["json"]
+    assert payload["selected_source_ids"] == ["src_abc"]
+    assert payload["project"] == "muninn"
+    assert payload["chunk_size_chars"] == 700
+    assert payload["chronological_order"] == "oldest_first"
+
+
 def test_sync_health_unwrapped_payload():
     stub = _StubSession(
         {
@@ -90,6 +162,40 @@ def test_sync_health_unwrapped_payload():
 
     assert result["status"] == "healthy"
     assert result["memory_count"] == 3
+
+
+def test_sync_unwrap_success_payload_without_data_wrapper():
+    stub = _StubSession(
+        {
+            ("POST", "/delete_all"): _requests_response(
+                200,
+                {"success": True, "event": "DELETE_ALL_COMPLETED", "deleted": 2},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+
+    result = client.delete_all(user_id="u1")
+
+    assert result["event"] == "DELETE_ALL_COMPLETED"
+    assert result["deleted"] == 2
+
+
+def test_sync_delete_url_encodes_memory_id():
+    stub = _StubSession(
+        {
+            ("DELETE", "/delete/mem%2Falpha%3Fv%3D1"): _requests_response(
+                200,
+                {"success": True, "data": {"deleted": True}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+
+    result = client.delete("mem/alpha?v=1")
+
+    assert result["deleted"] is True
+    assert stub.calls[0]["path"] == "/delete/mem%2Falpha%3Fv%3D1"
 
 
 def test_sync_api_error_on_http_failure():
@@ -157,6 +263,19 @@ async def test_async_search_and_connection_error():
         client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
         with pytest.raises(MuninnConnectionError, match="Failed to connect"):
             await client.health()
+
+
+@pytest.mark.asyncio
+async def test_async_delete_url_encodes_memory_id():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.raw_path.decode("utf-8") == "/delete/mem%2Falpha%3Fv%3D1"
+        return httpx.Response(200, json={"success": True, "data": {"deleted": True}})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.delete("mem/alpha?v=1")
+        assert result["deleted"] is True
 
 
 def test_mem0_style_alias_exports():
