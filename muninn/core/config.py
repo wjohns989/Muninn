@@ -10,7 +10,7 @@ v3.1.0: Uses platform abstraction for cross-platform path resolution.
 import os
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
 from muninn.platform import get_data_dir
@@ -97,6 +97,26 @@ class RetrievalFeedbackConfig(BaseModel):
     multiplier_ceiling: float = 1.25
 
 
+class IngestionConfig(BaseModel):
+    """Multi-source ingestion configuration (v3.3.0)."""
+    max_file_size_bytes: int = 5 * 1024 * 1024
+    chunk_size_chars: int = 1200
+    chunk_overlap_chars: int = 150
+    min_chunk_chars: int = 120
+    allowed_roots: List[str] = Field(default_factory=list)
+
+
+class MemoryChainsConfig(BaseModel):
+    """Memory chain detection/retrieval configuration (v3.3.0)."""
+    detection_threshold: float = 0.6
+    max_hours_apart: float = 168.0
+    max_links_per_memory: int = 4
+    candidate_scan_limit: int = 80
+    retrieval_signal_weight: float = 0.6
+    retrieval_expansion_limit: int = 20
+    retrieval_seed_limit: int = 6
+
+
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
@@ -133,6 +153,8 @@ class MuninnConfig(BaseModel):
     semantic_dedup: SemanticDedupConfig = Field(default_factory=SemanticDedupConfig)
     goal_compass: GoalCompassConfig = Field(default_factory=GoalCompassConfig)
     retrieval_feedback: RetrievalFeedbackConfig = Field(default_factory=RetrievalFeedbackConfig)
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
+    memory_chains: MemoryChainsConfig = Field(default_factory=MemoryChainsConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     data_dir: str = DEFAULT_DATA_DIR
 
@@ -246,6 +268,48 @@ class MuninnConfig(BaseModel):
                 ),
                 multiplier_ceiling=float(
                     os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_CEILING", "1.25")
+                ),
+            ),
+            ingestion=IngestionConfig(
+                max_file_size_bytes=int(
+                    os.environ.get("MUNINN_INGESTION_MAX_FILE_BYTES", str(5 * 1024 * 1024))
+                ),
+                chunk_size_chars=int(
+                    os.environ.get("MUNINN_INGESTION_CHUNK_SIZE_CHARS", "1200")
+                ),
+                chunk_overlap_chars=int(
+                    os.environ.get("MUNINN_INGESTION_CHUNK_OVERLAP_CHARS", "150")
+                ),
+                min_chunk_chars=int(
+                    os.environ.get("MUNINN_INGESTION_MIN_CHUNK_CHARS", "120")
+                ),
+                allowed_roots=[
+                    part.strip()
+                    for part in os.environ.get("MUNINN_INGESTION_ALLOWED_ROOTS", "").split(os.pathsep)
+                    if part.strip()
+                ],
+            ),
+            memory_chains=MemoryChainsConfig(
+                detection_threshold=float(
+                    os.environ.get("MUNINN_CHAINS_DETECTION_THRESHOLD", "0.6")
+                ),
+                max_hours_apart=float(
+                    os.environ.get("MUNINN_CHAINS_MAX_HOURS_APART", "168.0")
+                ),
+                max_links_per_memory=int(
+                    os.environ.get("MUNINN_CHAINS_MAX_LINKS_PER_MEMORY", "4")
+                ),
+                candidate_scan_limit=int(
+                    os.environ.get("MUNINN_CHAINS_CANDIDATE_SCAN_LIMIT", "80")
+                ),
+                retrieval_signal_weight=float(
+                    os.environ.get("MUNINN_CHAINS_SIGNAL_WEIGHT", "0.6")
+                ),
+                retrieval_expansion_limit=int(
+                    os.environ.get("MUNINN_CHAINS_EXPANSION_LIMIT", "20")
+                ),
+                retrieval_seed_limit=int(
+                    os.environ.get("MUNINN_CHAINS_SEED_LIMIT", "6")
                 ),
             ),
             server=ServerConfig(
