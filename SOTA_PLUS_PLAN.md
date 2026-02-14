@@ -106,9 +106,14 @@
     - SDK `delete` methods now URL-encode `memory_id` path segments,
     - SDK success payload unwrap now preserves non-`data` success payloads instead of discarding them,
     - parser/discovery robustness improved (`sqlite` URI escaping, safer glob derivation, custom-root sqlite artifact discovery).
+31. Phase 3A memory chains tranche is now implemented:
+    - new `muninn/chains` package with deterministic temporal/causal chain detector and retrieval expansion helper,
+    - graph-store support for first-class memory-to-memory `PRECEDES` / `CAUSES` edges with confidence + provenance fields,
+    - chain-link persistence wired into `add` and `update` paths with scoped candidate scans and entity-overlap reasoning,
+    - hybrid retrieval fusion now includes optional chain signal (`memory_chains` feature flag) with explainable trace attribution.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `378 passed, 2 skipped, 1 warning`.
+- Full-suite verification now green in-session: `384 passed, 2 skipped, 1 warning`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -123,6 +128,7 @@
 - Legacy migration tranche verification: `32 passed` (`tests/test_ingestion_parser.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 - UI + chronological ingestion verification: `34 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 - PR-remediation tranche verification: `83 passed` (`tests/test_eval_metrics.py`, `tests/test_sdk_client.py`, `tests/test_ingestion_pipeline.py`, `tests/test_ingestion_parser.py`, `tests/test_ingestion_discovery.py`, `tests/test_memory_ingestion.py`, `tests/test_config.py`, `tests/test_mcp_wrapper_protocol.py`).
+- Memory-chains tranche verification: `40 passed` (`tests/test_memory_chains.py`, `tests/test_hybrid_retriever.py`, `tests/test_memory_update_path.py`, `tests/test_config.py`, `tests/test_memory_feedback.py`) + `40 passed` (`tests/test_recall_trace.py`, `tests/test_feature_flags.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -142,6 +148,7 @@
 15. **Ingestion blast-radius reduction**: per-source fail-open parsing with strict chunking invariants prevents single bad files from halting batch ingestion while preserving auditability.
 16. **Cross-assistant historical continuity at scale**: source discovery + selection-based import closes manual migration gaps and creates measurable ROI by preserving prior project context across IDE/assistant switches.
 17. **Operational adoption ROI via browser UX**: consolidating discovery/import/project-ingest/search controls into one UI lowers operator friction and reduces CLI-only dependency for memory maintenance workflows.
+18. **Causal-context continuity ROI**: memory-chain edge persistence + retrieval expansion improves multi-step incident/debug recall, reducing repeated root-cause rediscovery across sessions.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
@@ -159,8 +166,8 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 4. Retrieval quality gating/observability enforceability for release integrity
 
 **Still open gaps:**
-1. Memory chains package (`muninn/chains`)
-2. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
+1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
+2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
@@ -169,10 +176,11 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 8. Semantic deduplication at ingestion + consolidation
 9. Python SDK sync/async interoperability layer
 10. Multi-source ingestion with provenance-rich fail-open parsing
+11. Memory chains with temporal/causal linking and retrieval expansion
 
 **After all features, Muninn will be the ONLY memory system that combines:**
 - Local-first architecture (no cloud dependency)
-- 4-signal hybrid retrieval with adaptive weights
+- 6-signal hybrid retrieval with adaptive weights (vector, graph, bm25, temporal, goal, chain)
 - Explainable recall traces with per-signal attribution
 - NLI-based conflict detection for memory integrity
 - Structured extraction via Instructor (matches Mem0 quality)

@@ -21,7 +21,7 @@ Evaluator: Codex
 - **Legacy memory/chat migration flow is now shipped**: discovery + selection-based import across assistant logs and MCP memory stores, including chat-context parsing for JSONL and sqlite-backed stores.
 - **Browser control center is now shipped**: root-served UI supports practical ingestion/reingestion/search/consolidation operations without CLI coupling.
 - **Open PR review issues are now remediated in code**: ingestion allow-list enforcement, runtime chunking bounds, legacy root/path validation, SDK URL-segment encoding, duplicate-safe eval metrics, and `/ingest` HTTPException passthrough.
-- **Phase 3 is substantially advanced**: Python SDK and multi-source ingestion are now shipped; memory chains package remains missing.
+- **Phase 3 is now functionally complete at core package level**: Python SDK, multi-source ingestion, legacy migration, browser control center, and memory chains are now shipped.
 
 ## Status vs Plan
 
@@ -55,7 +55,7 @@ Evaluator: Codex
 
 | Plan item | Status | Evidence |
 |---|---|---|
-| 3A Memory chains | **Missing** | No `muninn/chains/` package in repository tree. |
+| 3A Memory chains | **Implemented (feature-gated)** | `muninn/chains/*` added; graph `PRECEDES/CAUSES` edges + memory add/update linking + hybrid chain signal are wired. |
 | 3B Multi-source ingestion | **Implemented + expanded** | `muninn/ingestion/` now provides fail-open parser pipeline with provenance metadata, chat-context extraction for `.jsonl/.ndjson`, sqlite-backed source parsing (`.vscdb/.db/.sqlite*`), runtime guardrails (allow-list roots + chunk/file bounds), REST (`/ingest`, `/ingest/legacy/discover`, `/ingest/legacy/import`), MCP (`ingest_sources`, `discover_legacy_sources`, `ingest_legacy_sources`), and SDK parity methods. |
 | 3C Python SDK | **Implemented** | `muninn/sdk/` now ships sync+async clients with typed errors; top-level exports include `Memory` and `AsyncMemory`. |
 | 3D Browser control center | **Implemented** | `dashboard.html` rebuilt and served at `/` by `server.py`; includes legacy discovery/import selection, project-folder contextual ingestion with chronological ordering, and operational search/consolidation controls. |
@@ -68,10 +68,11 @@ Evaluator: Codex
 4. **Ingestion DoS vector through unconstrained chunk params (fixed):** runtime chunk/file limits now enforce bounded values and relation constraints (`overlap < chunk_size`, `min_chunk <= chunk_size`).
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
+7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `378 passed, 2 skipped, 1 warning`.
+- Full suite now passes in-session: `384 passed, 2 skipped, 1 warning`.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
   - `23 passed` (`eval_artifacts`, `eval_statistics`, `eval_presets`, `eval_run`, `eval_gates`, `eval_metrics`)
@@ -82,6 +83,8 @@ Evaluator: Codex
   - `32 passed` (`ingestion_parser`, `memory_ingestion`, `mcp_wrapper_protocol`, `sdk_client`)
   - `34 passed` (`ingestion_pipeline`, `memory_ingestion`, `mcp_wrapper_protocol`, `sdk_client`)
   - `83 passed` (`eval_metrics`, `sdk_client`, `ingestion_pipeline`, `ingestion_parser`, `ingestion_discovery`, `memory_ingestion`, `config`, `mcp_wrapper_protocol`)
+  - `40 passed` (`memory_chains`, `hybrid_retriever`, `memory_update_path`, `config`, `memory_feedback`)
+  - `40 passed` (`recall_trace`, `feature_flags`)
 - Compile checks passed on all touched modules/tests.
 
 ## Newly Resolved Inaccuracies

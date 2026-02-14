@@ -35,6 +35,7 @@ from muninn.store.graph_store import GraphStore
 from muninn.retrieval.bm25 import BM25Index
 from muninn.retrieval.reranker import Reranker
 from muninn.retrieval.weight_adapter import WeightAdapter
+from muninn.chains import MemoryChainRetriever
 from muninn.observability import OTelGenAITracer
 
 logger = logging.getLogger("Muninn.Retrieval")
@@ -48,6 +49,7 @@ SIGNAL_WEIGHTS = {
     "graph": 1.0,
     "bm25": 0.8,
     "temporal": 0.5,
+    "chain": 0.6,
 }
 GOAL_SIGNAL_WEIGHT = 0.65
 
@@ -80,6 +82,9 @@ class HybridRetriever:
         reranker: Optional[Reranker] = None,
         embed_fn=None,
         telemetry: Optional[OTelGenAITracer] = None,
+        chain_signal_weight: float = 0.6,
+        chain_expansion_limit: int = 20,
+        chain_max_seed_memories: int = 6,
     ):
         self.metadata = metadata_store
         self.vectors = vector_store
@@ -88,6 +93,12 @@ class HybridRetriever:
         self.reranker = reranker
         self._embed_fn = embed_fn  # async or sync function: text → List[float]
         self._telemetry = telemetry or OTelGenAITracer(enabled=False)
+        self._chain_signal_weight = max(0.0, float(chain_signal_weight))
+        self._chain_expansion_limit = max(0, int(chain_expansion_limit))
+        self._chain_retriever = MemoryChainRetriever(
+            graph_store=self.graph,
+            max_seed_memories=max(1, int(chain_max_seed_memories)),
+        )
 
     async def search(
         self,
@@ -157,6 +168,15 @@ class HybridRetriever:
                 user_id=user_id,
                 limit=limit * 2,
             )
+            chain_results = self._chain_search(
+                vector_results=vector_results,
+                graph_results=graph_results,
+                bm25_results=bm25_results,
+                goal_results=goal_results,
+                temporal_results=temporal_results,
+                limit=min(limit * 2, self._chain_expansion_limit),
+                enabled=flags.is_enabled("memory_chains"),
+            )
 
         # --- Compute signal weights (adaptive or fixed) ---
             use_adaptive = flags.is_enabled("adaptive_weights")
@@ -167,6 +187,7 @@ class HybridRetriever:
                     "graph": graph_results,
                     "bm25": bm25_results,
                     "temporal": temporal_results,
+                    "chain": chain_results,
                 }
                 active_weights = adapter.compute_weights(
                     query,
@@ -184,8 +205,10 @@ class HybridRetriever:
                     bm25_results=bm25_results,
                     goal_results=goal_results,
                     temporal_results=temporal_results,
+                    chain_results=chain_results,
                     weights=active_weights,
                     goal_signal_weight=goal_signal_weight,
+                    chain_signal_weight=self._chain_signal_weight,
                 )
             else:
                 fused_scores = self._rrf_fusion(
@@ -194,8 +217,10 @@ class HybridRetriever:
                     bm25_results=bm25_results,
                     goal_results=goal_results,
                     temporal_results=temporal_results,
+                    chain_results=chain_results,
                     weights=active_weights,
                     goal_signal_weight=goal_signal_weight,
+                    chain_signal_weight=self._chain_signal_weight,
                 )
                 traces = {}
 
@@ -364,8 +389,10 @@ class HybridRetriever:
         bm25_results: List[Tuple[str, float]],
         goal_results: List[Tuple[str, float]],
         temporal_results: List[Tuple[str, float]],
+        chain_results: List[Tuple[str, float]],
         weights: Optional[Dict[str, float]] = None,
         goal_signal_weight: float = GOAL_SIGNAL_WEIGHT,
+        chain_signal_weight: float = 0.6,
     ) -> Dict[str, float]:
         """
         Reciprocal Rank Fusion across all retrieval signals.
@@ -386,6 +413,7 @@ class HybridRetriever:
             (bm25_results, w.get("bm25", 0.8)),
             (goal_results, w.get("goal", goal_signal_weight)),
             (temporal_results, w.get("temporal", 0.5)),
+            (chain_results, w.get("chain", chain_signal_weight)),
         ]
 
         for results, weight in signal_data:
@@ -401,8 +429,10 @@ class HybridRetriever:
         bm25_results: List[Tuple[str, float]],
         goal_results: List[Tuple[str, float]],
         temporal_results: List[Tuple[str, float]],
+        chain_results: List[Tuple[str, float]],
         weights: Optional[Dict[str, float]] = None,
         goal_signal_weight: float = GOAL_SIGNAL_WEIGHT,
+        chain_signal_weight: float = 0.6,
     ) -> Tuple[Dict[str, float], Dict[str, RecallTrace]]:
         """
         RRF fusion with per-signal attribution tracking.
@@ -423,6 +453,7 @@ class HybridRetriever:
             ("bm25", bm25_results, w.get("bm25", 0.8)),
             ("goal", goal_results, w.get("goal", goal_signal_weight)),
             ("temporal", temporal_results, w.get("temporal", 0.5)),
+            ("chain", chain_results, w.get("chain", chain_signal_weight)),
         ]
 
         for signal_name, results, weight in signal_data:
@@ -583,6 +614,44 @@ class HybridRetriever:
                     return False
 
         return True
+
+    def _chain_search(
+        self,
+        *,
+        vector_results: List[Tuple[str, float]],
+        graph_results: List[Tuple[str, float]],
+        bm25_results: List[Tuple[str, float]],
+        goal_results: List[Tuple[str, float]],
+        temporal_results: List[Tuple[str, float]],
+        limit: int,
+        enabled: bool,
+    ) -> List[Tuple[str, float]]:
+        """Expand candidates using memory-chain graph links."""
+        if not enabled or limit <= 0:
+            return []
+        try:
+            seed_ranked: List[Tuple[str, float]] = []
+            for signal_results in (
+                vector_results,
+                graph_results,
+                bm25_results,
+                goal_results,
+                temporal_results,
+            ):
+                if not signal_results:
+                    continue
+                seed_ranked.extend(signal_results[:6])
+                if len(seed_ranked) >= (self._chain_retriever.max_seed_memories * 3):
+                    break
+            if not seed_ranked:
+                return []
+            return self._chain_retriever.expand_from_ranked_results(
+                ranked_results=seed_ranked,
+                limit=limit,
+            )
+        except Exception as e:
+            logger.warning("Chain search failed: %s", e)
+            return []
 
     def _build_qdrant_filters(self, filters: Dict[str, Any]) -> Optional[Dict]:
         """Convert generic filters to Qdrant filter format."""

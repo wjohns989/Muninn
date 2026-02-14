@@ -59,9 +59,14 @@ Completed since last update:
    - duplicate-safe `Recall@k` and `nDCG@k`,
    - SQLite URI escaping for special path characters,
    - robust glob derivation and custom-root sqlite artifact discovery.
+25. Phase 3A memory chains is now implemented with feature-gated rollout:
+   - `muninn/chains` package added (`detector`, `retriever`),
+   - graph-store now supports memory-to-memory `PRECEDES` / `CAUSES` edges with confidence metadata,
+   - memory add/update paths now persist scoped chain links from temporal/entity/causal signals,
+   - hybrid retrieval now fuses an optional chain signal with explainable trace attribution.
 
 Verification:
-- Full suite now passes in-session: `378 passed, 2 skipped, 1 warning`.
+- Full suite now passes in-session: `384 passed, 2 skipped, 1 warning`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -92,7 +97,7 @@ Fixed in current implementation slice:
 
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
-2. Phase 3 ecosystem packages are still incomplete (`chains` missing; parser sandbox/process isolation for optional binary backends remains).
+2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
 
 ---
 
@@ -424,7 +429,7 @@ This is core for vibecoders, not optional polish.
 ## 10) Immediate Next Actions (Execution Checklist)
 
 1. Close open PR review threads with evidence-linked responses and merge sequencing across stacked branches.
-2. Implement `muninn/chains` package (Phase 3A) with guarded rollout and benchmarked latency impact.
+2. Merge stacked PR chain (`#10` → `#13`) to `main` after resolving remaining review-thread states.
 3. Add parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) and ship minimal viable isolation controls.
 4. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
 5. Add OTel dashboard/alert pack templates for retrieval and ingestion regression triage.
