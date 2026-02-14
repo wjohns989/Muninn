@@ -8,6 +8,7 @@ and consolidation state. SQLite provides ACID guarantees and zero-config operati
 import sqlite3
 import json
 import time
+import math
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -83,6 +84,44 @@ CREATE TABLE IF NOT EXISTS user_scope_backfill_failures (
 );
 """
 
+PROJECT_GOALS = """
+CREATE TABLE IF NOT EXISTS project_goals (
+    user_id TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    project TEXT NOT NULL,
+    goal_statement TEXT NOT NULL,
+    constraints_json TEXT NOT NULL DEFAULT '[]',
+    goal_embedding_json TEXT,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (user_id, namespace, project)
+);
+"""
+
+HANDOFF_EVENT_LEDGER = """
+CREATE TABLE IF NOT EXISTS handoff_event_ledger (
+    event_id TEXT PRIMARY KEY,
+    source TEXT,
+    applied_at REAL NOT NULL
+);
+"""
+
+RETRIEVAL_FEEDBACK = """
+CREATE TABLE IF NOT EXISTS retrieval_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    project TEXT NOT NULL,
+    query_text TEXT,
+    memory_id TEXT,
+    outcome REAL NOT NULL,
+    rank INTEGER,
+    sampling_prob REAL,
+    signals_json TEXT NOT NULL DEFAULT '{}',
+    source TEXT,
+    created_at REAL NOT NULL
+);
+"""
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -91,6 +130,7 @@ class SQLiteMetadataStore:
         self.db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
+        self._json1_available = False
         self._initialize()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -104,17 +144,69 @@ class SQLiteMetadataStore:
 
     def _initialize(self):
         conn = self._get_conn()
+        self._json1_available = self._detect_json1(conn)
         conn.execute(CREATE_TABLE)
         for idx in CREATE_INDEXES:
             conn.execute(idx)
+        if self._json1_available:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_user_id_json ON memories(json_extract(metadata, '$.user_id'));"
+            )
         conn.execute(SCHEMA_META)
         conn.execute(USER_SCOPE_BACKFILL_FAILURES)
+        conn.execute(PROJECT_GOALS)
+        conn.execute(HANDOFF_EVENT_LEDGER)
+        conn.execute(RETRIEVAL_FEEDBACK)
+        self._ensure_column_exists(conn, "retrieval_feedback", "rank", "INTEGER")
+        self._ensure_column_exists(conn, "retrieval_feedback", "sampling_prob", "REAL")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_scope_time ON retrieval_feedback(user_id, namespace, project, created_at DESC);"
+        )
         conn.execute(
             "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)",
             ("version", str(SCHEMA_VERSION))
         )
         conn.commit()
         logger.info(f"SQLite metadata store initialized at {self.db_path}")
+
+    @staticmethod
+    def _ensure_column_exists(
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        column_type: str,
+    ) -> None:
+        """Ensure a table has a given column; add it if missing."""
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row[1] for row in rows}
+        if column in existing:
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+    @staticmethod
+    def _detect_json1(conn: sqlite3.Connection) -> bool:
+        """Detect whether SQLite JSON1 extension is available."""
+        try:
+            row = conn.execute("SELECT json_extract('{\"x\": 1}', '$.x')").fetchone()
+            return bool(row and row[0] == 1)
+        except sqlite3.OperationalError:
+            return False
+
+    def _user_id_condition(self) -> str:
+        """
+        Return SQL condition fragment for user_id filtering.
+
+        Uses exact JSON extraction when available, otherwise falls back to LIKE.
+        """
+        if self._json1_available:
+            return "json_extract(metadata, '$.user_id') = ?"
+        return "metadata LIKE ?"
+
+    def _user_id_param(self, user_id: str) -> str:
+        """Return parameter value matching `_user_id_condition`."""
+        if self._json1_available:
+            return user_id
+        return f'%\"user_id\": \"{user_id}\"%'
 
     def _row_to_record(self, row: sqlite3.Row) -> MemoryRecord:
         d = dict(row)
@@ -145,6 +237,315 @@ class SQLiteMetadataStore:
         if row is None:
             return default
         return row[0]
+
+    def set_project_goal(
+        self,
+        *,
+        user_id: str,
+        namespace: str,
+        project: str,
+        goal_statement: str,
+        constraints: List[str],
+        goal_embedding: Optional[List[float]] = None,
+    ) -> None:
+        """Persist or update a scoped project goal definition."""
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT INTO project_goals (
+                user_id, namespace, project, goal_statement,
+                constraints_json, goal_embedding_json, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, namespace, project) DO UPDATE SET
+                goal_statement = excluded.goal_statement,
+                constraints_json = excluded.constraints_json,
+                goal_embedding_json = excluded.goal_embedding_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                user_id,
+                namespace,
+                project,
+                goal_statement,
+                json.dumps(constraints or []),
+                json.dumps(goal_embedding) if goal_embedding is not None else None,
+                time.time(),
+            ),
+        )
+        conn.commit()
+
+    def get_project_goal(
+        self,
+        *,
+        user_id: str,
+        namespace: str,
+        project: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch a scoped project goal if present."""
+        conn = self._get_conn()
+        row = conn.execute(
+            """
+            SELECT user_id, namespace, project, goal_statement,
+                   constraints_json, goal_embedding_json, updated_at
+            FROM project_goals
+            WHERE user_id = ? AND namespace = ? AND project = ?
+            """,
+            (user_id, namespace, project),
+        ).fetchone()
+        if row is None:
+            return None
+
+        constraints = []
+        embedding = None
+        if row["constraints_json"]:
+            try:
+                parsed = json.loads(row["constraints_json"])
+                if isinstance(parsed, list):
+                    constraints = [str(item) for item in parsed]
+            except json.JSONDecodeError:
+                constraints = []
+        if row["goal_embedding_json"]:
+            try:
+                parsed = json.loads(row["goal_embedding_json"])
+                if isinstance(parsed, list):
+                    embedding = [float(x) for x in parsed]
+            except (json.JSONDecodeError, ValueError, TypeError):
+                embedding = None
+
+        return {
+            "user_id": row["user_id"],
+            "namespace": row["namespace"],
+            "project": row["project"],
+            "goal_statement": row["goal_statement"],
+            "constraints": constraints,
+            "goal_embedding": embedding,
+            "updated_at": row["updated_at"],
+        }
+
+    def has_handoff_event(self, event_id: str) -> bool:
+        """Return True when an idempotency event has already been applied."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT 1 FROM handoff_event_ledger WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        return row is not None
+
+    def record_handoff_event(self, event_id: str, source: str = "unknown") -> bool:
+        """Insert event into ledger; returns True when newly inserted."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO handoff_event_ledger (event_id, source, applied_at)
+            VALUES (?, ?, ?)
+            """,
+            (event_id, source, time.time()),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+    def add_retrieval_feedback(
+        self,
+        *,
+        user_id: str,
+        namespace: str,
+        project: str,
+        query_text: str,
+        memory_id: str,
+        outcome: float,
+        rank: Optional[int] = None,
+        sampling_prob: Optional[float] = None,
+        signals: Optional[Dict[str, float]] = None,
+        source: str = "unknown",
+    ) -> int:
+        """
+        Persist retrieval feedback for later weighting calibration.
+
+        outcome is expected in [0,1], where 1 = helpful/accepted.
+        """
+        clamped = max(0.0, min(1.0, float(outcome)))
+        normalized_signals: Dict[str, float] = {}
+        for key, value in (signals or {}).items():
+            if value is None:
+                continue
+            try:
+                v = float(value)
+            except (TypeError, ValueError):
+                continue
+            if v > 0:
+                normalized_signals[str(key)] = v
+        normalized_rank: Optional[int] = None
+        if rank is not None:
+            try:
+                parsed_rank = int(rank)
+                if parsed_rank > 0:
+                    normalized_rank = parsed_rank
+            except (TypeError, ValueError):
+                normalized_rank = None
+
+        normalized_sampling_prob: Optional[float] = None
+        if sampling_prob is not None:
+            try:
+                parsed_prob = float(sampling_prob)
+                if parsed_prob > 0:
+                    normalized_sampling_prob = max(0.0, min(1.0, parsed_prob))
+            except (TypeError, ValueError):
+                normalized_sampling_prob = None
+
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            INSERT INTO retrieval_feedback (
+                user_id, namespace, project, query_text, memory_id,
+                outcome, rank, sampling_prob, signals_json, source, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                namespace,
+                project,
+                query_text,
+                memory_id,
+                clamped,
+                normalized_rank,
+                normalized_sampling_prob,
+                json.dumps(normalized_signals),
+                source,
+                time.time(),
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+    def get_feedback_signal_multipliers(
+        self,
+        *,
+        user_id: str,
+        namespace: str,
+        project: str,
+        lookback_days: int = 30,
+        min_total_signal_weight: float = 3.0,
+        estimator: str = "weighted_mean",
+        propensity_floor: float = 0.05,
+        min_effective_samples: float = 2.0,
+        default_sampling_prob: float = 1.0,
+        floor: float = 0.75,
+        ceiling: float = 1.25,
+    ) -> Dict[str, float]:
+        """
+        Compute per-signal multipliers from historical retrieval feedback.
+
+        weighted_mean estimator:
+            score = weighted_positive / total_weight  (in [0,1])
+
+        snips estimator:
+            score = sum(outcome * w_i / p_i) / sum(w_i / p_i)
+            where p_i is clipped propensity per event.
+
+            multiplier = floor + score * (ceiling - floor)
+        """
+        cutoff_ts = time.time() - (max(1, int(lookback_days)) * 86400.0)
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT outcome, rank, sampling_prob, signals_json
+            FROM retrieval_feedback
+            WHERE user_id = ? AND namespace = ? AND project = ? AND created_at >= ?
+            """,
+            (user_id, namespace, project, cutoff_ts),
+        ).fetchall()
+        if not rows:
+            return {}
+
+        estimator_mode = (estimator or "weighted_mean").strip().lower()
+        use_snips = estimator_mode == "snips"
+        if estimator_mode not in {"weighted_mean", "snips"}:
+            logger.warning(
+                "Unknown retrieval feedback estimator '%s'; falling back to weighted_mean.",
+                estimator_mode,
+            )
+
+        safe_propensity_floor = max(1e-4, min(1.0, float(propensity_floor)))
+        safe_default_sampling_prob = max(safe_propensity_floor, min(1.0, float(default_sampling_prob)))
+        safe_min_effective_samples = max(1.0, float(min_effective_samples))
+        weighted_positive: Dict[str, float] = {}
+        weighted_total: Dict[str, float] = {}
+        snips_positive: Dict[str, float] = {}
+        snips_total: Dict[str, float] = {}
+        snips_sum_w: Dict[str, float] = {}
+        snips_sum_w2: Dict[str, float] = {}
+        for row in rows:
+            outcome = max(0.0, min(1.0, float(row["outcome"])))
+            rank = row["rank"]
+            sampling_prob = row["sampling_prob"]
+            rank_propensity = 1.0
+            if rank is not None:
+                try:
+                    rank_value = int(rank)
+                except (TypeError, ValueError):
+                    rank_value = 0
+                if rank_value > 0:
+                    rank_propensity = 1.0 / math.log2(rank_value + 1.0)
+
+            base_prob = safe_default_sampling_prob
+            if sampling_prob is not None:
+                try:
+                    parsed_prob = float(sampling_prob)
+                    if parsed_prob > 0:
+                        base_prob = min(1.0, parsed_prob)
+                except (TypeError, ValueError):
+                    pass
+            propensity = max(safe_propensity_floor, min(1.0, base_prob * rank_propensity))
+
+            try:
+                signal_map = json.loads(row["signals_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(signal_map, dict):
+                continue
+
+            for key, raw_weight in signal_map.items():
+                try:
+                    signal_weight = float(raw_weight)
+                except (TypeError, ValueError):
+                    continue
+                if signal_weight <= 0:
+                    continue
+                signal_name = str(key)
+                weighted_positive[signal_name] = weighted_positive.get(signal_name, 0.0) + (outcome * signal_weight)
+                weighted_total[signal_name] = weighted_total.get(signal_name, 0.0) + signal_weight
+                ipw = signal_weight / propensity
+                snips_positive[signal_name] = snips_positive.get(signal_name, 0.0) + (outcome * ipw)
+                snips_total[signal_name] = snips_total.get(signal_name, 0.0) + ipw
+                snips_sum_w[signal_name] = snips_sum_w.get(signal_name, 0.0) + ipw
+                snips_sum_w2[signal_name] = snips_sum_w2.get(signal_name, 0.0) + (ipw * ipw)
+
+        multipliers: Dict[str, float] = {}
+        for signal_name, total_weight in weighted_total.items():
+            if total_weight < float(min_total_signal_weight):
+                continue
+
+            if use_snips:
+                snips_denom = snips_total.get(signal_name, 0.0)
+                if snips_denom <= 0.0:
+                    continue
+                sum_w = snips_sum_w.get(signal_name, 0.0)
+                sum_w2 = snips_sum_w2.get(signal_name, 0.0)
+                if sum_w2 <= 0.0:
+                    continue
+                effective_samples = (sum_w * sum_w) / sum_w2
+                if effective_samples < safe_min_effective_samples:
+                    continue
+                score = snips_positive.get(signal_name, 0.0) / snips_denom
+            else:
+                score = weighted_positive.get(signal_name, 0.0) / total_weight
+
+            score = max(0.0, min(1.0, score))
+            multipliers[signal_name] = float(floor) + score * (float(ceiling) - float(floor))
+
+        return multipliers
 
     def record_user_scope_backfill_failure(self, memory_id: str, error: str) -> None:
         conn = self._get_conn()
@@ -183,23 +584,39 @@ class SQLiteMetadataStore:
     def get_missing_user_id_records(self, limit: int = 500) -> List[MemoryRecord]:
         """Fetch a batch of records that do not have metadata.user_id set."""
         conn = self._get_conn()
-        rows = conn.execute(
-            """
-            SELECT * FROM memories
-            WHERE metadata NOT LIKE '%"user_id"%'
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        if self._json1_available:
+            rows = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE json_extract(metadata, '$.user_id') IS NULL
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE metadata NOT LIKE '%"user_id"%'
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
     def count_missing_user_id(self) -> int:
         """Count records that do not contain metadata.user_id."""
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE metadata NOT LIKE '%\"user_id\"%'"
-        ).fetchone()
+        if self._json1_available:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE json_extract(metadata, '$.user_id') IS NULL"
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE metadata NOT LIKE '%\"user_id\"%'"
+            ).fetchone()
         return row[0] if row else 0
 
     # --- CRUD Operations ---
@@ -278,8 +695,8 @@ class SQLiteMetadataStore:
             conditions.append("namespace = ?")
             params.append(namespace)
         if user_id:
-            conditions.append("metadata LIKE ?")
-            params.append(f'%"user_id": "{user_id}"%')
+            conditions.append(self._user_id_condition())
+            params.append(self._user_id_param(user_id))
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cursor = conn.execute(f"DELETE FROM memories {where}", params)
@@ -312,8 +729,8 @@ class SQLiteMetadataStore:
             conditions.append("memory_type = ?")
             params.append(memory_type.value)
         if user_id:
-            conditions.append("metadata LIKE ?")
-            params.append(f'%"user_id": "{user_id}"%')
+            conditions.append(self._user_id_condition())
+            params.append(self._user_id_param(user_id))
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
