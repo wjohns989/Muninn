@@ -83,9 +83,13 @@ Completed since last update:
    - extraction config now accepts `MUNINN_VRAM_BUDGET_GB` for budget-tier model selection,
    - default high-reasoning baseline is reduced to 14B-class for active-development viability on 16GB GPUs,
    - 30B/32B profiles are now selected only for explicit high-VRAM budgets.
+31. Phase 4E helper-first profile scheduling baseline implemented:
+   - extraction config now supports independent `runtime_model_profile`, `ingestion_model_profile`, and `legacy_ingestion_model_profile`,
+   - runtime add/update extraction now defaults to runtime low-latency profile while ingestion paths default to ingestion-specific profiles,
+   - MCP wrapper now supports operation-specific profile overrides (`MUNINN_OPERATOR_RUNTIME_MODEL_PROFILE`, `MUNINN_OPERATOR_INGESTION_MODEL_PROFILE`, `MUNINN_OPERATOR_LEGACY_INGESTION_MODEL_PROFILE`) with deterministic fallback to `MUNINN_OPERATOR_MODEL_PROFILE`.
 
 Verification:
-- Full suite now passes in-session: `398 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `403 passed, 2 skipped, 0 warnings`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -93,6 +97,7 @@ Verification:
   - `48 passed` across eval/adaptive/MCP protocol tests.
   - `27 passed` across feedback-memory/config/hybrid-flag tests.
   - `83 passed` across PR-remediation slices (eval/sdk/ingestion/config/MCP protocol tests).
+  - `69 passed` across runtime-vs-ingestion profile scheduling surfaces (`config`, `memory_ingestion`, `memory_update_path`, `mcp_wrapper_protocol`, `extraction_pipeline`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
@@ -118,7 +123,7 @@ Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
 3. Profile-level promotion criteria remain open: routing is implemented, but per-profile eval gates and telemetry-backed auto-default policy are still pending.
-4. Runtime profile control API remains open: current cross-assistant switching works via env+metadata policy, but explicit REST/MCP profile mutation endpoints are still pending.
+4. Runtime profile control API remains open: operation-scoped env+metadata policy is implemented, but explicit REST/MCP profile mutation endpoints are still pending.
 
 ---
 
@@ -399,7 +404,7 @@ This is core for vibecoders, not optional polish.
   - `high_reasoning` (higher compute, deeper reasoning).
 - Route each profile to configurable provider/model fallback chains (xLAM + Ollama candidates).
 - Expose profile selection in config + browser UI; add API/runtime mutation in follow-up tranche.
-- Status update: config + extraction routing are implemented; assistant-session override is available via `MUNINN_OPERATOR_MODEL_PROFILE`; VRAM-budget auto-selection is available via `MUNINN_VRAM_BUDGET_GB`.
+- Status update: config + extraction routing are implemented; assistant-session override is available via `MUNINN_OPERATOR_MODEL_PROFILE`; VRAM-budget auto-selection is available via `MUNINN_VRAM_BUDGET_GB`; operation-scoped runtime/ingestion/legacy profile defaults and env overrides are now implemented.
 
 ### 4C Model Routing Safety + Observability
 - Add health/routing checks to avoid dead endpoints and unsupported model capabilities.
@@ -488,7 +493,7 @@ This is core for vibecoders, not optional polish.
 1. Maintain one-PR-at-a-time policy: verify no open PR comments/issues at each phase boundary, then open exactly one new PR.
 2. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
 3. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
-4. Implement Phase 4A/4B baseline: browser preference persistence + configurable model profile router (`low_latency`/`balanced`/`high_reasoning`).
-5. Add profile-aware eval + OTel dashboard/alert pack templates for retrieval/ingestion/model-routing regression triage.
+4. Implement Phase 4 profile-promotion tranche: add profile-aware eval gates + telemetry thresholds for default-policy promotion.
+5. Add runtime profile control API endpoints (REST + MCP) so assistants/IDE clients can mutate profile policy without env restarts.
 
 Completing these next actions keeps roadmap progression logically consistent while preserving merge hygiene, SOTA evidence quality, and operational ROI.
