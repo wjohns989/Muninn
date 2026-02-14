@@ -293,6 +293,7 @@ Implementation impact:
   - `balanced` (default),
   - `high_reasoning` (higher compute/thinking).
 - Expose profile choice in browser UI, config, and API for operator control.
+- Implementation status: baseline profile routing + browser profile persistence are now implemented; remaining work is profile-level eval/telemetry gating for default-policy promotion.
 
 ## Critical Issues/Accuracy Corrections
 

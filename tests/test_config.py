@@ -116,11 +116,23 @@ class TestExtractionConfig:
         assert cfg.enable_xlam is True
         assert cfg.xlam_model == "xLAM"
         assert cfg.enable_ollama_fallback is True
+        assert cfg.model_profile == "balanced"
+        assert cfg.ollama_balanced_model == "qwen3:8b"
+        assert cfg.ollama_high_reasoning_model == "qwen3:32b"
 
     def test_custom(self):
-        cfg = ExtractionConfig(enable_xlam=False, ollama_model="phi3")
+        cfg = ExtractionConfig(
+            enable_xlam=False,
+            ollama_model="phi3",
+            model_profile="high_reasoning",
+            ollama_balanced_model="qwen3:14b",
+            ollama_high_reasoning_model="qwen3:30b",
+        )
         assert cfg.enable_xlam is False
         assert cfg.ollama_model == "phi3"
+        assert cfg.model_profile == "high_reasoning"
+        assert cfg.ollama_balanced_model == "qwen3:14b"
+        assert cfg.ollama_high_reasoning_model == "qwen3:30b"
 
 
 class TestRerankerConfig:
@@ -205,6 +217,17 @@ class TestConfigFromEnv:
         monkeypatch.setenv("MUNINN_CONSOLIDATION_ENABLED", "false")
         config = MuninnConfig.from_env()
         assert config.consolidation.enabled is False
+
+    def test_env_override_extraction_profile(self, monkeypatch):
+        monkeypatch.setenv("MUNINN_MODEL_PROFILE", "high_reasoning")
+        monkeypatch.setenv("MUNINN_OLLAMA_MODEL", "llama3.2:3b")
+        monkeypatch.setenv("MUNINN_OLLAMA_BALANCED_MODEL", "qwen3:8b")
+        monkeypatch.setenv("MUNINN_OLLAMA_HIGH_REASONING_MODEL", "qwen3:32b")
+        config = MuninnConfig.from_env()
+        assert config.extraction.model_profile == "high_reasoning"
+        assert config.extraction.ollama_model == "llama3.2:3b"
+        assert config.extraction.ollama_balanced_model == "qwen3:8b"
+        assert config.extraction.ollama_high_reasoning_model == "qwen3:32b"
 
     def test_env_override_goal_compass(self, monkeypatch):
         monkeypatch.setenv("MUNINN_GOAL_DRIFT_THRESHOLD", "0.61")
