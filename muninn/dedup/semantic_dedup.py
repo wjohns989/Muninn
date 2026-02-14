@@ -150,6 +150,13 @@ class SemanticDedup:
                     similarity=score,
                     overlap=overlap,
                 )
+                logger.debug(
+                    "Semantic duplicate match found: memory_id=%s similarity=%.3f overlap=%.2f strategy=%s",
+                    memory_id,
+                    score,
+                    overlap,
+                    strategy.value,
+                )
 
                 return DedupResult(
                     is_duplicate=True,
