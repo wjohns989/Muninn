@@ -76,9 +76,44 @@
 24. OTel content-capture guardrail improved in code:
     - added `MUNINN_OTEL_CAPTURE_CONTENT_MAX_CHARS` with bounded parsing and safe fallback,
     - tracer now uses dynamic package version (`muninn.version.__version__`) instead of hardcoded instrumentation version.
+25. Phase 3C Python SDK tranche is now implemented:
+    - new `muninn/sdk` package with `MuninnClient` + `AsyncMuninnClient`,
+    - mem0-style aliases exported at package root (`Memory`, `AsyncMemory`),
+    - typed SDK exceptions (`MuninnConnectionError`, `MuninnAPIError`),
+    - method parity across health/add/search/goal/handoff/feedback/admin endpoints.
+26. Phase 3B multi-source ingestion tranche is now implemented:
+    - new feature-gated `muninn/ingestion` package with fail-open parser pipeline for `txt/md/json/csv/tsv/html` and optional `pdf/docx`,
+    - chunk-level provenance metadata (`source_sha256`, byte size, chunk offsets, source path/type),
+    - `MuninnMemory.ingest_sources(...)` orchestration with per-source/per-chunk failure isolation,
+    - REST `/ingest`, MCP `ingest_sources` tool wiring, and SDK `ingest_sources(...)` sync/async coverage.
+27. Legacy assistant/MCP memory migration tranche is now implemented:
+    - discovery catalog for local assistant artifacts and MCP memory stores (`codex_cli`, `claude_code`, `serena_memory`, `cursor`, `vscode`, `copilot`, `antigravity`, plus custom roots),
+    - selection-based legacy import (`selected_source_ids`/`selected_paths`) with contextual metadata injection per source,
+    - parser/contextualization upgrades for chat-heavy sources (`.jsonl/.ndjson`) and sqlite-backed stores (`.vscdb/.db/.sqlite*`),
+    - REST (`/ingest/legacy/discover`, `/ingest/legacy/import`) + MCP (`discover_legacy_sources`, `ingest_legacy_sources`) + SDK parity.
+28. Browser control-center tranche is now implemented:
+    - rebuilt first-party UI served at `/` from `dashboard.html` with direct operational controls,
+    - checkbox-based legacy discovery/reingestion workflow for assistant/MCP artifacts,
+    - project-folder contextual ingestion flow with chronological ordering (`none|oldest_first|newest_first`) and tunable chunking controls,
+    - health/search/consolidation actions consolidated in one interface for practical end-user operation.
+29. Open-PR security/correctness remediation tranche is now implemented:
+    - ingestion allow-list enforcement added (`allowed_roots`) to block arbitrary file reads from untrusted tool inputs,
+    - runtime chunk/file bounds validation added to prevent pathological chunking and oversized-ingest DoS vectors,
+    - legacy discovery/import now validates user-provided roots and selected paths against the ingestion allow-list,
+    - `/ingest` endpoint now preserves upstream `HTTPException` status codes (no blanket 500 remap).
+30. Eval/SDK reliability corrections from review threads are now implemented:
+    - `Recall@k`/`nDCG@k` now ignore duplicate relevant IDs to prevent inflated metrics,
+    - SDK `delete` methods now URL-encode `memory_id` path segments,
+    - SDK success payload unwrap now preserves non-`data` success payloads instead of discarding them,
+    - parser/discovery robustness improved (`sqlite` URI escaping, safer glob derivation, custom-root sqlite artifact discovery).
+31. Phase 3A memory chains tranche is now implemented:
+    - new `muninn/chains` package with deterministic temporal/causal chain detector and retrieval expansion helper,
+    - graph-store support for first-class memory-to-memory `PRECEDES` / `CAUSES` edges with confidence + provenance fields,
+    - chain-link persistence wired into `add` and `update` paths with scoped candidate scans and entity-overlap reasoning,
+    - hybrid retrieval fusion now includes optional chain signal (`memory_chains` feature flag) with explainable trace attribution.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `337 passed, 2 skipped, 2 warnings`.
+- Full-suite verification now green in-session: `384 passed, 2 skipped, 1 warning`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -88,6 +123,12 @@
   - `48 passed` (`tests/test_sqlite_feedback.py`, `tests/test_eval_metrics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_weight_adapter.py`, `tests/test_eval_gates.py`)
   - `27 passed` (`tests/test_memory_feedback.py`, `tests/test_config.py`)
 - Compile verification passed on all touched modules and tests.
+- SDK tranche verification: `7 passed` (`tests/test_sdk_client.py`).
+- Ingestion tranche verification: `51 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`, `tests/test_config.py`).
+- Legacy migration tranche verification: `32 passed` (`tests/test_ingestion_parser.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
+- UI + chronological ingestion verification: `34 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
+- PR-remediation tranche verification: `83 passed` (`tests/test_eval_metrics.py`, `tests/test_sdk_client.py`, `tests/test_ingestion_pipeline.py`, `tests/test_ingestion_parser.py`, `tests/test_ingestion_discovery.py`, `tests/test_memory_ingestion.py`, `tests/test_config.py`, `tests/test_mcp_wrapper_protocol.py`).
+- Memory-chains tranche verification: `40 passed` (`tests/test_memory_chains.py`, `tests/test_hybrid_retriever.py`, `tests/test_memory_update_path.py`, `tests/test_config.py`, `tests/test_memory_feedback.py`) + `40 passed` (`tests/test_recall_trace.py`, `tests/test_feature_flags.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -103,6 +144,11 @@
 11. **Protocol diagnosability + standards alignment**: explicit JSON-RPC method/param errors remove silent MCP integration failure modes and improve interoperability debugging ROI.
 12. **Artifact ops scalability**: one-shot `verify --all` preserves integrity/reproducibility guarantees as benchmark bundles grow, reducing CI and release-maintenance overhead.
 13. **Telemetry privacy hardening**: bounded capture length and explicit runbook policy reduce sensitive-data spill risk while preserving incident-debug capability.
+14. **SDK integration throughput + reliability**: reusable sync/async transports with typed error channels reduce connection churn and improve deterministic handling in agent runtime loops.
+15. **Ingestion blast-radius reduction**: per-source fail-open parsing with strict chunking invariants prevents single bad files from halting batch ingestion while preserving auditability.
+16. **Cross-assistant historical continuity at scale**: source discovery + selection-based import closes manual migration gaps and creates measurable ROI by preserving prior project context across IDE/assistant switches.
+17. **Operational adoption ROI via browser UX**: consolidating discovery/import/project-ingest/search controls into one UI lowers operator friction and reduces CLI-only dependency for memory maintenance workflows.
+18. **Causal-context continuity ROI**: memory-chain edge persistence + retrieval expansion improves multi-step incident/debug recall, reducing repeated root-cause rediscovery across sessions.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
@@ -111,24 +157,30 @@
 
 ## Executive Summary
 
-This plan advances Muninn from v3.0 (the most technically complete local-first MCP memory server) to v3.3.0 (definitively SOTA+ in the MCP memory category) by addressing 4 identified gaps and implementing 5 advancement features across 3 phased releases.
+This plan advances Muninn from v3.0 (the most technically complete local-first MCP memory server) to v3.3.0 (definitively SOTA+ in the MCP memory category) by closing high-ROI gaps first and sequencing remaining Phase 3 work.
 
-**Gaps Addressed:**
+**Gaps addressed to date:**
 1. LLM extraction less nuanced than cloud competitors
-2. No Python SDK for programmatic use
+2. Python SDK for programmatic use (now implemented: sync + async + mem0-style aliases)
 3. Windows-centric deployment (excludes 70%+ of developers)
-4. No multi-source ingestion (files, conversations, APIs)
+4. Retrieval quality gating/observability enforceability for release integrity
 
-**Advancements Implemented:**
+**Still open gaps:**
+1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
+2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
+
+**Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
 6. Adaptive retrieval weights (entropy-based dynamic fusion)
 7. NLI-based conflict detection (UNIQUE — no competitor has this)
-8. Memory chains with temporal/causal linking
-9. Semantic deduplication at ingestion + consolidation
+8. Semantic deduplication at ingestion + consolidation
+9. Python SDK sync/async interoperability layer
+10. Multi-source ingestion with provenance-rich fail-open parsing
+11. Memory chains with temporal/causal linking and retrieval expansion
 
 **After all features, Muninn will be the ONLY memory system that combines:**
 - Local-first architecture (no cloud dependency)
-- 4-signal hybrid retrieval with adaptive weights
+- 6-signal hybrid retrieval with adaptive weights (vector, graph, bm25, temporal, goal, chain)
 - Explainable recall traces with per-signal attribution
 - NLI-based conflict detection for memory integrity
 - Structured extraction via Instructor (matches Mem0 quality)

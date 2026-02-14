@@ -18,7 +18,10 @@ Evaluator: Codex
 - **Canonical benchmark artifact discipline is now available** (committed bundle + checksum manifest + reproducibility verifier).
 - **Canonical artifact coverage is now multi-bundle** (baseline + robustness stress slice) with aggregate verification (`verify --all`).
 - **OTel operational enablement is now documented** (runbook + collector config + privacy controls).
-- **Phase 3 is largely missing** (no memory chains package, no ingestion pipeline package, no Python SDK package).
+- **Legacy memory/chat migration flow is now shipped**: discovery + selection-based import across assistant logs and MCP memory stores, including chat-context parsing for JSONL and sqlite-backed stores.
+- **Browser control center is now shipped**: root-served UI supports practical ingestion/reingestion/search/consolidation operations without CLI coupling.
+- **Open PR review issues are now remediated in code**: ingestion allow-list enforcement, runtime chunking bounds, legacy root/path validation, SDK URL-segment encoding, duplicate-safe eval metrics, and `/ingest` HTTPException passthrough.
+- **Phase 3 is now functionally complete at core package level**: Python SDK, multi-source ingestion, legacy migration, browser control center, and memory chains are now shipped.
 
 ## Status vs Plan
 
@@ -52,20 +55,24 @@ Evaluator: Codex
 
 | Plan item | Status | Evidence |
 |---|---|---|
-| 3A Memory chains | **Missing** | No `muninn/chains/` package in repository tree. |
-| 3B Multi-source ingestion | **Missing** | No `muninn/ingestion/` package, no `/ingest` server endpoint, no MCP ingest tool. |
-| 3C Python SDK | **Missing** | No `muninn/sdk/` package; `muninn/__init__.py` does not export `Memory`/`AsyncMemory`. |
+| 3A Memory chains | **Implemented (feature-gated)** | `muninn/chains/*` added; graph `PRECEDES/CAUSES` edges + memory add/update linking + hybrid chain signal are wired. |
+| 3B Multi-source ingestion | **Implemented + expanded** | `muninn/ingestion/` now provides fail-open parser pipeline with provenance metadata, chat-context extraction for `.jsonl/.ndjson`, sqlite-backed source parsing (`.vscdb/.db/.sqlite*`), runtime guardrails (allow-list roots + chunk/file bounds), REST (`/ingest`, `/ingest/legacy/discover`, `/ingest/legacy/import`), MCP (`ingest_sources`, `discover_legacy_sources`, `ingest_legacy_sources`), and SDK parity methods. |
+| 3C Python SDK | **Implemented** | `muninn/sdk/` now ships sync+async clients with typed errors; top-level exports include `Memory` and `AsyncMemory`. |
+| 3D Browser control center | **Implemented** | `dashboard.html` rebuilt and served at `/` by `server.py`; includes legacy discovery/import selection, project-folder contextual ingestion with chronological ordering, and operational search/consolidation controls. |
 
 ## High-Impact Issues Discovered
 
 1. **Graph retrieval argument mismatch (fixed):** `_graph_search` passed a string where graph store expects a list; now corrected with deterministic scoring.
 2. **User-scope enforcement risk in retrieval (fixed):** hybrid retrieval now enforces user/namespace constraints in final record filtering.
-3. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
-4. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
+3. **Legacy ingestion path traversal / arbitrary file-read surface (fixed):** user-provided roots and selected paths now validate against ingestion allow-list roots before discovery/import.
+4. **Ingestion DoS vector through unconstrained chunk params (fixed):** runtime chunk/file limits now enforce bounded values and relation constraints (`overlap < chunk_size`, `min_chunk <= chunk_size`).
+5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
+6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
+7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `337 passed, 2 skipped, 2 warnings`.
+- Full suite now passes in-session: `384 passed, 2 skipped, 1 warning`.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
   - `23 passed` (`eval_artifacts`, `eval_statistics`, `eval_presets`, `eval_run`, `eval_gates`, `eval_metrics`)
@@ -73,6 +80,11 @@ Evaluator: Codex
   - `15 passed` (`eval_gates`, `eval_metrics`, `eval_run`)
   - `48 passed` (`sqlite_feedback`, `eval_metrics`, `mcp_wrapper_protocol`, `weight_adapter`, `eval_gates`)
   - `27 passed` (`memory_feedback`, `config`)
+  - `32 passed` (`ingestion_parser`, `memory_ingestion`, `mcp_wrapper_protocol`, `sdk_client`)
+  - `34 passed` (`ingestion_pipeline`, `memory_ingestion`, `mcp_wrapper_protocol`, `sdk_client`)
+  - `83 passed` (`eval_metrics`, `sdk_client`, `ingestion_pipeline`, `ingestion_parser`, `ingestion_discovery`, `memory_ingestion`, `config`, `mcp_wrapper_protocol`)
+  - `40 passed` (`memory_chains`, `hybrid_retriever`, `memory_update_path`, `config`, `memory_feedback`)
+  - `40 passed` (`recall_trace`, `feature_flags`)
 - Compile checks passed on all touched modules/tests.
 
 ## Newly Resolved Inaccuracies
