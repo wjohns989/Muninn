@@ -123,9 +123,9 @@ class TestDeleteAllUserScoping:
         """User_id with SQL metacharacters does not cause injection.
 
         The LIKE pattern uses parameterised queries so injection is
-        impossible.  Double-quotes in the user_id are JSON-escaped when
-        stored (``\\"``) which means the LIKE pattern won't match — this
-        is the safe-fail behaviour: no data deleted, table intact.
+        impossible. With JSON1 user_id filtering, the exact malicious
+        identifier should match safely (no injection) and only that row
+        is removed.
         """
         store = SQLiteMetadataStore(tmp_path / "inject.db")
         malicious_id = 'user"; DROP TABLE memories; --'
@@ -135,9 +135,9 @@ class TestDeleteAllUserScoping:
         # Should not raise and should not drop the table
         count = store.delete_all(user_id=malicious_id)
 
-        # JSON escaping prevents LIKE match → 0 deleted (safe failure)
-        assert count == 0
-        # Both records survive — table fully intact
-        assert store.count() == 2
+        # Exact match delete of only malicious-id row; no injection side effects
+        assert count == 1
+        # Table intact and other data preserved
+        assert store.count() == 1
         remaining = store.get_all(limit=100)
-        assert {r.id for r in remaining} == {"m1", "m2"}
+        assert {r.id for r in remaining} == {"m2"}

@@ -29,7 +29,7 @@ class SignalContribution(BaseModel):
     a memory gets one SignalContribution entry.
     """
     signal: str = Field(
-        description="Signal type: 'vector' | 'bm25' | 'graph' | 'temporal'"
+        description="Signal type: 'vector' | 'bm25' | 'graph' | 'temporal' | 'goal'"
     )
     raw_score: float = Field(
         description="Original score from that signal (cosine sim, BM25 score, etc.)"
@@ -170,12 +170,18 @@ def explain_temporal_signal(raw_score: float, rank: int) -> str:
     return f"Temporal relevance (importance {raw_score:.2f}, rank #{rank})"
 
 
+def explain_goal_signal(raw_score: float, rank: int) -> str:
+    """Generate explanation for goal-alignment signal."""
+    return f"Aligned with active project goal (score {raw_score:.2f}, rank #{rank})"
+
+
 # Signal name → explanation function mapping
 SIGNAL_EXPLAINERS = {
     "vector": explain_vector_signal,
     "bm25": explain_bm25_signal,
     "graph": explain_graph_signal,
     "temporal": explain_temporal_signal,
+    "goal": explain_goal_signal,
 }
 
 
