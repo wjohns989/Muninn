@@ -76,6 +76,10 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
    - https://opentelemetry-python.readthedocs.io/en/latest/exporter/otlp/otlp.html
 29. OTel security guidance for sensitive data:
    - https://opentelemetry.io/docs/security/handling-sensitive-data/
+30. Requests session guidance (connection reuse / advanced usage):
+   - https://requests.readthedocs.io/en/latest/user/advanced/
+31. HTTPX client lifecycle guidance (sync/async client reuse):
+   - https://www.python-httpx.org/advanced/clients/
 
 ## New Missing Features Identified (Beyond Current Plan)
 
@@ -229,3 +233,17 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
 - More reliable multi-tenant isolation.
 - Lower query cost for scoped retrieval/deletion paths.
 - No API contract break; storage behavior improves transparently.
+
+### Python SDK transport lifecycle (high ROI, performance + reliability)
+
+**Issue found:** direct per-call HTTP usage increases connection churn and makes async integration awkward.
+
+**Upgrade implemented:**
+- Added first-party sync/async SDK clients with reusable `requests.Session` / `httpx.AsyncClient` transports.
+- Added context manager ergonomics (`with` / `async with`) and typed exception hierarchy for deterministic error handling.
+- Added mem0-style aliases (`Memory`, `AsyncMemory`) to reduce migration friction for existing users.
+
+**Ecosystem impact:**
+- Lower overhead for high-frequency programmatic integrations.
+- Cleaner integration path for async agent runtimes.
+- Better operability via typed connection/API error semantics.

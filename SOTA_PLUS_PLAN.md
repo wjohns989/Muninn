@@ -76,9 +76,14 @@
 24. OTel content-capture guardrail improved in code:
     - added `MUNINN_OTEL_CAPTURE_CONTENT_MAX_CHARS` with bounded parsing and safe fallback,
     - tracer now uses dynamic package version (`muninn.version.__version__`) instead of hardcoded instrumentation version.
+25. Phase 3C Python SDK tranche is now implemented:
+    - new `muninn/sdk` package with `MuninnClient` + `AsyncMuninnClient`,
+    - mem0-style aliases exported at package root (`Memory`, `AsyncMemory`),
+    - typed SDK exceptions (`MuninnConnectionError`, `MuninnAPIError`),
+    - method parity across health/add/search/goal/handoff/feedback/admin endpoints.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `337 passed, 2 skipped, 2 warnings`.
+- Full-suite verification now green in-session: `344 passed, 2 skipped, 2 warnings`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -88,6 +93,7 @@
   - `48 passed` (`tests/test_sqlite_feedback.py`, `tests/test_eval_metrics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_weight_adapter.py`, `tests/test_eval_gates.py`)
   - `27 passed` (`tests/test_memory_feedback.py`, `tests/test_config.py`)
 - Compile verification passed on all touched modules and tests.
+- SDK tranche verification: `7 passed` (`tests/test_sdk_client.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -103,6 +109,7 @@
 11. **Protocol diagnosability + standards alignment**: explicit JSON-RPC method/param errors remove silent MCP integration failure modes and improve interoperability debugging ROI.
 12. **Artifact ops scalability**: one-shot `verify --all` preserves integrity/reproducibility guarantees as benchmark bundles grow, reducing CI and release-maintenance overhead.
 13. **Telemetry privacy hardening**: bounded capture length and explicit runbook policy reduce sensitive-data spill risk while preserving incident-debug capability.
+14. **SDK integration throughput + reliability**: reusable sync/async transports with typed error channels reduce connection churn and improve deterministic handling in agent runtime loops.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
@@ -111,20 +118,24 @@
 
 ## Executive Summary
 
-This plan advances Muninn from v3.0 (the most technically complete local-first MCP memory server) to v3.3.0 (definitively SOTA+ in the MCP memory category) by addressing 4 identified gaps and implementing 5 advancement features across 3 phased releases.
+This plan advances Muninn from v3.0 (the most technically complete local-first MCP memory server) to v3.3.0 (definitively SOTA+ in the MCP memory category) by closing high-ROI gaps first and sequencing remaining Phase 3 work.
 
-**Gaps Addressed:**
+**Gaps addressed to date:**
 1. LLM extraction less nuanced than cloud competitors
-2. No Python SDK for programmatic use
+2. Python SDK for programmatic use (now implemented: sync + async + mem0-style aliases)
 3. Windows-centric deployment (excludes 70%+ of developers)
-4. No multi-source ingestion (files, conversations, APIs)
+4. Retrieval quality gating/observability enforceability for release integrity
 
-**Advancements Implemented:**
+**Still open gaps:**
+1. Memory chains package (`muninn/chains`)
+2. Multi-source ingestion package (`muninn/ingestion`) and ingest endpoint/tooling
+
+**Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
 6. Adaptive retrieval weights (entropy-based dynamic fusion)
 7. NLI-based conflict detection (UNIQUE — no competitor has this)
-8. Memory chains with temporal/causal linking
-9. Semantic deduplication at ingestion + consolidation
+8. Semantic deduplication at ingestion + consolidation
+9. Python SDK sync/async interoperability layer
 
 **After all features, Muninn will be the ONLY memory system that combines:**
 - Local-first architecture (no cloud dependency)
