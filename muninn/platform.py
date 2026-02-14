@@ -127,8 +127,14 @@ def get_data_dir() -> Path:
 
     Contains: vectors/, graph/, metadata.db, bm25_index/
     """
-    if os.environ.get("MUNINN_DOCKER") == "1":
-        return Path(os.environ.get("MUNINN_DATA_DIR", "/data"))
+    # Respect explicit override first.
+    env_override = os.environ.get("MUNINN_DATA_DIR")
+    if env_override:
+        return Path(env_override)
+    # In containers, prefer stable mount points even if MUNINN_DOCKER
+    # was not explicitly exported.
+    if is_running_in_docker():
+        return Path("/data")
     return _resolve_dir("MUNINN_DATA_DIR", "user_data_dir", _fallback_user_data_dir)
 
 
@@ -139,8 +145,11 @@ def get_config_dir() -> Path:
     Priority: MUNINN_CONFIG_DIR env var > platformdirs > OS fallback.
     Contains: config.yaml, feature overrides
     """
-    if os.environ.get("MUNINN_DOCKER") == "1":
-        return Path(os.environ.get("MUNINN_CONFIG_DIR", "/config"))
+    env_override = os.environ.get("MUNINN_CONFIG_DIR")
+    if env_override:
+        return Path(env_override)
+    if is_running_in_docker():
+        return Path("/config")
     return _resolve_dir("MUNINN_CONFIG_DIR", "user_config_dir", _fallback_user_config_dir)
 
 
@@ -151,8 +160,11 @@ def get_log_dir() -> Path:
     Priority: MUNINN_LOG_DIR env var > platformdirs > OS fallback.
     Contains: muninn.log, consolidation.log
     """
-    if os.environ.get("MUNINN_DOCKER") == "1":
-        return Path(os.environ.get("MUNINN_LOG_DIR", "/data/logs"))
+    env_override = os.environ.get("MUNINN_LOG_DIR")
+    if env_override:
+        return Path(env_override)
+    if is_running_in_docker():
+        return Path("/data/logs")
     return _resolve_dir("MUNINN_LOG_DIR", "user_log_dir", _fallback_user_log_dir)
 
 

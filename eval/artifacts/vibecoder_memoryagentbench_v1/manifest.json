@@ -1,0 +1,19 @@
+{
+  "manifest_version": 1,
+  "preset": "vibecoder_memoryagentbench_v1",
+  "description": "Canonical benchmark artifacts for Muninn eval gate reproducibility.",
+  "files": {
+    "dataset.jsonl": "0145249cdac2eb5d3be2afdf50fea45a15ec15ff125b06812c8f2b24eae5b8c8",
+    "baseline_predictions.jsonl": "e17a0643cdd6ff8e4cd88914e88721579f0b9853ee32c4e21a3cabdfc26eba2f",
+    "baseline_report.json": "c7ecba9fa0fcd5088e458e693feaa81403430206aacf611f9cad238eb7c5ffca"
+  },
+  "dataset": {
+    "rows": 146,
+    "track_counts": {
+      "accurate_retrieval": 22,
+      "conflict_resolution": 8,
+      "long_range_understanding": 110,
+      "test_time_learning": 6
+    }
+  }
+}

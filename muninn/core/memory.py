@@ -18,10 +18,12 @@ while providing significantly richer capabilities.
 """
 
 import asyncio
+import hashlib
+import json
 import uuid
 import time
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
 
 from muninn.core.types import (
@@ -39,6 +41,8 @@ from muninn.extraction.pipeline import ExtractionPipeline
 from muninn.scoring.importance import calculate_importance, calculate_novelty
 from muninn.consolidation.daemon import ConsolidationDaemon
 from muninn.core.feature_flags import get_flags
+from muninn.goal import GoalCompass
+from muninn.observability import OTelGenAITracer
 
 logger = logging.getLogger("Muninn")
 
@@ -89,6 +93,8 @@ class MuninnMemory:
         self._retriever: Optional[HybridRetriever] = None
         self._reranker: Optional[Reranker] = None
         self._consolidation: Optional[ConsolidationDaemon] = None
+        self._goal_compass: Optional[GoalCompass] = None
+        self._otel = OTelGenAITracer(enabled=False)
 
         # Phase 2 engines (v3.2.0)
         self._dedup = None           # SemanticDedup
@@ -99,6 +105,7 @@ class MuninnMemory:
         self._embed_model = None
         self._initialized = False
         self._user_scope_migration_complete = False
+        self._feedback_multiplier_cache: Dict[Tuple[str, str, str], Tuple[float, Dict[str, float]]] = {}
 
     async def initialize(self) -> None:
         """
@@ -133,6 +140,13 @@ class MuninnMemory:
         self._extraction = ExtractionPipeline(
             xlam_url=self.config.extraction.xlam_url if self.config.extraction.enable_xlam else None,
             ollama_url=self.config.extraction.ollama_url if self.config.extraction.enable_ollama_fallback else None,
+            instructor_base_url=(
+                self.config.extraction.instructor_base_url
+                if self.config.extraction.enable_instructor
+                else None
+            ),
+            instructor_model=self.config.extraction.instructor_model,
+            instructor_api_key=self.config.extraction.instructor_api_key,
         )
 
         # Initialize hybrid retriever
@@ -143,6 +157,7 @@ class MuninnMemory:
             bm25_index=self._bm25,
             reranker=self._reranker,
             embed_fn=self._embed,
+            telemetry=self._otel,
         )
 
         # Initialize consolidation daemon
@@ -157,6 +172,23 @@ class MuninnMemory:
 
         # Initialize Phase 2 engines (v3.2.0) — gated by feature flags
         flags = get_flags()
+        self._otel = OTelGenAITracer(enabled=flags.is_enabled("otel_genai"))
+        if self._retriever is not None:
+            self._retriever._telemetry = self._otel
+
+        if flags.is_enabled("goal_compass"):
+            self._goal_compass = GoalCompass(
+                metadata_store=self._metadata,
+                embed_fn=self._embed,
+                drift_threshold=self.config.goal_compass.drift_threshold,
+                signal_weight=self.config.goal_compass.signal_weight,
+                reminder_max_chars=self.config.goal_compass.reminder_max_chars,
+            )
+            logger.info(
+                "Goal compass enabled (drift_threshold=%.3f, signal_weight=%.3f)",
+                self.config.goal_compass.drift_threshold,
+                self.config.goal_compass.signal_weight,
+            )
 
         if flags.is_enabled("semantic_dedup"):
             from muninn.dedup.semantic_dedup import SemanticDedup
@@ -224,6 +256,7 @@ class MuninnMemory:
         logger.info("Muninn shut down")
         self._initialized = False
         self._user_scope_migration_complete = False
+        self._feedback_multiplier_cache.clear()
 
     # ==========================================
     # Core Memory Operations (mem0-compatible API)
@@ -264,212 +297,245 @@ class MuninnMemory:
             Dict with 'id', 'content', 'importance', and extraction results.
         """
         self._check_initialized()
-
-        scope_filters = {"namespace": namespace, "user_id": user_id}
-
-        # Extract entities and relations
-        extraction = await self._extract(content)
-
-        # Generate embedding
-        embedding = self._embed(content)
-
-        # Create record early so conflict resolution can reference the new ID
-        record = MemoryRecord(
-            content=content,
-            memory_type=memory_type,
-            provenance=provenance,
-            source_agent=agent_id or "unknown",
-            namespace=namespace,
-            metadata={**(metadata or {}), "user_id": user_id},
-            novelty_score=0.0,
-        )
-
-        # --- Phase 2: Semantic Deduplication (v3.2.0) ---
-        dedup_result = None
-        if self._dedup and self._vectors.count() > 0:
-            from muninn.dedup.semantic_dedup import DedupStrategy
-            dedup_result = self._dedup.check_duplicate(
-                embedding=embedding,
-                content=content,
-                vector_store=self._vectors,
-                metadata_store=self._metadata,
-                filters=scope_filters,
+        with self._otel.span(
+            "muninn.memory.add",
+            {
+                "gen_ai.operation.name": "memory.add",
+                "gen_ai.system": "muninn",
+                "muninn.namespace": namespace,
+                "muninn.user_id": user_id,
+                "muninn.project": (metadata or {}).get("project", "global"),
+            },
+        ):
+            self._otel.add_event(
+                "muninn.add.request",
+                {"content_preview": self._otel.maybe_content(content)},
             )
-            if dedup_result and dedup_result.is_duplicate:
-                if dedup_result.strategy == DedupStrategy.SKIP:
-                    logger.info("Dedup SKIP: duplicate of %s (sim=%.3f)",
-                                dedup_result.existing_memory_id, dedup_result.similarity)
-                    return {
-                        "id": None,
-                        "content": content,
-                        "event": "DEDUP_SKIP",
-                        "dedup": dedup_result.model_dump(),
-                    }
-                elif dedup_result.strategy == DedupStrategy.UPDATE_EXISTING:
-                    existing = self._metadata.get(dedup_result.existing_memory_id)
-                    if existing:
-                        if not self._record_matches_scope(existing, namespace, user_id):
-                            logger.warning(
-                                "Dedup UPDATE_EXISTING scope mismatch: memory_id=%s namespace=%s user_id=%s",
-                                dedup_result.existing_memory_id,
-                                existing.namespace,
-                                (existing.metadata or {}).get("user_id"),
-                            )
-                        else:
-                            merged_content = self._dedup.merge_content(content, existing.content)
-                            self._metadata.update(
-                                dedup_result.existing_memory_id,
-                                content=merged_content,
-                            )
-                            # Re-embed merged content
-                            merged_embedding = self._embed(merged_content)
-                            self._vectors.upsert(
-                                memory_id=dedup_result.existing_memory_id,
-                                embedding=merged_embedding,
-                                metadata={
-                                    "content": merged_content[:500],
-                                    "memory_type": existing.memory_type.value,
-                                    "namespace": namespace,
-                                    "importance": existing.importance,
-                                    "user_id": user_id,
-                                },
-                            )
-                            self._bm25.add(dedup_result.existing_memory_id, merged_content)
-                            logger.info("Dedup UPDATE_EXISTING: merged into %s",
-                                        dedup_result.existing_memory_id)
-                            return {
-                                "id": dedup_result.existing_memory_id,
-                                "content": merged_content,
-                                "event": "DEDUP_MERGED",
-                                "dedup": dedup_result.model_dump(),
-                            }
 
-        # --- Phase 2: Conflict Detection (v3.2.0) ---
-        conflict_info = None
-        if self._conflict_detector and self._vectors.count() > 0:
-            try:
-                # Pre-filter by vector similarity to find candidates
-                similar_for_conflict = self._vectors.search(
-                    embedding,
-                    limit=5,
-                    score_threshold=self.config.conflict_detection.similarity_prefilter,
+            scoped_metadata = {**(metadata or {}), "user_id": user_id}
+            project_value = scoped_metadata.get("project")
+            project = str(project_value) if project_value else "global"
+            branch = scoped_metadata.get("branch")
+            if branch is not None:
+                branch = str(branch)
+
+            scope_filters = {"namespace": namespace, "user_id": user_id}
+            if project_value:
+                scope_filters["project"] = project
+
+            extraction = await self._extract(content)
+            embedding = self._embed(content)
+
+            record = MemoryRecord(
+                content=content,
+                memory_type=memory_type,
+                provenance=provenance,
+                source_agent=agent_id or "unknown",
+                project=project,
+                branch=branch,
+                namespace=namespace,
+                metadata=scoped_metadata,
+                novelty_score=0.0,
+            )
+
+            dedup_result = None
+            if self._dedup and self._vectors.count() > 0:
+                from muninn.dedup.semantic_dedup import DedupStrategy
+
+                dedup_result = self._dedup.check_duplicate(
+                    embedding=embedding,
+                    content=content,
+                    vector_store=self._vectors,
+                    metadata_store=self._metadata,
                     filters=scope_filters,
                 )
-                if similar_for_conflict:
-                    candidate_ids = [mid for mid, _score in similar_for_conflict]
-                    candidate_records = [
-                        candidate
-                        for candidate in self._metadata.get_by_ids(candidate_ids)
-                        if self._record_matches_scope(candidate, namespace, user_id)
-                    ]
-                    if candidate_records:
-                        conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)
-                        if conflicts and self._conflict_resolver:
-                            # Resolve the highest-scoring conflict first
-                            conflicts.sort(key=lambda c: c.contradiction_score, reverse=True)
-                            conflict = conflicts[0]
-                            resolution = self._conflict_resolver.resolve(
-                                conflict,
-                                new_record=record,
-                                new_embedding=embedding,
-                                user_id=user_id,
-                            )
-                            conflict_info = {
-                                "conflict_detected": True,
-                                "resolution": resolution,
-                                "conflict_details": conflict.model_dump(),
-                            }
-                            # If resolution says skip new storage, return early
-                            if resolution.get("skip_new_storage"):
-                                logger.info("Conflict resolution: %s — skipping new storage",
-                                            resolution.get("resolution"))
+                if dedup_result and dedup_result.is_duplicate:
+                    if dedup_result.strategy == DedupStrategy.SKIP:
+                        logger.info(
+                            "Dedup SKIP: duplicate of %s (sim=%.3f)",
+                            dedup_result.existing_memory_id,
+                            dedup_result.similarity,
+                        )
+                        return {
+                            "id": None,
+                            "content": content,
+                            "event": "DEDUP_SKIP",
+                            "dedup": dedup_result.model_dump(),
+                        }
+                    if dedup_result.strategy == DedupStrategy.UPDATE_EXISTING:
+                        existing = self._metadata.get(dedup_result.existing_memory_id)
+                        if existing:
+                            if not self._record_matches_scope(existing, namespace, user_id):
+                                logger.warning(
+                                    "Dedup UPDATE_EXISTING scope mismatch: memory_id=%s namespace=%s user_id=%s",
+                                    dedup_result.existing_memory_id,
+                                    existing.namespace,
+                                    (existing.metadata or {}).get("user_id"),
+                                )
+                            else:
+                                merged_content = self._dedup.merge_content(content, existing.content)
+                                self._metadata.update(
+                                    dedup_result.existing_memory_id,
+                                    content=merged_content,
+                                )
+                                merged_embedding = self._embed(merged_content)
+                                self._vectors.upsert(
+                                    memory_id=dedup_result.existing_memory_id,
+                                    embedding=merged_embedding,
+                                    metadata={
+                                        "content": merged_content[:500],
+                                        "memory_type": existing.memory_type.value,
+                                        "namespace": namespace,
+                                        "importance": existing.importance,
+                                        "user_id": user_id,
+                                        "project": existing.project,
+                                        "branch": existing.branch,
+                                    },
+                                )
+                                self._bm25.add(dedup_result.existing_memory_id, merged_content)
+                                logger.info(
+                                    "Dedup UPDATE_EXISTING: merged into %s",
+                                    dedup_result.existing_memory_id,
+                                )
                                 return {
-                                    "id": None,
-                                    "content": content,
-                                    "event": f"CONFLICT_{resolution['resolution'].upper()}",
-                                    "conflict": conflict_info,
+                                    "id": dedup_result.existing_memory_id,
+                                    "content": merged_content,
+                                    "event": "DEDUP_MERGED",
+                                    "dedup": dedup_result.model_dump(),
                                 }
-            except Exception as e:
-                logger.warning("Conflict detection failed (non-fatal): %s", e)
 
-        # Calculate novelty by checking similarity to existing memories
-        max_similarity = 0.0
-        if self._vectors.count() > 0:
-            try:
-                similar = self._vectors.search(embedding, limit=5, filters=scope_filters)
-                if similar:
-                    max_similarity = similar[0][1]  # Highest score
-            except Exception:
-                pass
+            conflict_info = None
+            if self._conflict_detector and self._vectors.count() > 0:
+                try:
+                    similar_for_conflict = self._vectors.search(
+                        embedding,
+                        limit=5,
+                        score_threshold=self.config.conflict_detection.similarity_prefilter,
+                        filters=scope_filters,
+                    )
+                    if similar_for_conflict:
+                        candidate_ids = [mid for mid, _score in similar_for_conflict]
+                        candidate_records = [
+                            candidate
+                            for candidate in self._metadata.get_by_ids(candidate_ids)
+                            if self._record_matches_scope(candidate, namespace, user_id)
+                        ]
+                        if candidate_records:
+                            conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)
+                            if conflicts and self._conflict_resolver:
+                                conflicts.sort(key=lambda c: c.contradiction_score, reverse=True)
+                                conflict = conflicts[0]
+                                resolution = self._conflict_resolver.resolve(
+                                    conflict,
+                                    new_record=record,
+                                    new_embedding=embedding,
+                                    user_id=user_id,
+                                )
+                                conflict_info = {
+                                    "conflict_detected": True,
+                                    "resolution": resolution,
+                                    "conflict_details": conflict.model_dump(),
+                                }
+                                if resolution.get("skip_new_storage"):
+                                    logger.info(
+                                        "Conflict resolution: %s — skipping new storage",
+                                        resolution.get("resolution"),
+                                    )
+                                    return {
+                                        "id": None,
+                                        "content": content,
+                                        "event": f"CONFLICT_{resolution['resolution'].upper()}",
+                                        "conflict": conflict_info,
+                                    }
+                except Exception as e:
+                    logger.warning("Conflict detection failed (non-fatal): %s", e)
 
-        # Calculate initial importance
-        record.novelty_score = calculate_novelty(max_similarity)
+            max_similarity = 0.0
+            if self._vectors.count() > 0:
+                try:
+                    similar = self._vectors.search(embedding, limit=5, filters=scope_filters)
+                    if similar:
+                        max_similarity = similar[0][1]
+                except Exception:
+                    pass
 
-        # Get centrality from graph (if entities exist)
-        centrality = 0.0
-        if extraction.entities:
-            # We'll compute centrality after adding to graph
-            centrality = 0.1  # Baseline for having entities
+            record.novelty_score = calculate_novelty(max_similarity)
 
-        importance = calculate_importance(
-            record,
-            max_similarity=max_similarity,
-            centrality=centrality,
-        )
-        record.importance = importance
+            centrality = 0.1 if extraction.entities else 0.0
+            importance = calculate_importance(
+                record,
+                max_similarity=max_similarity,
+                centrality=centrality,
+            )
+            record.importance = importance
 
-        # Store in metadata (SQLite)
-        self._metadata.add(record)
-
-        # Store embedding in vector store (Qdrant)
-        self._vectors.upsert(
-            memory_id=record.id,
-            embedding=embedding,
-            metadata={
-                "content": content[:500],
-                "memory_type": memory_type.value,
-                "namespace": namespace,
-                "importance": importance,
-                "user_id": user_id,
-            },
-        )
-
-        # Store in graph (Kuzu)
-        self._graph.add_memory_node(record.id, extraction.summary or content[:200])
-        for entity in extraction.entities:
-            self._graph.add_entity(entity.name, entity.entity_type)
-            self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
-        for relation in extraction.relations:
-            self._graph.add_entity(relation.subject, "concept")
-            self._graph.add_entity(relation.object, "concept")
-            self._graph.add_relation(
-                relation.subject, relation.predicate,
-                relation.object, record.id, relation.confidence,
+            self._metadata.add(record)
+            self._vectors.upsert(
+                memory_id=record.id,
+                embedding=embedding,
+                metadata={
+                    "content": content[:500],
+                    "memory_type": memory_type.value,
+                    "namespace": namespace,
+                    "importance": importance,
+                    "user_id": user_id,
+                    "project": project,
+                    "branch": branch,
+                },
             )
 
-        # Add to BM25 index
-        self._bm25.add(record.id, content)
+            self._graph.add_memory_node(record.id, extraction.summary or content[:200])
+            for entity in extraction.entities:
+                self._graph.add_entity(entity.name, entity.entity_type)
+                self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
+            for relation in extraction.relations:
+                self._graph.add_entity(relation.subject, "concept")
+                self._graph.add_entity(relation.object, "concept")
+                self._graph.add_relation(
+                    relation.subject,
+                    relation.predicate,
+                    relation.object,
+                    record.id,
+                    relation.confidence,
+                )
 
-        logger.info("Added memory %s (importance=%.3f, entities=%d, relations=%d)",
-                     record.id, importance, len(extraction.entities), len(extraction.relations))
+            self._bm25.add(record.id, content)
+            logger.info(
+                "Added memory %s (importance=%.3f, entities=%d, relations=%d)",
+                record.id,
+                importance,
+                len(extraction.entities),
+                len(extraction.relations),
+            )
 
-        result = {
-            "id": record.id,
-            "content": content,
-            "importance": importance,
-            "memory_type": memory_type.value,
-            "entities": [e.model_dump() for e in extraction.entities],
-            "relations": [r.model_dump() for r in extraction.relations],
-            "event": "ADD",
-        }
+            result = {
+                "id": record.id,
+                "content": content,
+                "importance": importance,
+                "memory_type": memory_type.value,
+                "entities": [e.model_dump() for e in extraction.entities],
+                "relations": [r.model_dump() for r in extraction.relations],
+                "event": "ADD",
+            }
+            if conflict_info:
+                result["conflict"] = conflict_info
+            if dedup_result:
+                result["dedup"] = dedup_result.model_dump()
+            if self._goal_compass is not None and project:
+                drift = await self._goal_compass.evaluate_drift(
+                    text=content,
+                    user_id=user_id,
+                    namespace=namespace,
+                    project=project,
+                )
+                if drift is not None:
+                    result["goal_alignment"] = drift
 
-        # Attach Phase 2 metadata when present
-        if conflict_info:
-            result["conflict"] = conflict_info
-        if dedup_result:
-            result["dedup"] = dedup_result.model_dump()
-
-        return result
+            self._otel.add_event(
+                "muninn.add.result",
+                {"memory_id": record.id, "importance": importance},
+            )
+            return result
 
     async def search(
         self,
@@ -481,6 +547,7 @@ class MuninnMemory:
         filters: Optional[Dict[str, Any]] = None,
         namespaces: Optional[List[str]] = None,
         explain: bool = False,
+        project: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search memories using hybrid multi-signal retrieval.
@@ -500,32 +567,93 @@ class MuninnMemory:
         """
         self._check_initialized()
 
-        results = await self._retriever.search(
-            query=query,
-            limit=limit,
-            user_id=user_id,
-            filters=filters,
-            rerank=rerank,
-            namespaces=namespaces,
-            explain=explain,
-        )
+        with self._otel.span(
+            "muninn.memory.search",
+            {
+                "gen_ai.operation.name": "memory.search",
+                "gen_ai.system": "muninn",
+                "muninn.user_id": user_id,
+                "muninn.limit": limit,
+            },
+        ):
+            self._otel.add_event(
+                "muninn.search.request",
+                {"query_preview": self._otel.maybe_content(query)},
+            )
+            effective_filters = dict(filters or {})
+            if project and "project" not in effective_filters:
+                effective_filters["project"] = project
 
-        output = []
-        for r in results:
-            item = {
-                "id": r.memory.id,
-                "memory": r.memory.content,
-                "score": r.score,
-                "source": r.source,
-                "memory_type": r.memory.memory_type.value,
-                "importance": r.memory.importance,
-                "created_at": r.memory.created_at,
-                "metadata": r.memory.metadata,
-            }
-            if explain and r.trace is not None:
-                item["trace"] = r.trace.model_dump()
-            output.append(item)
-        return output
+            resolved_namespace = "global"
+            if namespaces and len(namespaces) == 1:
+                resolved_namespace = namespaces[0]
+            elif effective_filters.get("namespace"):
+                resolved_namespace = str(effective_filters["namespace"])
+
+            resolved_project = str(effective_filters.get("project") or project or "global")
+            goal_embedding = None
+            goal_alignment = None
+            feedback_signal_multipliers = None
+            if self._goal_compass is not None and resolved_project:
+                goal = await self._goal_compass.get_goal(
+                    user_id=user_id,
+                    namespace=resolved_namespace,
+                    project=resolved_project,
+                )
+                if goal:
+                    goal_embedding = goal.get("goal_embedding")
+                    goal_alignment = await self._goal_compass.evaluate_drift(
+                        text=query,
+                        user_id=user_id,
+                        namespace=resolved_namespace,
+                        project=resolved_project,
+                    )
+            flags = get_flags()
+            if (
+                flags.is_enabled("retrieval_feedback")
+                and self.config.retrieval_feedback.enabled
+                and resolved_project
+            ):
+                feedback_signal_multipliers = self._get_feedback_signal_multipliers_cached(
+                    user_id=user_id,
+                    namespace=resolved_namespace,
+                    project=resolved_project,
+                )
+
+            results = await self._retriever.search(
+                query=query,
+                limit=limit,
+                user_id=user_id,
+                filters=effective_filters,
+                rerank=rerank,
+                namespaces=namespaces,
+                explain=explain,
+                goal_embedding=goal_embedding,
+                goal_signal_weight=self.config.goal_compass.signal_weight,
+                feedback_signal_multipliers=feedback_signal_multipliers,
+            )
+
+            output = []
+            for r in results:
+                item = {
+                    "id": r.memory.id,
+                    "memory": r.memory.content,
+                    "score": r.score,
+                    "source": r.source,
+                    "memory_type": r.memory.memory_type.value,
+                    "importance": r.memory.importance,
+                    "created_at": r.memory.created_at,
+                    "metadata": r.memory.metadata,
+                }
+                if explain and r.trace is not None:
+                    item["trace"] = r.trace.model_dump()
+                if goal_alignment is not None:
+                    item["goal_similarity"] = goal_alignment["similarity"]
+                    if goal_alignment["is_drift"]:
+                        item["goal_drift_warning"] = goal_alignment["reminder"]
+                output.append(item)
+            self._otel.add_event("muninn.search.result", {"result_count": len(output)})
+            return output
 
     async def get_all(
         self,
@@ -560,6 +688,299 @@ class MuninnMemory:
             }
             for r in records
         ]
+
+    def _get_feedback_signal_multipliers_cached(
+        self,
+        *,
+        user_id: str,
+        namespace: str,
+        project: str,
+    ) -> Dict[str, float]:
+        """Fetch scoped feedback multipliers with short TTL cache."""
+        cache_key = (user_id, namespace, project)
+        now = time.time()
+        cached = self._feedback_multiplier_cache.get(cache_key)
+        if cached and cached[0] > now:
+            return dict(cached[1])
+
+        multipliers = self._metadata.get_feedback_signal_multipliers(
+            user_id=user_id,
+            namespace=namespace,
+            project=project,
+            lookback_days=self.config.retrieval_feedback.lookback_days,
+            min_total_signal_weight=self.config.retrieval_feedback.min_total_signal_weight,
+            estimator=self.config.retrieval_feedback.estimator,
+            propensity_floor=self.config.retrieval_feedback.propensity_floor,
+            min_effective_samples=self.config.retrieval_feedback.min_effective_samples,
+            default_sampling_prob=self.config.retrieval_feedback.default_sampling_prob,
+            floor=self.config.retrieval_feedback.multiplier_floor,
+            ceiling=self.config.retrieval_feedback.multiplier_ceiling,
+        )
+        ttl = max(1, int(self.config.retrieval_feedback.cache_ttl_seconds))
+        self._feedback_multiplier_cache[cache_key] = (now + ttl, dict(multipliers))
+        return multipliers
+
+    async def record_retrieval_feedback(
+        self,
+        *,
+        query: str,
+        memory_id: str,
+        outcome: float,
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str = "global",
+        rank: Optional[int] = None,
+        sampling_prob: Optional[float] = None,
+        signals: Optional[Dict[str, float]] = None,
+        source: str = "manual",
+    ) -> Dict[str, Any]:
+        """Persist retrieval feedback for adaptive weighting calibration."""
+        self._check_initialized()
+        feedback_id = self._metadata.add_retrieval_feedback(
+            user_id=user_id,
+            namespace=namespace,
+            project=project,
+            query_text=query,
+            memory_id=memory_id,
+            outcome=outcome,
+            rank=rank,
+            sampling_prob=sampling_prob,
+            signals=signals or {},
+            source=source,
+        )
+        self._feedback_multiplier_cache.pop((user_id, namespace, project), None)
+        return {
+            "feedback_id": feedback_id,
+            "query": query,
+            "memory_id": memory_id,
+            "outcome": max(0.0, min(1.0, float(outcome))),
+            "project": project,
+            "namespace": namespace,
+            "rank": int(rank) if isinstance(rank, int) and rank > 0 else None,
+            "sampling_prob": (
+                max(0.0, min(1.0, float(sampling_prob)))
+                if isinstance(sampling_prob, (int, float))
+                else None
+            ),
+            "source": source,
+        }
+
+    async def set_project_goal(
+        self,
+        *,
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str,
+        goal_statement: str,
+        constraints: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Set/update a scoped project goal and cache its embedding."""
+        self._check_initialized()
+        if self._goal_compass is None:
+            raise RuntimeError("Goal compass is disabled by feature flag")
+        if not goal_statement.strip():
+            raise ValueError("goal_statement cannot be empty")
+        return await self._goal_compass.set_goal(
+            user_id=user_id,
+            namespace=namespace,
+            project=project,
+            goal_statement=goal_statement,
+            constraints=constraints or [],
+        )
+
+    async def get_project_goal(
+        self,
+        *,
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch a scoped project goal if configured."""
+        self._check_initialized()
+        if self._goal_compass is None:
+            return None
+        return await self._goal_compass.get_goal(
+            user_id=user_id,
+            namespace=namespace,
+            project=project,
+        )
+
+    @staticmethod
+    def _handoff_payload_for_checksum(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Return canonical payload subset used for checksum generation."""
+        return {
+            "schema_version": payload.get("schema_version", 1),
+            "project": payload.get("project"),
+            "namespace": payload.get("namespace"),
+            "user_id": payload.get("user_id"),
+            "goal": payload.get("goal"),
+            "decisions": payload.get("decisions", []),
+            "open_questions": payload.get("open_questions", []),
+            "memories": payload.get("memories", []),
+            "watermark_created_at": payload.get("watermark_created_at"),
+        }
+
+    @classmethod
+    def _handoff_checksum(cls, payload: Dict[str, Any]) -> str:
+        canonical = cls._handoff_payload_for_checksum(payload)
+        blob = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    async def export_handoff(
+        self,
+        *,
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str,
+        limit: int = 25,
+    ) -> Dict[str, Any]:
+        """Export deterministic project handoff bundle for cross-assistant continuity."""
+        self._check_initialized()
+        goal = await self.get_project_goal(user_id=user_id, namespace=namespace, project=project)
+
+        records = self._metadata.get_all(
+            limit=5000,
+            project=project,
+            namespace=namespace,
+            user_id=user_id,
+        )
+
+        now = time.time()
+
+        def _handoff_rank(record: MemoryRecord) -> float:
+            age_seconds = max(0.0, now - record.created_at)
+            recency = 1.0 / (1.0 + (age_seconds / 86400.0))
+            return float(record.importance) * recency
+
+        ranked_records = sorted(records, key=_handoff_rank, reverse=True)
+        top_records = ranked_records[: max(1, min(limit, 500))]
+
+        decisions = []
+        open_questions = []
+        memories = []
+        for record in top_records:
+            metadata = record.metadata or {}
+            memories.append(
+                {
+                    "id": record.id,
+                    "content": record.content,
+                    "importance": record.importance,
+                    "memory_type": record.memory_type.value,
+                    "created_at": record.created_at,
+                    "metadata": metadata,
+                }
+            )
+            if metadata.get("kind") == "decision":
+                decisions.append(
+                    {
+                        "id": metadata.get("decision_id", record.id),
+                        "text": record.content,
+                        "status": metadata.get("status", "accepted"),
+                    }
+                )
+            if metadata.get("kind") == "open_question" or record.content.strip().endswith("?"):
+                open_questions.append(record.content.strip())
+
+        payload = {
+            "schema_version": 1,
+            "project": project,
+            "namespace": namespace,
+            "user_id": user_id,
+            "exported_at": time.time(),
+            "goal": goal,
+            "decisions": decisions,
+            "open_questions": open_questions,
+            "memories": memories,
+            "watermark_created_at": max((r.created_at for r in top_records), default=0.0),
+        }
+        checksum = self._handoff_checksum(payload)
+        payload["checksum"] = f"sha256:{checksum}"
+        payload["event_id"] = f"handoff:{project}:{namespace}:{checksum[:16]}"
+        return payload
+
+    async def import_handoff(
+        self,
+        *,
+        bundle: Dict[str, Any],
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str,
+        source: str = "handoff_import",
+    ) -> Dict[str, Any]:
+        """Import handoff bundle with checksum verification and idempotent replay."""
+        self._check_initialized()
+        if not isinstance(bundle, dict):
+            raise ValueError("bundle must be an object")
+
+        payload = dict(bundle)
+        expected_checksum = payload.get("checksum", "")
+        if not expected_checksum or not isinstance(expected_checksum, str):
+            raise ValueError("bundle.checksum is required")
+
+        computed = self._handoff_checksum(payload)
+        checksum_ok = expected_checksum == f"sha256:{computed}"
+        if not checksum_ok:
+            raise ValueError("bundle checksum verification failed")
+
+        event_id = payload.get("event_id") or f"handoff:{project}:{namespace}:{computed[:16]}"
+        if self._metadata.has_handoff_event(event_id):
+            return {
+                "event": "HANDOFF_DUPLICATE",
+                "event_id": event_id,
+                "imported": 0,
+                "skipped": len(payload.get("memories", [])),
+                "checksum_verified": True,
+            }
+
+        imported = 0
+        skipped = 0
+
+        goal = payload.get("goal")
+        if isinstance(goal, dict) and goal.get("goal_statement"):
+            await self.set_project_goal(
+                user_id=user_id,
+                namespace=namespace,
+                project=project,
+                goal_statement=str(goal.get("goal_statement")),
+                constraints=[str(item) for item in goal.get("constraints", [])],
+            )
+
+        memories = payload.get("memories", [])
+        for item in memories:
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                skipped += 1
+                continue
+
+            merged_meta = dict(item.get("metadata") or {})
+            merged_meta.setdefault("project", project)
+            merged_meta.setdefault("kind", "handoff_memory")
+            merged_meta["handoff_event_id"] = event_id
+            merged_meta["handoff_source"] = source
+
+            add_result = await self.add(
+                content=content,
+                user_id=user_id,
+                namespace=namespace,
+                metadata=merged_meta,
+                provenance=Provenance.INGESTED,
+            )
+            if add_result.get("event") in {"DEDUP_SKIP", "CONFLICT_SKIP"}:
+                skipped += 1
+            else:
+                imported += 1
+
+        self._metadata.record_handoff_event(event_id=event_id, source=source)
+        return {
+            "event": "HANDOFF_IMPORTED",
+            "event_id": event_id,
+            "imported": imported,
+            "skipped": skipped,
+            "checksum_verified": True,
+        }
 
     async def update(self, memory_id: str, data: str) -> Dict[str, Any]:
         """
@@ -598,6 +1019,8 @@ class MuninnMemory:
                 "namespace": record.namespace,
                 "importance": record.importance,
                 "user_id": record.metadata.get("user_id", "global_user"),
+                "project": record.project,
+                "branch": record.branch,
             },
         )
 

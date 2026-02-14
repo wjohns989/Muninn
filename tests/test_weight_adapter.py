@@ -243,3 +243,29 @@ class TestExplain:
         }
         explanations = adapter.explain("test query sentence for length", results)
         assert all(isinstance(v, str) for v in explanations.values())
+
+
+class TestFeedbackAdaptation:
+    """Historical feedback multiplier behavior."""
+
+    def test_feedback_multipliers_influence_weights(self):
+        adapter = WeightAdapter()
+        no_feedback = adapter.compute_weights("architecture query sentence")
+        with_feedback = adapter.compute_weights(
+            "architecture query sentence",
+            feedback_multipliers={"vector": 1.2, "bm25": 0.8},
+        )
+        # Relative vector share should improve vs bm25 under positive vector feedback.
+        assert (with_feedback["vector"] / with_feedback["bm25"]) > (
+            no_feedback["vector"] / no_feedback["bm25"]
+        )
+
+    def test_feedback_multiplier_is_safely_bounded(self):
+        adapter = WeightAdapter()
+        extreme = adapter.compute_weights(
+            "architecture query sentence",
+            feedback_multipliers={"vector": 999.0, "bm25": -5.0},
+        )
+        # After normalization, all weights remain finite and positive.
+        for value in extreme.values():
+            assert value > 0

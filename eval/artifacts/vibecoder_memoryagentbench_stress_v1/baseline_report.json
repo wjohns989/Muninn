@@ -1,0 +1,135 @@
+{
+  "cases": 60,
+  "cutoffs": {
+    "@5": {
+      "recall": 0.9333333333333333,
+      "mrr": 0.5233333333333332,
+      "ndcg": 0.6213452677756235
+    },
+    "@10": {
+      "recall": 0.95,
+      "mrr": 0.5233333333333332,
+      "ndcg": 0.628209165116214
+    }
+  },
+  "latency_ms": {
+    "avg": 124.4,
+    "p50": 131.0,
+    "p95": 158.0,
+    "count": 60.0
+  },
+  "tracks": {
+    "accurate_retrieval": {
+      "cases": 16,
+      "cutoffs": {
+        "@5": {
+          "recall": 1.0,
+          "mrr": 0.875,
+          "ndcg": 0.8923843528101205
+        },
+        "@10": {
+          "recall": 1.0,
+          "mrr": 0.875,
+          "ndcg": 0.8923843528101205
+        }
+      },
+      "latency_ms": {
+        "avg": 88.625,
+        "p50": 88.0,
+        "p95": 107.0,
+        "count": 16.0
+      }
+    },
+    "test_time_learning": {
+      "cases": 6,
+      "cutoffs": {
+        "@5": {
+          "recall": 1.0,
+          "mrr": 0.4166666666666667,
+          "ndcg": 0.564178688405436
+        },
+        "@10": {
+          "recall": 1.0,
+          "mrr": 0.4166666666666667,
+          "ndcg": 0.564178688405436
+        }
+      },
+      "latency_ms": {
+        "avg": 116.16666666666667,
+        "p50": 113.0,
+        "p95": 133.0,
+        "count": 6.0
+      }
+    },
+    "long_range_understanding": {
+      "cases": 30,
+      "cutoffs": {
+        "@5": {
+          "recall": 0.9166666666666666,
+          "mrr": 0.3966666666666666,
+          "ndcg": 0.5262400560158099
+        },
+        "@10": {
+          "recall": 0.9333333333333333,
+          "mrr": 0.3966666666666666,
+          "ndcg": 0.5326876028030523
+        }
+      },
+      "latency_ms": {
+        "avg": 138.43333333333334,
+        "p50": 138.0,
+        "p95": 157.0,
+        "count": 30.0
+      }
+    },
+    "conflict_resolution": {
+      "cases": 8,
+      "cutoffs": {
+        "@5": {
+          "recall": 0.8125,
+          "mrr": 0.375,
+          "ndcg": 0.4787865763335699
+        },
+        "@10": {
+          "recall": 0.875,
+          "mrr": 0.375,
+          "ndcg": 0.5060875059358404
+        }
+      },
+      "latency_ms": {
+        "avg": 149.5,
+        "p50": 153.0,
+        "p95": 167.0,
+        "count": 8.0
+      }
+    }
+  },
+  "dataset_size": 60,
+  "predictions_size": 60,
+  "matched_queries": 60,
+  "gates": {
+    "passed": true,
+    "violations": []
+  },
+  "gate_config": {
+    "preset": "vibecoder_memoryagentbench_stress_v1",
+    "max_metric_regression": 0.015,
+    "max_track_metric_regression": 0.02,
+    "max_p95_latency_ms": 170.0,
+    "required_track_cases": {
+      "accurate_retrieval": 16,
+      "test_time_learning": 6,
+      "long_range_understanding": 30,
+      "conflict_resolution": 8
+    },
+    "skip_baseline_compare": true,
+    "baseline_predictions": null,
+    "significance_alpha": 0.05,
+    "bootstrap_samples": 2000,
+    "permutation_rounds": 4000,
+    "significance_seed": 42,
+    "gate_significant_regressions": true,
+    "significance_correction": "holm",
+    "significance_correction_family": "by_track"
+  }
+}

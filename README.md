@@ -288,6 +288,10 @@ python -m pytest tests/ -v
 
 # Run specific test module
 python -m pytest tests/test_bm25.py -v
+
+# Verify canonical eval artifact integrity + reproducibility
+python -m eval.artifacts verify --preset vibecoder_memoryagentbench_v1
+python -m eval.artifacts verify --all
 ```
 
 ---
@@ -326,6 +330,7 @@ See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadm
 - [Architecture Deep Dive](docs/ARCHITECTURE.md) — Full design document with research references
 - [Citations & Credits](CITATIONS.md) — Academic sources and open-source attribution
 - [SOTA+ Roadmap](SOTA_PLUS_PLAN.md) — Next-generation feature implementation plan
+- [OTel GenAI Runbook](docs/OTEL_GENAI_OBSERVABILITY.md) — Trace export setup and privacy controls
 
 ---
 

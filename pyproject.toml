@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muninn-mcp"
-version = "3.1.0"
+version = "3.1.1"
 description = "Local-first, assistant-agnostic persistent memory for AI agents via MCP — Muninn native engine"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -59,8 +59,11 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
 ]
+observability = [
+    "opentelemetry-api>=1.27.0",
+]
 all = [
-    "muninn-mcp[instructor,tray,dev]",
+    "muninn-mcp[instructor,tray,dev,observability]",
 ]
 
 [project.scripts]
