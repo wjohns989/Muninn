@@ -71,9 +71,13 @@ Completed since last update:
 27. Phase 4A baseline started:
    - browser control center now persists operator preferences in local storage (profile, ingestion defaults, verbosity, and workflow toggles),
    - model profile is now surfaced in UI and tagged into ingestion metadata for operational traceability.
+28. Phase 4B backend profile router baseline implemented:
+   - extraction config now supports `model_profile` plus profile-specific Ollama model slots,
+   - extraction pipeline now builds deterministic Instructor route chains by profile (`low_latency`/`balanced`/`high_reasoning`) with xLAM+Ollama fallback ordering,
+   - add/update extraction path now supports operator profile hints while preserving backward-compatible test/mocking behavior.
 
 Verification:
-- Full suite now passes in-session: `384 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `390 passed, 2 skipped, 0 warnings`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -105,7 +109,7 @@ Fixed in current implementation slice:
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
-3. Extraction/model policy remains static: operator-facing controls for model quality/latency/compute tradeoffs and fallback routing are not yet implemented.
+3. Profile-level promotion criteria remain open: routing is implemented, but per-profile eval gates and telemetry-backed auto-default policy are still pending.
 
 ---
 

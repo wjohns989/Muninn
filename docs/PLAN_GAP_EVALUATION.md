@@ -23,6 +23,7 @@ Evaluator: Codex
 - **Open PR review issues are now remediated in code**: ingestion allow-list enforcement, runtime chunking bounds, legacy root/path validation, SDK URL-segment encoding, duplicate-safe eval metrics, and `/ingest` HTTPException passthrough.
 - **Phase 3 is now functionally complete at core package level**: Python SDK, multi-source ingestion, legacy migration, browser control center, and memory chains are now shipped.
 - **Phase 4A is now started with production code**: browser control center preferences are now persistent (auto-save/save/reset) and model-profile tags are attached to ingestion operations.
+- **Phase 4B baseline is now implemented in core extraction path**: profile-based Instructor route selection (`low_latency`, `balanced`, `high_reasoning`) is wired, with deterministic xLAM/Ollama fallback ordering and config/env controls.
 
 ## Status vs Plan
 
@@ -70,11 +71,11 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy remains static (open):** current xLAM+Ollama defaults are fixed and do not expose operator-tunable latency/quality tradeoffs or "thinking level" profiles in UI/API.
+8. **Extraction/model policy partially open:** profile routing and UI profile persistence are now implemented, but profile-level eval/telemetry gates still need completion before default-policy promotion.
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `384 passed, 2 skipped, 0 warnings`.
+- Full suite now passes in-session: `390 passed, 2 skipped, 0 warnings`.
 - Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and no open PR/comment backlog remained after restart.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
