@@ -25,6 +25,7 @@ import functools
 
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2024-11-05")
 JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
+SUPPORTED_MODEL_PROFILES = ("low_latency", "balanced", "high_reasoning")
 _SESSION_STATE = {
     "negotiated": False,
     "initialized": False,
@@ -68,6 +69,36 @@ SERVER_SCRIPT = GLOBAL_MEMORY_DIR / "server.py"
 # We maintain the relative path for the script execution.
 SERVER_URL = os.environ.get("MUNINN_SERVER_URL", "http://localhost:42069")
 HEALTH_URL = f"{SERVER_URL}/health"
+OLLAMA_URL = os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434")
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _get_operator_model_profile() -> Optional[str]:
+    profile = os.environ.get("MUNINN_OPERATOR_MODEL_PROFILE", "").strip()
+    if not profile:
+        return None
+    if profile in SUPPORTED_MODEL_PROFILES:
+        return profile
+    logger.warning(
+        "Ignoring unsupported MUNINN_OPERATOR_MODEL_PROFILE='%s'; expected one of %s",
+        profile,
+        SUPPORTED_MODEL_PROFILES,
+    )
+    return None
+
+
+def _inject_operator_profile_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    scoped = dict(metadata or {})
+    session_profile = _get_operator_model_profile()
+    if session_profile and "operator_model_profile" not in scoped:
+        scoped["operator_model_profile"] = session_profile
+    return scoped
 
 def make_request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
     """Make HTTP request with exponential backoff retry and server auto-restart."""
@@ -99,17 +130,23 @@ def is_server_running() -> bool:
     except requests.RequestException:
         return False
 
+
+def is_ollama_running() -> bool:
+    """Check if Ollama is reachable."""
+    try:
+        response = requests.get(OLLAMA_URL, timeout=0.5)
+        return response.status_code == 200
+    except requests.RequestException:
+        return False
+
 def check_and_start_ollama():
     """Check if Ollama is running, and start it if not."""
     from muninn.platform import spawn_detached_process, find_ollama_executable
 
-    try:
-        # Quick check if Ollama is responsive
-        requests.get("http://localhost:11434", timeout=0.5)
+    if is_ollama_running():
         logger.info("Ollama is already running (responsive).")
         return True
-    except requests.RequestException:
-        logger.warning("Ollama is not responding. Attempting to start...")
+    logger.warning("Ollama is not responding. Attempting to start...")
 
     try:
         ollama_path = find_ollama_executable()
@@ -121,12 +158,10 @@ def check_and_start_ollama():
 
         # Wait for Ollama to become responsive
         for _ in range(20):  # 10 seconds wait
-            try:
-                requests.get("http://localhost:11434", timeout=0.5)
+            if is_ollama_running():
                 logger.info("Ollama started successfully.")
                 return True
-            except requests.RequestException:
-                time.sleep(0.5)
+            time.sleep(0.5)
 
         logger.error("Timed out waiting for Ollama to start.")
         return False
@@ -157,8 +192,71 @@ def start_server():
 
 def ensure_server_running():
     """Ensure server is up, starting it if necessary."""
-    if not is_server_running():
-        start_server()
+    if is_server_running():
+        return True
+    if not start_server():
+        return False
+    for _ in range(20):
+        if is_server_running():
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _collect_startup_warnings(
+    autostart_server: Optional[bool] = None,
+    autostart_ollama: Optional[bool] = None,
+) -> List[str]:
+    """
+    Validate startup dependencies for assistant/IDE sessions.
+
+    On initialize, we either auto-start missing dependencies or return explicit
+    startup prompts so the user can fix the environment immediately.
+    """
+    warnings: List[str] = []
+    autostart_server_enabled = (
+        _env_flag("MUNINN_MCP_AUTOSTART_SERVER", True)
+        if autostart_server is None
+        else autostart_server
+    )
+    autostart_ollama_enabled = (
+        _env_flag("MUNINN_MCP_AUTOSTART_OLLAMA", True)
+        if autostart_ollama is None
+        else autostart_ollama
+    )
+
+    server_ok = ensure_server_running() if autostart_server_enabled else is_server_running()
+    if not server_ok:
+        warnings.append(
+            f"Muninn server is not reachable at {SERVER_URL}. "
+            f"Start it with: python {SERVER_SCRIPT.name}"
+        )
+
+    ollama_ok = check_and_start_ollama() if autostart_ollama_enabled else is_ollama_running()
+    if not ollama_ok:
+        warnings.append(
+            f"Ollama is not reachable at {OLLAMA_URL}. "
+            "Start it with: ollama serve"
+        )
+
+    return warnings
+
+
+def _build_initialize_instructions(startup_warnings: Optional[List[str]] = None) -> str:
+    base_instructions = (
+        "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
+        "for cross-assistant continuity."
+    )
+    session_profile = _get_operator_model_profile()
+    if session_profile:
+        base_instructions = (
+            f"{base_instructions}\n\nSession model profile: {session_profile} "
+            "(from MUNINN_OPERATOR_MODEL_PROFILE)."
+        )
+    if not startup_warnings:
+        return base_instructions
+    bullet_list = "\n".join(f"- {warning}" for warning in startup_warnings)
+    return f"{base_instructions}\n\nStartup checks:\n{bullet_list}"
 
 # --- MCP Protocol Implementation ---
 
@@ -210,6 +308,7 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     _SESSION_STATE["negotiated"] = True
     _SESSION_STATE["initialized"] = False
     _SESSION_STATE["protocol_version"] = negotiated
+    startup_warnings = _collect_startup_warnings()
 
     send_json_rpc({
         "jsonrpc": "2.0",
@@ -225,10 +324,7 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
                 "name": "muninn-mcp",
                 "version": __version__
             },
-            "instructions": (
-                "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
-                "for cross-assistant continuity."
-            ),
+            "instructions": _build_initialize_instructions(startup_warnings),
         }
     })
 
@@ -767,7 +863,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
         if name == "add_memory":
             # SOTA: Inject current working directory as 'project' metadata
             # This allows the memory system to automatically anchor memories to the workspace
-            metadata = arguments.get("metadata", {})
+            metadata = _inject_operator_profile_metadata(arguments.get("metadata", {}))
             git_info = get_git_info()
             if "project" not in metadata:
                 metadata["project"] = git_info["project"]
@@ -1040,7 +1136,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "user_id": "global_user",
                 "namespace": arguments.get("namespace", "global"),
                 "project": arguments.get("project", git_info["project"]),
-                "metadata": arguments.get("metadata", {}),
+                "metadata": _inject_operator_profile_metadata(arguments.get("metadata", {})),
                 "max_file_size_bytes": arguments.get("max_file_size_bytes"),
                 "chunk_size_chars": arguments.get("chunk_size_chars"),
                 "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
@@ -1096,7 +1192,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "user_id": "global_user",
                 "namespace": arguments.get("namespace", "global"),
                 "project": arguments.get("project", git_info["project"]),
-                "metadata": arguments.get("metadata", {}),
+                "metadata": _inject_operator_profile_metadata(arguments.get("metadata", {})),
                 "max_file_size_bytes": arguments.get("max_file_size_bytes"),
                 "chunk_size_chars": arguments.get("chunk_size_chars"),
                 "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),

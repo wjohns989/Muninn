@@ -62,6 +62,105 @@ def test_initialize_rejects_non_object_params(monkeypatch):
     assert "initialize params must be an object" in sent[0]["error"]["message"]
 
 
+def test_initialize_includes_startup_warnings(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "_collect_startup_warnings",
+        lambda: [
+            "Muninn server is not reachable at http://localhost:42069. Start it with: python server.py",
+            "Ollama is not reachable at http://localhost:11434. Start it with: ollama serve",
+        ],
+    )
+
+    mcp_wrapper.handle_initialize("req-startup", {"protocolVersion": "2025-11-25"})
+
+    assert len(sent) == 1
+    instructions = sent[0]["result"]["instructions"]
+    assert "Startup checks:" in instructions
+    assert "python server.py" in instructions
+    assert "ollama serve" in instructions
+
+
+def test_initialize_without_warnings_uses_base_instructions(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "_collect_startup_warnings", lambda: [])
+
+    mcp_wrapper.handle_initialize("req-clean", {"protocolVersion": "2025-11-25"})
+
+    assert len(sent) == 1
+    instructions = sent[0]["result"]["instructions"]
+    assert "Startup checks:" not in instructions
+    assert "cross-assistant continuity" in instructions
+
+
+def test_initialize_includes_session_model_profile(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "_collect_startup_warnings", lambda: [])
+    monkeypatch.setenv("MUNINN_OPERATOR_MODEL_PROFILE", "high_reasoning")
+
+    mcp_wrapper.handle_initialize("req-profile", {"protocolVersion": "2025-11-25"})
+
+    assert len(sent) == 1
+    instructions = sent[0]["result"]["instructions"]
+    assert "Session model profile: high_reasoning" in instructions
+
+
+def test_collect_startup_warnings_when_dependencies_unavailable(monkeypatch):
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: False)
+    monkeypatch.setattr(mcp_wrapper, "check_and_start_ollama", lambda: False)
+
+    warnings = mcp_wrapper._collect_startup_warnings(
+        autostart_server=True,
+        autostart_ollama=True,
+    )
+
+    assert any("Muninn server is not reachable" in warning for warning in warnings)
+    assert any("ollama serve" in warning for warning in warnings)
+
+
+def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setenv("MUNINN_OPERATOR_MODEL_PROFILE", "balanced")
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-add-memory",
+        {
+            "name": "add_memory",
+            "arguments": {
+                "content": "hello world",
+                "metadata": {"source": "test"},
+            },
+        },
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/add")
+    metadata = captured["json"]["metadata"]
+    assert metadata["source"] == "test"
+    assert metadata["operator_model_profile"] == "balanced"
+
+
 def test_unknown_request_method_returns_method_not_found(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
