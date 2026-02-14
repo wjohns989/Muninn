@@ -49,27 +49,32 @@ class FeatureFlags:
         - conflict_detection: NLI-based contradiction detection on add()
         - semantic_dedup: Cosine-similarity dedup at ingestion
         - adaptive_weights: Entropy-based dynamic signal weighting
+        - retrieval_feedback: Persist and apply implicit retrieval feedback
 
     Phase 3 flags default OFF (require additional deps):
         - memory_chains: Temporal/causal linking between memories
         - multi_source_ingestion: File, conversation, API ingestion
         - python_sdk: Expose MuninnClient for programmatic use
+        - otel_genai: OpenTelemetry GenAI trace instrumentation
     """
 
     # --- Phase 1 (v3.1.0) — default ON ---
     explainable_recall: bool = True
     instructor_extraction: bool = True
     platform_abstraction: bool = True
+    goal_compass: bool = True
 
     # --- Phase 2 (v3.2.0) — default OFF ---
     conflict_detection: bool = False
     semantic_dedup: bool = False
     adaptive_weights: bool = False
+    retrieval_feedback: bool = False
 
     # --- Phase 3 (v3.3.0) — default OFF ---
     memory_chains: bool = False
     multi_source_ingestion: bool = False
     python_sdk: bool = False
+    otel_genai: bool = False
 
     @classmethod
     def from_env(cls) -> "FeatureFlags":
@@ -84,14 +89,17 @@ class FeatureFlags:
             explainable_recall=_env_bool("EXPLAIN_RECALL", "1"),
             instructor_extraction=_env_bool("INSTRUCTOR_EXTRACTION", "1"),
             platform_abstraction=_env_bool("PLATFORM_ABSTRACTION", "1"),
+            goal_compass=_env_bool("GOAL_COMPASS", "1"),
             # Phase 2
             conflict_detection=_env_bool("CONFLICT_DETECTION", "0"),
             semantic_dedup=_env_bool("SEMANTIC_DEDUP", "0"),
             adaptive_weights=_env_bool("ADAPTIVE_WEIGHTS", "0"),
+            retrieval_feedback=_env_bool("RETRIEVAL_FEEDBACK", "0"),
             # Phase 3
             memory_chains=_env_bool("MEMORY_CHAINS", "0"),
             multi_source_ingestion=_env_bool("MULTI_SOURCE_INGESTION", "0"),
             python_sdk=_env_bool("PYTHON_SDK", "0"),
+            otel_genai=_env_bool("OTEL_GENAI", "0"),
         )
         _log_active_flags(flags)
         return flags

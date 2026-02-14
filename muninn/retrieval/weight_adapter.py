@@ -87,7 +87,8 @@ class WeightAdapter:
     def compute_weights(
         self,
         query: str,
-        signal_results: Optional[Dict[str, List[Tuple[str, int]]]] = None,
+        signal_results: Optional[Dict[str, List[Tuple[str, float]]]] = None,
+        feedback_multipliers: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
         """
         Compute dynamic weights for a specific query and its signal results.
@@ -111,7 +112,11 @@ class WeightAdapter:
         if signal_results:
             weights = self._adapt_for_entropy(signal_results, weights)
 
-        # Phase 3: Normalize to prevent weight explosion
+        # Phase 3: Historical feedback calibration (optional)
+        if feedback_multipliers:
+            weights = self._adapt_for_feedback(weights, feedback_multipliers)
+
+        # Phase 4: Normalize to prevent weight explosion
         weights = self._normalize_weights(weights)
 
         logger.debug(
@@ -120,6 +125,26 @@ class WeightAdapter:
             {k: round(v, 3) for k, v in weights.items()},
         )
 
+        return weights
+
+    def _adapt_for_feedback(
+        self,
+        weights: Dict[str, float],
+        feedback_multipliers: Dict[str, float],
+    ) -> Dict[str, float]:
+        """
+        Apply bounded per-signal multipliers derived from historical feedback.
+        """
+        for signal_name, multiplier in feedback_multipliers.items():
+            if signal_name not in weights:
+                continue
+            try:
+                m = float(multiplier)
+            except (TypeError, ValueError):
+                continue
+            # Safety bound to avoid abrupt online instability.
+            bounded = min(1.3, max(0.7, m))
+            weights[signal_name] *= bounded
         return weights
 
     def _adapt_for_query(
@@ -154,7 +179,7 @@ class WeightAdapter:
 
     def _adapt_for_entropy(
         self,
-        signal_results: Dict[str, List[Tuple[str, int]]],
+        signal_results: Dict[str, List[Tuple[str, float]]],
         weights: Dict[str, float],
     ) -> Dict[str, float]:
         """
@@ -177,12 +202,13 @@ class WeightAdapter:
                 # Insufficient data — keep base weight unchanged
                 continue
 
-            # Extract rank-based scores for entropy computation
-            # Transform ranks to pseudo-scores: score = 1/(rank+1)
-            # This gives us a distribution to compute entropy over
-            pseudo_scores = [1.0 / (rank + 1) for _, rank in results]
+            # Use native signal scores for entropy confidence. This better
+            # captures each signal's discriminative certainty than rank proxies.
+            positive_scores = [float(score) for _, score in results if score and score > 0]
+            if len(positive_scores) < 2:
+                continue
 
-            entropy = self._normalized_entropy(pseudo_scores)
+            entropy = self._normalized_entropy(positive_scores)
             # confidence ∈ [0, 1] where 1 = perfectly confident
             confidence = 1.0 - entropy
 
@@ -255,7 +281,8 @@ class WeightAdapter:
     def explain(
         self,
         query: str,
-        signal_results: Optional[Dict[str, List[Tuple[str, int]]]] = None,
+        signal_results: Optional[Dict[str, List[Tuple[str, float]]]] = None,
+        feedback_multipliers: Optional[Dict[str, float]] = None,
     ) -> Dict[str, str]:
         """
         Generate human-readable explanation of weight adaptation decisions.
@@ -264,7 +291,7 @@ class WeightAdapter:
             Dict mapping signal name → explanation string.
         """
         explanations: Dict[str, str] = {}
-        weights = self.compute_weights(query, signal_results)
+        weights = self.compute_weights(query, signal_results, feedback_multipliers)
         base = self.base_weights
 
         for signal, weight in weights.items():
