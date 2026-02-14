@@ -64,9 +64,13 @@ Completed since last update:
    - graph-store now supports memory-to-memory `PRECEDES` / `CAUSES` edges with confidence metadata,
    - memory add/update paths now persist scoped chain links from temporal/entity/causal signals,
    - hybrid retrieval now fuses an optional chain signal with explainable trace attribution.
+26. Post-crash recovery hardening completed:
+   - repository integrity re-verified (`git fsck --full`) with no corruption findings,
+   - full suite warning source remediated in conflict resolver tests,
+   - no open PR/comment backlog remained before starting next phase branch.
 
 Verification:
-- Full suite now passes in-session: `384 passed, 2 skipped, 1 warning`.
+- Full suite now passes in-session: `384 passed, 2 skipped, 0 warnings`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -98,6 +102,7 @@ Fixed in current implementation slice:
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
+3. Extraction/model policy remains static: operator-facing controls for model quality/latency/compute tradeoffs and fallback routing are not yet implemented.
 
 ---
 
@@ -135,6 +140,7 @@ After this roadmap, Muninn should provide:
 4. **Cross-assistant handoff bundles** with deterministic idempotent import.
 5. **Multi-source ingestion** and Python SDK parity across REST+MCP+SDK.
 6. **Evaluation gate** as a hard release criterion.
+7. **Operator-adaptive control plane** for browser-side preferences and model-routing profiles.
 
 ---
 
@@ -360,6 +366,35 @@ This is core for vibecoders, not optional polish.
 
 ---
 
+## Phase 4 (v3.3.1) — Operator Adaptation & Model Policy
+
+### 4A Browser Preference Controls
+- Persist operator preferences for control-center workflows:
+  - default namespace/project and ingestion metadata profile,
+  - saved ingestion presets (chunking policy, chronology mode, recursion),
+  - visibility toggles for advanced controls/log verbosity.
+- Support explicit "safe mode" defaults for higher-risk actions (legacy import, broad-path ingest).
+
+### 4B Adjustable Thinking-Level Model Profiles
+- Add extraction profile abstraction with explicit tradeoff modes:
+  - `low_latency` (fast/low compute),
+  - `balanced` (default),
+  - `high_reasoning` (higher compute, deeper reasoning).
+- Route each profile to configurable provider/model fallback chains (xLAM + Ollama candidates).
+- Expose profile selection in config + API + browser UI.
+
+### 4C Model Routing Safety + Observability
+- Add health/routing checks to avoid dead endpoints and unsupported model capabilities.
+- Emit per-profile latency/success metrics for evidence-based default tuning.
+- Enforce license-awareness in docs and startup diagnostics for non-commercial model constraints.
+
+### Phase 4 exit criteria
+1. Users can choose and persist UI preferences without manual JSON edits.
+2. Model profile selection works end-to-end with deterministic fallback behavior.
+3. Eval reports include profile-level latency/quality deltas for promotion decisions.
+
+---
+
 ## 6) Cross-Cutting Workstreams (All Phases)
 
 ### A) Testing and validation
@@ -413,6 +448,8 @@ This is core for vibecoders, not optional polish.
    - Mitigation: canonical handoff schema + conformance tests.
 5. **SOTA claim mismatch**
    - Mitigation: publish evaluation artifacts with each release candidate.
+6. **Model-profile overengineering risk**
+   - Mitigation: keep first release to 3 profile tiers + deterministic fallback policy; only expand with measured ROI.
 
 ---
 
@@ -423,15 +460,16 @@ This is core for vibecoders, not optional polish.
 - **Week 4:** Phase 1.2 MCP compatibility + OpenTelemetry GenAI instrumentation baseline.
 - **Weeks 5–6:** Phase 2 intelligence features with measured A/B validation.
 - **Weeks 7–9:** Phase 3 ecosystem (ingestion, SDK, chains, handoff interop).
+- **Weeks 10–11:** Phase 4 operator adaptation (UI preferences + model profile routing + profile-aware evaluation).
 
 ---
 
 ## 10) Immediate Next Actions (Execution Checklist)
 
-1. Close open PR review threads with evidence-linked responses and merge sequencing across stacked branches.
-2. Merge stacked PR chain (`#10` → `#13`) to `main` after resolving remaining review-thread states.
-3. Add parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) and ship minimal viable isolation controls.
-4. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
-5. Add OTel dashboard/alert pack templates for retrieval and ingestion regression triage.
+1. Maintain one-PR-at-a-time policy: verify no open PR comments/issues at each phase boundary, then open exactly one new PR.
+2. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
+3. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
+4. Implement Phase 4A/4B baseline: browser preference persistence + configurable model profile router (`low_latency`/`balanced`/`high_reasoning`).
+5. Add profile-aware eval + OTel dashboard/alert pack templates for retrieval/ingestion/model-routing regression triage.
 
-Completing these next five actions keeps roadmap progression logically consistent while reducing merge risk and preserving SOTA claim credibility.
+Completing these next actions keeps roadmap progression logically consistent while preserving merge hygiene, SOTA evidence quality, and operational ROI.

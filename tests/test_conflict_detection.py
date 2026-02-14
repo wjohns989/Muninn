@@ -371,9 +371,26 @@ class TestConflictResolver:
     def test_unknown_strategy_falls_back_to_flag(self):
         """If a new strategy is added but resolver doesn't handle it, flag."""
         resolver = self._make_resolver()
-        conflict = self._make_conflict(ConflictResolution.FLAG_FOR_REVIEW)
-        # Manually override to simulate unknown
-        conflict.suggested_resolution = "nonexistent_strategy"
+
+        class UnknownConflict:
+            """Minimal conflict-like payload with an unsupported strategy."""
+
+            suggested_resolution = "nonexistent_strategy"
+            existing_memory_id = "mem-old"
+            contradiction_score = 0.8
+
+            def model_dump(self):
+                return {
+                    "new_content": "The sky is green.",
+                    "existing_memory_id": self.existing_memory_id,
+                    "existing_content": "The sky is blue.",
+                    "contradiction_score": self.contradiction_score,
+                    "entailment_score": 0.1,
+                    "neutral_score": 0.1,
+                    "suggested_resolution": self.suggested_resolution,
+                }
+
+        conflict = UnknownConflict()
         result = resolver.resolve(conflict)
         assert result["resolution"] == "flag_for_review"
 
