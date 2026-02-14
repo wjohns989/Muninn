@@ -303,7 +303,7 @@ Implementation impact:
   - `balanced` (default),
   - `high_reasoning` (higher compute/higher quality).
 - Expose profile choice in browser UI and assistant-session config; treat think-level toggles as optional secondary controls.
-- Implementation status: baseline profile routing + browser profile persistence + assistant-session profile override are now implemented; remaining work is profile-level eval/telemetry gating for default-policy promotion.
+- Implementation status: baseline profile routing + browser profile persistence + assistant-session profile override are now implemented; helper-first runtime-vs-ingestion profile scheduling is now implemented; remaining work is profile-level eval/telemetry gating for default-policy promotion.
 
 ## Critical Issues/Accuracy Corrections
 
@@ -378,6 +378,20 @@ Implementation impact:
 - Improves forensic and dedup workflows through deterministic source checksums + chunk offset metadata.
 - Creates a direct path for safe MCP/SDK ingestion automation while preserving local-first guarantees.
 
+### Runtime-vs-ingestion model scheduling (high ROI, helper-first performance)
+
+**Issue found:** a single global profile can force active coding sessions to pay planning-grade VRAM/latency costs for routine memory updates.
+
+**Upgrade implemented:**
+- Added independent extraction profile defaults for runtime add/update, ingestion, and legacy ingestion.
+- Runtime profile defaults to low-latency helper behavior; ingestion and legacy import can be promoted independently when users choose deeper parsing.
+- MCP wrapper now supports operation-specific env overrides with deterministic fallback to a generic session profile.
+
+**Ecosystem impact:**
+- Preserves SOTA+ continuity behavior while keeping active-development VRAM pressure low on 16GB-class systems.
+- Enables high-caliber ingest/import passes without making the always-on helper path heavyweight.
+- Keeps model policy portable across assistants/IDEs through the same OpenAI-compatible routing surface.
+
 ## Model-Caliber Session-Switching Policy (2026-02-14, revised)
 
 ### Research conclusion
@@ -426,6 +440,7 @@ Primary sources:
 2. Preserve cross-assistant portability through OpenAI-compatible transport and metadata-tagged profile context.
 3. Measure profile promotion with per-profile eval gates before changing defaults.
 4. Treat think-level controls as secondary tuning knobs, not the primary product abstraction.
+5. Keep helper runtime profile low-latency by default and split ingest/import profiles so heavy models are opt-in for offline/high-context operations.
 
 ### Fresh release scan (as-of 2026-02-14)
 
