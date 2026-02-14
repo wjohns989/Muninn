@@ -38,7 +38,7 @@ from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 
 from muninn.core.memory import MuninnMemory
-from muninn.core.config import MuninnConfig
+from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
     MAX_CHUNK_OVERLAP_CHARS,
@@ -207,6 +207,16 @@ class IngestLegacySourcesRequest(BaseModel):
         ge=1,
         le=MAX_CHUNK_SIZE_CHARS,
     )
+
+
+MODEL_PROFILE_PATTERN = f"^({'|'.join(SUPPORTED_MODEL_PROFILES)})$"
+
+
+class SetModelProfilesRequest(BaseModel):
+    model_profile: Optional[str] = Field(default=None, pattern=MODEL_PROFILE_PATTERN)
+    runtime_model_profile: Optional[str] = Field(default=None, pattern=MODEL_PROFILE_PATTERN)
+    ingestion_model_profile: Optional[str] = Field(default=None, pattern=MODEL_PROFILE_PATTERN)
+    legacy_ingestion_model_profile: Optional[str] = Field(default=None, pattern=MODEL_PROFILE_PATTERN)
 
 
 # --- Application Lifecycle ---
@@ -433,6 +443,50 @@ async def get_project_goal_endpoint(
         return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error getting project goal: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/profiles/model")
+async def get_model_profiles_endpoint():
+    """Return active runtime extraction profile policy."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        result = await memory.get_model_profiles()
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error getting model profiles: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/profiles/model")
+async def set_model_profiles_endpoint(req: SetModelProfilesRequest):
+    """Update runtime extraction profile policy without server restart."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    payload = req.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one profile field to update.",
+        )
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.set_model_profiles(**payload)
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Error setting model profiles: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

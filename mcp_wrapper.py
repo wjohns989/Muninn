@@ -598,6 +598,43 @@ def handle_list_tools(msg_id: Any):
             }
         },
         {
+            "name": "get_model_profiles",
+            "description": "Fetch active runtime extraction profile policy for helper/ingestion routing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "set_model_profiles",
+            "description": "Update runtime extraction profile policy without restarting the server.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model_profile": {
+                        "type": "string",
+                        "enum": list(SUPPORTED_MODEL_PROFILES),
+                        "description": "Default extraction profile fallback."
+                    },
+                    "runtime_model_profile": {
+                        "type": "string",
+                        "enum": list(SUPPORTED_MODEL_PROFILES),
+                        "description": "Profile for add/update helper extraction."
+                    },
+                    "ingestion_model_profile": {
+                        "type": "string",
+                        "enum": list(SUPPORTED_MODEL_PROFILES),
+                        "description": "Profile for source ingestion extraction."
+                    },
+                    "legacy_ingestion_model_profile": {
+                        "type": "string",
+                        "enum": list(SUPPORTED_MODEL_PROFILES),
+                        "description": "Profile for legacy source ingestion extraction."
+                    }
+                }
+            }
+        },
+        {
             "name": "export_handoff",
             "description": "Export deterministic cross-assistant handoff bundle for this project.",
             "inputSchema": {
@@ -855,7 +892,14 @@ def handle_list_tools(msg_id: Any):
         }
     ]
     
-    read_only_tools = {"search_memory", "get_all_memories", "get_project_goal", "export_handoff", "discover_legacy_sources"}
+    read_only_tools = {
+        "search_memory",
+        "get_all_memories",
+        "get_project_goal",
+        "get_model_profiles",
+        "export_handoff",
+        "discover_legacy_sources",
+    }
     for tool in tools:
         schema = tool.get("inputSchema", {})
         if isinstance(schema, dict) and "$schema" not in schema:
@@ -1067,6 +1111,44 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "project": arguments.get("project", git_info["project"]),
             }
             resp = make_request_with_retry("GET", f"{SERVER_URL}/goal/get", params=params, timeout=10)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "get_model_profiles":
+            resp = make_request_with_retry("GET", f"{SERVER_URL}/profiles/model", timeout=10)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "set_model_profiles":
+            payload = {}
+            for key in (
+                "model_profile",
+                "runtime_model_profile",
+                "ingestion_model_profile",
+                "legacy_ingestion_model_profile",
+            ):
+                value = arguments.get(key)
+                if value is not None:
+                    payload[key] = value
+            if not payload:
+                raise ValueError("set_model_profiles requires at least one profile field")
+            resp = make_request_with_retry("POST", f"{SERVER_URL}/profiles/model", json=payload, timeout=10)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
