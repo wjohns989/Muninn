@@ -94,7 +94,7 @@ The SDK raises typed exceptions:
 - `MuninnAPIError`: server returned an HTTP error or `{"success": false}` payload.
 
 ```python
-from muninn.sdk import Memory, MuninnConnectionError, MuninnAPIError
+from muninn import Memory, MuninnConnectionError, MuninnAPIError
 
 client = Memory()
 try:
@@ -112,7 +112,7 @@ except MuninnAPIError as err:
 Use context managers to guarantee transport cleanup:
 
 ```python
-from muninn.sdk import MuninnClient
+from muninn import MuninnClient
 
 with MuninnClient() as client:
     status = client.health()
@@ -120,7 +120,7 @@ with MuninnClient() as client:
 ```
 
 ```python
-from muninn.sdk import AsyncMuninnClient
+from muninn import AsyncMuninnClient
 
 async with AsyncMuninnClient() as client:
     result = await client.health()
