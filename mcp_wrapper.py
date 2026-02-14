@@ -631,10 +631,106 @@ def handle_list_tools(msg_id: Any):
                 },
                 "required": ["sources"]
             }
+        },
+        {
+            "name": "discover_legacy_sources",
+            "description": "Discover local legacy assistant/MCP memory sources (Codex, Claude Code, Serena, Cursor/VS Code stores, etc.) available for import.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "roots": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional additional root directories to scan."
+                    },
+                    "providers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional provider allowlist, e.g. ['codex_cli','serena_memory']."
+                    },
+                    "include_unsupported": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include files not currently supported by ingestion parsers."
+                    },
+                    "max_results_per_provider": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum files returned per provider."
+                    }
+                }
+            }
+        },
+        {
+            "name": "ingest_legacy_sources",
+            "description": "Ingest user-selected legacy sources discovered from assistant logs and MCP memory programs with contextual metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "selected_source_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Source IDs selected from discover_legacy_sources."
+                    },
+                    "selected_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional explicit local paths to include."
+                    },
+                    "roots": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "providers": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "include_unsupported": {
+                        "type": "boolean",
+                        "default": False
+                    },
+                    "max_results_per_provider": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "default": False
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override."
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Optional metadata merged into each ingested chunk."
+                    },
+                    "max_file_size_bytes": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "chunk_size_chars": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "chunk_overlap_chars": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "min_chunk_chars": {
+                        "type": "integer",
+                        "minimum": 1
+                    }
+                }
+            }
         }
     ]
     
-    read_only_tools = {"search_memory", "get_all_memories", "get_project_goal", "export_handoff"}
+    read_only_tools = {"search_memory", "get_all_memories", "get_project_goal", "export_handoff", "discover_legacy_sources"}
     for tool in tools:
         schema = tool.get("inputSchema", {})
         if isinstance(schema, dict) and "$schema" not in schema:
@@ -939,6 +1035,66 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "min_chunk_chars": arguments.get("min_chunk_chars"),
             }
             resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest", json=payload, timeout=60)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "discover_legacy_sources":
+            payload = {
+                "roots": arguments.get("roots", []),
+                "providers": arguments.get("providers", []),
+                "include_unsupported": arguments.get("include_unsupported", False),
+                "max_results_per_provider": arguments.get("max_results_per_provider", 100),
+            }
+            resp = make_request_with_retry(
+                "POST",
+                f"{SERVER_URL}/ingest/legacy/discover",
+                json=payload,
+                timeout=60,
+            )
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "ingest_legacy_sources":
+            git_info = get_git_info()
+            payload = {
+                "selected_source_ids": arguments.get("selected_source_ids", []),
+                "selected_paths": arguments.get("selected_paths", []),
+                "roots": arguments.get("roots", []),
+                "providers": arguments.get("providers", []),
+                "include_unsupported": arguments.get("include_unsupported", False),
+                "max_results_per_provider": arguments.get("max_results_per_provider", 100),
+                "recursive": arguments.get("recursive", False),
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+                "metadata": arguments.get("metadata", {}),
+                "max_file_size_bytes": arguments.get("max_file_size_bytes"),
+                "chunk_size_chars": arguments.get("chunk_size_chars"),
+                "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
+                "min_chunk_chars": arguments.get("min_chunk_chars"),
+            }
+            resp = make_request_with_retry(
+                "POST",
+                f"{SERVER_URL}/ingest/legacy/import",
+                json=payload,
+                timeout=120,
+            )
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",

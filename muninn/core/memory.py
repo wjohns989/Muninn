@@ -43,7 +43,8 @@ from muninn.consolidation.daemon import ConsolidationDaemon
 from muninn.core.feature_flags import get_flags
 from muninn.goal import GoalCompass
 from muninn.observability import OTelGenAITracer
-from muninn.ingestion import IngestionPipeline
+from muninn.ingestion import IngestionPipeline, discover_legacy_sources as discover_legacy_sources_catalog
+from muninn.ingestion.parser import infer_source_type
 
 logger = logging.getLogger("Muninn")
 
@@ -998,52 +999,27 @@ class MuninnMemory:
             "checksum_verified": True,
         }
 
-    async def ingest_sources(
-        self,
-        *,
-        sources: List[str],
-        user_id: str = "global_user",
-        namespace: str = "global",
-        project: str = "global",
-        metadata: Optional[Dict[str, Any]] = None,
-        recursive: bool = False,
-        max_file_size_bytes: Optional[int] = None,
-        chunk_size_chars: Optional[int] = None,
-        chunk_overlap_chars: Optional[int] = None,
-        min_chunk_chars: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """
-        Ingest multiple file sources with fail-open behavior.
-
-        Each source is parsed independently. Parser/source failures are recorded
-        and ingestion continues for remaining sources.
-        """
-        self._check_initialized()
-        if not sources:
-            raise ValueError("sources must be a non-empty list")
-
+    def _require_ingestion_pipeline(self) -> IngestionPipeline:
         flags = get_flags()
         flags.require("multi_source_ingestion")
         if self._ingestion is None:
             raise RuntimeError("Ingestion pipeline is unavailable")
+        return self._ingestion
 
-        report = self._ingestion.ingest(
-            sources,
-            recursive=recursive,
-            max_file_size_bytes=max_file_size_bytes,
-            chunk_size_chars=chunk_size_chars,
-            chunk_overlap_chars=chunk_overlap_chars,
-            min_chunk_chars=min_chunk_chars,
-        )
-
+    async def _persist_ingestion_report(
+        self,
+        *,
+        report,
+        user_id: str,
+        namespace: str,
+        base_metadata: Dict[str, Any],
+        source_context_by_path: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         source_payloads: List[Dict[str, Any]] = []
         added_memories = 0
         skipped_chunks = 0
         failed_chunks = 0
-
-        base_metadata = dict(metadata or {})
-        base_metadata.setdefault("project", project)
-        base_metadata.setdefault("kind", "ingested_source_chunk")
+        source_context_by_path = source_context_by_path or {}
 
         for source_result in report.source_results:
             source_record: Dict[str, Any] = {
@@ -1061,8 +1037,10 @@ class MuninnMemory:
                 source_payloads.append(source_record)
                 continue
 
+            source_context = source_context_by_path.get(source_result.source_path, {})
             for chunk in source_result.chunks:
                 chunk_metadata = dict(base_metadata)
+                chunk_metadata.update(source_context)
                 chunk_metadata.update(chunk.metadata)
                 try:
                     add_result = await self.add(
@@ -1090,7 +1068,6 @@ class MuninnMemory:
             source_payloads.append(source_record)
 
         return {
-            "event": "INGEST_COMPLETED",
             "total_sources": report.total_sources,
             "processed_sources": report.processed_sources,
             "skipped_sources": report.skipped_sources,
@@ -1100,6 +1077,233 @@ class MuninnMemory:
             "failed_chunks": failed_chunks,
             "source_results": source_payloads,
         }
+
+    async def ingest_sources(
+        self,
+        *,
+        sources: List[str],
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ingest multiple file sources with fail-open behavior.
+
+        Each source is parsed independently. Parser/source failures are recorded
+        and ingestion continues for remaining sources.
+        """
+        self._check_initialized()
+        if not sources:
+            raise ValueError("sources must be a non-empty list")
+
+        ingestion = self._require_ingestion_pipeline()
+
+        report = ingestion.ingest(
+            sources,
+            recursive=recursive,
+            max_file_size_bytes=max_file_size_bytes,
+            chunk_size_chars=chunk_size_chars,
+            chunk_overlap_chars=chunk_overlap_chars,
+            min_chunk_chars=min_chunk_chars,
+        )
+
+        base_metadata = dict(metadata or {})
+        base_metadata.setdefault("project", project)
+        base_metadata.setdefault("kind", "ingested_source_chunk")
+        result = await self._persist_ingestion_report(
+            report=report,
+            user_id=user_id,
+            namespace=namespace,
+            base_metadata=base_metadata,
+        )
+        result["event"] = "INGEST_COMPLETED"
+        return result
+
+    async def discover_legacy_sources(
+        self,
+        *,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+    ) -> Dict[str, Any]:
+        self._check_initialized()
+        self._require_ingestion_pipeline()
+
+        discovered = discover_legacy_sources_catalog(
+            roots=roots or [],
+            include_unsupported=include_unsupported,
+            max_results_per_provider=max_results_per_provider,
+        )
+        if providers:
+            allowed = {p.strip().lower() for p in providers if p and p.strip()}
+            discovered = [
+                item
+                for item in discovered
+                if str(item.get("provider", "")).lower() in allowed
+            ]
+
+        provider_counts: Dict[str, int] = {}
+        parser_supported = 0
+        for item in discovered:
+            provider = str(item.get("provider", "unknown"))
+            provider_counts[provider] = provider_counts.get(provider, 0) + 1
+            if item.get("parser_supported"):
+                parser_supported += 1
+
+        return {
+            "event": "LEGACY_DISCOVERY_COMPLETED",
+            "total_discovered": len(discovered),
+            "parser_supported": parser_supported,
+            "parser_unsupported": len(discovered) - parser_supported,
+            "provider_counts": provider_counts,
+            "sources": discovered,
+        }
+
+    async def ingest_legacy_sources(
+        self,
+        *,
+        selected_source_ids: Optional[List[str]] = None,
+        selected_paths: Optional[List[str]] = None,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+        user_id: str = "global_user",
+        namespace: str = "global",
+        project: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        self._check_initialized()
+        ingestion = self._require_ingestion_pipeline()
+
+        catalog = discover_legacy_sources_catalog(
+            roots=roots or [],
+            include_unsupported=True,
+            max_results_per_provider=max_results_per_provider,
+        )
+        if providers:
+            allowed = {p.strip().lower() for p in providers if p and p.strip()}
+            catalog = [
+                item
+                for item in catalog
+                if str(item.get("provider", "")).lower() in allowed
+            ]
+
+        by_id = {str(item["source_id"]): item for item in catalog}
+        by_path = {str(item["path"]): item for item in catalog}
+        missing_source_ids: List[str] = []
+        selected: List[Dict[str, Any]] = []
+        seen_paths: set[str] = set()
+
+        for source_id in selected_source_ids or []:
+            item = by_id.get(source_id)
+            if item is None:
+                missing_source_ids.append(source_id)
+                continue
+            path = str(item["path"])
+            if path in seen_paths:
+                continue
+            selected.append(item)
+            seen_paths.add(path)
+
+        for path in selected_paths or []:
+            norm = str(Path(path).expanduser().resolve())
+            item = by_path.get(norm)
+            if item is None:
+                source_type = infer_source_type(Path(norm))
+                parser_supported = source_type != "unsupported"
+                size_bytes = 0
+                try:
+                    size_bytes = Path(norm).stat().st_size
+                except OSError:
+                    pass
+                item = {
+                    "source_id": f"manual:{hashlib.sha1(norm.encode('utf-8', errors='replace')).hexdigest()[:16]}",
+                    "provider": "manual_selection",
+                    "category": "assistant_chat",
+                    "path": norm,
+                    "source_type": source_type,
+                    "parser_supported": parser_supported,
+                    "confidence": "manual",
+                    "size_bytes": size_bytes,
+                    "notes": "Explicit path selected by user",
+                }
+            if item["path"] in seen_paths:
+                continue
+            selected.append(item)
+            seen_paths.add(str(item["path"]))
+
+        if not selected:
+            raise ValueError("No legacy sources selected. Provide selected_source_ids and/or selected_paths.")
+
+        supported_selected = [
+            item
+            for item in selected
+            if item.get("parser_supported") is True
+        ]
+        unsupported_selected = [
+            item
+            for item in selected
+            if item.get("parser_supported") is not True
+        ]
+        unsupported_payload = unsupported_selected if include_unsupported else []
+
+        sources = [str(item["path"]) for item in supported_selected]
+
+        report = ingestion.ingest(
+            sources,
+            recursive=recursive,
+            max_file_size_bytes=max_file_size_bytes,
+            chunk_size_chars=chunk_size_chars,
+            chunk_overlap_chars=chunk_overlap_chars,
+            min_chunk_chars=min_chunk_chars,
+        )
+
+        source_context_by_path: Dict[str, Dict[str, Any]] = {}
+        for item in supported_selected:
+            source_context_by_path[str(item["path"])] = {
+                "legacy_import": True,
+                "legacy_source_id": item.get("source_id"),
+                "legacy_source_provider": item.get("provider"),
+                "legacy_source_category": item.get("category"),
+                "legacy_source_confidence": item.get("confidence"),
+                "legacy_source_notes": item.get("notes"),
+            }
+
+        base_metadata = dict(metadata or {})
+        base_metadata.setdefault("project", project)
+        base_metadata.setdefault("kind", "legacy_ingested_source_chunk")
+        result = await self._persist_ingestion_report(
+            report=report,
+            user_id=user_id,
+            namespace=namespace,
+            base_metadata=base_metadata,
+            source_context_by_path=source_context_by_path,
+        )
+        result.update(
+            {
+                "event": "LEGACY_INGEST_COMPLETED",
+                "discovery_candidates": len(catalog),
+                "selected_sources": len(selected),
+                "selected_supported_sources": len(supported_selected),
+                "selected_unsupported_sources": len(unsupported_selected),
+                "missing_source_ids": missing_source_ids,
+                "unsupported_sources": unsupported_payload,
+            }
+        )
+        return result
 
     async def update(self, memory_id: str, data: str) -> Dict[str, Any]:
         """

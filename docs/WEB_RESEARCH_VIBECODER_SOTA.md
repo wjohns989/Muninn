@@ -90,6 +90,45 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
    - https://pypdf.readthedocs.io/en/latest/user/extract-text.html
 36. python-docx document API quickstart:
    - https://python-docx.readthedocs.io/en/latest/user/quickstart.html
+37. Codex CLI config + state location (`CODEX_HOME`, defaults):
+   - https://developers.openai.com/codex/config-advanced/
+38. Codex CLI history growth issue referencing `CODEX_HOME/history.jsonl`:
+   - https://github.com/openai/codex/issues/4963
+39. Claude Code repository issue confirming local session JSONL paths:
+   - https://github.com/anthropics/claude-code/issues/22365
+40. VS Code user-data and platform path contract (portable mode docs):
+   - https://code.visualstudio.com/docs/editor/portable
+41. VS Code discussion referencing chat session storage under workspaceStorage:
+   - https://github.com/microsoft/vscode-discussions/discussions/168163
+42. VS Code issue referencing `workspaceStorage/.../state.vscdb`:
+   - https://github.com/microsoft/vscode/issues/179882
+43. Cursor community thread on local chat history location:
+   - https://stackoverflow.com/questions/79398677/where-does-cursor-store-chat-history
+44. Cursor chat browser implementation notes for workspace storage parsing:
+   - https://github.com/alexjbuck/cursor-chat-browser/blob/main/README.md
+
+## Legacy Chat/Memory Storage Research (2026-02-14)
+
+### Confidence Matrix
+
+- **High confidence**
+  - Codex CLI: `CODEX_HOME` defaults to `~/.codex`; `history.jsonl` and session artifacts under that root.
+  - Claude Code: session JSONL under `~/.claude/projects/...`.
+- **Medium confidence**
+  - VS Code/Copilot/Cursor-style stores: workspace/global state databases under `User/workspaceStorage` and `User/globalStorage` (sqlite `state.vscdb`, plus `chatSessions/*.json` where present).
+  - Antigravity brain outputs under `.gemini/antigravity/brain/**/output.txt` (project-observed convention).
+- **Low confidence**
+  - Claude Desktop and ChatGPT desktop local artifact roots on each OS: directory conventions vary and official vendor docs are limited.
+
+### Implementation Decision
+
+To avoid brittle single-path assumptions, discovery was implemented as:
+- provider-specific path patterns across Windows/macOS/Linux,
+- confidence tagging per provider,
+- user-supplied root scanning (`roots[]`) for unknown/custom layouts,
+- parser-supported gating with explicit unsupported reporting.
+
+This balances ingestion ROI against ecosystem path volatility and avoids hard-coding unverifiable assumptions as invariants.
 
 ## New Missing Features Identified (Beyond Current Plan)
 
