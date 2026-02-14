@@ -28,6 +28,7 @@ import logging
 import time
 import asyncio
 from typing import Optional, Dict, Any, List
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -37,6 +38,11 @@ from contextlib import asynccontextmanager
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig
 from muninn.version import __version__
+from muninn.ingestion.pipeline import (
+    MAX_CHUNK_OVERLAP_CHARS,
+    MAX_CHUNK_SIZE_CHARS,
+    MAX_INGEST_FILE_SIZE_BYTES,
+)
 from muninn.core.types import (
     AddMemoryRequest,
     SearchMemoryRequest,
@@ -129,6 +135,78 @@ class RetrievalFeedbackRequest(BaseModel):
     source: str = "manual"
 
 
+class IngestSourcesRequest(BaseModel):
+    sources: List[str]
+    user_id: str = "global_user"
+    namespace: str = "global"
+    project: str = "global"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    recursive: bool = False
+    chronological_order: str = Field(default="none", pattern="^(none|oldest_first|newest_first)$")
+    max_file_size_bytes: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=MAX_INGEST_FILE_SIZE_BYTES,
+    )
+    chunk_size_chars: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=MAX_CHUNK_SIZE_CHARS,
+    )
+    chunk_overlap_chars: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=MAX_CHUNK_OVERLAP_CHARS,
+    )
+    min_chunk_chars: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=MAX_CHUNK_SIZE_CHARS,
+    )
+
+
+class DiscoverLegacySourcesRequest(BaseModel):
+    roots: List[str] = Field(default_factory=list)
+    providers: List[str] = Field(default_factory=list)
+    include_unsupported: bool = False
+    max_results_per_provider: int = Field(default=100, ge=1, le=5000)
+
+
+class IngestLegacySourcesRequest(BaseModel):
+    selected_source_ids: List[str] = Field(default_factory=list)
+    selected_paths: List[str] = Field(default_factory=list)
+    roots: List[str] = Field(default_factory=list)
+    providers: List[str] = Field(default_factory=list)
+    include_unsupported: bool = False
+    max_results_per_provider: int = Field(default=100, ge=1, le=5000)
+    user_id: str = "global_user"
+    namespace: str = "global"
+    project: str = "global"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    recursive: bool = False
+    chronological_order: str = Field(default="none", pattern="^(none|oldest_first|newest_first)$")
+    max_file_size_bytes: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=MAX_INGEST_FILE_SIZE_BYTES,
+    )
+    chunk_size_chars: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=MAX_CHUNK_SIZE_CHARS,
+    )
+    chunk_overlap_chars: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=MAX_CHUNK_OVERLAP_CHARS,
+    )
+    min_chunk_chars: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=MAX_CHUNK_SIZE_CHARS,
+    )
+
+
 # --- Application Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -162,8 +240,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+DASHBOARD_HTML_PATH = Path(__file__).with_name("dashboard.html")
+
+
+def _load_dashboard_html() -> str:
+    try:
+        return DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.error("Failed to load dashboard HTML: %s", exc)
+        return (
+            "<html><body><h1>Muninn UI unavailable</h1>"
+            "<p>dashboard.html could not be loaded.</p></body></html>"
+        )
+
 
 # --- Endpoints ---
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard_root():
+    """Serve the browser UI for memory operations."""
+    return HTMLResponse(content=_load_dashboard_html())
 
 @app.get("/health")
 async def health_check():
@@ -405,6 +501,90 @@ async def retrieval_feedback_endpoint(req: RetrievalFeedbackRequest):
             return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error recording retrieval feedback: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ingest")
+async def ingest_sources_endpoint(req: IngestSourcesRequest):
+    """Ingest multiple local sources with fail-open behavior per source/chunk."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.ingest_sources(
+                sources=req.sources,
+                user_id=req.user_id or "global_user",
+                namespace=req.namespace or "global",
+                project=req.project or "global",
+                metadata=req.metadata,
+                recursive=req.recursive,
+                chronological_order=req.chronological_order,
+                max_file_size_bytes=req.max_file_size_bytes,
+                chunk_size_chars=req.chunk_size_chars,
+                chunk_overlap_chars=req.chunk_overlap_chars,
+                min_chunk_chars=req.min_chunk_chars,
+            )
+            return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error ingesting sources: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ingest/legacy/discover")
+async def discover_legacy_sources_endpoint(req: DiscoverLegacySourcesRequest):
+    """Discover local legacy assistant/MCP memory artifacts available for import."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        result = await memory.discover_legacy_sources(
+            roots=req.roots,
+            providers=req.providers,
+            include_unsupported=req.include_unsupported,
+            max_results_per_provider=req.max_results_per_provider,
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error discovering legacy sources: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ingest/legacy/import")
+async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
+    """Ingest user-selected legacy assistant/MCP sources with contextual metadata."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.ingest_legacy_sources(
+                selected_source_ids=req.selected_source_ids,
+                selected_paths=req.selected_paths,
+                roots=req.roots,
+                providers=req.providers,
+                include_unsupported=req.include_unsupported,
+                max_results_per_provider=req.max_results_per_provider,
+                user_id=req.user_id or "global_user",
+                namespace=req.namespace or "global",
+                project=req.project or "global",
+                metadata=req.metadata,
+                recursive=req.recursive,
+                chronological_order=req.chronological_order,
+                max_file_size_bytes=req.max_file_size_bytes,
+                chunk_size_chars=req.chunk_size_chars,
+                chunk_overlap_chars=req.chunk_overlap_chars,
+                min_chunk_chars=req.min_chunk_chars,
+            )
+            return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error importing legacy sources: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -6,6 +6,7 @@ Kuzu-based knowledge graph for entity relationships and graph-enhanced retrieval
 
 import logging
 import time
+import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -87,6 +88,36 @@ class GraphStore:
         except Exception as e:
             if "already exists" not in str(e).lower():
                 logger.warning(f"MENTIONS table creation: {e}")
+
+        try:
+            conn.execute("""
+                CREATE REL TABLE IF NOT EXISTS PRECEDES (
+                    FROM Memory TO Memory,
+                    confidence DOUBLE DEFAULT 1.0,
+                    reason STRING,
+                    shared_entities_json STRING,
+                    hours_apart DOUBLE,
+                    created_at DOUBLE
+                )
+            """)
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                logger.warning(f"PRECEDES table creation: {e}")
+
+        try:
+            conn.execute("""
+                CREATE REL TABLE IF NOT EXISTS CAUSES (
+                    FROM Memory TO Memory,
+                    confidence DOUBLE DEFAULT 1.0,
+                    reason STRING,
+                    shared_entities_json STRING,
+                    hours_apart DOUBLE,
+                    created_at DOUBLE
+                )
+            """)
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                logger.warning(f"CAUSES table creation: {e}")
 
         logger.info(f"Graph store initialized at {self.db_path}")
 
@@ -243,6 +274,122 @@ class GraphStore:
         except Exception as e:
             logger.debug(f"Get all entities: {e}")
         return entities
+
+    def add_chain_link(
+        self,
+        predecessor_id: str,
+        successor_id: str,
+        *,
+        relation_type: str = "PRECEDES",
+        confidence: float = 1.0,
+        reason: str = "",
+        shared_entities: Optional[List[str]] = None,
+        hours_apart: Optional[float] = None,
+    ) -> bool:
+        """
+        Add a directed memory-to-memory chain edge.
+        """
+        conn = self._get_conn()
+        rel = str(relation_type or "PRECEDES").upper()
+        if rel not in {"PRECEDES", "CAUSES"}:
+            return False
+        if predecessor_id == successor_id:
+            return False
+        now = time.time()
+        payload = json.dumps(shared_entities or [], ensure_ascii=False)
+        conf = max(0.0, min(1.0, float(confidence)))
+        hours = float(hours_apart) if hours_apart is not None else None
+        try:
+            conn.execute(
+                f"MATCH (a:Memory {{id: $pred}}), (b:Memory {{id: $succ}}) "
+                f"CREATE (a)-[:{rel} {{confidence: $conf, reason: $reason, "
+                f"shared_entities_json: $shared, hours_apart: $hours, created_at: $now}}]->(b)",
+                {
+                    "pred": predecessor_id,
+                    "succ": successor_id,
+                    "conf": conf,
+                    "reason": reason[:500],
+                    "shared": payload,
+                    "hours": hours,
+                    "now": now,
+                },
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"Chain relation creation ({rel}): {e}")
+            return False
+
+    def find_chain_related_memories(
+        self,
+        seed_memory_ids: List[str],
+        limit: int = 20,
+    ) -> List[Tuple[str, float]]:
+        """
+        Find memories related via PRECEDES/CAUSES edges around given seeds.
+        Returns list of (memory_id, score) ranked by accumulated confidence.
+        """
+        if not seed_memory_ids:
+            return []
+        conn = self._get_conn()
+        seed_set = set(seed_memory_ids)
+        scores: Dict[str, float] = {}
+        max_seed_scan = max(1, min(len(seed_memory_ids), 12))
+
+        def _fetch_rows(query: str, params: Dict[str, Any]) -> List[Tuple[Any, ...]]:
+            result = conn.execute(query, params)
+            if hasattr(result, "fetchall"):
+                try:
+                    return result.fetchall()
+                except Exception:
+                    pass
+            rows: List[Tuple[Any, ...]] = []
+            while result.has_next():
+                rows.append(result.get_next())
+            return rows
+
+        def _accumulate(rows, multiplier: float) -> None:
+            for mem_id, conf in rows:
+                if mem_id in seed_set:
+                    continue
+                confidence = float(conf) if conf is not None else 0.5
+                score = max(0.0, min(1.0, confidence)) * multiplier
+                prev = scores.get(mem_id, 0.0)
+                scores[mem_id] = max(prev, score)
+
+        for seed_id in seed_memory_ids[:max_seed_scan]:
+            try:
+                # Outgoing PRECEDES / CAUSES
+                out_pre = _fetch_rows(
+                    "MATCH (a:Memory {id: $id})-[r:PRECEDES]->(b:Memory) "
+                    "RETURN b.id, r.confidence LIMIT $limit",
+                    {"id": seed_id, "limit": limit},
+                )
+                _accumulate(out_pre, 1.0)
+                out_cau = _fetch_rows(
+                    "MATCH (a:Memory {id: $id})-[r:CAUSES]->(b:Memory) "
+                    "RETURN b.id, r.confidence LIMIT $limit",
+                    {"id": seed_id, "limit": limit},
+                )
+                _accumulate(out_cau, 1.15)
+
+                # Incoming PRECEDES / CAUSES
+                in_pre = _fetch_rows(
+                    "MATCH (a:Memory)-[r:PRECEDES]->(b:Memory {id: $id}) "
+                    "RETURN a.id, r.confidence LIMIT $limit",
+                    {"id": seed_id, "limit": limit},
+                )
+                _accumulate(in_pre, 0.9)
+                in_cau = _fetch_rows(
+                    "MATCH (a:Memory)-[r:CAUSES]->(b:Memory {id: $id}) "
+                    "RETURN a.id, r.confidence LIMIT $limit",
+                    {"id": seed_id, "limit": limit},
+                )
+                _accumulate(in_cau, 1.05)
+            except Exception as e:
+                logger.debug(f"Chain traversal for seed '{seed_id}': {e}")
+
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        return ranked[:limit]
 
     def delete_memory_references(self, memory_id: str) -> bool:
         """Remove all graph references for a memory."""

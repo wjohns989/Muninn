@@ -11,6 +11,8 @@ from muninn.core.config import (
     ExtractionConfig,
     GoalCompassConfig,
     RetrievalFeedbackConfig,
+    IngestionConfig,
+    MemoryChainsConfig,
     RerankerConfig,
     ConsolidationConfig,
     ServerConfig,
@@ -151,6 +153,28 @@ class TestRetrievalFeedbackConfig:
         assert cfg.multiplier_ceiling == 1.25
 
 
+class TestIngestionConfig:
+    def test_defaults(self):
+        cfg = IngestionConfig()
+        assert cfg.max_file_size_bytes == 5 * 1024 * 1024
+        assert cfg.chunk_size_chars == 1200
+        assert cfg.chunk_overlap_chars == 150
+        assert cfg.min_chunk_chars == 120
+        assert cfg.allowed_roots == []
+
+
+class TestMemoryChainsConfig:
+    def test_defaults(self):
+        cfg = MemoryChainsConfig()
+        assert cfg.detection_threshold == 0.6
+        assert cfg.max_hours_apart == 168.0
+        assert cfg.max_links_per_memory == 4
+        assert cfg.candidate_scan_limit == 80
+        assert cfg.retrieval_signal_weight == 0.6
+        assert cfg.retrieval_expansion_limit == 20
+        assert cfg.retrieval_seed_limit == 6
+
+
 class TestConfigFromEnv:
     def test_env_override_port(self, monkeypatch):
         monkeypatch.setenv("MUNINN_PORT", "9999")
@@ -213,3 +237,36 @@ class TestConfigFromEnv:
         assert config.retrieval_feedback.cache_ttl_seconds == 45
         assert config.retrieval_feedback.multiplier_floor == 0.8
         assert config.retrieval_feedback.multiplier_ceiling == 1.2
+
+    def test_env_override_ingestion(self, monkeypatch):
+        monkeypatch.setenv("MUNINN_INGESTION_MAX_FILE_BYTES", "1048576")
+        monkeypatch.setenv("MUNINN_INGESTION_CHUNK_SIZE_CHARS", "800")
+        monkeypatch.setenv("MUNINN_INGESTION_CHUNK_OVERLAP_CHARS", "80")
+        monkeypatch.setenv("MUNINN_INGESTION_MIN_CHUNK_CHARS", "60")
+        monkeypatch.setenv(
+            "MUNINN_INGESTION_ALLOWED_ROOTS",
+            f"/tmp{os.pathsep}/var/tmp",
+        )
+        config = MuninnConfig.from_env()
+        assert config.ingestion.max_file_size_bytes == 1048576
+        assert config.ingestion.chunk_size_chars == 800
+        assert config.ingestion.chunk_overlap_chars == 80
+        assert config.ingestion.min_chunk_chars == 60
+        assert config.ingestion.allowed_roots == ["/tmp", "/var/tmp"]
+
+    def test_env_override_memory_chains(self, monkeypatch):
+        monkeypatch.setenv("MUNINN_CHAINS_DETECTION_THRESHOLD", "0.72")
+        monkeypatch.setenv("MUNINN_CHAINS_MAX_HOURS_APART", "48")
+        monkeypatch.setenv("MUNINN_CHAINS_MAX_LINKS_PER_MEMORY", "3")
+        monkeypatch.setenv("MUNINN_CHAINS_CANDIDATE_SCAN_LIMIT", "40")
+        monkeypatch.setenv("MUNINN_CHAINS_SIGNAL_WEIGHT", "0.75")
+        monkeypatch.setenv("MUNINN_CHAINS_EXPANSION_LIMIT", "12")
+        monkeypatch.setenv("MUNINN_CHAINS_SEED_LIMIT", "5")
+        config = MuninnConfig.from_env()
+        assert config.memory_chains.detection_threshold == 0.72
+        assert config.memory_chains.max_hours_apart == 48.0
+        assert config.memory_chains.max_links_per_memory == 3
+        assert config.memory_chains.candidate_scan_limit == 40
+        assert config.memory_chains.retrieval_signal_weight == 0.75
+        assert config.memory_chains.retrieval_expansion_limit == 12
+        assert config.memory_chains.retrieval_seed_limit == 5

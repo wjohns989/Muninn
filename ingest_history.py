@@ -1,267 +1,179 @@
+#!/usr/bin/env python3
 """
-Muninn History Ingestion Script
--------------------------------
-Ingests conversation history from all supported assistants into the Muninn global memory.
-Supports: Claude Code, Codex, Antigravity/Gemini CLI
+Legacy history ingestion utility using Muninn's discovery/import APIs.
 
-Usage:
-    python ingest_history.py [--dry-run] [--agent codex|claude|antigravity|all]
+Usage examples:
+  python ingest_history.py --discover-only
+  python ingest_history.py --provider codex_cli --all-discovered
+  python ingest_history.py --source-id src_abc123 --source-id src_def456
+  python ingest_history.py --agent serena --all-discovered
 """
+
+from __future__ import annotations
+
+import argparse
 import json
-import requests
+import os
 import sys
-import time
 from pathlib import Path
+from typing import Dict, List
 
-BASE_URL = "http://localhost:8000"
-# Throttle: sleep between adds to avoid overwhelming the server + xLAM sidecar
-ADD_DELAY = 0.3  # seconds between /add calls
+import requests
+
+DEFAULT_BASE_URL = os.environ.get("MUNINN_SERVER_URL", "http://localhost:42069")
+
+AGENT_PROVIDER_MAP = {
+    "codex": ["codex_cli"],
+    "claude": ["claude_code"],
+    "antigravity": ["antigravity_brain"],
+    "serena": ["serena_memory"],
+    "all": [],
+}
 
 
-def add_memory(content: str, agent_id: str, metadata: dict, dry_run: bool = False) -> bool:
-    """Add a single memory entry to Muninn. Returns True on success."""
-    if dry_run:
-        print(f"  [DRY-RUN] Would add {len(content)} chars from {agent_id}")
-        return True
+def _request_json(method: str, base_url: str, endpoint: str, payload: Dict) -> Dict:
+    url = f"{base_url.rstrip('/')}{endpoint}"
+    response = requests.request(method=method, url=url, json=payload, timeout=120)
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("success", False):
+        raise RuntimeError(data.get("detail") or data)
+    return data.get("data", {})
+
+
+def _print_sources(sources: List[Dict]) -> None:
+    if not sources:
+        print("No legacy sources discovered.")
+        return
+    print(f"Discovered {len(sources)} sources:")
+    print(
+        "  source_id                         provider           supported  size_bytes  path"
+    )
+    for item in sources:
+        print(
+            f"  {str(item.get('source_id', ''))[:32]:<32} "
+            f"{str(item.get('provider', ''))[:16]:<16} "
+            f"{str(item.get('parser_supported', False)):<9} "
+            f"{int(item.get('size_bytes', 0)):<10} "
+            f"{item.get('path', '')}"
+        )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Discover and import legacy assistant/MCP memory sources")
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Muninn server base URL")
+    parser.add_argument("--discover-only", action="store_true", help="Only run discovery, do not import")
+    parser.add_argument("--dry-run", action="store_true", help="Alias for --discover-only")
+    parser.add_argument("--provider", action="append", default=[], help="Provider filter (repeatable)")
+    parser.add_argument("--root", action="append", default=[], help="Additional root directory to scan")
+    parser.add_argument("--include-unsupported", action="store_true", help="Include unsupported files in discovery results")
+    parser.add_argument("--max-results-per-provider", type=int, default=100)
+    parser.add_argument("--source-id", action="append", default=[], help="Selected discovered source ID (repeatable)")
+    parser.add_argument("--path", action="append", default=[], help="Explicit local path to import (repeatable)")
+    parser.add_argument("--all-discovered", action="store_true", help="Import all parser-supported discovered sources")
+    parser.add_argument(
+        "--agent",
+        choices=["codex", "claude", "antigravity", "serena", "all"],
+        help="Legacy shorthand for provider filter",
+    )
+    parser.add_argument("--project", default=Path.cwd().name)
+    parser.add_argument("--namespace", default="global")
+    parser.add_argument("--recursive", action="store_true")
+    parser.add_argument(
+        "--chronological-order",
+        choices=["none", "oldest_first", "newest_first"],
+        default="none",
+    )
+    parser.add_argument("--chunk-size", type=int, default=None)
+    parser.add_argument("--chunk-overlap", type=int, default=None)
+    parser.add_argument("--min-chunk", type=int, default=None)
+    parser.add_argument("--max-file-size-bytes", type=int, default=None)
+    args = parser.parse_args()
+
+    discover_only = args.discover_only or args.dry_run
+
+    provider_filter = list(args.provider)
+    if args.agent:
+        provider_filter.extend(AGENT_PROVIDER_MAP[args.agent])
+    provider_filter = [item for item in provider_filter if item]
+    provider_filter = sorted(set(provider_filter))
+
     try:
-        resp = requests.post(f"{BASE_URL}/add", json={
-            "content": content,
-            "user_id": "global_user",
-            "agent_id": agent_id,
-            "metadata": metadata
-        }, timeout=30)
-        if resp.status_code == 200:
-            time.sleep(ADD_DELAY)
-            return True
-        else:
-            print(f"  [WARN] Server returned {resp.status_code}: {resp.text[:200]}")
-            return False
-    except requests.exceptions.Timeout:
-        print(f"  [WARN] Timeout adding memory (content too large?)")
-        return False
-    except Exception as e:
-        print(f"  [ERROR] {e}")
-        return False
+        discover_payload = {
+            "roots": args.root,
+            "providers": provider_filter,
+            "include_unsupported": args.include_unsupported,
+            "max_results_per_provider": args.max_results_per_provider,
+        }
+        discovery = _request_json("POST", args.base_url, "/ingest/legacy/discover", discover_payload)
+    except Exception as exc:
+        print(f"ERROR: discovery failed: {exc}")
+        return 1
 
+    print(
+        json.dumps(
+            {
+                "event": discovery.get("event"),
+                "total_discovered": discovery.get("total_discovered"),
+                "parser_supported": discovery.get("parser_supported"),
+                "parser_unsupported": discovery.get("parser_unsupported"),
+                "provider_counts": discovery.get("provider_counts", {}),
+            },
+            indent=2,
+        )
+    )
+    _print_sources(discovery.get("sources", []))
 
-def ingest_codex(dry_run: bool = False):
-    """Ingest Codex CLI history from ~/.codex/history.jsonl"""
-    print("\n=== Ingesting Codex History ===")
-    path = Path("C:/Users/user/.codex/history.jsonl")
-    if not path.exists():
-        print("  Codex history not found. Skipping.")
+    if discover_only:
         return 0
 
-    count = 0
-    skipped = 0
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                data = json.loads(line)
-                text = data.get("text", "")
-                if len(text) < 30:
-                    skipped += 1
-                    continue
+    selected_source_ids = list(args.source_id)
+    selected_paths = list(args.path)
+    if args.all_discovered:
+        selected_source_ids.extend(
+            item["source_id"]
+            for item in discovery.get("sources", [])
+            if item.get("parser_supported") is True
+        )
+    selected_source_ids = sorted(set(selected_source_ids))
+    selected_paths = sorted(set(selected_paths))
 
-                # Cap at 8000 chars to keep extraction feasible
-                text = text[:8000]
-                meta = {
-                    "source": "codex_history",
-                    "session_id": data.get("session_id", "unknown"),
-                    "ts": data.get("ts")
-                }
-                if add_memory(text, "codex", meta, dry_run):
-                    count += 1
-                if count % 25 == 0 and count > 0:
-                    print(f"  Ingested {count} codex entries...")
-            except json.JSONDecodeError:
-                skipped += 1
-            except Exception as e:
-                print(f"  Error: {e}")
-                skipped += 1
+    if not selected_source_ids and not selected_paths:
+        print(
+            "ERROR: no import selection provided. Use --source-id/--path or --all-discovered."
+        )
+        return 2
 
-    print(f"  Done. Ingested {count} items, skipped {skipped}.")
-    return count
+    import_payload = {
+        "selected_source_ids": selected_source_ids,
+        "selected_paths": selected_paths,
+        "roots": args.root,
+        "providers": provider_filter,
+        "include_unsupported": args.include_unsupported,
+        "max_results_per_provider": args.max_results_per_provider,
+        "project": args.project,
+        "namespace": args.namespace,
+        "recursive": args.recursive,
+        "chronological_order": args.chronological_order,
+        "max_file_size_bytes": args.max_file_size_bytes,
+        "chunk_size_chars": args.chunk_size,
+        "chunk_overlap_chars": args.chunk_overlap,
+        "min_chunk_chars": args.min_chunk,
+        "metadata": {
+            "source": "legacy_history_import_script",
+            "selection_mode": "all_discovered" if args.all_discovered else "manual",
+        },
+    }
 
-
-def ingest_claude(dry_run: bool = False):
-    """Ingest Claude Code conversation history from ~/.claude/projects/*/"""
-    print("\n=== Ingesting Claude Code History ===")
-    projects_dir = Path("C:/Users/user/.claude/projects")
-    if not projects_dir.exists():
-        print("  Claude projects directory not found. Skipping.")
-        return 0
-
-    count = 0
-    skipped = 0
-    jsonl_files = list(projects_dir.glob("**/*.jsonl"))
-    print(f"  Found {len(jsonl_files)} conversation files.")
-
-    for jsonl_path in jsonl_files:
-        # Skip agent-prefixed files (task subagent transcripts, usually redundant)
-        if jsonl_path.stem.startswith("agent-"):
-            continue
-
-        session_id = jsonl_path.stem
-        project_name = jsonl_path.parent.name
-
-        try:
-            with open(jsonl_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        skipped += 1
-                        continue
-
-                    msg_type = data.get("type", "")
-                    message = data.get("message", {})
-                    if not isinstance(message, dict):
-                        continue
-
-                    role = message.get("role", "")
-                    content = message.get("content", "")
-
-                    # Extract text from user messages (direct string content)
-                    if msg_type == "user" and role == "user" and isinstance(content, str):
-                        text = content.strip()
-                        if len(text) < 30:
-                            skipped += 1
-                            continue
-                        text = text[:8000]
-                        meta = {
-                            "source": "claude_history",
-                            "session_id": session_id,
-                            "project": project_name,
-                            "role": "user"
-                        }
-                        if add_memory(text, "claude", meta, dry_run):
-                            count += 1
-
-                    # Extract text from user messages (content blocks)
-                    elif msg_type == "user" and role == "user" and isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text = block.get("text", "").strip()
-                                if len(text) < 30:
-                                    continue
-                                text = text[:8000]
-                                meta = {
-                                    "source": "claude_history",
-                                    "session_id": session_id,
-                                    "project": project_name,
-                                    "role": "user"
-                                }
-                                if add_memory(text, "claude", meta, dry_run):
-                                    count += 1
-
-                    # Extract substantive assistant text responses (skip tool calls)
-                    elif role == "assistant" and isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text = block.get("text", "").strip()
-                                # Only ingest substantial assistant responses
-                                if len(text) < 100:
-                                    continue
-                                text = text[:8000]
-                                meta = {
-                                    "source": "claude_history",
-                                    "session_id": session_id,
-                                    "project": project_name,
-                                    "role": "assistant"
-                                }
-                                if add_memory(text, "claude", meta, dry_run):
-                                    count += 1
-
-                    if count % 25 == 0 and count > 0 and count % 50 == 0:
-                        print(f"  Ingested {count} claude entries...")
-
-        except Exception as e:
-            print(f"  Error reading {jsonl_path}: {e}")
-
-    print(f"  Done. Ingested {count} items, skipped {skipped}.")
-    return count
-
-
-def ingest_antigravity(dry_run: bool = False):
-    """Ingest Antigravity/Gemini brain output files."""
-    print("\n=== Ingesting Antigravity Brain ===")
-    root = Path("C:/Users/user/.gemini/antigravity/brain")
-    if not root.exists():
-        print("  Antigravity brain not found. Skipping.")
-        return 0
-
-    count = 0
-    skipped = 0
-    files = list(root.glob("**/output.txt"))
-    print(f"  Found {len(files)} output files.")
-
-    for f_path in files:
-        try:
-            size = f_path.stat().st_size
-            if size < 100 or size > 50000:
-                skipped += 1
-                continue
-
-            content = f_path.read_text(encoding="utf-8")
-
-            # Extract session ID from path (UUID-style directory name)
-            session_id = "unknown"
-            for p in f_path.parts:
-                if len(p) == 36 and p.count("-") == 4:
-                    session_id = p
-                    break
-
-            meta = {
-                "source": "antigravity_brain",
-                "file": str(f_path),
-                "session_id": session_id
-            }
-            text = content[:8000]
-            if add_memory(text, "antigravity", meta, dry_run):
-                count += 1
-            if count % 10 == 0 and count > 0:
-                print(f"  Ingested {count} antigravity files...")
-        except Exception as e:
-            print(f"  Error ingesting {f_path}: {e}")
-            skipped += 1
-
-    print(f"  Done. Ingested {count} files, skipped {skipped}.")
-    return count
-
-
-def main():
-    dry_run = "--dry-run" in sys.argv
-    agent_filter = "all"
-    if "--agent" in sys.argv:
-        idx = sys.argv.index("--agent")
-        if idx + 1 < len(sys.argv):
-            agent_filter = sys.argv[idx + 1].lower()
-
-    if dry_run:
-        print("[DRY RUN MODE - no data will be written]")
-
-    # Server health check
     try:
-        resp = requests.get(f"{BASE_URL}/health", timeout=5)
-        health = resp.json()
-        print(f"Muninn server: {health.get('status')} | graph_nodes: {health.get('graph_nodes')}")
-    except Exception:
-        print("ERROR: Muninn server must be running at http://localhost:8000")
-        sys.exit(1)
+        result = _request_json("POST", args.base_url, "/ingest/legacy/import", import_payload)
+    except Exception as exc:
+        print(f"ERROR: import failed: {exc}")
+        return 1
 
-    total = 0
-    if agent_filter in ("all", "codex"):
-        total += ingest_codex(dry_run)
-    if agent_filter in ("all", "claude"):
-        total += ingest_claude(dry_run)
-    if agent_filter in ("all", "antigravity"):
-        total += ingest_antigravity(dry_run)
-
-    print(f"\n=== Ingestion Complete ===")
-    print(f"Total memories added: {total}")
-    print("GraphRAG will process these in the background via Mem0's native pipeline.")
+    print(json.dumps(result, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -579,10 +579,169 @@ def handle_list_tools(msg_id: Any):
                 },
                 "required": ["query", "memory_id", "outcome"]
             }
+        },
+        {
+            "name": "ingest_sources",
+            "description": "Ingest local files/directories into memory with fail-open parsing and per-source provenance metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of local file or directory paths to ingest."
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Recursively traverse directory sources."
+                    },
+                    "chronological_order": {
+                        "type": "string",
+                        "enum": ["none", "oldest_first", "newest_first"],
+                        "default": "none",
+                        "description": "Process source files in deterministic path order or by file modification time."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override."
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Optional metadata merged into each ingested chunk."
+                    },
+                    "max_file_size_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional maximum source file size."
+                    },
+                    "chunk_size_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional chunk size override."
+                    },
+                    "chunk_overlap_chars": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional chunk overlap override."
+                    },
+                    "min_chunk_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional minimum chunk length."
+                    }
+                },
+                "required": ["sources"]
+            }
+        },
+        {
+            "name": "discover_legacy_sources",
+            "description": "Discover local legacy assistant/MCP memory sources (Codex, Claude Code, Serena, Cursor/VS Code stores, etc.) available for import.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "roots": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional additional root directories to scan."
+                    },
+                    "providers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional provider allowlist, e.g. ['codex_cli','serena_memory']."
+                    },
+                    "include_unsupported": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include files not currently supported by ingestion parsers."
+                    },
+                    "max_results_per_provider": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum files returned per provider."
+                    }
+                }
+            }
+        },
+        {
+            "name": "ingest_legacy_sources",
+            "description": "Ingest user-selected legacy sources discovered from assistant logs and MCP memory programs with contextual metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "selected_source_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Source IDs selected from discover_legacy_sources."
+                    },
+                    "selected_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional explicit local paths to include."
+                    },
+                    "roots": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "providers": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "include_unsupported": {
+                        "type": "boolean",
+                        "default": False
+                    },
+                    "max_results_per_provider": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "default": False
+                    },
+                    "chronological_order": {
+                        "type": "string",
+                        "enum": ["none", "oldest_first", "newest_first"],
+                        "default": "none"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override."
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Optional metadata merged into each ingested chunk."
+                    },
+                    "max_file_size_bytes": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "chunk_size_chars": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "chunk_overlap_chars": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "min_chunk_chars": {
+                        "type": "integer",
+                        "minimum": 1
+                    }
+                }
+            }
         }
     ]
     
-    read_only_tools = {"search_memory", "get_all_memories", "get_project_goal", "export_handoff"}
+    read_only_tools = {"search_memory", "get_all_memories", "get_project_goal", "export_handoff", "discover_legacy_sources"}
     for tool in tools:
         schema = tool.get("inputSchema", {})
         if isinstance(schema, dict) and "$schema" not in schema:
@@ -861,6 +1020,94 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "source": arguments.get("source", "mcp_feedback"),
             }
             resp = make_request_with_retry("POST", f"{SERVER_URL}/feedback/retrieval", json=payload, timeout=15)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "ingest_sources":
+            git_info = get_git_info()
+            payload = {
+                "sources": arguments.get("sources", []),
+                "recursive": arguments.get("recursive", False),
+                "chronological_order": arguments.get("chronological_order", "none"),
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+                "metadata": arguments.get("metadata", {}),
+                "max_file_size_bytes": arguments.get("max_file_size_bytes"),
+                "chunk_size_chars": arguments.get("chunk_size_chars"),
+                "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
+                "min_chunk_chars": arguments.get("min_chunk_chars"),
+            }
+            resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest", json=payload, timeout=60)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "discover_legacy_sources":
+            payload = {
+                "roots": arguments.get("roots", []),
+                "providers": arguments.get("providers", []),
+                "include_unsupported": arguments.get("include_unsupported", False),
+                "max_results_per_provider": arguments.get("max_results_per_provider", 100),
+            }
+            resp = make_request_with_retry(
+                "POST",
+                f"{SERVER_URL}/ingest/legacy/discover",
+                json=payload,
+                timeout=60,
+            )
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "ingest_legacy_sources":
+            git_info = get_git_info()
+            payload = {
+                "selected_source_ids": arguments.get("selected_source_ids", []),
+                "selected_paths": arguments.get("selected_paths", []),
+                "roots": arguments.get("roots", []),
+                "providers": arguments.get("providers", []),
+                "include_unsupported": arguments.get("include_unsupported", False),
+                "max_results_per_provider": arguments.get("max_results_per_provider", 100),
+                "recursive": arguments.get("recursive", False),
+                "chronological_order": arguments.get("chronological_order", "none"),
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+                "metadata": arguments.get("metadata", {}),
+                "max_file_size_bytes": arguments.get("max_file_size_bytes"),
+                "chunk_size_chars": arguments.get("chunk_size_chars"),
+                "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
+                "min_chunk_chars": arguments.get("min_chunk_chars"),
+            }
+            resp = make_request_with_retry(
+                "POST",
+                f"{SERVER_URL}/ingest/legacy/import",
+                json=payload,
+                timeout=120,
+            )
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",

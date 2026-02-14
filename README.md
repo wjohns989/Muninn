@@ -115,6 +115,13 @@ muninn_mcp/
 │   │   └── reranker.py        # Jina cross-encoder reranker
 │   ├── scoring/               # Importance scoring
 │   │   └── importance.py      # Multi-factor importance formula
+│   ├── sdk/                   # Python SDK (sync + async REST clients)
+│   │   ├── client.py          # MuninnClient / AsyncMuninnClient / aliases
+│   │   └── errors.py          # SDK exception hierarchy
+│   ├── ingestion/             # Multi-source ingestion (v3.3.0)
+│   │   ├── pipeline.py        # Fail-open source ingestion orchestrator
+│   │   ├── parser.py          # Safe parser adapters (txt/md/json/jsonl/csv/html/sqlite/pdf/docx)
+│   │   └── discovery.py       # Legacy assistant/MCP source discovery catalog
 │   └── consolidation/         # Background memory lifecycle
 │       ├── daemon.py          # Async consolidation loop
 │       ├── merge.py           # Near-duplicate merging
@@ -236,6 +243,9 @@ args = ["/path/to/muninn-mcp/mcp_wrapper.py"]
 | `update_memory` | Update an existing memory by ID |
 | `delete_memory` | Delete a specific memory by ID |
 | `delete_all_memories` | Delete all memories (requires confirmation) |
+| `ingest_sources` | Ingest local files/directories with provenance-rich fail-open parsing |
+| `discover_legacy_sources` | Discover reingestable legacy assistant and MCP memory artifacts |
+| `ingest_legacy_sources` | Ingest selected legacy sources with contextual metadata |
 
 ---
 
@@ -248,34 +258,81 @@ When the server is running (`http://localhost:42069`):
 | `GET` | `/health` | Server and subsystem health check |
 | `POST` | `/add` | Add a new memory |
 | `POST` | `/search` | Hybrid search with query |
+| `POST` | `/ingest` | Multi-source ingestion (feature-gated) |
+| `POST` | `/ingest/legacy/discover` | Discover local legacy assistant/MCP memory artifacts |
+| `POST` | `/ingest/legacy/import` | Import selected legacy artifacts into Muninn |
+| `POST` | `/goal/set` | Set project north-star goal |
+| `GET` | `/goal/get` | Get active project goal |
+| `POST` | `/handoff/export` | Export deterministic handoff bundle |
+| `POST` | `/handoff/import` | Import handoff bundle idempotently |
+| `POST` | `/feedback/retrieval` | Record retrieval feedback for adaptive calibration |
 | `GET` | `/get_all` | Retrieve all memories |
 | `PUT` | `/update` | Update memory by ID |
-| `DELETE` | `/delete` | Delete memory by ID |
+| `DELETE` | `/delete/{memory_id}` | Delete memory by ID |
 | `GET` | `/graph` | Knowledge graph statistics |
 | `POST` | `/handover` | Generate cross-assistant handover context |
-| `POST` | `/consolidation/trigger` | Manually trigger consolidation |
-| `GET` | `/consolidation/stats` | Consolidation statistics |
+| `POST` | `/consolidation/run` | Manually trigger consolidation |
+| `GET` | `/consolidation/status` | Consolidation status |
+
+---
+
+## Python SDK
+
+Muninn includes first-party sync + async clients for REST integration:
+
+```python
+from muninn import Memory
+
+client = Memory(base_url="http://localhost:42069")
+client.add(content="User prefers deterministic CI gates", metadata={"project": "muninn"})
+results = client.search("What does the user prefer?", explain=True)
+print(results[0]["memory"]["content"])
+```
+
+```python
+import asyncio
+from muninn import AsyncMemory
+
+async def main():
+    async with AsyncMemory() as client:
+        await client.set_project_goal(
+            project="muninn",
+            goal_statement="Ship Phase 3 safely with tests",
+            constraints=["backward-compatible", "local-first"],
+        )
+        goal = await client.get_project_goal(project="muninn")
+        print(goal)
+
+asyncio.run(main())
+```
+
+See `docs/PYTHON_SDK.md` for full method coverage and error handling.
 
 ---
 
 ## Dashboard
 
-Visit `http://localhost:42069` when the server is running to access the web dashboard for memory visualization and knowledge graph exploration.
+Visit `http://localhost:42069` when the server is running to access the browser control center. It includes:
+
+- Legacy source discovery and checkbox-based reingestion of assistant/MCP memory artifacts.
+- Project-folder ingestion with chronological ordering (`none`, `oldest_first`, `newest_first`).
+- Search and system operations in one UI.
 
 ---
 
 ## History Ingestion
 
-Import existing conversation history from your AI assistants:
+Import existing conversation history from your AI assistants and MCP memory sources:
 
 ```bash
-# Dry run to see what would be ingested
-python ingest_history.py --dry-run --agent all
+# Discover only (no writes)
+python ingest_history.py --discover-only --agent all
 
-# Ingest from a specific assistant
-python ingest_history.py --agent claude
-python ingest_history.py --agent codex
-python ingest_history.py --agent antigravity
+# Import all parser-supported discovered sources for selected providers
+python ingest_history.py --provider codex_cli --provider serena_memory --all-discovered
+
+# Import with chronological ordering
+python ingest_history.py --agent claude --all-discovered --chronological-order oldest_first
 ```
 
 ---
@@ -319,8 +376,8 @@ See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadm
 - **Semantic deduplication** — Embedding-based near-duplicate prevention
 - **Adaptive retrieval weights** — Entropy-based dynamic signal weighting
 - **Memory chains** — Temporal/causal linking of related memories
-- **Multi-source ingestion** — PDF, Markdown, and structured document import
-- **Python SDK** — Programmatic API for non-MCP integration
+- **Multi-source ingestion** — PDF, Markdown, and structured document import (**implemented**: feature-gated fail-open pipeline)
+- **Python SDK** — Programmatic API for non-MCP integration (**implemented**: sync + async clients)
 - **Cross-platform support** — Linux and macOS path resolution
 
 ---
@@ -331,6 +388,8 @@ See [SOTA_PLUS_PLAN.md](SOTA_PLUS_PLAN.md) for the complete implementation roadm
 - [Citations & Credits](CITATIONS.md) — Academic sources and open-source attribution
 - [SOTA+ Roadmap](SOTA_PLUS_PLAN.md) — Next-generation feature implementation plan
 - [OTel GenAI Runbook](docs/OTEL_GENAI_OBSERVABILITY.md) — Trace export setup and privacy controls
+- [Python SDK Guide](docs/PYTHON_SDK.md) — Sync/async client usage and mem0-style aliases
+- [Ingestion Guide](docs/INGESTION_PIPELINE.md) — Feature-gated multi-source ingestion setup and safety profile
 
 ---
 

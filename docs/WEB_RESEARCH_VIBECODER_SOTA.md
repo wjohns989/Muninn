@@ -76,6 +76,77 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
    - https://opentelemetry-python.readthedocs.io/en/latest/exporter/otlp/otlp.html
 29. OTel security guidance for sensitive data:
    - https://opentelemetry.io/docs/security/handling-sensitive-data/
+30. Requests session guidance (connection reuse / advanced usage):
+   - https://requests.readthedocs.io/en/latest/user/advanced/
+31. HTTPX client lifecycle guidance (sync/async client reuse):
+   - https://www.python-httpx.org/advanced/clients/
+32. OWASP file upload hardening guidance (applicable to ingestion safety):
+   - https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html
+33. Python CSV standard-library behavior and limits:
+   - https://docs.python.org/3/library/csv.html
+34. Python HTML parser standard-library reference:
+   - https://docs.python.org/3/library/html.parser.html
+35. pypdf extraction and memory caveats:
+   - https://pypdf.readthedocs.io/en/latest/user/extract-text.html
+36. python-docx document API quickstart:
+   - https://python-docx.readthedocs.io/en/latest/user/quickstart.html
+37. Codex CLI config + state location (`CODEX_HOME`, defaults):
+   - https://developers.openai.com/codex/config-advanced/
+38. Codex CLI history growth issue referencing `CODEX_HOME/history.jsonl`:
+   - https://github.com/openai/codex/issues/4963
+39. Claude Code repository issue confirming local session JSONL paths:
+   - https://github.com/anthropics/claude-code/issues/22365
+40. VS Code user-data and platform path contract (portable mode docs):
+   - https://code.visualstudio.com/docs/editor/portable
+41. VS Code discussion referencing chat session storage under workspaceStorage:
+   - https://github.com/microsoft/vscode-discussions/discussions/168163
+42. VS Code issue referencing `workspaceStorage/.../state.vscdb`:
+   - https://github.com/microsoft/vscode/issues/179882
+43. Cursor community thread on local chat history location:
+   - https://stackoverflow.com/questions/79398677/where-does-cursor-store-chat-history
+44. Cursor chat browser implementation notes for workspace storage parsing:
+   - https://github.com/alexjbuck/cursor-chat-browser/blob/main/README.md
+45. MDN File System Access `showDirectoryPicker` limitations:
+   - https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker
+46. Browser support for `showDirectoryPicker`:
+   - https://caniuse.com/mdn-api_window_showdirectorypicker
+47. FastAPI response class guidance for serving HTML:
+   - https://fastapi.tiangolo.com/advanced/custom-response/
+
+## Legacy Chat/Memory Storage Research (2026-02-14)
+
+### Confidence Matrix
+
+- **High confidence**
+  - Codex CLI: `CODEX_HOME` defaults to `~/.codex`; `history.jsonl` and session artifacts under that root.
+  - Claude Code: session JSONL under `~/.claude/projects/...`.
+- **Medium confidence**
+  - VS Code/Copilot/Cursor-style stores: workspace/global state databases under `User/workspaceStorage` and `User/globalStorage` (sqlite `state.vscdb`, plus `chatSessions/*.json` where present).
+  - Antigravity brain outputs under `.gemini/antigravity/brain/**/output.txt` (project-observed convention).
+- **Low confidence**
+  - Claude Desktop and ChatGPT desktop local artifact roots on each OS: directory conventions vary and official vendor docs are limited.
+
+### Implementation Decision
+
+To avoid brittle single-path assumptions, discovery was implemented as:
+- provider-specific path patterns across Windows/macOS/Linux,
+- confidence tagging per provider,
+- user-supplied root scanning (`roots[]`) for unknown/custom layouts,
+- parser-supported gating with explicit unsupported reporting.
+
+This balances ingestion ROI against ecosystem path volatility and avoids hard-coding unverifiable assumptions as invariants.
+
+## Browser UI + Filesystem Constraint Research (2026-02-14)
+
+Key findings:
+- `showDirectoryPicker()` is experimental, not baseline across major browsers, and requires secure context.
+- Browser File System Access API intentionally avoids exposing absolute local paths to JavaScript.
+- Result: path-driven ingestion workflows cannot rely on portable browser-native folder pickers.
+
+Implementation impact:
+- Browser UI uses server-side local path entry and discovery-based selection instead of fragile client-side absolute-path APIs.
+- This preserves cross-browser operability and keeps ingestion semantics deterministic across desktop environments.
+- FastAPI serves the UI from `/` via `HTMLResponse`, minimizing deployment complexity and keeping API/UI origin aligned.
 
 ## New Missing Features Identified (Beyond Current Plan)
 
@@ -229,3 +300,32 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
 - More reliable multi-tenant isolation.
 - Lower query cost for scoped retrieval/deletion paths.
 - No API contract break; storage behavior improves transparently.
+
+### Python SDK transport lifecycle (high ROI, performance + reliability)
+
+**Issue found:** direct per-call HTTP usage increases connection churn and makes async integration awkward.
+
+**Upgrade implemented:**
+- Added first-party sync/async SDK clients with reusable `requests.Session` / `httpx.AsyncClient` transports.
+- Added context manager ergonomics (`with` / `async with`) and typed exception hierarchy for deterministic error handling.
+- Added mem0-style aliases (`Memory`, `AsyncMemory`) to reduce migration friction for existing users.
+
+**Ecosystem impact:**
+- Lower overhead for high-frequency programmatic integrations.
+- Cleaner integration path for async agent runtimes.
+- Better operability via typed connection/API error semantics.
+
+### Ingestion safety + fail-open parsing (high ROI, correctness + operability)
+
+**Issue found:** Phase 3B ingestion gap prevented controlled parsing of heterogeneous sources and increased risk of parser-coupled pipeline failure.
+
+**Upgrade implemented:**
+- Added feature-gated multi-source ingestion package (`muninn/ingestion`) with parser adapters for `txt/md/json/csv/tsv/html` and optional `pdf/docx`.
+- Added source-level fail-open behavior: parser failures, missing paths, and oversize files are isolated per source without aborting the full run.
+- Added provenance-rich chunk metadata (`source_path`, `source_type`, `source_sha256`, byte size, chunk offsets/count).
+- Added strict chunking invariants (`overlap < chunk_size`, minimum chunk length) and bounded file-size controls.
+
+**Ecosystem impact:**
+- Reduces ingestion blast radius by turning source/parser failures into auditable partial failures.
+- Improves forensic and dedup workflows through deterministic source checksums + chunk offset metadata.
+- Creates a direct path for safe MCP/SDK ingestion automation while preserving local-first guarantees.
