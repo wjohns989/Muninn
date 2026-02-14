@@ -75,6 +75,31 @@ def test_sync_add_success_and_payload_shape():
     assert stub.calls[0]["timeout"] == 3.0
 
 
+def test_sync_ingest_sources_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/ingest"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "INGEST_COMPLETED", "added_memories": 2}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.ingest_sources(
+        sources=["/tmp/a.txt"],
+        project="muninn",
+        recursive=True,
+        chunk_size_chars=500,
+    )
+
+    assert result["event"] == "INGEST_COMPLETED"
+    payload = stub.calls[0]["json"]
+    assert payload["sources"] == ["/tmp/a.txt"]
+    assert payload["project"] == "muninn"
+    assert payload["recursive"] is True
+    assert payload["chunk_size_chars"] == 500
+
+
 def test_sync_health_unwrapped_payload():
     stub = _StubSession(
         {

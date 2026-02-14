@@ -62,8 +62,12 @@ dev = [
 observability = [
     "opentelemetry-api>=1.27.0",
 ]
+ingestion = [
+    "pypdf>=4.0.0",
+    "python-docx>=1.1.0",
+]
 all = [
-    "muninn-mcp[instructor,tray,dev,observability]",
+    "muninn-mcp[instructor,tray,dev,observability,ingestion]",
 ]
 
 [project.scripts]
