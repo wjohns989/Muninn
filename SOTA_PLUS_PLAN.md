@@ -115,6 +115,9 @@
     - repository integrity verified after crash/restart (`git fsck --full` clean),
     - conflict-resolver test warning source removed,
     - branch workflow moved to one-open-PR-per-phase policy.
+33. Phase 4A operator adaptation baseline started:
+    - `dashboard.html` now persists control-center preferences in browser storage,
+    - model profile selection is displayed in UI and carried into ingestion metadata for traceability.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `384 passed, 2 skipped, 0 warnings`.
