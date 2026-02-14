@@ -43,6 +43,7 @@ from muninn.consolidation.daemon import ConsolidationDaemon
 from muninn.core.feature_flags import get_flags
 from muninn.goal import GoalCompass
 from muninn.observability import OTelGenAITracer
+from muninn.chains import MemoryChainDetector
 from muninn.ingestion import IngestionPipeline, discover_legacy_sources as discover_legacy_sources_catalog
 from muninn.ingestion.parser import infer_source_type
 
@@ -98,6 +99,7 @@ class MuninnMemory:
         self._goal_compass: Optional[GoalCompass] = None
         self._otel = OTelGenAITracer(enabled=False)
         self._ingestion: Optional[IngestionPipeline] = None
+        self._chain_detector: Optional[MemoryChainDetector] = None
 
         # Phase 2 engines (v3.2.0)
         self._dedup = None           # SemanticDedup
@@ -161,6 +163,9 @@ class MuninnMemory:
             reranker=self._reranker,
             embed_fn=self._embed,
             telemetry=self._otel,
+            chain_signal_weight=self.config.memory_chains.retrieval_signal_weight,
+            chain_expansion_limit=self.config.memory_chains.retrieval_expansion_limit,
+            chain_max_seed_memories=self.config.memory_chains.retrieval_seed_limit,
         )
 
         # Initialize consolidation daemon
@@ -206,6 +211,19 @@ class MuninnMemory:
                 self.config.ingestion.max_file_size_bytes,
                 self.config.ingestion.chunk_size_chars,
                 self.config.ingestion.chunk_overlap_chars,
+            )
+
+        if flags.is_enabled("memory_chains"):
+            self._chain_detector = MemoryChainDetector(
+                threshold=self.config.memory_chains.detection_threshold,
+                max_hours_apart=self.config.memory_chains.max_hours_apart,
+                max_links_per_memory=self.config.memory_chains.max_links_per_memory,
+            )
+            logger.info(
+                "Memory chains enabled (threshold=%.3f, max_hours=%.1f, max_links=%d)",
+                self.config.memory_chains.detection_threshold,
+                self.config.memory_chains.max_hours_apart,
+                self.config.memory_chains.max_links_per_memory,
             )
 
         if flags.is_enabled("semantic_dedup"):
@@ -289,6 +307,76 @@ class MuninnMemory:
         record_user_id = metadata.get("user_id")
         return record_user_id == user_id
 
+    @staticmethod
+    def _extract_entity_names(extraction: ExtractionResult) -> List[str]:
+        """Derive unique entity names from extraction output, preserving order."""
+        names: List[str] = []
+        seen = set()
+        for entity in extraction.entities:
+            raw_name = getattr(entity, "name", None)
+            if not isinstance(raw_name, str):
+                continue
+            clean = raw_name.strip()
+            if not clean:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(clean)
+        return names
+
+    def _upsert_memory_chain_links(
+        self,
+        *,
+        successor_record: MemoryRecord,
+        successor_content: str,
+        successor_entity_names: List[str],
+    ) -> int:
+        """Detect and persist memory-chain links for a memory record."""
+        if (
+            self._chain_detector is None
+            or self._metadata is None
+            or self._graph is None
+            or not successor_entity_names
+        ):
+            return 0
+
+        metadata = successor_record.metadata or {}
+        user_id = str(metadata.get("user_id") or "global_user")
+
+        try:
+            candidate_records = self._metadata.get_all(
+                limit=self.config.memory_chains.candidate_scan_limit,
+                project=successor_record.project,
+                namespace=successor_record.namespace,
+                user_id=user_id,
+            )
+            links = self._chain_detector.detect_links(
+                successor_record=successor_record,
+                successor_content=successor_content,
+                successor_entity_names=successor_entity_names,
+                candidate_records=candidate_records,
+            )
+
+            persisted = 0
+            for link in links:
+                created = self._graph.add_chain_link(
+                    predecessor_id=link.predecessor_id,
+                    successor_id=link.successor_id,
+                    relation_type=link.relation_type,
+                    confidence=link.confidence,
+                    reason=link.reason,
+                    shared_entities=link.shared_entities,
+                    hours_apart=link.hours_apart,
+                )
+                if created:
+                    persisted += 1
+            return persisted
+        except Exception as e:
+            logger.warning("Memory-chain linking failed (non-fatal): %s", e)
+            return 0
+
     async def add(
         self,
         content: str,
@@ -342,6 +430,9 @@ class MuninnMemory:
                 scope_filters["project"] = project
 
             extraction = await self._extract(content)
+            entity_names = self._extract_entity_names(extraction)
+            if entity_names:
+                scoped_metadata["entity_names"] = entity_names
             embedding = self._embed(content)
 
             record = MemoryRecord(
@@ -517,13 +608,20 @@ class MuninnMemory:
                     relation.confidence,
                 )
 
+            chain_links_created = self._upsert_memory_chain_links(
+                successor_record=record,
+                successor_content=content,
+                successor_entity_names=entity_names,
+            )
+
             self._bm25.add(record.id, content)
             logger.info(
-                "Added memory %s (importance=%.3f, entities=%d, relations=%d)",
+                "Added memory %s (importance=%.3f, entities=%d, relations=%d, chains=%d)",
                 record.id,
                 importance,
                 len(extraction.entities),
                 len(extraction.relations),
+                chain_links_created,
             )
 
             result = {
@@ -533,6 +631,7 @@ class MuninnMemory:
                 "memory_type": memory_type.value,
                 "entities": [e.model_dump() for e in extraction.entities],
                 "relations": [r.model_dump() for r in extraction.relations],
+                "chain_links_created": chain_links_created,
                 "event": "ADD",
             }
             if conflict_info:
@@ -1362,6 +1461,13 @@ class MuninnMemory:
 
         # Re-extract entities
         extraction = await self._extract(data)
+        entity_names = self._extract_entity_names(extraction)
+        updated_metadata = dict(record.metadata or {})
+        if entity_names:
+            updated_metadata["entity_names"] = entity_names
+        else:
+            updated_metadata.pop("entity_names", None)
+        record.metadata = updated_metadata
 
         # Re-embed
         embedding = self._embed(data)
@@ -1396,15 +1502,22 @@ class MuninnMemory:
                 relation.object, record.id, relation.confidence,
             )
 
+        chain_links_created = self._upsert_memory_chain_links(
+            successor_record=record,
+            successor_content=data,
+            successor_entity_names=entity_names,
+        )
+
         # Update BM25
         self._bm25.add(record.id, data)
 
-        logger.info("Updated memory %s", memory_id)
+        logger.info("Updated memory %s (chains=%d)", memory_id, chain_links_created)
 
         return {
             "id": record.id,
             "content": data,
             "previous_content": old_content,
+            "chain_links_created": chain_links_created,
             "event": "UPDATE",
         }
 
