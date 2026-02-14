@@ -126,9 +126,13 @@
     - MCP initialize now performs startup readiness checks for Muninn/Ollama and attempts autostart when enabled,
     - initialize instructions now provide explicit startup prompts when dependencies are unavailable,
     - assistant-specific profile override now works via `MUNINN_OPERATOR_MODEL_PROFILE` with metadata injection defaults.
+36. Phase 4D VRAM-aware profile policy baseline implemented:
+    - extraction config now supports `MUNINN_VRAM_BUDGET_GB` to auto-select profile models by GPU budget tier,
+    - 16GB-class defaults are now explicitly right-sized (`low=llama3.2:3b`, `balanced=qwen3:8b`, `high=qwen3:14b`),
+    - 30B/32B routes are now reserved for explicit high-VRAM budgets rather than default high-reasoning baseline.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `395 passed, 2 skipped, 0 warnings`.
+- Full-suite verification now green in-session: `398 passed, 2 skipped, 0 warnings`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -144,6 +148,7 @@
 - UI + chronological ingestion verification: `34 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 - PR-remediation tranche verification: `83 passed` (`tests/test_eval_metrics.py`, `tests/test_sdk_client.py`, `tests/test_ingestion_pipeline.py`, `tests/test_ingestion_parser.py`, `tests/test_ingestion_discovery.py`, `tests/test_memory_ingestion.py`, `tests/test_config.py`, `tests/test_mcp_wrapper_protocol.py`).
 - Memory-chains tranche verification: `40 passed` (`tests/test_memory_chains.py`, `tests/test_hybrid_retriever.py`, `tests/test_memory_update_path.py`, `tests/test_config.py`, `tests/test_memory_feedback.py`) + `40 passed` (`tests/test_recall_trace.py`, `tests/test_feature_flags.py`).
+- Phase 4D VRAM-policy verification: `36 passed` (`tests/test_config.py`, `tests/test_extraction_pipeline.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.

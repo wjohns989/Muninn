@@ -19,6 +19,72 @@ logger = logging.getLogger("Muninn.Config")
 
 # Default data directory — now cross-platform via platform.py
 DEFAULT_DATA_DIR = str(get_data_dir())
+DEFAULT_LOW_LATENCY_MODEL = "llama3.2:3b"
+DEFAULT_BALANCED_MODEL = "qwen3:8b"
+DEFAULT_HIGH_REASONING_MODEL = "qwen3:14b"
+
+
+def _parse_optional_float_env(name: str) -> Optional[float]:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning(
+            "Invalid %s value '%s'; expected positive float. Ignoring.",
+            name,
+            raw,
+        )
+        return None
+
+
+def _select_profile_models_for_vram(vram_budget_gb: Optional[float]) -> Dict[str, str]:
+    """
+    Select profile model defaults for an approximate VRAM budget.
+
+    This policy keeps low-latency memory operations responsive under constrained
+    developer GPUs while preserving a higher-capability path when headroom exists.
+    """
+    if vram_budget_gb is None:
+        return {
+            "low_latency": DEFAULT_LOW_LATENCY_MODEL,
+            "balanced": DEFAULT_BALANCED_MODEL,
+            "high_reasoning": DEFAULT_HIGH_REASONING_MODEL,
+        }
+
+    if vram_budget_gb < 6:
+        return {
+            "low_latency": "llama3.2:1b",
+            "balanced": "qwen3:1.7b",
+            "high_reasoning": "qwen3:4b",
+        }
+    if vram_budget_gb < 10:
+        return {
+            "low_latency": DEFAULT_LOW_LATENCY_MODEL,
+            "balanced": "qwen3:4b",
+            "high_reasoning": "qwen3:8b",
+        }
+    if vram_budget_gb < 18:
+        return {
+            "low_latency": DEFAULT_LOW_LATENCY_MODEL,
+            "balanced": DEFAULT_BALANCED_MODEL,
+            "high_reasoning": DEFAULT_HIGH_REASONING_MODEL,
+        }
+    if vram_budget_gb < 28:
+        return {
+            "low_latency": DEFAULT_LOW_LATENCY_MODEL,
+            "balanced": DEFAULT_BALANCED_MODEL,
+            "high_reasoning": "qwen3:30b",
+        }
+    return {
+        "low_latency": DEFAULT_LOW_LATENCY_MODEL,
+        "balanced": DEFAULT_BALANCED_MODEL,
+        "high_reasoning": "qwen3:32b",
+    }
 
 
 class EmbeddingConfig(BaseModel):
@@ -56,8 +122,9 @@ class ExtractionConfig(BaseModel):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2:3b"  # low-latency baseline
     model_profile: str = "balanced"  # low_latency | balanced | high_reasoning
-    ollama_balanced_model: str = "qwen3:8b"
-    ollama_high_reasoning_model: str = "qwen3:32b"
+    ollama_balanced_model: str = DEFAULT_BALANCED_MODEL
+    ollama_high_reasoning_model: str = DEFAULT_HIGH_REASONING_MODEL
+    vram_budget_gb: Optional[float] = None
     # Instructor-based extraction (v3.1.0)
     enable_instructor: bool = True
     instructor_provider: str = "ollama"  # "ollama" | "xlam" | "openai" | "custom"
@@ -180,6 +247,8 @@ class MuninnConfig(BaseModel):
         """
         data_dir = os.environ.get("MUNINN_DATA_DIR", DEFAULT_DATA_DIR)
         ollama_url = os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434")
+        vram_budget_gb = _parse_optional_float_env("MUNINN_VRAM_BUDGET_GB")
+        profile_models = _select_profile_models_for_vram(vram_budget_gb)
         embedding_model = os.environ.get("MUNINN_EMBEDDING_MODEL", "nomic-embed-text")
         embedding_dims = int(os.environ.get("MUNINN_EMBEDDING_DIMS", "768"))
 
@@ -206,14 +275,15 @@ class MuninnConfig(BaseModel):
                 xlam_model=os.environ.get("MUNINN_XLAM_MODEL", "xLAM"),
                 enable_ollama_fallback=True,
                 ollama_url=ollama_url,
-                ollama_model=os.environ.get("MUNINN_OLLAMA_MODEL", "llama3.2:3b"),
+                ollama_model=os.environ.get("MUNINN_OLLAMA_MODEL", profile_models["low_latency"]),
                 model_profile=os.environ.get("MUNINN_MODEL_PROFILE", "balanced"),
                 ollama_balanced_model=os.environ.get(
-                    "MUNINN_OLLAMA_BALANCED_MODEL", "qwen3:8b"
+                    "MUNINN_OLLAMA_BALANCED_MODEL", profile_models["balanced"]
                 ),
                 ollama_high_reasoning_model=os.environ.get(
-                    "MUNINN_OLLAMA_HIGH_REASONING_MODEL", "qwen3:32b"
+                    "MUNINN_OLLAMA_HIGH_REASONING_MODEL", profile_models["high_reasoning"]
                 ),
+                vram_budget_gb=vram_budget_gb,
                 # Instructor extraction (v3.1.0)
                 enable_instructor=os.environ.get("MUNINN_INSTRUCTOR_ENABLED", "true").lower() == "true",
                 instructor_provider=os.environ.get("MUNINN_INSTRUCTOR_PROVIDER", "ollama"),
