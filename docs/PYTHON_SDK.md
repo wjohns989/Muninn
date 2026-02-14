@@ -84,6 +84,8 @@ The sync and async clients expose equivalent methods:
 - `run_consolidation()`
 - `consolidation_status()`
 
+For ingestion methods, use `chronological_order` (`none`, `oldest_first`, `newest_first`) when you need timeline-preserving imports.
+
 ## Error Handling
 
 The SDK raises typed exceptions:

@@ -106,6 +106,12 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
    - https://stackoverflow.com/questions/79398677/where-does-cursor-store-chat-history
 44. Cursor chat browser implementation notes for workspace storage parsing:
    - https://github.com/alexjbuck/cursor-chat-browser/blob/main/README.md
+45. MDN File System Access `showDirectoryPicker` limitations:
+   - https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker
+46. Browser support for `showDirectoryPicker`:
+   - https://caniuse.com/mdn-api_window_showdirectorypicker
+47. FastAPI response class guidance for serving HTML:
+   - https://fastapi.tiangolo.com/advanced/custom-response/
 
 ## Legacy Chat/Memory Storage Research (2026-02-14)
 
@@ -129,6 +135,18 @@ To avoid brittle single-path assumptions, discovery was implemented as:
 - parser-supported gating with explicit unsupported reporting.
 
 This balances ingestion ROI against ecosystem path volatility and avoids hard-coding unverifiable assumptions as invariants.
+
+## Browser UI + Filesystem Constraint Research (2026-02-14)
+
+Key findings:
+- `showDirectoryPicker()` is experimental, not baseline across major browsers, and requires secure context.
+- Browser File System Access API intentionally avoids exposing absolute local paths to JavaScript.
+- Result: path-driven ingestion workflows cannot rely on portable browser-native folder pickers.
+
+Implementation impact:
+- Browser UI uses server-side local path entry and discovery-based selection instead of fragile client-side absolute-path APIs.
+- This preserves cross-browser operability and keeps ingestion semantics deterministic across desktop environments.
+- FastAPI serves the UI from `/` via `HTMLResponse`, minimizing deployment complexity and keeping API/UI origin aligned.
 
 ## New Missing Features Identified (Beyond Current Plan)
 

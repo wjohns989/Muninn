@@ -19,6 +19,7 @@ Evaluator: Codex
 - **Canonical artifact coverage is now multi-bundle** (baseline + robustness stress slice) with aggregate verification (`verify --all`).
 - **OTel operational enablement is now documented** (runbook + collector config + privacy controls).
 - **Legacy memory/chat migration flow is now shipped**: discovery + selection-based import across assistant logs and MCP memory stores, including chat-context parsing for JSONL and sqlite-backed stores.
+- **Browser control center is now shipped**: root-served UI supports practical ingestion/reingestion/search/consolidation operations without CLI coupling.
 - **Phase 3 is substantially advanced**: Python SDK and multi-source ingestion are now shipped; memory chains package remains missing.
 
 ## Status vs Plan
@@ -56,6 +57,7 @@ Evaluator: Codex
 | 3A Memory chains | **Missing** | No `muninn/chains/` package in repository tree. |
 | 3B Multi-source ingestion | **Implemented + expanded** | `muninn/ingestion/` now provides fail-open parser pipeline with provenance metadata, chat-context extraction for `.jsonl/.ndjson`, sqlite-backed source parsing (`.vscdb/.db/.sqlite*`), REST (`/ingest`, `/ingest/legacy/discover`, `/ingest/legacy/import`), MCP (`ingest_sources`, `discover_legacy_sources`, `ingest_legacy_sources`), and SDK parity methods. |
 | 3C Python SDK | **Implemented** | `muninn/sdk/` now ships sync+async clients with typed errors; top-level exports include `Memory` and `AsyncMemory`. |
+| 3D Browser control center | **Implemented** | `dashboard.html` rebuilt and served at `/` by `server.py`; includes legacy discovery/import selection, project-folder contextual ingestion with chronological ordering, and operational search/consolidation controls. |
 
 ## High-Impact Issues Discovered
 
@@ -66,7 +68,7 @@ Evaluator: Codex
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `362 passed, 2 skipped, 1 warning`.
+- Full suite now passes in-session: `364 passed, 2 skipped, 1 warning`.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
   - `23 passed` (`eval_artifacts`, `eval_statistics`, `eval_presets`, `eval_run`, `eval_gates`, `eval_metrics`)
@@ -75,6 +77,7 @@ Evaluator: Codex
   - `48 passed` (`sqlite_feedback`, `eval_metrics`, `mcp_wrapper_protocol`, `weight_adapter`, `eval_gates`)
   - `27 passed` (`memory_feedback`, `config`)
   - `32 passed` (`ingestion_parser`, `memory_ingestion`, `mcp_wrapper_protocol`, `sdk_client`)
+  - `34 passed` (`ingestion_pipeline`, `memory_ingestion`, `mcp_wrapper_protocol`, `sdk_client`)
 - Compile checks passed on all touched modules/tests.
 
 ## Newly Resolved Inaccuracies
