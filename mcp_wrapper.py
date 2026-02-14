@@ -79,23 +79,41 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _get_operator_model_profile() -> Optional[str]:
-    profile = os.environ.get("MUNINN_OPERATOR_MODEL_PROFILE", "").strip()
+def _read_operator_model_profile(env_var: str) -> Optional[str]:
+    profile = os.environ.get(env_var, "").strip()
     if not profile:
         return None
     if profile in SUPPORTED_MODEL_PROFILES:
         return profile
     logger.warning(
-        "Ignoring unsupported MUNINN_OPERATOR_MODEL_PROFILE='%s'; expected one of %s",
+        "Ignoring unsupported %s='%s'; expected one of %s",
+        env_var,
         profile,
         SUPPORTED_MODEL_PROFILES,
     )
     return None
 
 
-def _inject_operator_profile_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _get_operator_model_profile_for_operation(operation: str) -> Optional[str]:
+    env_map = {
+        "add": "MUNINN_OPERATOR_RUNTIME_MODEL_PROFILE",
+        "ingest": "MUNINN_OPERATOR_INGESTION_MODEL_PROFILE",
+        "legacy_ingest": "MUNINN_OPERATOR_LEGACY_INGESTION_MODEL_PROFILE",
+    }
+    operation_env = env_map.get(operation)
+    if operation_env:
+        scoped = _read_operator_model_profile(operation_env)
+        if scoped:
+            return scoped
+    return _read_operator_model_profile("MUNINN_OPERATOR_MODEL_PROFILE")
+
+
+def _inject_operator_profile_metadata(
+    metadata: Optional[Dict[str, Any]],
+    operation: str = "add",
+) -> Dict[str, Any]:
     scoped = dict(metadata or {})
-    session_profile = _get_operator_model_profile()
+    session_profile = _get_operator_model_profile_for_operation(operation)
     if session_profile and "operator_model_profile" not in scoped:
         scoped["operator_model_profile"] = session_profile
     return scoped
@@ -247,7 +265,7 @@ def _build_initialize_instructions(startup_warnings: Optional[List[str]] = None)
         "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
         "for cross-assistant continuity."
     )
-    session_profile = _get_operator_model_profile()
+    session_profile = _read_operator_model_profile("MUNINN_OPERATOR_MODEL_PROFILE")
     if session_profile:
         base_instructions = (
             f"{base_instructions}\n\nSession model profile: {session_profile} "
@@ -863,7 +881,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
         if name == "add_memory":
             # SOTA: Inject current working directory as 'project' metadata
             # This allows the memory system to automatically anchor memories to the workspace
-            metadata = _inject_operator_profile_metadata(arguments.get("metadata", {}))
+            metadata = _inject_operator_profile_metadata(arguments.get("metadata", {}), operation="add")
             git_info = get_git_info()
             if "project" not in metadata:
                 metadata["project"] = git_info["project"]
@@ -1136,7 +1154,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "user_id": "global_user",
                 "namespace": arguments.get("namespace", "global"),
                 "project": arguments.get("project", git_info["project"]),
-                "metadata": _inject_operator_profile_metadata(arguments.get("metadata", {})),
+                "metadata": _inject_operator_profile_metadata(arguments.get("metadata", {}), operation="ingest"),
                 "max_file_size_bytes": arguments.get("max_file_size_bytes"),
                 "chunk_size_chars": arguments.get("chunk_size_chars"),
                 "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
@@ -1192,7 +1210,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "user_id": "global_user",
                 "namespace": arguments.get("namespace", "global"),
                 "project": arguments.get("project", git_info["project"]),
-                "metadata": _inject_operator_profile_metadata(arguments.get("metadata", {})),
+                "metadata": _inject_operator_profile_metadata(arguments.get("metadata", {}), operation="legacy_ingest"),
                 "max_file_size_bytes": arguments.get("max_file_size_bytes"),
                 "chunk_size_chars": arguments.get("chunk_size_chars"),
                 "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),

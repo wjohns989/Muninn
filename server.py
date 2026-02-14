@@ -14,7 +14,9 @@ Architecture (Muninn-native, Mem0-free):
 - Reranking: Jina Tiny cross-encoder (fastembed)
 - Consolidation: Background daemon (decay/merge/promote/replay)
 
-Total VRAM: ~1.4GB (with xLAM) or ~0.5GB (embeddings only)
+VRAM usage is profile/model dependent.
+Use MUNINN_VRAM_BUDGET_GB and extraction profile env vars to keep
+runtime helper paths lightweight during active development.
 
 Usage:
     python server.py              # Start server on localhost:42069
