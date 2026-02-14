@@ -48,15 +48,27 @@ Completed since last update:
 19. Phase 3B multi-source ingestion is now implemented with feature-gated fail-open parsing, provenance-rich chunk metadata, REST/MCP/SDK surface wiring, and targeted tests.
 20. Legacy assistant/MCP migration flow is now implemented with discovery + selection-based import, including parser support for chat JSONL and sqlite-backed state stores.
 21. Browser control center is now implemented at `/` with practical user workflows for legacy reingestion, project-folder contextual ingestion, search, and consolidation actions.
+22. Ingestion safety hardening is now implemented in runtime:
+   - allow-list root enforcement for source expansion and legacy discovery/import selection,
+   - bounded chunk/file parameter validation against safe upper limits,
+   - skip semantics now explicitly report `outside_allowed_roots`.
+23. SDK transport/path safety fixes are now implemented:
+   - delete path segments are URL-encoded in sync/async clients,
+   - success payloads without `data` wrappers are preserved.
+24. Eval/parser/discovery correctness fixes from PR review are now implemented:
+   - duplicate-safe `Recall@k` and `nDCG@k`,
+   - SQLite URI escaping for special path characters,
+   - robust glob derivation and custom-root sqlite artifact discovery.
 
 Verification:
-- Full suite now passes in-session: `364 passed, 2 skipped, 1 warning`.
+- Full suite now passes in-session: `378 passed, 2 skipped, 1 warning`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
   - `15 passed` across eval run/gate/metric policy tests.
   - `48 passed` across eval/adaptive/MCP protocol tests.
   - `27 passed` across feedback-memory/config/hybrid-flag tests.
+  - `83 passed` across PR-remediation slices (eval/sdk/ingestion/config/MCP protocol tests).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
@@ -72,10 +84,15 @@ Fixed in current implementation slice:
 5. Version consistency across package/server/MCP wrapper via single source of truth.
 6. Graph retrieval argument mismatch (entity list vs string) and deterministic score output.
 7. Final retrieval scope enforcement for user/namespace constraints.
+8. Legacy-root and selected-path traversal paths are now blocked by ingestion allow-list validation.
+9. Ingestion chunk/file parameter guardrails now prevent oversized or pathological runtime values.
+10. `/ingest` now preserves explicit `HTTPException` statuses (no accidental 500 remap).
+11. SDK delete paths now URL-encode `memory_id` segments.
+12. Eval metric duplicate inflation bug is fixed (`Recall@k`/`nDCG@k` deduplicate relevant IDs).
 
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
-2. Phase 3 ecosystem packages are still incomplete (`chains` missing; ingestion hardening remains).
+2. Phase 3 ecosystem packages are still incomplete (`chains` missing; parser sandbox/process isolation for optional binary backends remains).
 
 ---
 
@@ -284,7 +301,7 @@ Introduce a `ProjectGoal` memory primitive plus drift checks at add/search time.
 - Parser adapters for txt/md/pdf/docx/html/json/csv.
 - Fail-open by source item (skip bad files, continue pipeline).
 - Mandatory provenance metadata per ingested chunk.
-- Status update: implemented with feature-gated fail-open pipeline (`muninn/ingestion`), per-source/per-chunk reporting, chat-context adapters for `.jsonl/.ndjson`, sqlite-backed parser support (`.vscdb/.db/.sqlite*`), and REST/MCP/SDK parity for both baseline ingestion and legacy discovery/import flows.
+- Status update: implemented with feature-gated fail-open pipeline (`muninn/ingestion`), per-source/per-chunk reporting, chat-context adapters for `.jsonl/.ndjson`, sqlite-backed parser support (`.vscdb/.db/.sqlite*`), runtime safety guardrails (allow-list roots + bounded chunk/file limits), and REST/MCP/SDK parity for both baseline ingestion and legacy discovery/import flows.
 
 ### 3E Browser Control Center
 - Root-served browser UI (`/`) for operational memory workflows.
@@ -406,10 +423,10 @@ This is core for vibecoders, not optional polish.
 
 ## 10) Immediate Next Actions (Execution Checklist)
 
-1. Mark Phase 1.1 correctness bundle complete in release notes (A1–A5 now implemented).
-2. Stand up eval harness + baseline report (BEIR-style retrieval metrics + vibecoder suites).
-3. Implement Goal Compass in feature-flagged mode.
-4. Add Phase 1.2 MCP 2025-11 conformance checklist and OTel GenAI opt-in tracing.
-5. Define handoff bundle schema v1 and conformance tests.
+1. Close open PR review threads with evidence-linked responses and merge sequencing across stacked branches.
+2. Implement `muninn/chains` package (Phase 3A) with guarded rollout and benchmarked latency impact.
+3. Add parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) and ship minimal viable isolation controls.
+4. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
+5. Add OTel dashboard/alert pack templates for retrieval and ingestion regression triage.
 
-If these five actions are completed with passing metrics, Muninn can credibly claim a robust SOTA+ trajectory for the intended vibecoder use case.
+Completing these next five actions keeps roadmap progression logically consistent while reducing merge risk and preserving SOTA claim credibility.

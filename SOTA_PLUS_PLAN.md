@@ -96,9 +96,19 @@
     - checkbox-based legacy discovery/reingestion workflow for assistant/MCP artifacts,
     - project-folder contextual ingestion flow with chronological ordering (`none|oldest_first|newest_first`) and tunable chunking controls,
     - health/search/consolidation actions consolidated in one interface for practical end-user operation.
+29. Open-PR security/correctness remediation tranche is now implemented:
+    - ingestion allow-list enforcement added (`allowed_roots`) to block arbitrary file reads from untrusted tool inputs,
+    - runtime chunk/file bounds validation added to prevent pathological chunking and oversized-ingest DoS vectors,
+    - legacy discovery/import now validates user-provided roots and selected paths against the ingestion allow-list,
+    - `/ingest` endpoint now preserves upstream `HTTPException` status codes (no blanket 500 remap).
+30. Eval/SDK reliability corrections from review threads are now implemented:
+    - `Recall@k`/`nDCG@k` now ignore duplicate relevant IDs to prevent inflated metrics,
+    - SDK `delete` methods now URL-encode `memory_id` path segments,
+    - SDK success payload unwrap now preserves non-`data` success payloads instead of discarding them,
+    - parser/discovery robustness improved (`sqlite` URI escaping, safer glob derivation, custom-root sqlite artifact discovery).
 
 ### Verification evidence
-- Full-suite verification now green in-session: `364 passed, 2 skipped, 1 warning`.
+- Full-suite verification now green in-session: `378 passed, 2 skipped, 1 warning`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -112,6 +122,7 @@
 - Ingestion tranche verification: `51 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`, `tests/test_config.py`).
 - Legacy migration tranche verification: `32 passed` (`tests/test_ingestion_parser.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 - UI + chronological ingestion verification: `34 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
+- PR-remediation tranche verification: `83 passed` (`tests/test_eval_metrics.py`, `tests/test_sdk_client.py`, `tests/test_ingestion_pipeline.py`, `tests/test_ingestion_parser.py`, `tests/test_ingestion_discovery.py`, `tests/test_memory_ingestion.py`, `tests/test_config.py`, `tests/test_mcp_wrapper_protocol.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -149,7 +160,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 
 **Still open gaps:**
 1. Memory chains package (`muninn/chains`)
-2. Ingestion hardening follow-ups (sandbox/process isolation for untrusted binary parser backends and broader corpus adapters)
+2. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
