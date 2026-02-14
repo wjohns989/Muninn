@@ -342,6 +342,62 @@ class FeatureFlags:
 
 ---
 
+
+## Phase 1.1: Stabilization & Measurement Gate (v3.1.1)
+
+> **Priority**: 🔴 HIGHEST (BLOCKER before v3.2 claims)
+> **Risk**: LOW
+> **Effort**: 3–5 days
+> **Theme**: Correctness, trustworthiness, measurable retrieval quality
+
+### 1.1A. Correctness Fix Bundle
+
+**Scope (must ship together):**
+1. **Instructor wiring fix** — pass `instructor_base_url`, `instructor_model`, and `instructor_api_key` from config into `ExtractionPipeline` initialization.
+2. **Docker path contract fix** — make `get_data_dir()` use `is_running_in_docker()` (not only `MUNINN_DOCKER`) to align behavior with tests and container reality.
+3. **Recall trace fidelity fix** — store true signal-native raw scores where available (vector cosine, BM25 score, graph traversal confidence, temporal decay score), not rank proxies.
+4. **Version consistency fix** — unify `pyproject.toml`, `muninn.__version__`, MCP wrapper `serverInfo.version`, and docs.
+
+**Acceptance Criteria:**
+- Zero known correctness mismatches from v3.1 gap audit.
+- All platform and extraction tests pass on Linux/macOS/Windows CI.
+
+### 1.1B. Retrieval Evaluation Gate (vibecoder-focused)
+
+**Why:** SOTA claims require reproducible metrics, especially for adaptive weighting and explainability.
+
+**Deliverables:**
+- `eval/` harness with reproducible query sets from real coding workflows:
+  - project goal recall
+  - dependency decisions
+  - architecture constraints
+  - recent task continuity across assistants
+- Metrics: `nDCG@k`, `Recall@k`, `MRR`, p50/p95 latency, and contradiction false-positive rate.
+- A/B mode: fixed weights vs adaptive weights; explain off vs explain on.
+
+**Research Basis:** Hybrid retrieval and RRF evaluation practices from Elastic/Qdrant/Pinecone and BEIR-style benchmarking.
+
+### 1.1C. Goal-Drift Guardrail (new, high ROI)
+
+**Problem:** For vibecoders hopping between assistants/IDEs, sessions drift and lose the primary project goal.
+
+**Solution:** Add a lightweight "Goal Compass" memory primitive:
+- `ProjectGoal` record (north-star objective, constraints, definition-of-done).
+- `GoalDriftCheck` at query/add time:
+  - compute semantic distance between current intent and `ProjectGoal`.
+  - if drift > threshold, prepend a concise steering reminder in responses.
+- `goal_relevance` score becomes a fifth retrieval signal (low cost, high UX value).
+
+**New Files (proposed):**
+- `muninn/goal/compass.py`
+- `muninn/goal/drift.py`
+- `tests/test_goal_compass.py`
+
+**Backward compatibility:** Fully optional via feature flag (`MUNINN_GOAL_COMPASS=1`).
+
+---
+
+
 ## Phase 2: Intelligence (v3.2.0)
 
 > **Priority**: 🟡 HIGH
@@ -690,6 +746,32 @@ async with AsyncMemory() as m:
 
 ---
 
+
+### 3D. Cross-Assistant Handoff + Interop Pack (Vibecoder Priority)
+
+**Problem**: Users switch constantly between Claude, ChatGPT, Cursor, Windsurf, Copilot, CLI agents, and IDE workflows. State continuity is fragile.
+
+**Solution**: Add a portable "handoff bundle" and interop contract.
+
+**Key capabilities:**
+- `export_handoff(project_id)` creates signed JSON bundle containing:
+  - current goal + constraints
+  - recent decisions and unresolved questions
+  - top memories by importance/recency
+  - provenance and checksum
+- `import_handoff(bundle)` performs idempotent merge with conflict-aware reconciliation.
+- MCP tool + REST endpoint parity for handoff operations.
+
+**High-performance implementation notes:**
+- Use append-only event IDs + idempotent receiver semantics for safe repeated imports.
+- Keep bundle small via summarization + top-k memory selection.
+- Store `source_assistant`, `source_workspace`, and `source_session` for traceability.
+
+**Dependencies**: None required (standard library signing + hashing); optional compression via `zstd`.
+
+---
+
+
 ## Dependency Summary
 
 ### New Dependencies by Phase
@@ -774,16 +856,23 @@ Phase 1 (v3.1.0): Weeks 1-2
 ├── 1D. Feature Flags (Day 7)
 └── Testing + Validation (Days 8-9)
 
-Phase 2 (v3.2.0): Weeks 3-4
+Phase 1.1 (v3.1.1): Week 3
+├── 1.1A. Correctness Fix Bundle (Days 1-2)
+├── 1.1B. Retrieval Evaluation Gate (Days 2-4)
+├── 1.1C. Goal-Drift Guardrail (Days 4-5)
+└── Testing + Validation (Day 5)
+
+Phase 2 (v3.2.0): Weeks 4-5
 ├── 2A. Conflict Detection (Days 1-4)
 ├── 2B. Semantic Dedup (Days 4-6)
 ├── 2C. Adaptive Weights (Days 6-8)
 └── Testing + Validation (Days 9-10)
 
-Phase 3 (v3.3.0): Weeks 5-7
+Phase 3 (v3.3.0): Weeks 6-8
 ├── 3A. Memory Chains (Days 1-3)
 ├── 3B. Multi-Source Ingestion (Days 3-8)
 ├── 3C. Python SDK (Days 8-11)
+├── 3D. Cross-Assistant Handoff + Interop Pack (Days 11-12)
 └── Testing + Validation (Days 12-13)
 ```
 
