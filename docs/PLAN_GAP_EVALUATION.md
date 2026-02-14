@@ -69,10 +69,12 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
+8. **Extraction/model policy remains static (open):** current xLAM+Ollama defaults are fixed and do not expose operator-tunable latency/quality tradeoffs or "thinking level" profiles in UI/API.
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `384 passed, 2 skipped, 1 warning`.
+- Full suite now passes in-session: `384 passed, 2 skipped, 0 warnings`.
+- Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and no open PR/comment backlog remained after restart.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
   - `23 passed` (`eval_artifacts`, `eval_statistics`, `eval_presets`, `eval_run`, `eval_gates`, `eval_metrics`)
@@ -127,6 +129,8 @@ Evaluator: Codex
 3. Expand Phase 3 to include **ingestion safety hardening** (parser sandboxing, fail-open/skip semantics, and provenance metadata standards).
 4. Add a cross-platform CI matrix + optional-dependency matrix as explicit deliverables before v3.2/v3.3 claims.
 5. Add MCP 2025-11 interoperability and OTel GenAI instrumentation as cross-cutting release criteria.
+6. Add a Phase 4 adaptive operator tranche for browser UI preferences + model profile routing (latency/quality/compute "thinking level" control) with safe defaults.
+7. Enforce single-PR workflow policy operationally: one branch/one open PR per phase, merge before next branch starts, with PR/comment checks at each phase boundary.
 
 
 ## Vibecoder-Centric Additions (Multi-Assistant Continuity)
@@ -151,5 +155,6 @@ To align with the product intent (not enterprise-heavy), the highest-ROI additio
 
 Research notes and implementation guidance are documented in:
 - `docs/WEB_RESEARCH_VIBECODER_SOTA.md`
+- `docs/plans/2026-02-14-browser-ui-model-policy-design.md`
 
 Key references reviewed include Elastic RRF docs, Qdrant/Pinecone hybrid search writeups, BEIR benchmark, Self-RAG, MCP specification, and idempotent receiver patterns.
