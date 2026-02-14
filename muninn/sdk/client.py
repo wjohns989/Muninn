@@ -362,6 +362,68 @@ class MuninnClient(_BaseMuninnClient):
             },
         )
 
+    def discover_legacy_sources(
+        self,
+        *,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+    ) -> Dict[str, Any]:
+        return self._request(
+            "POST",
+            "/ingest/legacy/discover",
+            json_body={
+                "roots": roots or [],
+                "providers": providers or [],
+                "include_unsupported": include_unsupported,
+                "max_results_per_provider": max_results_per_provider,
+            },
+        )
+
+    def ingest_legacy_sources(
+        self,
+        *,
+        selected_source_ids: Optional[List[str]] = None,
+        selected_paths: Optional[List[str]] = None,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+        project: str = "global",
+        user_id: str = "global_user",
+        namespace: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not (selected_source_ids or selected_paths):
+            raise ValueError("Provide selected_source_ids and/or selected_paths")
+        return self._request(
+            "POST",
+            "/ingest/legacy/import",
+            json_body={
+                "selected_source_ids": selected_source_ids or [],
+                "selected_paths": selected_paths or [],
+                "roots": roots or [],
+                "providers": providers or [],
+                "include_unsupported": include_unsupported,
+                "max_results_per_provider": max_results_per_provider,
+                "user_id": user_id,
+                "namespace": namespace,
+                "project": project,
+                "metadata": metadata or {},
+                "recursive": recursive,
+                "max_file_size_bytes": max_file_size_bytes,
+                "chunk_size_chars": chunk_size_chars,
+                "chunk_overlap_chars": chunk_overlap_chars,
+                "min_chunk_chars": min_chunk_chars,
+            },
+        )
+
     def get_all(
         self,
         *,
@@ -695,6 +757,68 @@ class AsyncMuninnClient(_BaseMuninnClient):
             "/ingest",
             json_body={
                 "sources": sources,
+                "user_id": user_id,
+                "namespace": namespace,
+                "project": project,
+                "metadata": metadata or {},
+                "recursive": recursive,
+                "max_file_size_bytes": max_file_size_bytes,
+                "chunk_size_chars": chunk_size_chars,
+                "chunk_overlap_chars": chunk_overlap_chars,
+                "min_chunk_chars": min_chunk_chars,
+            },
+        )
+
+    async def discover_legacy_sources(
+        self,
+        *,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+    ) -> Dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/ingest/legacy/discover",
+            json_body={
+                "roots": roots or [],
+                "providers": providers or [],
+                "include_unsupported": include_unsupported,
+                "max_results_per_provider": max_results_per_provider,
+            },
+        )
+
+    async def ingest_legacy_sources(
+        self,
+        *,
+        selected_source_ids: Optional[List[str]] = None,
+        selected_paths: Optional[List[str]] = None,
+        roots: Optional[List[str]] = None,
+        providers: Optional[List[str]] = None,
+        include_unsupported: bool = False,
+        max_results_per_provider: int = 100,
+        project: str = "global",
+        user_id: str = "global_user",
+        namespace: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not (selected_source_ids or selected_paths):
+            raise ValueError("Provide selected_source_ids and/or selected_paths")
+        return await self._request(
+            "POST",
+            "/ingest/legacy/import",
+            json_body={
+                "selected_source_ids": selected_source_ids or [],
+                "selected_paths": selected_paths or [],
+                "roots": roots or [],
+                "providers": providers or [],
+                "include_unsupported": include_unsupported,
+                "max_results_per_provider": max_results_per_provider,
                 "user_id": user_id,
                 "namespace": namespace,
                 "project": project,

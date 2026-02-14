@@ -86,9 +86,14 @@
     - chunk-level provenance metadata (`source_sha256`, byte size, chunk offsets, source path/type),
     - `MuninnMemory.ingest_sources(...)` orchestration with per-source/per-chunk failure isolation,
     - REST `/ingest`, MCP `ingest_sources` tool wiring, and SDK `ingest_sources(...)` sync/async coverage.
+27. Legacy assistant/MCP memory migration tranche is now implemented:
+    - discovery catalog for local assistant artifacts and MCP memory stores (`codex_cli`, `claude_code`, `serena_memory`, `cursor`, `vscode`, `copilot`, `antigravity`, plus custom roots),
+    - selection-based legacy import (`selected_source_ids`/`selected_paths`) with contextual metadata injection per source,
+    - parser/contextualization upgrades for chat-heavy sources (`.jsonl/.ndjson`) and sqlite-backed stores (`.vscdb/.db/.sqlite*`),
+    - REST (`/ingest/legacy/discover`, `/ingest/legacy/import`) + MCP (`discover_legacy_sources`, `ingest_legacy_sources`) + SDK parity.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `353 passed, 2 skipped, 2 warnings`.
+- Full-suite verification now green in-session: `362 passed, 2 skipped, 1 warning`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -100,6 +105,7 @@
 - Compile verification passed on all touched modules and tests.
 - SDK tranche verification: `7 passed` (`tests/test_sdk_client.py`).
 - Ingestion tranche verification: `51 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`, `tests/test_config.py`).
+- Legacy migration tranche verification: `32 passed` (`tests/test_ingestion_parser.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -117,6 +123,7 @@
 13. **Telemetry privacy hardening**: bounded capture length and explicit runbook policy reduce sensitive-data spill risk while preserving incident-debug capability.
 14. **SDK integration throughput + reliability**: reusable sync/async transports with typed error channels reduce connection churn and improve deterministic handling in agent runtime loops.
 15. **Ingestion blast-radius reduction**: per-source fail-open parsing with strict chunking invariants prevents single bad files from halting batch ingestion while preserving auditability.
+16. **Cross-assistant historical continuity at scale**: source discovery + selection-based import closes manual migration gaps and creates measurable ROI by preserving prior project context across IDE/assistant switches.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
