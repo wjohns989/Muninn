@@ -47,9 +47,10 @@ Completed since last update:
 18. Phase 3C Python SDK is now implemented (`muninn/sdk`) with sync+async clients, typed errors, mem0-style aliases, and dedicated tests/docs.
 19. Phase 3B multi-source ingestion is now implemented with feature-gated fail-open parsing, provenance-rich chunk metadata, REST/MCP/SDK surface wiring, and targeted tests.
 20. Legacy assistant/MCP migration flow is now implemented with discovery + selection-based import, including parser support for chat JSONL and sqlite-backed state stores.
+21. Browser control center is now implemented at `/` with practical user workflows for legacy reingestion, project-folder contextual ingestion, search, and consolidation actions.
 
 Verification:
-- Full suite now passes in-session: `362 passed, 2 skipped, 1 warning`.
+- Full suite now passes in-session: `364 passed, 2 skipped, 1 warning`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -284,6 +285,15 @@ Introduce a `ProjectGoal` memory primitive plus drift checks at add/search time.
 - Fail-open by source item (skip bad files, continue pipeline).
 - Mandatory provenance metadata per ingested chunk.
 - Status update: implemented with feature-gated fail-open pipeline (`muninn/ingestion`), per-source/per-chunk reporting, chat-context adapters for `.jsonl/.ndjson`, sqlite-backed parser support (`.vscdb/.db/.sqlite*`), and REST/MCP/SDK parity for both baseline ingestion and legacy discovery/import flows.
+
+### 3E Browser Control Center
+- Root-served browser UI (`/`) for operational memory workflows.
+- Explicit user controls for:
+  - legacy source discovery and selection-based reingestion,
+  - project-folder contextual ingestion,
+  - chronological import ordering (`none`, `oldest_first`, `newest_first`),
+  - memory search and consolidation actions.
+- Design constraint: avoid non-portable browser filesystem assumptions by keeping path selection server-side/manual, with discovery-assisted selection.
 
 ### 3C Python SDK
 - Sync + async clients.

@@ -91,9 +91,14 @@
     - selection-based legacy import (`selected_source_ids`/`selected_paths`) with contextual metadata injection per source,
     - parser/contextualization upgrades for chat-heavy sources (`.jsonl/.ndjson`) and sqlite-backed stores (`.vscdb/.db/.sqlite*`),
     - REST (`/ingest/legacy/discover`, `/ingest/legacy/import`) + MCP (`discover_legacy_sources`, `ingest_legacy_sources`) + SDK parity.
+28. Browser control-center tranche is now implemented:
+    - rebuilt first-party UI served at `/` from `dashboard.html` with direct operational controls,
+    - checkbox-based legacy discovery/reingestion workflow for assistant/MCP artifacts,
+    - project-folder contextual ingestion flow with chronological ordering (`none|oldest_first|newest_first`) and tunable chunking controls,
+    - health/search/consolidation actions consolidated in one interface for practical end-user operation.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `362 passed, 2 skipped, 1 warning`.
+- Full-suite verification now green in-session: `364 passed, 2 skipped, 1 warning`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -106,6 +111,7 @@
 - SDK tranche verification: `7 passed` (`tests/test_sdk_client.py`).
 - Ingestion tranche verification: `51 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`, `tests/test_config.py`).
 - Legacy migration tranche verification: `32 passed` (`tests/test_ingestion_parser.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
+- UI + chronological ingestion verification: `34 passed` (`tests/test_ingestion_pipeline.py`, `tests/test_memory_ingestion.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -124,6 +130,7 @@
 14. **SDK integration throughput + reliability**: reusable sync/async transports with typed error channels reduce connection churn and improve deterministic handling in agent runtime loops.
 15. **Ingestion blast-radius reduction**: per-source fail-open parsing with strict chunking invariants prevents single bad files from halting batch ingestion while preserving auditability.
 16. **Cross-assistant historical continuity at scale**: source discovery + selection-based import closes manual migration gaps and creates measurable ROI by preserving prior project context across IDE/assistant switches.
+17. **Operational adoption ROI via browser UX**: consolidating discovery/import/project-ingest/search controls into one UI lowers operator friction and reduces CLI-only dependency for memory maintenance workflows.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
