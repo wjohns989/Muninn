@@ -26,7 +26,7 @@ def test_build_instructor_route_specs_balanced_prefers_xlam_first():
         ollama_url="http://localhost:11434",
         ollama_model="llama3.2:3b",
         ollama_balanced_model="qwen3:8b",
-        ollama_high_reasoning_model="qwen3:32b",
+        ollama_high_reasoning_model="qwen3:14b",
     )
     assert routes[0][0].startswith("xlam")
     assert routes[0][1] == "http://localhost:8001/v1"
@@ -40,7 +40,7 @@ def test_build_instructor_route_specs_low_latency_prefers_ollama_first():
         ollama_url="http://localhost:11434",
         ollama_model="llama3.2:3b",
         ollama_balanced_model="qwen3:8b",
-        ollama_high_reasoning_model="qwen3:32b",
+        ollama_high_reasoning_model="qwen3:14b",
     )
     assert routes[0][0].startswith("ollama-low")
     assert routes[0][1] == "http://localhost:11434/v1"

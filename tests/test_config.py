@@ -16,6 +16,7 @@ from muninn.core.config import (
     RerankerConfig,
     ConsolidationConfig,
     ServerConfig,
+    _select_profile_models_for_vram,
 )
 
 
@@ -118,7 +119,8 @@ class TestExtractionConfig:
         assert cfg.enable_ollama_fallback is True
         assert cfg.model_profile == "balanced"
         assert cfg.ollama_balanced_model == "qwen3:8b"
-        assert cfg.ollama_high_reasoning_model == "qwen3:32b"
+        assert cfg.ollama_high_reasoning_model == "qwen3:14b"
+        assert cfg.vram_budget_gb is None
 
     def test_custom(self):
         cfg = ExtractionConfig(
@@ -222,12 +224,38 @@ class TestConfigFromEnv:
         monkeypatch.setenv("MUNINN_MODEL_PROFILE", "high_reasoning")
         monkeypatch.setenv("MUNINN_OLLAMA_MODEL", "llama3.2:3b")
         monkeypatch.setenv("MUNINN_OLLAMA_BALANCED_MODEL", "qwen3:8b")
-        monkeypatch.setenv("MUNINN_OLLAMA_HIGH_REASONING_MODEL", "qwen3:32b")
+        monkeypatch.setenv("MUNINN_OLLAMA_HIGH_REASONING_MODEL", "qwen3:14b")
         config = MuninnConfig.from_env()
         assert config.extraction.model_profile == "high_reasoning"
         assert config.extraction.ollama_model == "llama3.2:3b"
         assert config.extraction.ollama_balanced_model == "qwen3:8b"
-        assert config.extraction.ollama_high_reasoning_model == "qwen3:32b"
+        assert config.extraction.ollama_high_reasoning_model == "qwen3:14b"
+
+    def test_env_vram_budget_selects_16gb_profile_defaults(self, monkeypatch):
+        monkeypatch.delenv("MUNINN_OLLAMA_MODEL", raising=False)
+        monkeypatch.delenv("MUNINN_OLLAMA_BALANCED_MODEL", raising=False)
+        monkeypatch.delenv("MUNINN_OLLAMA_HIGH_REASONING_MODEL", raising=False)
+        monkeypatch.setenv("MUNINN_VRAM_BUDGET_GB", "16")
+
+        config = MuninnConfig.from_env()
+        assert config.extraction.vram_budget_gb == 16.0
+        assert config.extraction.ollama_model == "llama3.2:3b"
+        assert config.extraction.ollama_balanced_model == "qwen3:8b"
+        assert config.extraction.ollama_high_reasoning_model == "qwen3:14b"
+
+
+class TestVramModelSelection:
+    def test_select_profile_models_for_low_budget(self):
+        selection = _select_profile_models_for_vram(5.0)
+        assert selection["low_latency"] == "llama3.2:1b"
+        assert selection["balanced"] == "qwen3:1.7b"
+        assert selection["high_reasoning"] == "qwen3:4b"
+
+    def test_select_profile_models_for_16gb_budget(self):
+        selection = _select_profile_models_for_vram(16.0)
+        assert selection["low_latency"] == "llama3.2:3b"
+        assert selection["balanced"] == "qwen3:8b"
+        assert selection["high_reasoning"] == "qwen3:14b"
 
     def test_env_override_goal_compass(self, monkeypatch):
         monkeypatch.setenv("MUNINN_GOAL_DRIFT_THRESHOLD", "0.61")
