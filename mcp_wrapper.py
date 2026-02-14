@@ -630,6 +630,27 @@ def handle_list_tools(msg_id: Any):
                         "type": "string",
                         "enum": list(SUPPORTED_MODEL_PROFILES),
                         "description": "Profile for legacy source ingestion extraction."
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Optional mutation source tag for audit trail.",
+                        "default": "mcp_tool"
+                    }
+                }
+            }
+        },
+        {
+            "name": "get_model_profile_events",
+            "description": "Fetch recent runtime model profile policy mutation events for auditability.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 25,
+                        "description": "Maximum number of recent events to return."
                     }
                 }
             }
@@ -897,6 +918,7 @@ def handle_list_tools(msg_id: Any):
         "get_all_memories",
         "get_project_goal",
         "get_model_profiles",
+        "get_model_profile_events",
         "export_handoff",
         "discover_legacy_sources",
     }
@@ -1148,7 +1170,29 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                     payload[key] = value
             if not payload:
                 raise ValueError("set_model_profiles requires at least one profile field")
+            payload["source"] = arguments.get("source", "mcp_tool")
             resp = make_request_with_retry("POST", f"{SERVER_URL}/profiles/model", json=payload, timeout=10)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "get_model_profile_events":
+            params = {
+                "limit": arguments.get("limit", 25),
+            }
+            resp = make_request_with_retry(
+                "GET",
+                f"{SERVER_URL}/profiles/model/events",
+                params=params,
+                timeout=10,
+            )
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
