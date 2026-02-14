@@ -28,6 +28,7 @@ import logging
 import time
 import asyncio
 from typing import Optional, Dict, Any, List
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -136,6 +137,7 @@ class IngestSourcesRequest(BaseModel):
     project: str = "global"
     metadata: Dict[str, Any] = Field(default_factory=dict)
     recursive: bool = False
+    chronological_order: str = Field(default="none", pattern="^(none|oldest_first|newest_first)$")
     max_file_size_bytes: Optional[int] = Field(default=None, gt=0)
     chunk_size_chars: Optional[int] = Field(default=None, gt=0)
     chunk_overlap_chars: Optional[int] = Field(default=None, ge=0)
@@ -161,6 +163,7 @@ class IngestLegacySourcesRequest(BaseModel):
     project: str = "global"
     metadata: Dict[str, Any] = Field(default_factory=dict)
     recursive: bool = False
+    chronological_order: str = Field(default="none", pattern="^(none|oldest_first|newest_first)$")
     max_file_size_bytes: Optional[int] = Field(default=None, gt=0)
     chunk_size_chars: Optional[int] = Field(default=None, gt=0)
     chunk_overlap_chars: Optional[int] = Field(default=None, ge=0)
@@ -200,8 +203,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+DASHBOARD_HTML_PATH = Path(__file__).with_name("dashboard.html")
+
+
+def _load_dashboard_html() -> str:
+    try:
+        return DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.error("Failed to load dashboard HTML: %s", exc)
+        return (
+            "<html><body><h1>Muninn UI unavailable</h1>"
+            "<p>dashboard.html could not be loaded.</p></body></html>"
+        )
+
 
 # --- Endpoints ---
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard_root():
+    """Serve the browser UI for memory operations."""
+    return HTMLResponse(content=_load_dashboard_html())
 
 @app.get("/health")
 async def health_check():
@@ -463,6 +484,7 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
                 project=req.project or "global",
                 metadata=req.metadata,
                 recursive=req.recursive,
+                chronological_order=req.chronological_order,
                 max_file_size_bytes=req.max_file_size_bytes,
                 chunk_size_chars=req.chunk_size_chars,
                 chunk_overlap_chars=req.chunk_overlap_chars,
@@ -515,6 +537,7 @@ async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
                 project=req.project or "global",
                 metadata=req.metadata,
                 recursive=req.recursive,
+                chronological_order=req.chronological_order,
                 max_file_size_bytes=req.max_file_size_bytes,
                 chunk_size_chars=req.chunk_size_chars,
                 chunk_overlap_chars=req.chunk_overlap_chars,
