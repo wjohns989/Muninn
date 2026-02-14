@@ -579,6 +579,58 @@ def handle_list_tools(msg_id: Any):
                 },
                 "required": ["query", "memory_id", "outcome"]
             }
+        },
+        {
+            "name": "ingest_sources",
+            "description": "Ingest local files/directories into memory with fail-open parsing and per-source provenance metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of local file or directory paths to ingest."
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Recursively traverse directory sources."
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "default": "global"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project override."
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Optional metadata merged into each ingested chunk."
+                    },
+                    "max_file_size_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional maximum source file size."
+                    },
+                    "chunk_size_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional chunk size override."
+                    },
+                    "chunk_overlap_chars": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional chunk overlap override."
+                    },
+                    "min_chunk_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional minimum chunk length."
+                    }
+                },
+                "required": ["sources"]
+            }
         }
     ]
     
@@ -861,6 +913,32 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "source": arguments.get("source", "mcp_feedback"),
             }
             resp = make_request_with_retry("POST", f"{SERVER_URL}/feedback/retrieval", json=payload, timeout=15)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "ingest_sources":
+            git_info = get_git_info()
+            payload = {
+                "sources": arguments.get("sources", []),
+                "recursive": arguments.get("recursive", False),
+                "user_id": "global_user",
+                "namespace": arguments.get("namespace", "global"),
+                "project": arguments.get("project", git_info["project"]),
+                "metadata": arguments.get("metadata", {}),
+                "max_file_size_bytes": arguments.get("max_file_size_bytes"),
+                "chunk_size_chars": arguments.get("chunk_size_chars"),
+                "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
+                "min_chunk_chars": arguments.get("min_chunk_chars"),
+            }
+            resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest", json=payload, timeout=60)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",

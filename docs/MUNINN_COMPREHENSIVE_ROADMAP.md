@@ -45,9 +45,10 @@ Completed since last update:
 16. Canonical benchmark artifact coverage now includes a second robustness slice preset (`vibecoder_memoryagentbench_stress_v1`) and aggregate verifier support (`python -m eval.artifacts verify --all`).
 17. OTel operational runbook and example collector configuration are now committed, including privacy policy defaults and smoke-test guidance.
 18. Phase 3C Python SDK is now implemented (`muninn/sdk`) with sync+async clients, typed errors, mem0-style aliases, and dedicated tests/docs.
+19. Phase 3B multi-source ingestion is now implemented with feature-gated fail-open parsing, provenance-rich chunk metadata, REST/MCP/SDK surface wiring, and targeted tests.
 
 Verification:
-- Full suite now passes in-session: `344 passed, 2 skipped, 2 warnings`.
+- Full suite now passes in-session: `353 passed, 2 skipped, 2 warnings`.
 - Targeted verification for changed areas:
   - `23 passed` across eval artifacts/statistics/presets/run/gates/metrics tests.
   - `21 passed` across eval statistics/presets/run/gates/metrics tests.
@@ -72,7 +73,7 @@ Fixed in current implementation slice:
 
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
-2. Phase 3 ecosystem packages are still incomplete (`chains` and `ingestion` missing).
+2. Phase 3 ecosystem packages are still incomplete (`chains` missing; ingestion hardening remains).
 
 ---
 
@@ -281,6 +282,7 @@ Introduce a `ProjectGoal` memory primitive plus drift checks at add/search time.
 - Parser adapters for txt/md/pdf/docx/html/json/csv.
 - Fail-open by source item (skip bad files, continue pipeline).
 - Mandatory provenance metadata per ingested chunk.
+- Status update: implemented with feature-gated fail-open pipeline (`muninn/ingestion`), per-source/per-chunk reporting, and REST (`/ingest`) + MCP (`ingest_sources`) + SDK method parity.
 
 ### 3C Python SDK
 - Sync + async clients.

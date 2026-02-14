@@ -329,6 +329,39 @@ class MuninnClient(_BaseMuninnClient):
             },
         )
 
+    def ingest_sources(
+        self,
+        *,
+        sources: List[str],
+        project: str = "global",
+        user_id: str = "global_user",
+        namespace: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not sources:
+            raise ValueError("sources must be a non-empty list")
+        return self._request(
+            "POST",
+            "/ingest",
+            json_body={
+                "sources": sources,
+                "user_id": user_id,
+                "namespace": namespace,
+                "project": project,
+                "metadata": metadata or {},
+                "recursive": recursive,
+                "max_file_size_bytes": max_file_size_bytes,
+                "chunk_size_chars": chunk_size_chars,
+                "chunk_overlap_chars": chunk_overlap_chars,
+                "min_chunk_chars": min_chunk_chars,
+            },
+        )
+
     def get_all(
         self,
         *,
@@ -638,6 +671,39 @@ class AsyncMuninnClient(_BaseMuninnClient):
                 "project": project,
                 "signals": signals or {},
                 "source": source,
+            },
+        )
+
+    async def ingest_sources(
+        self,
+        *,
+        sources: List[str],
+        project: str = "global",
+        user_id: str = "global_user",
+        namespace: str = "global",
+        metadata: Optional[Dict[str, Any]] = None,
+        recursive: bool = False,
+        max_file_size_bytes: Optional[int] = None,
+        chunk_size_chars: Optional[int] = None,
+        chunk_overlap_chars: Optional[int] = None,
+        min_chunk_chars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not sources:
+            raise ValueError("sources must be a non-empty list")
+        return await self._request(
+            "POST",
+            "/ingest",
+            json_body={
+                "sources": sources,
+                "user_id": user_id,
+                "namespace": namespace,
+                "project": project,
+                "metadata": metadata or {},
+                "recursive": recursive,
+                "max_file_size_bytes": max_file_size_bytes,
+                "chunk_size_chars": chunk_size_chars,
+                "chunk_overlap_chars": chunk_overlap_chars,
+                "min_chunk_chars": min_chunk_chars,
             },
         )
 

@@ -129,6 +129,19 @@ class RetrievalFeedbackRequest(BaseModel):
     source: str = "manual"
 
 
+class IngestSourcesRequest(BaseModel):
+    sources: List[str]
+    user_id: str = "global_user"
+    namespace: str = "global"
+    project: str = "global"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    recursive: bool = False
+    max_file_size_bytes: Optional[int] = Field(default=None, gt=0)
+    chunk_size_chars: Optional[int] = Field(default=None, gt=0)
+    chunk_overlap_chars: Optional[int] = Field(default=None, ge=0)
+    min_chunk_chars: Optional[int] = Field(default=None, ge=1)
+
+
 # --- Application Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -405,6 +418,34 @@ async def retrieval_feedback_endpoint(req: RetrievalFeedbackRequest):
             return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error recording retrieval feedback: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ingest")
+async def ingest_sources_endpoint(req: IngestSourcesRequest):
+    """Ingest multiple local sources with fail-open behavior per source/chunk."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.ingest_sources(
+                sources=req.sources,
+                user_id=req.user_id or "global_user",
+                namespace=req.namespace or "global",
+                project=req.project or "global",
+                metadata=req.metadata,
+                recursive=req.recursive,
+                max_file_size_bytes=req.max_file_size_bytes,
+                chunk_size_chars=req.chunk_size_chars,
+                chunk_overlap_chars=req.chunk_overlap_chars,
+                min_chunk_chars=req.min_chunk_chars,
+            )
+            return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error ingesting sources: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
