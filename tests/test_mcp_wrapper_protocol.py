@@ -258,6 +258,8 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     by_name = {tool["name"]: tool for tool in tools}
     assert "record_retrieval_feedback" in by_name
     assert "search_memory" in by_name
+    assert "get_model_profiles" in by_name
+    assert "set_model_profiles" in by_name
     assert "ingest_sources" in by_name
     assert "discover_legacy_sources" in by_name
     assert "ingest_legacy_sources" in by_name
@@ -269,6 +271,8 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
         assert "readOnlyHint" in tool["annotations"]
 
     assert by_name["search_memory"]["annotations"]["readOnlyHint"] is True
+    assert by_name["get_model_profiles"]["annotations"]["readOnlyHint"] is True
+    assert by_name["set_model_profiles"]["annotations"]["readOnlyHint"] is False
     assert by_name["record_retrieval_feedback"]["annotations"]["readOnlyHint"] is False
     assert by_name["ingest_sources"]["annotations"]["readOnlyHint"] is False
     assert by_name["discover_legacy_sources"]["annotations"]["readOnlyHint"] is True
@@ -283,6 +287,9 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert "roots" in legacy_discover_props
     legacy_ingest_props = by_name["ingest_legacy_sources"]["inputSchema"]["properties"]
     assert "selected_source_ids" in legacy_ingest_props
+    set_profile_props = by_name["set_model_profiles"]["inputSchema"]["properties"]
+    assert "runtime_model_profile" in set_profile_props
+    assert "legacy_ingestion_model_profile" in set_profile_props
 
 
 def test_tool_schemas_have_consistent_contract(monkeypatch):
@@ -343,6 +350,97 @@ def test_ingest_sources_tool_call_payload(monkeypatch):
     assert captured["json"]["chronological_order"] == "none"
     assert sent
     assert sent[0]["id"] == "req-ingest"
+
+
+def test_get_model_profiles_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"active": {"runtime_model_profile": "low_latency"}}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-get-profiles",
+        {
+            "name": "get_model_profiles",
+            "arguments": {},
+        },
+    )
+
+    assert captured["method"] == "GET"
+    assert captured["url"].endswith("/profiles/model")
+    assert captured["json"] is None
+    assert sent
+    assert sent[0]["id"] == "req-get-profiles"
+
+
+def test_set_model_profiles_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "MODEL_PROFILE_POLICY_UPDATED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-set-profiles",
+        {
+            "name": "set_model_profiles",
+            "arguments": {
+                "runtime_model_profile": "low_latency",
+                "ingestion_model_profile": "balanced",
+            },
+        },
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/profiles/model")
+    assert captured["json"]["runtime_model_profile"] == "low_latency"
+    assert captured["json"]["ingestion_model_profile"] == "balanced"
+    assert sent
+    assert sent[0]["id"] == "req-set-profiles"
+
+
+def test_set_model_profiles_requires_field(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    mcp_wrapper.handle_call_tool(
+        "req-set-profiles-empty",
+        {
+            "name": "set_model_profiles",
+            "arguments": {},
+        },
+    )
+
+    assert sent
+    assert sent[0]["id"] == "req-set-profiles-empty"
+    assert sent[0]["error"]["code"] == -32603
+    assert "requires at least one profile field" in sent[0]["error"]["message"]
 
 
 def test_discover_legacy_sources_tool_call_payload(monkeypatch):
