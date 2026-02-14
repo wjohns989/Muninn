@@ -33,19 +33,31 @@ from muninn.store.vector_store import VectorStore
 from muninn.store.graph_store import GraphStore
 from muninn.retrieval.bm25 import BM25Index
 from muninn.retrieval.reranker import Reranker
+from muninn.retrieval.weight_adapter import WeightAdapter
 
 logger = logging.getLogger("Muninn.Retrieval")
 
 # RRF constant (standard value from literature)
 RRF_K = 60
 
-# Signal weights for RRF contribution
+# Signal weights for RRF contribution (used when adaptive_weights is OFF)
 SIGNAL_WEIGHTS = {
     "vector": 1.0,
     "graph": 1.0,
     "bm25": 0.8,
     "temporal": 0.5,
 }
+
+# Module-level WeightAdapter instance (lazy-initialized)
+_weight_adapter: WeightAdapter | None = None
+
+
+def _get_weight_adapter() -> WeightAdapter:
+    """Get or create the module-level WeightAdapter singleton."""
+    global _weight_adapter
+    if _weight_adapter is None:
+        _weight_adapter = WeightAdapter(base_weights=SIGNAL_WEIGHTS)
+    return _weight_adapter
 
 
 class HybridRetriever:
@@ -116,6 +128,20 @@ class HybridRetriever:
         bm25_results = self._bm25_search(query, limit * 2)
         temporal_results = self._temporal_search(filters, namespaces, limit * 2)
 
+        # --- Compute signal weights (adaptive or fixed) ---
+        use_adaptive = flags.is_enabled("adaptive_weights")
+        if use_adaptive:
+            adapter = _get_weight_adapter()
+            signal_results_for_entropy = {
+                "vector": vector_results,
+                "graph": graph_results,
+                "bm25": bm25_results,
+                "temporal": temporal_results,
+            }
+            active_weights = adapter.compute_weights(query, signal_results_for_entropy)
+        else:
+            active_weights = SIGNAL_WEIGHTS
+
         # --- Reciprocal Rank Fusion (with optional trace tracking) ---
         if generate_traces:
             fused_scores, traces = self._rrf_fusion_with_traces(
@@ -123,6 +149,7 @@ class HybridRetriever:
                 graph_results=graph_results,
                 bm25_results=bm25_results,
                 temporal_results=temporal_results,
+                weights=active_weights,
             )
         else:
             fused_scores = self._rrf_fusion(
@@ -130,6 +157,7 @@ class HybridRetriever:
                 graph_results=graph_results,
                 bm25_results=bm25_results,
                 temporal_results=temporal_results,
+                weights=active_weights,
             )
             traces = {}
 
@@ -172,14 +200,10 @@ class HybridRetriever:
     ) -> List[Tuple[str, int]]:
         """Vector similarity search. Returns list of (id, rank)."""
         try:
-            qdrant_filters = None
-            if filters:
-                qdrant_filters = self._build_qdrant_filters(filters)
-
             results = self.vectors.search(
-                query_vector=query_embedding,
+                query_embedding=query_embedding,
                 limit=limit,
-                filter_conditions=qdrant_filters,
+                filters=filters,
             )
             # results are (id, score) tuples from Qdrant
             return [(str(r[0]), rank) for rank, r in enumerate(results)]
@@ -240,19 +264,26 @@ class HybridRetriever:
         graph_results: List[Tuple[str, int]],
         bm25_results: List[Tuple[str, int]],
         temporal_results: List[Tuple[str, int]],
+        weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
         """
         Reciprocal Rank Fusion across all retrieval signals.
 
         RRF score = sum(weight / (k + rank + 1)) for each signal.
+
+        Args:
+            weights: Signal weights dict. When adaptive_weights is ON,
+                     these are computed per-query by WeightAdapter.
+                     Falls back to SIGNAL_WEIGHTS if not provided.
         """
+        w = weights or SIGNAL_WEIGHTS
         scores: Dict[str, float] = defaultdict(float)
 
         signal_data = [
-            (vector_results, SIGNAL_WEIGHTS["vector"]),
-            (graph_results, SIGNAL_WEIGHTS["graph"]),
-            (bm25_results, SIGNAL_WEIGHTS["bm25"]),
-            (temporal_results, SIGNAL_WEIGHTS["temporal"]),
+            (vector_results, w.get("vector", 1.0)),
+            (graph_results, w.get("graph", 1.0)),
+            (bm25_results, w.get("bm25", 0.8)),
+            (temporal_results, w.get("temporal", 0.5)),
         ]
 
         for results, weight in signal_data:
@@ -267,6 +298,7 @@ class HybridRetriever:
         graph_results: List[Tuple[str, int]],
         bm25_results: List[Tuple[str, int]],
         temporal_results: List[Tuple[str, int]],
+        weights: Optional[Dict[str, float]] = None,
     ) -> Tuple[Dict[str, float], Dict[str, RecallTrace]]:
         """
         RRF fusion with per-signal attribution tracking.
@@ -275,15 +307,17 @@ class HybridRetriever:
         document, enabling explainable recall.
 
         v3.1.0: Unique differentiator — no competitor provides this.
+        v3.2.0: Supports adaptive per-query weights from WeightAdapter.
         """
+        w = weights or SIGNAL_WEIGHTS
         scores: Dict[str, float] = defaultdict(float)
         traces: Dict[str, RecallTrace] = {}
 
         signal_data = [
-            ("vector", vector_results, SIGNAL_WEIGHTS["vector"]),
-            ("graph", graph_results, SIGNAL_WEIGHTS["graph"]),
-            ("bm25", bm25_results, SIGNAL_WEIGHTS["bm25"]),
-            ("temporal", temporal_results, SIGNAL_WEIGHTS["temporal"]),
+            ("vector", vector_results, w.get("vector", 1.0)),
+            ("graph", graph_results, w.get("graph", 1.0)),
+            ("bm25", bm25_results, w.get("bm25", 0.8)),
+            ("temporal", temporal_results, w.get("temporal", 0.5)),
         ]
 
         for signal_name, results, weight in signal_data:

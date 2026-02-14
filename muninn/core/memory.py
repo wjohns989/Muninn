@@ -38,6 +38,7 @@ from muninn.retrieval.hybrid import HybridRetriever
 from muninn.extraction.pipeline import ExtractionPipeline
 from muninn.scoring.importance import calculate_importance, calculate_novelty
 from muninn.consolidation.daemon import ConsolidationDaemon
+from muninn.core.feature_flags import get_flags
 
 logger = logging.getLogger("Muninn")
 
@@ -89,9 +90,15 @@ class MuninnMemory:
         self._reranker: Optional[Reranker] = None
         self._consolidation: Optional[ConsolidationDaemon] = None
 
+        # Phase 2 engines (v3.2.0)
+        self._dedup = None           # SemanticDedup
+        self._conflict_detector = None  # ConflictDetector
+        self._conflict_resolver = None  # ConflictResolver
+
         # Embedding
         self._embed_model = None
         self._initialized = False
+        self._user_scope_migration_complete = False
 
     async def initialize(self) -> None:
         """
@@ -148,6 +155,57 @@ class MuninnMemory:
             embed_fn=self._embed,
         )
 
+        # Initialize Phase 2 engines (v3.2.0) — gated by feature flags
+        flags = get_flags()
+
+        if flags.is_enabled("semantic_dedup"):
+            from muninn.dedup.semantic_dedup import SemanticDedup
+            self._dedup = SemanticDedup(
+                threshold=self.config.semantic_dedup.threshold,
+                content_overlap_threshold=self.config.semantic_dedup.content_overlap_threshold,
+            )
+            logger.info("Semantic dedup enabled (threshold=%.3f)", self.config.semantic_dedup.threshold)
+
+        if flags.is_enabled("conflict_detection"):
+            try:
+                from muninn.conflict.detector import ConflictDetector
+                from muninn.conflict.resolver import ConflictResolver
+                self._conflict_detector = ConflictDetector(
+                    model_name=self.config.conflict_detection.model_name,
+                    contradiction_threshold=self.config.conflict_detection.contradiction_threshold,
+                    similarity_prefilter=self.config.conflict_detection.similarity_prefilter,
+                )
+                if self._conflict_detector.is_available:
+                    self._conflict_resolver = ConflictResolver(
+                        metadata_store=self._metadata,
+                        vector_store=self._vectors,
+                        graph_store=self._graph,
+                        bm25_index=self._bm25,
+                        embed_fn=self._embed,
+                    )
+                    logger.info("Conflict detection enabled (model=%s)", self.config.conflict_detection.model_name)
+                else:
+                    logger.info("Conflict detection flag ON but NLI model unavailable (install transformers+torch)")
+                    self._conflict_detector = None
+            except Exception as e:
+                logger.warning("Conflict detection initialization failed: %s", e)
+                self._conflict_detector = None
+                self._conflict_resolver = None
+
+        # Controlled migration for legacy records that predate user_id metadata scope.
+        migration_complete = self._metadata.get_meta("user_scope_migration_complete", "0") == "1"
+        if not migration_complete:
+            migration_stats = self._run_user_scope_migration(batch_size=500, max_batches=5)
+            migration_complete = bool(migration_stats["complete"])
+            logger.info(
+                "User scope migration progress: updated=%d retried=%d remaining_failures=%d complete=%s",
+                migration_stats["updated"],
+                migration_stats["retried"],
+                migration_stats["remaining_failures"],
+                migration_complete,
+            )
+        self._user_scope_migration_complete = migration_complete
+
         # Rebuild BM25 index from existing memories
         await self._rebuild_bm25()
 
@@ -165,10 +223,20 @@ class MuninnMemory:
             await self._consolidation.stop()
         logger.info("Muninn shut down")
         self._initialized = False
+        self._user_scope_migration_complete = False
 
     # ==========================================
     # Core Memory Operations (mem0-compatible API)
     # ==========================================
+
+    def _record_matches_scope(self, record: MemoryRecord, namespace: str, user_id: str) -> bool:
+        """Return True when a record belongs to the provided namespace/user scope."""
+        if record.namespace != namespace:
+            return False
+
+        metadata = record.metadata or {}
+        record_user_id = metadata.get("user_id")
+        return record_user_id == user_id
 
     async def add(
         self,
@@ -197,32 +265,145 @@ class MuninnMemory:
         """
         self._check_initialized()
 
+        scope_filters = {"namespace": namespace, "user_id": user_id}
+
         # Extract entities and relations
         extraction = await self._extract(content)
 
         # Generate embedding
         embedding = self._embed(content)
 
-        # Calculate novelty by checking similarity to existing memories
-        max_similarity = 0.0
-        if self._vectors.count() > 0:
-            try:
-                similar = self._vectors.search(embedding, limit=5)
-                if similar:
-                    max_similarity = similar[0][1]  # Highest score
-            except Exception:
-                pass
-
-        # Calculate initial importance
+        # Create record early so conflict resolution can reference the new ID
         record = MemoryRecord(
             content=content,
             memory_type=memory_type,
             provenance=provenance,
             source_agent=agent_id or "unknown",
             namespace=namespace,
-            metadata=metadata or {},
-            novelty_score=calculate_novelty(max_similarity),
+            metadata={**(metadata or {}), "user_id": user_id},
+            novelty_score=0.0,
         )
+
+        # --- Phase 2: Semantic Deduplication (v3.2.0) ---
+        dedup_result = None
+        if self._dedup and self._vectors.count() > 0:
+            from muninn.dedup.semantic_dedup import DedupStrategy
+            dedup_result = self._dedup.check_duplicate(
+                embedding=embedding,
+                content=content,
+                vector_store=self._vectors,
+                metadata_store=self._metadata,
+                filters=scope_filters,
+            )
+            if dedup_result and dedup_result.is_duplicate:
+                if dedup_result.strategy == DedupStrategy.SKIP:
+                    logger.info("Dedup SKIP: duplicate of %s (sim=%.3f)",
+                                dedup_result.existing_memory_id, dedup_result.similarity)
+                    return {
+                        "id": None,
+                        "content": content,
+                        "event": "DEDUP_SKIP",
+                        "dedup": dedup_result.model_dump(),
+                    }
+                elif dedup_result.strategy == DedupStrategy.UPDATE_EXISTING:
+                    existing = self._metadata.get(dedup_result.existing_memory_id)
+                    if existing:
+                        if not self._record_matches_scope(existing, namespace, user_id):
+                            logger.warning(
+                                "Dedup UPDATE_EXISTING scope mismatch: memory_id=%s namespace=%s user_id=%s",
+                                dedup_result.existing_memory_id,
+                                existing.namespace,
+                                (existing.metadata or {}).get("user_id"),
+                            )
+                        else:
+                            merged_content = self._dedup.merge_content(content, existing.content)
+                            self._metadata.update(
+                                dedup_result.existing_memory_id,
+                                content=merged_content,
+                            )
+                            # Re-embed merged content
+                            merged_embedding = self._embed(merged_content)
+                            self._vectors.upsert(
+                                memory_id=dedup_result.existing_memory_id,
+                                embedding=merged_embedding,
+                                metadata={
+                                    "content": merged_content[:500],
+                                    "memory_type": existing.memory_type.value,
+                                    "namespace": namespace,
+                                    "importance": existing.importance,
+                                    "user_id": user_id,
+                                },
+                            )
+                            self._bm25.add(dedup_result.existing_memory_id, merged_content)
+                            logger.info("Dedup UPDATE_EXISTING: merged into %s",
+                                        dedup_result.existing_memory_id)
+                            return {
+                                "id": dedup_result.existing_memory_id,
+                                "content": merged_content,
+                                "event": "DEDUP_MERGED",
+                                "dedup": dedup_result.model_dump(),
+                            }
+
+        # --- Phase 2: Conflict Detection (v3.2.0) ---
+        conflict_info = None
+        if self._conflict_detector and self._vectors.count() > 0:
+            try:
+                # Pre-filter by vector similarity to find candidates
+                similar_for_conflict = self._vectors.search(
+                    embedding,
+                    limit=5,
+                    score_threshold=self.config.conflict_detection.similarity_prefilter,
+                    filters=scope_filters,
+                )
+                if similar_for_conflict:
+                    candidate_ids = [mid for mid, _score in similar_for_conflict]
+                    candidate_records = [
+                        candidate
+                        for candidate in self._metadata.get_by_ids(candidate_ids)
+                        if self._record_matches_scope(candidate, namespace, user_id)
+                    ]
+                    if candidate_records:
+                        conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)
+                        if conflicts and self._conflict_resolver:
+                            # Resolve the highest-scoring conflict first
+                            conflicts.sort(key=lambda c: c.contradiction_score, reverse=True)
+                            conflict = conflicts[0]
+                            resolution = self._conflict_resolver.resolve(
+                                conflict,
+                                new_record=record,
+                                new_embedding=embedding,
+                                user_id=user_id,
+                            )
+                            conflict_info = {
+                                "conflict_detected": True,
+                                "resolution": resolution,
+                                "conflict_details": conflict.model_dump(),
+                            }
+                            # If resolution says skip new storage, return early
+                            if resolution.get("skip_new_storage"):
+                                logger.info("Conflict resolution: %s — skipping new storage",
+                                            resolution.get("resolution"))
+                                return {
+                                    "id": None,
+                                    "content": content,
+                                    "event": f"CONFLICT_{resolution['resolution'].upper()}",
+                                    "conflict": conflict_info,
+                                }
+            except Exception as e:
+                logger.warning("Conflict detection failed (non-fatal): %s", e)
+
+        # Calculate novelty by checking similarity to existing memories
+        max_similarity = 0.0
+        if self._vectors.count() > 0:
+            try:
+                similar = self._vectors.search(embedding, limit=5, filters=scope_filters)
+                if similar:
+                    max_similarity = similar[0][1]  # Highest score
+            except Exception:
+                pass
+
+        # Calculate initial importance
+        record.novelty_score = calculate_novelty(max_similarity)
 
         # Get centrality from graph (if entities exist)
         centrality = 0.0
@@ -272,7 +453,7 @@ class MuninnMemory:
         logger.info("Added memory %s (importance=%.3f, entities=%d, relations=%d)",
                      record.id, importance, len(extraction.entities), len(extraction.relations))
 
-        return {
+        result = {
             "id": record.id,
             "content": content,
             "importance": importance,
@@ -281,6 +462,14 @@ class MuninnMemory:
             "relations": [r.model_dump() for r in extraction.relations],
             "event": "ADD",
         }
+
+        # Attach Phase 2 metadata when present
+        if conflict_info:
+            result["conflict"] = conflict_info
+        if dedup_result:
+            result["dedup"] = dedup_result.model_dump()
+
+        return result
 
     async def search(
         self,
@@ -356,6 +545,7 @@ class MuninnMemory:
         records = self._metadata.get_all(
             limit=limit,
             namespace=namespace,
+            user_id=user_id,
         )
 
         return [
@@ -398,7 +588,7 @@ class MuninnMemory:
         embedding = self._embed(data)
 
         # Update stores
-        self._metadata.update(record)
+        self._metadata.update(record.id, content=record.content, metadata=record.metadata)
         self._vectors.upsert(
             memory_id=record.id,
             embedding=embedding,
@@ -407,6 +597,7 @@ class MuninnMemory:
                 "memory_type": record.memory_type.value,
                 "namespace": record.namespace,
                 "importance": record.importance,
+                "user_id": record.metadata.get("user_id", "global_user"),
             },
         )
 
@@ -448,16 +639,42 @@ class MuninnMemory:
         logger.info("Deleted memory %s", memory_id)
         return {"id": memory_id, "event": "DELETE"}
 
-    async def delete_all(self, user_id: str = "global_user") -> Dict[str, str]:
-        """Delete all memories."""
+    async def delete_all(self, user_id: str = "global_user") -> Dict[str, Any]:
+        """Delete all memories for the given user.
+
+        Scoped by ``user_id`` so that one tenant cannot wipe another's data.
+        Individual vectors and BM25 entries are removed per-record to keep
+        the stores consistent without a full collection nuke.
+        """
         self._check_initialized()
 
-        self._metadata.delete_all()
-        self._vectors.delete_all()
-        self._bm25.clear()
+        # 1. Collect IDs to delete from vector / BM25 stores
+        records = self._metadata.get_all(user_id=user_id, limit=100_000)
+        memory_ids = [r.id for r in records]
 
-        logger.info("Deleted all memories for user %s", user_id)
-        return {"event": "DELETE_ALL", "user_id": user_id}
+        # 2. User-scoped deletion in SQLite
+        count = self._metadata.delete_all(user_id=user_id)
+
+        # 3. Remove matching vectors individually (best-effort)
+        for mid in memory_ids:
+            try:
+                self._vectors.delete(mid)
+            except Exception:
+                logger.debug("Vector delete skipped for %s", mid)
+
+        # 4. Remove matching BM25 documents individually
+        for mid in memory_ids:
+            self._bm25.remove(mid)
+
+        # 5. Clean up graph references
+        for mid in memory_ids:
+            try:
+                self._graph.delete_memory_references(mid)
+            except Exception:
+                logger.debug("Graph cleanup skipped for %s", mid)
+
+        logger.info("Deleted %d memories for user %s", count, user_id)
+        return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
 
     async def health(self) -> Dict[str, Any]:
         """Return system health status."""
@@ -535,6 +752,59 @@ class MuninnMemory:
         records = self._metadata.get_all(limit=10000)
         documents = {r.id: r.content for r in records}
         self._bm25.rebuild(documents)
+
+    def _run_user_scope_migration(
+        self,
+        default_user_id: str = "global_user",
+        batch_size: int = 500,
+        max_batches: int = 5,
+    ) -> Dict[str, int]:
+        """Run a bounded migration pass and retry ledger for legacy user scope backfill."""
+        updated = 0
+        retried = 0
+
+        # Retry previous vector payload failures first.
+        retry_ids = self._metadata.get_user_scope_backfill_failures(limit=batch_size)
+        if retry_ids:
+            for memory_id in retry_ids:
+                try:
+                    self._vectors.set_payload(memory_id, {"user_id": default_user_id})
+                    self._metadata.clear_user_scope_backfill_failure(memory_id)
+                    retried += 1
+                except Exception as e:
+                    self._metadata.record_user_scope_backfill_failure(memory_id, str(e))
+
+        for _ in range(max_batches):
+            records = self._metadata.get_missing_user_id_records(limit=batch_size)
+            if not records:
+                break
+
+            for record in records:
+                updated_metadata = {**record.metadata, "user_id": default_user_id}
+                self._metadata.update(record.id, metadata=updated_metadata)
+
+                try:
+                    self._vectors.set_payload(record.id, {"user_id": default_user_id})
+                    self._metadata.clear_user_scope_backfill_failure(record.id)
+                except Exception as e:
+                    self._metadata.record_user_scope_backfill_failure(record.id, str(e))
+
+                updated += 1
+
+        # Determine completion based on remaining records missing user_id and retry failures.
+        remaining_missing = self._metadata.count_missing_user_id()
+
+        remaining_failures = self._metadata.count_user_scope_backfill_failures()
+        complete = remaining_missing == 0 and remaining_failures == 0
+        self._metadata.set_meta("user_scope_migration_complete", "1" if complete else "0")
+
+        return {
+            "updated": updated,
+            "retried": retried,
+            "remaining_missing": remaining_missing,
+            "remaining_failures": remaining_failures,
+            "complete": int(complete),
+        }
 
     def _check_initialized(self) -> None:
         """Raise if not initialized."""
