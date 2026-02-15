@@ -124,6 +124,9 @@ Completed since last update:
    - command now runs live benchmark + legacy benchmark + profile gate in one operator-triggered flow,
    - role-based profile recommendations are emitted in summary artifact (`dev_cycle_summary_<timestamp>.json`),
    - implementation plan documented (`docs/plans/2026-02-15-phase4l-dev-cycle-benchmark-orchestration.md`).
+39. MCP transport framing compatibility hardening implemented:
+   - `mcp_wrapper` stdin parsing now supports both newline JSON and `Content-Length` framed JSON-RPC,
+   - this closes a cross-client transport mismatch class that can surface as immediate `Transport closed`.
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -141,6 +144,7 @@ Verification:
   - initial 5-model quick-pass latency/throughput snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
   - `8 passed` across Phase 4I/4J benchmark helper tests (`tests/test_ollama_local_benchmark.py`).
   - `14 passed` across benchmark+hygiene helper tests (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
+  - `28 passed` across MCP transport protocol tests (`tests/test_mcp_wrapper_protocol.py`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)

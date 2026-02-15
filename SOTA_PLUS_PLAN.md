@@ -164,6 +164,9 @@
     - `dev-cycle` command added to local benchmark utility (`python -m eval.ollama_local_benchmark dev-cycle`),
     - command now executes `benchmark` + `legacy-benchmark` + `profile-gate` in one operator-triggered run,
     - summary artifact now maps profile recommendations to practical workload roles.
+45. MCP transport framing compatibility hardening implemented:
+    - `mcp_wrapper` stdio reader now supports both newline-delimited JSON and `Content-Length` framed JSON-RPC payloads,
+    - transport parser tests added to prevent regressions in cross-client MCP compatibility.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -190,6 +193,7 @@
 - Phase 4H initial five-model quick-pass benchmark snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
 - Phase 4I/4J benchmark helper verification: `8 passed` (`tests/test_ollama_local_benchmark.py`).
 - Phase 4K/4L benchmark+hygiene helper verification: `14 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
+- MCP transport framing verification: `28 passed` (`tests/test_mcp_wrapper_protocol.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
