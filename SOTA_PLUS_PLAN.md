@@ -223,6 +223,10 @@
     - new deterministic soak harness shipped (`python -m eval.mcp_transport_soak`) with framed/line transport options and JSON report artifacts,
     - root-cause fix applied: `tools/call` background dispatch is now opt-in (`MUNINN_MCP_BACKGROUND_TOOLS_CALL=1`) while `tasks/result` remains background-dispatched by default,
     - preflight server-start probes are now skipped when autostart is disabled or backend circuit is already open, reducing outage amplification.
+59. Phase 4Y profile-governance telemetry + apply-guardrail baseline implemented:
+    - `profile-gate` now emits governance alert telemetry (`critical|warning|info`) with deterministic policy thresholds (`min_composite_score`, `min_score_margin`, `blocking_severities`),
+    - `profile-gate --enforce-governance` now fails CI/operator runs when governance policy marks alerts as blocking,
+    - `dev-cycle` now supports governance-aware controls (`--enforce-governance`, `--require-governance-clean`) and prevents policy-apply when blocking governance alerts are present.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -264,6 +268,7 @@
 - Phase 4V metadata/cursor compliance verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_061319.json`).
 - Phase 4W transport resilience verification: `56 passed` (`tests/test_mcp_wrapper_protocol.py`) + `92 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_064545.json`).
 - Phase 4X soak/dispatch-policy verification: `98 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_074136.json`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_074404.json`).
+- Phase 4Y governance telemetry/guardrail verification: `30 passed` (`tests/test_ollama_local_benchmark.py`) + compile checks (`python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -301,6 +306,7 @@
 33. **Protocol-correctness without throughput regression ROI**: background dispatch for blocking lifecycle methods keeps `tasks/result` spec-aligned while preserving responsiveness for concurrent health/poll/tool traffic.
 34. **Concurrency guardrail ROI**: bounded dispatch executor + generic guarded logging reduce thread-exhaustion and log-forging risk under adversarial or malformed request bursts.
 35. **Contract-evolution ROI**: opaque cursor tokens + schema-aligned related-task `taskId` remove brittle client coupling to internal offsets/field aliases and enable non-breaking pagination/task contract evolution.
+36. **Governance alert ROI**: policy-level recommendation confidence alerts plus governance-gated apply prevent low-confidence profile promotions from being applied during noisy benchmark windows.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
@@ -321,7 +327,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 **Still open gaps:**
 1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
 2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
-3. Profile auto-promotion operationalization still needs implementation (automatic governance rules/alerts and promotion automation are still open; operator-triggered apply/rollback plus approval-gated checkpoint apply are now implemented)
+3. Profile promotion automation still needs finalization (governance rules/alerts and governance-gated apply are now implemented; fully automatic promotion scheduling/roll-forward remains open)
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
