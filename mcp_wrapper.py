@@ -688,6 +688,8 @@ def send_json_rpc(message: Dict[str, Any]):
     """Send JSON-RPC message to stdout."""
     if _TRANSPORT_CLOSED.is_set():
         return
+    serialized = json.dumps(message)
+    _record_tool_call_response_metrics(message, serialized)
     emitter = getattr(_thread_local, "rpc_emitter", None)
     if callable(emitter):
         emitter(message)
@@ -696,7 +698,7 @@ def send_json_rpc(message: Dict[str, Any]):
         if _TRANSPORT_CLOSED.is_set():
             return
         try:
-            print(json.dumps(message))
+            print(serialized)
             sys.stdout.flush()
         except (BrokenPipeError, OSError) as exc:
             _TRANSPORT_CLOSED.set()
@@ -726,6 +728,39 @@ def _get_tool_response_max_chars() -> int:
         )
         return 12000
     return max(256, parsed)
+
+
+def _get_tool_call_warn_ms() -> float:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_CALL_WARN_MS", "90000")
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_CALL_WARN_MS=%r; using default of 90000.",
+            raw_value,
+        )
+        return 90000.0
+    if not math.isfinite(parsed) or parsed < 0:
+        logger.warning(
+            "Non-finite/negative MUNINN_MCP_TOOL_CALL_WARN_MS=%r; using default of 90000.",
+            raw_value,
+        )
+        return 90000.0
+    return parsed
+
+
+def _record_tool_call_response_metrics(message: Dict[str, Any], serialized: str) -> None:
+    metrics = getattr(_thread_local, "tool_call_metrics", None)
+    if not isinstance(metrics, dict):
+        return
+    if metrics.get("msg_id") != message.get("id"):
+        return
+    payload_size_bytes = len(serialized.encode("utf-8")) + 1  # newline delimiter on stdout
+    metrics["response_count"] = int(metrics.get("response_count", 0)) + 1
+    metrics["response_bytes_total"] = int(metrics.get("response_bytes_total", 0)) + payload_size_bytes
+    metrics["response_bytes_max"] = max(int(metrics.get("response_bytes_max", 0)), payload_size_bytes)
+    if isinstance(message.get("error"), dict):
+        metrics["saw_error"] = True
 
 
 def _safe_json_dumps(payload: Any) -> str:
@@ -1941,6 +1976,22 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
     name = params.get("name")
     arguments = params.get("arguments", {})
     tool_call_deadline_epoch = _get_tool_call_deadline_epoch()
+    tool_call_started_monotonic = time.monotonic()
+    initial_remaining_budget = _remaining_deadline_seconds(tool_call_deadline_epoch)
+    initial_budget_ms = (
+        max(0.0, initial_remaining_budget * 1000.0)
+        if initial_remaining_budget is not None
+        else None
+    )
+    tool_call_metrics = {
+        "msg_id": msg_id,
+        "name": str(name),
+        "response_count": 0,
+        "response_bytes_total": 0,
+        "response_bytes_max": 0,
+        "saw_error": False,
+    }
+    setattr(_thread_local, "tool_call_metrics", tool_call_metrics)
 
     def _request(method: str, url: str, **kwargs) -> requests.Response:
         if tool_call_deadline_epoch is not None:
@@ -2424,6 +2475,38 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "message": _public_tool_error_message(e)
             }
         })
+    finally:
+        if getattr(_thread_local, "tool_call_metrics", None) is tool_call_metrics:
+            setattr(_thread_local, "tool_call_metrics", None)
+        elapsed_ms = max(0.0, (time.monotonic() - tool_call_started_monotonic) * 1000.0)
+        remaining_budget = _remaining_deadline_seconds(tool_call_deadline_epoch)
+        remaining_budget_ms = (
+            max(0.0, remaining_budget * 1000.0)
+            if remaining_budget is not None
+            else None
+        )
+        if tool_call_metrics["saw_error"]:
+            outcome = "error"
+        elif int(tool_call_metrics["response_count"]) > 0:
+            outcome = "success"
+        else:
+            outcome = "no_response"
+        budget_str = "n/a" if initial_budget_ms is None else f"{initial_budget_ms:.1f}"
+        remaining_str = "n/a" if remaining_budget_ms is None else f"{remaining_budget_ms:.1f}"
+        log_method = logger.warning if elapsed_ms >= _get_tool_call_warn_ms() else logger.info
+        log_method(
+            "Tool call telemetry: name=%s id=%r outcome=%s elapsed_ms=%.1f responses=%d "
+            "response_bytes_total=%d response_bytes_max=%d budget_ms=%s remaining_budget_ms=%s",
+            tool_call_metrics["name"],
+            msg_id,
+            outcome,
+            elapsed_ms,
+            int(tool_call_metrics["response_count"]),
+            int(tool_call_metrics["response_bytes_total"]),
+            int(tool_call_metrics["response_bytes_max"]),
+            budget_str,
+            remaining_str,
+        )
 
 
 def _dispatch_rpc_message_guarded(msg: Dict[str, Any]) -> None:

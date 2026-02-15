@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics applied)
 
 ## Objective
 
@@ -101,6 +101,18 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - unresolved regression/defect/failure classification inputs.
 - Detailed tranche note: `docs/plans/2026-02-15-phase5a2-mcp-transport-closure-campaign-automation.md`.
 
+### 7) Tool-Call Telemetry Hardening (Phase 5A.3)
+
+- `mcp_wrapper.py` now tracks per-tool-call transport telemetry:
+  - elapsed wall time (`elapsed_ms`),
+  - response message count,
+  - total/max response bytes sent over stdio,
+  - initial and remaining deadline budget snapshots.
+- Added configurable near-timeout warning threshold:
+  - `MUNINN_MCP_TOOL_CALL_WARN_MS` (default `90000`).
+- Telemetry is emitted for both direct and task-backed tool execution paths, improving diagnosis for intermittent host transport closures.
+- Detailed tranche note: `docs/plans/2026-02-15-phase5a3-mcp-tool-call-telemetry-hardening.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -132,6 +144,12 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `python -m py_compile eval/mcp_transport_closure.py`
     - `86 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`)
     - `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`)
+    - full closure campaign evidence:
+      - `closure_ready=true`, streak `30`, window `30/30`, p95 ratio `1.0`
+      - artifact: `eval/reports/mcp_transport/mcp_transport_closure_20260215_213858.json`
+  - tool-call telemetry hardening verification:
+    - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+    - `88 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

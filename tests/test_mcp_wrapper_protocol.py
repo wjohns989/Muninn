@@ -1,5 +1,6 @@
 import copy
 import io
+import json
 import threading
 import time
 
@@ -540,6 +541,49 @@ def test_send_json_rpc_marks_transport_closed_on_broken_pipe(monkeypatch):
     # No-op once transport is closed.
     mcp_wrapper.send_json_rpc({"jsonrpc": "2.0", "id": "req-2", "result": {}})
     assert len(sent) == writes_before
+
+
+def test_record_tool_call_response_metrics_updates_thread_local_state():
+    metrics = {
+        "msg_id": "req-metrics",
+        "response_count": 0,
+        "response_bytes_total": 0,
+        "response_bytes_max": 0,
+        "saw_error": False,
+    }
+    setattr(mcp_wrapper._thread_local, "tool_call_metrics", metrics)
+    try:
+        success_msg = {"jsonrpc": "2.0", "id": "req-metrics", "result": {"ok": True}}
+        serialized_success = json.dumps(success_msg)
+        mcp_wrapper._record_tool_call_response_metrics(success_msg, serialized_success)
+        assert metrics["response_count"] == 1
+        assert metrics["response_bytes_total"] >= len(serialized_success.encode("utf-8")) + 1
+        assert metrics["response_bytes_max"] >= len(serialized_success.encode("utf-8")) + 1
+        assert metrics["saw_error"] is False
+
+        error_msg = {"jsonrpc": "2.0", "id": "req-metrics", "error": {"code": -32603, "message": "boom"}}
+        serialized_error = json.dumps(error_msg)
+        mcp_wrapper._record_tool_call_response_metrics(error_msg, serialized_error)
+        assert metrics["response_count"] == 2
+        assert metrics["saw_error"] is True
+
+        unmatched_msg = {"jsonrpc": "2.0", "id": "other-id", "result": {"ok": True}}
+        before = dict(metrics)
+        mcp_wrapper._record_tool_call_response_metrics(unmatched_msg, json.dumps(unmatched_msg))
+        assert metrics == before
+    finally:
+        setattr(mcp_wrapper._thread_local, "tool_call_metrics", None)
+
+
+def test_get_tool_call_warn_ms_defaults_and_invalid(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TOOL_CALL_WARN_MS", raising=False)
+    assert mcp_wrapper._get_tool_call_warn_ms() == 90000.0
+
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_WARN_MS", "not-a-number")
+    assert mcp_wrapper._get_tool_call_warn_ms() == 90000.0
+
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_WARN_MS", "-1")
+    assert mcp_wrapper._get_tool_call_warn_ms() == 90000.0
 
 
 def test_submit_background_dispatch_uses_executor(monkeypatch):

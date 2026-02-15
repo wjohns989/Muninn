@@ -302,6 +302,12 @@
     - campaign now orchestrates repeated soak runs across `framed`/`line` transports and emits one closure verdict artifact,
     - closure criteria are now machine-evaluable (streak target, window regressions, p95 ratio, unresolved regression/defect/failure inputs),
     - tranche note documented in `docs/plans/2026-02-15-phase5a2-mcp-transport-closure-campaign-automation.md`.
+78. Phase 5A.3 tool-call telemetry hardening implemented:
+    - wrapper now records per-tool-call `elapsed_ms`, response count, and response byte totals/max into `mcp_wrapper.log`,
+    - wrapper now records initial/remaining deadline budget snapshots per call to isolate timeout-adjacent behavior,
+    - near-timeout warning threshold added (`MUNINN_MCP_TOOL_CALL_WARN_MS`, default `90000`),
+    - telemetry recording is applied to direct and task-backed tool execution paths,
+    - tranche note documented in `docs/plans/2026-02-15-phase5a3-mcp-tool-call-telemetry-hardening.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -357,7 +363,8 @@
 - Phase 5A continuation security follow-up verification: `104 passed` (`tests/test_memory_user_profile.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`).
 - Phase 5A.1 long-tool auto-task mitigation verification: `82 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 - Phase 5A.2 closure campaign automation verification: transport eval utility compile pass (`python -m py_compile eval/mcp_transport_closure.py`) + `86 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
-- Phase 5A.2 closure campaign smoke-run evidence: `closure_ready=true` for a 5-run dual-transport window (`eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`); 30-run closure window still pending.
+- Phase 5A.2 closure campaign evidence: `closure_ready=true` in both smoke and full-window runs: 5-run dual-transport (`eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`) and 30-run closure window (`eval/reports/mcp_transport/mcp_transport_closure_20260215_213858.json`, streak `30`, window `30/30`, p95 ratio `1.0`).
+- Phase 5A.3 tool-call telemetry hardening verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -412,6 +419,7 @@
 48. **Chronology-plus-hierarchy ROI**: propagating file modification and path-structure context into legacy-ingested chunks improves phase-aware recall and disambiguation of similarly worded artifacts across project epochs.
 49. **Standalone adoption ROI**: dedicated launcher and packaging path reduce assistant dependency for ingestion/search workflows and improve operability for non-IDE users.
 50. **Operator-throughput ROI**: auto discover-and-import flow for parser-supported legacy artifacts reduces manual multi-click migration overhead while preserving deterministic selection controls.
+51. **Timeout forensics ROI**: per-tool-call elapsed/byte/budget telemetry in wrapper logs reduces mean time to isolate external host transport-close regressions and supports objective remediation decisions.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
