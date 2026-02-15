@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build helper for packaging Muninn standalone launcher with PyInstaller.
+Build helper for packaging Huginn (Muninn standalone launcher) with PyInstaller.
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ from pathlib import Path
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build Muninn standalone executable with PyInstaller."
+        description="Build Huginn standalone executable (Muninn browser mode) with PyInstaller."
     )
     parser.add_argument(
         "--name",
-        default="MuninnControlCenter",
+        default="HuginnControlCenter",
         help="Output executable/app name.",
     )
     parser.add_argument(

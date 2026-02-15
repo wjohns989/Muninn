@@ -3,6 +3,11 @@ import os
 from scripts import build_standalone
 
 
+def test_build_standalone_default_output_name_is_huginn():
+    args = build_standalone.build_parser().parse_args([])
+    assert args.name == "HuginnControlCenter"
+
+
 def test_build_standalone_constructs_pyinstaller_command(monkeypatch):
     captured = {}
 

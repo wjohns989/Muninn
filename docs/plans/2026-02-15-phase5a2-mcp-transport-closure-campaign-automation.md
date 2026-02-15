@@ -73,6 +73,10 @@ Outputs explicit per-criterion booleans plus final `closure_ready`.
    - `python -m eval.mcp_transport_closure --streak-target 5 --max-campaign-runs 5 --transports framed,line --soak-iterations 10 --soak-warmup-requests 2 --soak-timeout-sec 15 --soak-max-p95-ms 5000 --soak-server-url http://127.0.0.1:1`
    - Result: `closure_ready=true`, `current_consecutive_pass_streak=5`, `window_p95_compliance_ratio=1.0`
    - Artifact: `eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json`
+7. Closure telemetry enrichment evidence:
+   - `python -m eval.mcp_transport_closure --streak-target 5 --max-campaign-runs 5 --transports framed,line --soak-iterations 10 --soak-warmup-requests 2 --soak-timeout-sec 15 --soak-max-p95-ms 5000 --soak-task-result-mode auto --soak-task-result-auto-retry-clients "claude desktop,claude code,cursor,windsurf,continue" --soak-server-url http://127.0.0.1:1`
+   - Result: `closure_ready=true` with telemetry rollups populated (`error_code_totals`, mode/profile distributions)
+   - Artifact: `eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json`
 
 ## ROI / Blocker Impact
 

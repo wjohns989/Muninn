@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Muninn Control Center</title>
+  <title>Huginn Control Center (Muninn Standalone)</title>
   <style>
     :root {
       --bg: #0b1220;
@@ -295,10 +295,11 @@
   <div class="app">
     <section class="hero">
       <div>
-        <h1>Muninn Browser Control Center</h1>
-        <div class="sub">Legacy assistant reingestion, project-folder contextual ingestion, and memory ops in one place.</div>
+        <h1>Huginn Browser Control Center</h1>
+        <div class="sub">Standalone browser app for the Muninn memory engine. Use Muninn MCP mode when attached to an active assistant.</div>
       </div>
       <div class="status-strip">
+        <div class="chip"><strong>Mode:</strong> <span id="chip-mode">Huginn (browser)</span></div>
         <div class="chip"><strong>Status:</strong> <span id="chip-status">checking</span></div>
         <div class="chip"><strong>Backend:</strong> <span id="chip-backend">-</span></div>
         <div class="chip"><strong>Memories:</strong> <span id="chip-count">-</span></div>
@@ -513,7 +514,7 @@
 
       <div class="panel col-12">
         <h2>User Profile and Global Context</h2>
-        <p class="desc">Editable user context that helps Muninn prioritize relevant memories: skills, tool paths, environments, hardware, and workflow preferences.</p>
+        <p class="desc">Editable user context that helps Huginn/Muninn prioritize relevant memories: skills, tool paths, environments, hardware, and workflow preferences.</p>
         <div class="row">
           <div class="field-12">
             <label for="user-profile-json">Profile JSON</label>

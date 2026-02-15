@@ -209,6 +209,21 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cooldown-sec", type=float, default=30.0)
     parser.add_argument("--max-p95-ms", type=float, default=400.0)
     parser.add_argument(
+        "--task-result-mode",
+        choices=("auto", "blocking", "immediate_retry"),
+        default=os.environ.get("MUNINN_MCP_TASK_RESULT_MODE", "auto"),
+        help="Override wrapper tasks/result semantics mode during soak.",
+    )
+    parser.add_argument(
+        "--task-result-auto-retry-clients",
+        type=str,
+        default=os.environ.get(
+            "MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS",
+            "claude desktop,claude code,cursor,windsurf,continue",
+        ),
+        help="Comma-delimited client profile tokens used by auto mode.",
+    )
+    parser.add_argument(
         "--inject-malformed-frame",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -258,6 +273,8 @@ def run(argv: list[str] | None = None) -> int:
             "MUNINN_MCP_AUTOSTART_OLLAMA": "0",
             "MUNINN_MCP_BACKEND_FAILURE_THRESHOLD": str(args.failure_threshold),
             "MUNINN_MCP_BACKEND_COOLDOWN_SEC": str(args.cooldown_sec),
+            "MUNINN_MCP_TASK_RESULT_MODE": args.task_result_mode,
+            "MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS": args.task_result_auto_retry_clients,
         }
     )
 
@@ -353,6 +370,8 @@ def run(argv: list[str] | None = None) -> int:
                 "failure_threshold": args.failure_threshold,
                 "cooldown_sec": args.cooldown_sec,
                 "max_p95_ms": args.max_p95_ms,
+                "task_result_mode": args.task_result_mode,
+                "task_result_auto_retry_clients": args.task_result_auto_retry_clients,
                 "inject_malformed_frame": bool(args.inject_malformed_frame),
                 "wrapper": str(wrapper_path),
             },

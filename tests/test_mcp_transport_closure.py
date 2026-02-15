@@ -24,6 +24,8 @@ def test_build_soak_command_contains_expected_flags(tmp_path: Path) -> None:
         soak_server_url="http://127.0.0.1:9",
         soak_failure_threshold=2,
         soak_cooldown_sec=45.0,
+        soak_task_result_mode="immediate_retry",
+        soak_task_result_auto_retry_clients="claude desktop,cursor",
         inject_malformed_frame=False,
         report_dir=tmp_path / "reports",
         wrapper=Path("mcp_wrapper.py"),
@@ -32,6 +34,8 @@ def test_build_soak_command_contains_expected_flags(tmp_path: Path) -> None:
     assert "--iterations" in command and "30" in command
     assert "--warmup-requests" in command and "3" in command
     assert "--transport" in command and "framed" in command
+    assert "--task-result-mode" in command and "immediate_retry" in command
+    assert "--task-result-auto-retry-clients" in command and "claude desktop,cursor" in command
     assert "--no-inject-malformed-frame" in command
 
 
@@ -69,3 +73,39 @@ def test_evaluate_campaign_not_ready_with_open_wrapper_defect() -> None:
     )
     assert result["closure_ready"] is False
     assert result["criteria"]["no_open_wrapper_defects"] is False
+
+
+def test_aggregate_campaign_telemetry_collects_error_codes_and_modes() -> None:
+    telemetry = closure._aggregate_campaign_telemetry(
+        [
+            {
+                "transports": [
+                    {
+                        "error_codes": {"-32603": 4, "-32002": 1},
+                        "task_result_mode": "auto",
+                        "task_result_auto_retry_clients": "claude desktop,cursor",
+                    },
+                    {
+                        "error_codes": {"-32603": 5},
+                        "task_result_mode": "auto",
+                        "task_result_auto_retry_clients": "claude desktop,cursor",
+                    },
+                ]
+            },
+            {
+                "transports": [
+                    {
+                        "error_codes": {"-32603": 2},
+                        "task_result_mode": "blocking",
+                        "task_result_auto_retry_clients": "none",
+                    }
+                ]
+            },
+        ]
+    )
+    assert telemetry["error_code_totals"]["-32603"] == 11
+    assert telemetry["error_code_totals"]["-32002"] == 1
+    assert telemetry["task_result_mode_distribution"]["auto"] == 2
+    assert telemetry["task_result_mode_distribution"]["blocking"] == 1
+    assert telemetry["retryable_task_result_error_count"] == 1
+    assert telemetry["retryable_task_result_error_ratio"] > 0.0

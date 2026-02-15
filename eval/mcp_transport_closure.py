@@ -48,6 +48,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--soak-failure-threshold", type=int, default=1)
     parser.add_argument("--soak-cooldown-sec", type=float, default=30.0)
     parser.add_argument(
+        "--soak-task-result-mode",
+        choices=("auto", "blocking", "immediate_retry"),
+        default="auto",
+        help="tasks/result mode forwarded to soak runner.",
+    )
+    parser.add_argument(
+        "--soak-task-result-auto-retry-clients",
+        type=str,
+        default="claude desktop,claude code,cursor,windsurf,continue",
+        help="auto-mode retry client profile tokens forwarded to soak runner.",
+    )
+    parser.add_argument(
         "--inject-malformed-frame",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -96,6 +108,10 @@ def _build_soak_command(args: argparse.Namespace, transport: str) -> list[str]:
         str(args.soak_cooldown_sec),
         "--max-p95-ms",
         str(args.soak_max_p95_ms),
+        "--task-result-mode",
+        str(args.soak_task_result_mode),
+        "--task-result-auto-retry-clients",
+        str(args.soak_task_result_auto_retry_clients),
         "--report-dir",
         str(args.report_dir),
         "--wrapper",
@@ -137,6 +153,15 @@ def _transport_attempt_summary(transport: str, attempt: dict[str, Any], max_p95_
     p95 = float(latency.get("p95_ms", 0.0) or 0.0)
     p95_compliant = bool(report_outcome == "pass" and p95 <= max_p95_ms)
     report_failures = report.get("results", {}).get("failures", []) if report else []
+    report_config = report.get("config", {}) if report else {}
+    raw_error_codes = report.get("results", {}).get("error_codes", {}) if report else {}
+    error_codes: dict[str, int] = {}
+    if isinstance(raw_error_codes, dict):
+        for key, value in raw_error_codes.items():
+            try:
+                error_codes[str(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
     failures: list[str] = []
     if isinstance(report_failures, list):
         failures.extend(str(item) for item in report_failures)
@@ -154,7 +179,66 @@ def _transport_attempt_summary(transport: str, attempt: dict[str, Any], max_p95_
         "report_run_id": report.get("run_id") if report else None,
         "p95_ms": p95,
         "p95_compliant": p95_compliant,
+        "error_codes": error_codes,
+        "task_result_mode": (
+            str(report_config.get("task_result_mode"))
+            if isinstance(report_config.get("task_result_mode"), str)
+            else None
+        ),
+        "task_result_auto_retry_clients": (
+            str(report_config.get("task_result_auto_retry_clients"))
+            if isinstance(report_config.get("task_result_auto_retry_clients"), str)
+            else None
+        ),
         "failures": failures,
+    }
+
+
+def _aggregate_campaign_telemetry(campaign_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    error_code_totals: dict[str, int] = {}
+    mode_distribution: dict[str, int] = {}
+    auto_retry_profile_distribution: dict[str, int] = {}
+
+    for run in campaign_runs:
+        transports = run.get("transports")
+        if not isinstance(transports, list):
+            continue
+        for transport in transports:
+            if not isinstance(transport, dict):
+                continue
+            error_codes = transport.get("error_codes")
+            if isinstance(error_codes, dict):
+                for code, count in error_codes.items():
+                    try:
+                        inc = int(count)
+                    except (TypeError, ValueError):
+                        continue
+                    error_code_totals[str(code)] = error_code_totals.get(str(code), 0) + inc
+
+            mode = transport.get("task_result_mode")
+            if isinstance(mode, str) and mode:
+                mode_distribution[mode] = mode_distribution.get(mode, 0) + 1
+
+            profiles = transport.get("task_result_auto_retry_clients")
+            if isinstance(profiles, str) and profiles:
+                auto_retry_profile_distribution[profiles] = (
+                    auto_retry_profile_distribution.get(profiles, 0) + 1
+                )
+
+    retryable_task_result_error_count = error_code_totals.get("-32002", 0)
+    total_error_count = sum(error_code_totals.values())
+    retryable_task_result_error_ratio = (
+        float(retryable_task_result_error_count) / float(total_error_count)
+        if total_error_count > 0
+        else 0.0
+    )
+
+    return {
+        "error_code_totals": error_code_totals,
+        "task_result_mode_distribution": mode_distribution,
+        "task_result_auto_retry_profile_distribution": auto_retry_profile_distribution,
+        "retryable_task_result_error_count": retryable_task_result_error_count,
+        "retryable_task_result_error_ratio": retryable_task_result_error_ratio,
     }
 
 
@@ -294,6 +378,8 @@ def run(argv: list[str] | None = None) -> int:
             "soak_server_url": args.soak_server_url,
             "soak_failure_threshold": args.soak_failure_threshold,
             "soak_cooldown_sec": args.soak_cooldown_sec,
+            "soak_task_result_mode": args.soak_task_result_mode,
+            "soak_task_result_auto_retry_clients": args.soak_task_result_auto_retry_clients,
             "inject_malformed_frame": bool(args.inject_malformed_frame),
             "wrapper": str(args.wrapper),
             "open_wrapper_defects": args.open_wrapper_defects,
@@ -302,6 +388,7 @@ def run(argv: list[str] | None = None) -> int:
         },
         "results": {
             **evaluation,
+            "telemetry": _aggregate_campaign_telemetry(campaign_runs),
             "attempted_campaign_runs": len(campaign_runs),
             "campaign_runs": campaign_runs,
         },

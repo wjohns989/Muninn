@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + task-result compatibility controls applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring applied)
 
 ## Objective
 
@@ -59,6 +59,13 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - `MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS` for deterministic client-profile auto-selection,
    - optional per-request `params.wait` override.
    - Implementation detail: `docs/plans/2026-02-15-phase5a5-mcp-task-result-compatibility-mode.md`.
+10. Transport closure artifacts now include compatibility telemetry rollups:
+   - error-code totals,
+   - task-result mode/profile distributions,
+   - retryable-task-result error incidence ratio.
+   - Implementation detail: `docs/plans/2026-02-15-phase5a6-closure-telemetry-huginn-branding.md`.
+11. Browser-first standalone UX is now explicitly branded as Huginn while preserving Muninn naming for MCP-attached assistant mode.
+   - Implementation detail: `docs/plans/2026-02-15-phase5a6-closure-telemetry-huginn-branding.md`.
 
 Current assessment:
 
@@ -73,6 +80,9 @@ Current assessment:
 - Post-compatibility-mode regression evidence:
   - soak pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_221650.json`
   - closure mini-campaign pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
+- Post-telemetry/branding regression evidence:
+  - soak pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_224206.json`
+  - closure mini-campaign pass with telemetry: `eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
 - Remaining operational risk is primarily external host-runtime intermittency; closure evidence for wrapper-controlled transport behavior is now available and machine-verifiable.
 
 ## Decision Rule
@@ -223,4 +233,4 @@ The transport intermittency blocker is closed only when:
 5. Add dashboard/report template for leadership-facing release evidence.
 6. Add host-runtime transport diagnostics bundle capture for timeout regressions (wrapper log snapshot + response-size distribution + per-tool p95 wall time).
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
-8. Add compatibility-mode metrics to closure reports (mode distribution + retry-path incidence) for release-gate auditing.
+8. Add optional `tasks/result` non-terminal scenario to soak/closure harness to intentionally exercise `-32002` path and validate compatibility semantics under stress.

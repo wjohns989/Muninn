@@ -4,6 +4,12 @@ Local-first persistent memory infrastructure for coding agents and MCP-compatibl
 
 Muninn provides deterministic, explainable memory retrieval with robust transport behavior and production-grade operational controls. It is designed for long-running development workflows where continuity, auditability, and measurable quality matter.
 
+## Runtime Modes
+
+- **Huginn mode**: browser-first standalone UX for direct ingestion/search/admin workflows.
+- **Muninn mode**: MCP wrapper surface for active assistant/IDE sessions.
+- Both modes use the same underlying Muninn memory engine and data.
+
 ## Why Muninn
 
 - Local-first data residency by default
@@ -49,13 +55,13 @@ Run the backend service:
 python server.py
 ```
 
-Run the standalone browser-first launcher:
+Run the standalone browser-first launcher (Huginn mode):
 
 ```bash
 python muninn_standalone.py
 ```
 
-Run the MCP wrapper (stdio bridge):
+Run the MCP wrapper (Muninn MCP mode for active assistants):
 
 ```bash
 python mcp_wrapper.py
@@ -64,7 +70,7 @@ python mcp_wrapper.py
 Build a standalone executable package (PyInstaller):
 
 ```bash
-python scripts/build_standalone.py --name MuninnControlCenter --windowed
+python scripts/build_standalone.py --name HuginnControlCenter --windowed
 ```
 
 ## Minimal MCP Client Configuration
