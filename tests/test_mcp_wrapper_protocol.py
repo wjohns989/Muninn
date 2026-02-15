@@ -355,6 +355,34 @@ def test_background_dispatch_selection():
     assert mcp_wrapper._should_dispatch_in_background({"method": "ping"}) is False
 
 
+def test_dispatch_guard_logs_generic_message(monkeypatch):
+    logged = []
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "_dispatch_rpc_message",
+        lambda _msg: (_ for _ in ()).throw(ValueError("bad\nuser")),
+    )
+    monkeypatch.setattr(mcp_wrapper.logger, "error", lambda msg: logged.append(msg))
+
+    mcp_wrapper._dispatch_rpc_message_guarded({"method": "tasks/result"})
+    assert logged == ["An unexpected error occurred during RPC dispatch."]
+
+
+def test_submit_background_dispatch_uses_executor(monkeypatch):
+    calls = []
+
+    class _StubExecutor:
+        def submit(self, fn, *args):
+            calls.append((fn, args))
+
+    monkeypatch.setattr(mcp_wrapper, "_get_dispatch_executor", lambda: _StubExecutor())
+    payload = {"method": "tasks/result", "id": "req"}
+    mcp_wrapper._submit_background_dispatch(payload)
+    assert len(calls) == 1
+    assert calls[0][0] is mcp_wrapper._dispatch_rpc_message_guarded
+    assert calls[0][1][0] == payload
+
+
 def test_initialized_notification_requires_prior_initialize(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
