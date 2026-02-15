@@ -1220,6 +1220,113 @@ def test_tools_call_with_task_returns_create_task_and_completes(monkeypatch):
     assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == task_id
 
 
+def test_tools_call_auto_defers_configured_long_tool(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS", "1")
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_TOOL_NAMES", "ingest_legacy_sources")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    class _InlineThread:
+        def __init__(self, target, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            self._target(*self._args, **self._kwargs)
+
+    def _fake_worker(task_id: str, _name: str, _arguments: dict):
+        with mcp_wrapper._TASKS_CONDITION:
+            task = mcp_wrapper._SESSION_STATE["tasks"][task_id]
+            mcp_wrapper._set_task_state_locked(
+                task,
+                status="completed",
+                status_message="done",
+                result={"content": [{"type": "text", "text": "ok"}]},
+            )
+            task_snapshot = mcp_wrapper._public_task(task)
+            mcp_wrapper._TASKS_CONDITION.notify_all()
+        mcp_wrapper._emit_task_status_notification(task_snapshot)
+
+    monkeypatch.setattr(mcp_wrapper.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(mcp_wrapper, "_run_tool_call_task_worker", _fake_worker)
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tools-call-auto-task",
+        "method": "tools/call",
+        "params": {
+            "name": "ingest_legacy_sources",
+            "arguments": {"selected_source_ids": ["src_1"]},
+        },
+    })
+
+    create_response = next(msg for msg in sent if msg.get("id") == "req-tools-call-auto-task")
+    assert create_response["result"]["task"]["status"] == "working"
+    assert "io.modelcontextprotocol/model-immediate-response" in create_response["result"]["_meta"]
+
+
+def test_tools_call_auto_defer_can_be_disabled(monkeypatch):
+    sent = []
+    handled = {}
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS", "0")
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_TOOL_NAMES", "ingest_legacy_sources")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    def _fake_handle_call_tool(msg_id, params):
+        handled["id"] = msg_id
+        handled["params"] = params
+
+    monkeypatch.setattr(mcp_wrapper, "handle_call_tool", _fake_handle_call_tool)
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tools-call-no-auto-task",
+        "method": "tools/call",
+        "params": {
+            "name": "ingest_legacy_sources",
+            "arguments": {"selected_source_ids": ["src_1"]},
+        },
+    })
+
+    assert handled["id"] == "req-tools-call-no-auto-task"
+    assert handled["params"]["name"] == "ingest_legacy_sources"
+
+
+def test_tools_call_auto_defer_can_require_client_capability(monkeypatch):
+    sent = []
+    handled = {}
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS", "1")
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_TOOL_NAMES", "ingest_legacy_sources")
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_REQUIRE_CLIENT_CAP", "1")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["client_capabilities"] = {}
+
+    def _fake_handle_call_tool(msg_id, params):
+        handled["id"] = msg_id
+        handled["params"] = params
+
+    monkeypatch.setattr(mcp_wrapper, "handle_call_tool", _fake_handle_call_tool)
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tools-call-cap-gated",
+        "method": "tools/call",
+        "params": {
+            "name": "ingest_legacy_sources",
+            "arguments": {"selected_source_ids": ["src_1"]},
+        },
+    })
+
+    assert handled["id"] == "req-tools-call-cap-gated"
+    assert handled["params"]["name"] == "ingest_legacy_sources"
+
 def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))

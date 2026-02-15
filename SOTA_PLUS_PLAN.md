@@ -292,6 +292,11 @@
     - profile REST endpoints now avoid returning raw internal exception strings on 500s and retain full stack traces only in server logs,
     - browser dashboard removed dynamic `innerHTML` rendering for result payloads and legacy source rows (DOM-safe node creation with `textContent`),
     - browser API error handling now summarizes/redacts sensitive backend detail strings before display.
+76. Phase 5A.1 long-tool auto-task timeout mitigation implemented:
+    - `tools/call` now auto-defers configured long tools into task mode when `params.task` is omitted (`MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS=1`),
+    - configurable long-tool allowlist added (`MUNINN_MCP_AUTO_TASK_TOOL_NAMES`),
+    - optional client-capability gate added (`MUNINN_MCP_AUTO_TASK_REQUIRE_CLIENT_CAP`),
+    - mitigation note documented in `docs/plans/2026-02-15-phase5a1-mcp-long-tool-auto-task-deferral.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -345,6 +350,7 @@
 - Phase 5A user-profile + chronology/hierarchy + standalone foundation verification: `116 passed` (`tests/test_ingestion_discovery.py`, `tests/test_memory_ingestion.py`, `tests/test_memory_user_profile.py`, `tests/test_sqlite_goal_handoff.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`) + compile checks on touched modules.
 - Phase 5A continuation hardening verification: `79 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 - Phase 5A continuation security follow-up verification: `104 passed` (`tests/test_memory_user_profile.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`).
+- Phase 5A.1 long-tool auto-task mitigation verification: `82 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -383,6 +389,7 @@
 34. **Concurrency guardrail ROI**: bounded dispatch executor + generic guarded logging reduce thread-exhaustion and log-forging risk under adversarial or malformed request bursts.
 35. **Contract-evolution ROI**: opaque cursor tokens + schema-aligned related-task `taskId` remove brittle client coupling to internal offsets/field aliases and enable non-breaking pagination/task contract evolution.
 36. **Host-timeout avoidance ROI**: wrapper-level tool-call deadline budgeting plus per-attempt timeout clamping reduces intermittent host-side `120s` transport closures by failing deterministically before channel teardown windows.
+37. **Long-call timeout-mitigation ROI**: auto-deferring configured ingest-heavy `tools/call` operations into task mode removes long synchronous wait pressure from host timeout windows while preserving completion retrieval via task lifecycle APIs.
 37. **Timeout-window integrity ROI**: startup-recovery budget gating prevents low-remaining-budget preflight work from consuming terminal wall time, reducing deadline overshoot risk in intermittent outage/retry windows.
 38. **Cross-host adaptation ROI**: deriving deadline budgets from host timeout and safety margin reduces manual tuning overhead across different MCP client timeout policies while preserving deterministic safety margins.
 39. **Misconfiguration-resilience ROI**: explicit deadline overrun guardrail defaults to host-safe clamping, preventing operator-configured over-budget values from silently reintroducing transport-closure risk.
