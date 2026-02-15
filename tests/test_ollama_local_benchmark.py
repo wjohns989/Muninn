@@ -501,7 +501,9 @@ def test_cmd_rollback_policy_applies_previous_checkpoint(tmp_path: Path, monkeyp
     assert calls[0]["path"] == "/profiles/model"
 
 
-def test_cmd_approval_manifest_records_checkpoint_hash(tmp_path: Path) -> None:
+def test_cmd_approval_manifest_records_checkpoint_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     checkpoint_path = tmp_path / "checkpoint.json"
     checkpoint_path.write_text(
         json.dumps(
@@ -517,12 +519,22 @@ def test_cmd_approval_manifest_records_checkpoint_hash(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
+    monkeypatch.setattr(
+        bench,
+        "_git_output",
+        lambda args: "44f2192" if args == ["rev-parse", "HEAD"] else "main",
+    )
+
     manifest_output = tmp_path / "approval_manifest.json"
     args = SimpleNamespace(
         checkpoint=str(checkpoint_path),
         decision="approved",
         approved_by="ops@example",
         notes="Reviewed benchmark evidence.",
+        pr_number=27,
+        pr_url="https://github.com/wjohns989/Muninn/pull/27",
+        commit_sha=None,
+        branch_name=None,
         source="approval_manifest_test",
         output_dir=str(tmp_path),
         output=str(manifest_output),
@@ -536,6 +548,10 @@ def test_cmd_approval_manifest_records_checkpoint_hash(tmp_path: Path) -> None:
     assert payload["checkpoint_path"] == str(checkpoint_path.resolve())
     assert payload["checkpoint_sha256"] == bench._sha256_file(checkpoint_path.resolve())
     assert payload["source"] == "approval_manifest_test"
+    assert payload["change_context"]["pr_number"] == 27
+    assert payload["change_context"]["pr_url"] == "https://github.com/wjohns989/Muninn/pull/27"
+    assert payload["change_context"]["commit_sha"] == "44f2192"
+    assert payload["change_context"]["branch_name"] == "main"
 
 
 def test_cmd_apply_checkpoint_applies_approved_manifest(
@@ -564,6 +580,12 @@ def test_cmd_apply_checkpoint_applies_approved_manifest(
                 "approved_by": "ops@example",
                 "checkpoint_path": str(checkpoint_path.resolve()),
                 "checkpoint_sha256": checkpoint_sha,
+                "change_context": {
+                    "pr_number": 27,
+                    "pr_url": "https://github.com/wjohns989/Muninn/pull/27",
+                    "commit_sha": "44f2192",
+                    "branch_name": "feat/phase4n-policy-approval-manifest",
+                },
             }
         ),
         encoding="utf-8",
@@ -616,7 +638,42 @@ def test_cmd_apply_checkpoint_applies_approved_manifest(
     assert report["result"]["applied"] is True
     assert report["checkpoint_sha256"] == checkpoint_sha
     assert report["approved_by"] == "ops@example"
+    assert report["change_context"]["pr_number"] == 27
+    assert report["change_context"]["commit_sha"] == "44f2192"
     assert len(calls) == 1
+
+
+def test_cmd_approval_manifest_rejects_invalid_commit_sha(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        decision="approved",
+        approved_by="ops@example",
+        notes="",
+        pr_number=None,
+        pr_url=None,
+        commit_sha="not-a-sha",
+        branch_name=None,
+        source="approval_manifest_test",
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "approval_manifest.json"),
+    )
+    with pytest.raises(ValueError, match="Invalid commit SHA format"):
+        bench.cmd_approval_manifest(args)
 
 
 def test_cmd_apply_checkpoint_rejects_non_approved_manifest(tmp_path: Path) -> None:
@@ -743,4 +800,47 @@ def test_cmd_apply_checkpoint_rejects_path_mismatch(tmp_path: Path) -> None:
         dry_run=False,
     )
     with pytest.raises(ValueError, match="checkpoint_path does not match"):
+        bench.cmd_apply_checkpoint(args)
+
+
+def test_cmd_apply_checkpoint_rejects_non_object_change_context(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+                "change_context": "invalid",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "apply_report.json"),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=False,
+    )
+    with pytest.raises(ValueError, match="change_context must be an object"):
         bench.cmd_apply_checkpoint(args)
