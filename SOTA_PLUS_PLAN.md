@@ -227,6 +227,9 @@
     - `profile-gate` now emits governance alert telemetry (`critical|warning|info`) with deterministic policy thresholds (`min_composite_score`, `min_score_margin`, `blocking_severities`),
     - `profile-gate --enforce-governance` now fails CI/operator runs when governance policy marks alerts as blocking,
     - `dev-cycle` now supports governance-aware controls (`--enforce-governance`, `--require-governance-clean`) and prevents policy-apply when blocking governance alerts are present.
+60. Packaging-profile dependency surface baseline implemented:
+    - `pyproject.toml` now defines optional extras for `conflict` (transformers+torch) and `sdk` (requests+httpx),
+    - `all` extra now includes `conflict` and `sdk` to align install profiles with roadmap feature surfaces.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -307,6 +310,7 @@
 34. **Concurrency guardrail ROI**: bounded dispatch executor + generic guarded logging reduce thread-exhaustion and log-forging risk under adversarial or malformed request bursts.
 35. **Contract-evolution ROI**: opaque cursor tokens + schema-aligned related-task `taskId` remove brittle client coupling to internal offsets/field aliases and enable non-breaking pagination/task contract evolution.
 36. **Governance alert ROI**: policy-level recommendation confidence alerts plus governance-gated apply prevent low-confidence profile promotions from being applied during noisy benchmark windows.
+37. **Packaging reliability ROI**: explicit optional dependency groups for conflict detection and SDK surfaces reduce installation ambiguity and improve reproducibility across operator environments.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).

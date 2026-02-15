@@ -49,6 +49,7 @@ Evaluator: Codex
 - **Phase 4W MCP transport resilience baseline is now implemented**: malformed framed payloads are now recoverable, backend outages now use circuit-breaker fast-fail cooldown, dispatch queue saturation now returns explicit `-32001`, and broken-pipe writes are now transport-guarded.
 - **Phase 4X transport soak + dispatch-policy baseline is now implemented**: deterministic MCP soak harness reports are now generated, `tools/call` background dispatch is now opt-in for transport determinism, and outage preflight start probes are now skipped when autostart is disabled or circuit is open.
 - **Phase 4Y profile-governance telemetry + guardrail baseline is now implemented**: profile-gate now emits governance alerts with policy thresholds, governance enforcement is now available in gate/cycle commands, and policy apply can now require governance-clean gate output.
+- **Packaging dependency mismatch is now corrected**: `pyproject.toml` now ships explicit optional extras for `conflict` and `sdk`, and `all` now includes those surfaces for reproducible installs.
 
 ## Status vs Plan
 
@@ -93,7 +94,7 @@ Evaluator: Codex
 2. **User-scope enforcement risk in retrieval (fixed):** hybrid retrieval now enforces user/namespace constraints in final record filtering.
 3. **Legacy ingestion path traversal / arbitrary file-read surface (fixed):** user-provided roots and selected paths now validate against ingestion allow-list roots before discovery/import.
 4. **Ingestion DoS vector through unconstrained chunk params (fixed):** runtime chunk/file limits now enforce bounded values and relation constraints (`overlap < chunk_size`, `min_chunk <= chunk_size`).
-5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
+5. **Plan/dependency mismatch (fixed):** `pyproject.toml` now defines optional dependency groups for `conflict` and `sdk` and includes both in `all` install surface.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
