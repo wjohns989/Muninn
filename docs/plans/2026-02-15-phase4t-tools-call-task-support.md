@@ -43,9 +43,10 @@ Implementation semantics were checked against official MCP lifecycle guidance an
    - `tasks/list` now supports deterministic cursor pagination (`cursor` decimal offset + optional `limit`, bounded by `MUNINN_MCP_TASKS_LIST_PAGE_SIZE`).
 
 5. Lifecycle behavior corrections:
-   - `tasks/result` now blocks until task reaches terminal/input-required state and returns related-task metadata (`io.modelcontextprotocol/related-task`).
+   - `tasks/result` now returns deterministic non-terminal error immediately (polling-safe for single-threaded wrapper dispatch), and returns related-task metadata (`io.modelcontextprotocol/related-task`) once terminal.
    - `tasks/result` now returns stored JSON-RPC error payload for failed/cancelled executions.
    - `tasks/cancel` now returns `-32602` for already-terminal tasks (schema-aligned) and stamps cancelled task error payload (`-32800` request-cancelled style).
+   - terminal-cancel and internal-task-worker error messaging no longer reflect raw user-originated values in client-visible error strings.
 
 ## Validation
 
@@ -55,7 +56,7 @@ Implementation semantics were checked against official MCP lifecycle guidance an
 4. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_phase_hygiene.py tests/test_ollama_local_benchmark.py tests/test_mcp_wrapper_protocol.py`
 5. Result: `85 passed`
 6. `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command ""`
-7. Result: `PASS` (`eval/reports/hygiene/phase_hygiene_20260215_052920.json`)
+7. Result: `PASS` (`eval/reports/hygiene/phase_hygiene_20260215_054744.json`)
 
 ## ROI / Impact
 

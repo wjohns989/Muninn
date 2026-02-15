@@ -1,7 +1,5 @@
 import copy
 import io
-import threading
-import time
 
 import pytest
 
@@ -563,7 +561,7 @@ def test_tasks_get_returns_task(monkeypatch):
     assert sent[0]["result"]["status"] == "working"
 
 
-def test_tasks_result_blocks_until_terminal(monkeypatch):
+def test_tasks_result_requires_terminal_status(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
     mcp_wrapper._SESSION_STATE["negotiated"] = True
@@ -571,40 +569,15 @@ def test_tasks_result_blocks_until_terminal(monkeypatch):
     mcp_wrapper._SESSION_STATE["tasks"] = {
         "task-1": _sample_task(task_id="task-1", status="working"),
     }
-
-    done = threading.Event()
-
-    def _invoke_result():
-        mcp_wrapper._dispatch_rpc_message({
-            "jsonrpc": "2.0",
-            "id": "req-tasks-result-blocking",
-            "method": "tasks/result",
-            "params": {"taskId": "task-1"},
-        })
-        done.set()
-
-    thread = threading.Thread(target=_invoke_result, daemon=True)
-    thread.start()
-    time.sleep(0.05)
-    assert done.is_set() is False
-    assert sent == []
-
-    with mcp_wrapper._TASKS_CONDITION:
-        task = mcp_wrapper._SESSION_STATE["tasks"]["task-1"]
-        mcp_wrapper._set_task_state_locked(
-            task,
-            status="completed",
-            status_message="done",
-            result={"content": [{"type": "text", "text": "ok"}]},
-        )
-        mcp_wrapper._TASKS_CONDITION.notify_all()
-
-    thread.join(timeout=1.0)
-    assert done.is_set() is True
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-not-done",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
     assert len(sent) == 1
-    assert sent[0]["id"] == "req-tasks-result-blocking"
-    assert sent[0]["result"]["content"][0]["text"] == "ok"
-    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["id"] == "task-1"
+    assert sent[0]["error"]["code"] == -32001
+    assert "not complete" in sent[0]["error"]["message"]
 
 
 def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
@@ -672,7 +645,7 @@ def test_tasks_cancel_rejects_terminal_task(monkeypatch):
 
     assert len(sent) == 1
     assert sent[0]["error"]["code"] == -32602
-    assert "already terminal" in sent[0]["error"]["message"]
+    assert "terminal state" in sent[0]["error"]["message"]
 
 
 def test_tasks_cancel_updates_task_state(monkeypatch):
