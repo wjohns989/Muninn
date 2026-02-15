@@ -844,3 +844,170 @@ def test_cmd_apply_checkpoint_rejects_non_object_change_context(tmp_path: Path) 
     )
     with pytest.raises(ValueError, match="change_context must be an object"):
         bench.cmd_apply_checkpoint(args)
+
+
+def test_cmd_apply_checkpoint_requires_change_context_when_flag_set(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "apply_report.json"),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=True,
+        require_change_context=True,
+        require_pr_number=False,
+        require_commit_sha=False,
+        require_branch_name=False,
+    )
+    with pytest.raises(ValueError, match="missing change_context"):
+        bench.cmd_apply_checkpoint(args)
+
+
+@pytest.mark.parametrize(
+    ("flag_to_set", "error_match"),
+    [
+        ("require_pr_number", "pr_number is required"),
+        ("require_commit_sha", "commit_sha is required"),
+        ("require_branch_name", "branch_name is required"),
+    ],
+)
+def test_cmd_apply_checkpoint_requires_pr_commit_branch_fields(
+    tmp_path: Path, flag_to_set: str, error_match: str
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+                "change_context": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    base_args = dict(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "apply_report.json"),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=True,
+        require_change_context=False,
+    )
+
+    args_dict = {
+        **base_args,
+        "require_pr_number": False,
+        "require_commit_sha": False,
+        "require_branch_name": False,
+        flag_to_set: True,
+    }
+    with pytest.raises(ValueError, match=error_match):
+        bench.cmd_apply_checkpoint(SimpleNamespace(**args_dict))
+
+
+def test_cmd_apply_checkpoint_accepts_required_change_context_fields(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+                "change_context": {
+                    "pr_number": 28,
+                    "pr_url": "https://github.com/wjohns989/Muninn/pull/28",
+                    "commit_sha": "f2e6c53",
+                    "branch_name": "feat/phase4o-approval-provenance-context",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    apply_output = tmp_path / "apply_report.json"
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(apply_output),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=True,
+        require_change_context=True,
+        require_pr_number=True,
+        require_commit_sha=True,
+        require_branch_name=True,
+    )
+    rc = bench.cmd_apply_checkpoint(args)
+    assert rc == 0
+    report = json.loads(apply_output.read_text(encoding="utf-8"))
+    assert report["change_context"]["pr_number"] == 28
+    assert report["change_context"]["commit_sha"] == "f2e6c53"
+    assert report["result"]["applied"] is False

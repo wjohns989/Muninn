@@ -711,6 +711,64 @@ def _build_change_context(
     }
 
 
+def _validated_manifest_change_context(
+    value: Any,
+    *,
+    require_change_context: bool,
+    require_pr_number: bool,
+    require_commit_sha: bool,
+    require_branch_name: bool,
+) -> dict[str, Any]:
+    if value is None:
+        if require_change_context or require_pr_number or require_commit_sha or require_branch_name:
+            raise ValueError(
+                "Approval manifest is missing change_context while provenance enforcement is enabled."
+            )
+        return {
+            "pr_number": None,
+            "pr_url": None,
+            "commit_sha": None,
+            "branch_name": None,
+        }
+
+    if not isinstance(value, dict):
+        raise ValueError("Approval manifest change_context must be an object when present.")
+
+    pr_number_raw = value.get("pr_number")
+    pr_number: int | None = None
+    if pr_number_raw is not None:
+        pr_number = int(pr_number_raw)
+        if pr_number <= 0:
+            raise ValueError("Approval manifest change_context.pr_number must be > 0.")
+
+    pr_url = str(value.get("pr_url") or "").strip() or None
+    if pr_url and not (pr_url.startswith("https://") or pr_url.startswith("http://")):
+        raise ValueError("Approval manifest change_context.pr_url must start with https:// or http://.")
+
+    commit_sha = _normalize_commit_sha(str(value.get("commit_sha") or ""))
+    branch_name = str(value.get("branch_name") or "").strip() or None
+
+    if require_pr_number and pr_number is None:
+        raise ValueError(
+            "Approval manifest change_context.pr_number is required by --require-pr-number."
+        )
+    if require_commit_sha and commit_sha is None:
+        raise ValueError(
+            "Approval manifest change_context.commit_sha is required by --require-commit-sha."
+        )
+    if require_branch_name and branch_name is None:
+        raise ValueError(
+            "Approval manifest change_context.branch_name is required by --require-branch-name."
+        )
+
+    return {
+        "pr_number": pr_number,
+        "pr_url": pr_url,
+        "commit_sha": commit_sha,
+        "branch_name": branch_name,
+    }
+
+
 def _validated_profile_payload(
     active: dict[str, Any], *, source: str | None = None
 ) -> dict[str, str]:
@@ -1039,6 +1097,10 @@ def cmd_apply_checkpoint(args: argparse.Namespace) -> int:
     timeout_seconds = int(args.muninn_timeout_seconds)
     source = str(args.source).strip() or "apply_checkpoint_cli"
     dry_run = bool(args.dry_run)
+    require_change_context = bool(getattr(args, "require_change_context", False))
+    require_pr_number = bool(getattr(args, "require_pr_number", False))
+    require_commit_sha = bool(getattr(args, "require_commit_sha", False))
+    require_branch_name = bool(getattr(args, "require_branch_name", False))
 
     checkpoint = _load_json(checkpoint_path)
     target_policy = _checkpoint_target_policy(checkpoint)
@@ -1059,13 +1121,13 @@ def cmd_apply_checkpoint(args: argparse.Namespace) -> int:
     if recorded_path and Path(recorded_path).resolve() != checkpoint_path:
         raise ValueError("Approval manifest checkpoint_path does not match provided checkpoint.")
 
-    change_context_raw = manifest.get("change_context")
-    if change_context_raw is None:
-        change_context: dict[str, Any] = {}
-    elif isinstance(change_context_raw, dict):
-        change_context = change_context_raw
-    else:
-        raise ValueError("Approval manifest change_context must be an object when present.")
+    change_context = _validated_manifest_change_context(
+        manifest.get("change_context"),
+        require_change_context=require_change_context,
+        require_pr_number=require_pr_number,
+        require_commit_sha=require_commit_sha,
+        require_branch_name=require_branch_name,
+    )
 
     apply_payload = {**target_policy, "source": source}
     apply_result: dict[str, Any]
@@ -2221,6 +2283,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Write apply report without posting apply request to server.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--require-change-context",
+        action="store_true",
+        help="Require approval manifest to include change_context object.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--require-pr-number",
+        action="store_true",
+        help="Require approval manifest change_context.pr_number.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--require-commit-sha",
+        action="store_true",
+        help="Require approval manifest change_context.commit_sha.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--require-branch-name",
+        action="store_true",
+        help="Require approval manifest change_context.branch_name.",
     )
     apply_checkpoint_parser.set_defaults(func=cmd_apply_checkpoint)
 
