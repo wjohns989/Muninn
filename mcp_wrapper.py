@@ -51,8 +51,31 @@ _TASK_CURSOR_PREFIX = "tasks:v1:"
 _thread_local = threading.local()
 _RPC_WRITE_LOCK = threading.Lock()
 _DISPATCH_MAX_WORKERS = max(1, int(os.environ.get("MUNINN_MCP_DISPATCH_MAX_WORKERS", "8")))
+_DISPATCH_QUEUE_LIMIT = max(
+    _DISPATCH_MAX_WORKERS,
+    int(os.environ.get("MUNINN_MCP_DISPATCH_QUEUE_LIMIT", str(_DISPATCH_MAX_WORKERS * 8))),
+)
 _DISPATCH_EXECUTOR: Optional[ThreadPoolExecutor] = None
 _DISPATCH_EXECUTOR_LOCK = threading.Lock()
+_DISPATCH_QUEUE_SEMAPHORE = threading.BoundedSemaphore(_DISPATCH_QUEUE_LIMIT)
+_TRANSPORT_CLOSED = threading.Event()
+_BACKEND_CIRCUIT_LOCK = threading.Lock()
+_BACKEND_CIRCUIT_FAILURE_THRESHOLD = max(
+    1,
+    int(os.environ.get("MUNINN_MCP_BACKEND_FAILURE_THRESHOLD", "3")),
+)
+_BACKEND_CIRCUIT_COOLDOWN_SEC = max(
+    1.0,
+    float(os.environ.get("MUNINN_MCP_BACKEND_COOLDOWN_SEC", "30")),
+)
+_BACKEND_CIRCUIT_STATE = {
+    "consecutive_failures": 0,
+    "open_until_epoch": 0.0,
+}
+
+
+class _BackendCircuitOpenError(requests.ConnectionError):
+    """Raised when backend requests are short-circuited during cooldown."""
 
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
@@ -140,6 +163,43 @@ def _inject_operator_profile_metadata(
         scoped["operator_model_profile"] = session_profile
     return scoped
 
+
+def _backend_circuit_open(now_epoch: Optional[float] = None) -> bool:
+    now = time.time() if now_epoch is None else now_epoch
+    with _BACKEND_CIRCUIT_LOCK:
+        return now < float(_BACKEND_CIRCUIT_STATE["open_until_epoch"])
+
+
+def _mark_backend_success() -> None:
+    with _BACKEND_CIRCUIT_LOCK:
+        _BACKEND_CIRCUIT_STATE["consecutive_failures"] = 0
+        _BACKEND_CIRCUIT_STATE["open_until_epoch"] = 0.0
+
+
+def _mark_backend_failure(error: Exception) -> None:
+    now = time.time()
+    with _BACKEND_CIRCUIT_LOCK:
+        failures = int(_BACKEND_CIRCUIT_STATE["consecutive_failures"]) + 1
+        _BACKEND_CIRCUIT_STATE["consecutive_failures"] = failures
+        if failures >= _BACKEND_CIRCUIT_FAILURE_THRESHOLD:
+            _BACKEND_CIRCUIT_STATE["open_until_epoch"] = now + _BACKEND_CIRCUIT_COOLDOWN_SEC
+            logger.warning(
+                "Backend circuit opened for %.1fs after %d consecutive failures: %s",
+                _BACKEND_CIRCUIT_COOLDOWN_SEC,
+                failures,
+                error,
+            )
+
+
+def _consume_framing_headers(stream: BinaryIO) -> bool:
+    """Consume headers until the framing separator; false when stream ends."""
+    while True:
+        header_line = stream.readline()
+        if not header_line:
+            return False
+        if header_line in (b"\r\n", b"\n"):
+            return True
+
 def make_request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
     """Make HTTP request with exponential backoff retry and server auto-restart."""
     max_retries = 3
@@ -148,14 +208,25 @@ def make_request_with_retry(method: str, url: str, **kwargs) -> requests.Respons
     last_error = None
     for attempt in range(max_retries):
         try:
-            return requests.request(method, url, **kwargs)
+            if _backend_circuit_open():
+                raise _BackendCircuitOpenError(
+                    "Muninn backend temporarily unavailable (circuit open during cooldown)."
+                )
+            response = requests.request(method, url, **kwargs)
+            _mark_backend_success()
+            return response
         except (requests.ConnectionError, requests.Timeout) as e:
             last_error = e
+            if isinstance(e, _BackendCircuitOpenError):
+                logger.warning("Fast-fail request while backend circuit is open: %s", e)
+                break
+            _mark_backend_failure(e)
             logger.warning(f"Connection failed (attempt {attempt+1}/{max_retries}): {e}")
             
             # If server might be down, ensure it's running
             if attempt < max_retries - 1:
-                ensure_server_running()
+                if not _backend_circuit_open():
+                    ensure_server_running()
                 time.sleep(base_delay * (2 ** attempt))
             
     if last_error:
@@ -346,29 +417,37 @@ def _read_rpc_message(stream: BinaryIO) -> Optional[Dict[str, Any]]:
         if lowered.startswith(b"content-length:"):
             try:
                 content_length = int(first_line.split(b":", 1)[1].strip())
+                if content_length <= 0:
+                    raise ValueError("content length must be positive")
             except Exception:
                 logger.warning("Invalid Content-Length header: %r", first_line)
-                return None
+                if not _consume_framing_headers(stream):
+                    return None
+                continue
 
             # Consume remaining headers until blank line.
-            while True:
-                header_line = stream.readline()
-                if not header_line:
-                    return None
-                if header_line in (b"\r\n", b"\n"):
-                    break
+            if not _consume_framing_headers(stream):
+                return None
 
             payload = stream.read(content_length)
             if not payload:
+                return None
+            if len(payload) != content_length:
+                logger.warning(
+                    "Truncated framed JSON payload (%d/%d bytes).",
+                    len(payload),
+                    content_length,
+                )
                 return None
             try:
                 msg = json.loads(payload.decode("utf-8"))
             except json.JSONDecodeError:
                 logger.warning("Invalid framed JSON payload")
-                return None
+                continue
             if isinstance(msg, dict):
                 return msg
-            return None
+            logger.warning("Ignoring framed JSON payload that is not an object")
+            continue
 
         try:
             msg = json.loads(first_line.decode("utf-8"))
@@ -377,18 +456,27 @@ def _read_rpc_message(stream: BinaryIO) -> Optional[Dict[str, Any]]:
             continue
         if isinstance(msg, dict):
             return msg
-        return None
+        logger.debug("Skipping JSON value that is not an object on stdio transport")
+        continue
 
 
 def send_json_rpc(message: Dict[str, Any]):
     """Send JSON-RPC message to stdout."""
+    if _TRANSPORT_CLOSED.is_set():
+        return
     emitter = getattr(_thread_local, "rpc_emitter", None)
     if callable(emitter):
         emitter(message)
         return
     with _RPC_WRITE_LOCK:
-        print(json.dumps(message))
-        sys.stdout.flush()
+        if _TRANSPORT_CLOSED.is_set():
+            return
+        try:
+            print(json.dumps(message))
+            sys.stdout.flush()
+        except (BrokenPipeError, OSError) as exc:
+            _TRANSPORT_CLOSED.set()
+            logger.warning("MCP stdio transport closed while sending JSON-RPC message: %s", exc)
 
 
 def _send_json_rpc_error(msg_id: Any, code: int, message: str):
@@ -1989,7 +2077,24 @@ def _get_dispatch_executor() -> ThreadPoolExecutor:
 
 
 def _submit_background_dispatch(msg: Dict[str, Any]) -> None:
-    _get_dispatch_executor().submit(_dispatch_rpc_message_guarded, msg)
+    if not _DISPATCH_QUEUE_SEMAPHORE.acquire(blocking=False):
+        msg_id = msg.get("id")
+        if msg_id is not None:
+            _send_json_rpc_error(msg_id, -32001, "Server busy: dispatch queue is saturated.")
+        else:
+            logger.warning("Dropping notification while dispatch queue is saturated: %s", msg.get("method"))
+        return
+
+    try:
+        future = _get_dispatch_executor().submit(_dispatch_rpc_message_guarded, msg)
+    except Exception:
+        _DISPATCH_QUEUE_SEMAPHORE.release()
+        raise
+
+    def _release_slot(_future) -> None:
+        _DISPATCH_QUEUE_SEMAPHORE.release()
+
+    future.add_done_callback(_release_slot)
 
 
 def _should_dispatch_in_background(msg: Dict[str, Any]) -> bool:
@@ -2013,6 +2118,8 @@ def main():
             try:
                 msg = _read_rpc_message(sys.stdin.buffer)
                 if msg is None:
+                    break
+                if _TRANSPORT_CLOSED.is_set():
                     break
                 if _should_dispatch_in_background(msg):
                     _submit_background_dispatch(msg)

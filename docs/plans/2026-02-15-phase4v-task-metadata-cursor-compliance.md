@@ -54,7 +54,7 @@ Close remaining high-ROI MCP task-contract mismatches by aligning:
 
 ## Blockers / Notes
 
-1. Muninn MCP tool server from this assistant session still intermittently reports `Transport closed`; planning/memory retrieval used local docs + GitHub + MCP spec sources in this tranche.
+1. Muninn MCP tool server from this assistant session remains operationally unstable (`Transport closed` earlier, 120-second tool-call deadlines after reboot); planning/memory retrieval used local docs + GitHub + MCP spec sources in this tranche.
 
 ## Follow-up opportunities
 
