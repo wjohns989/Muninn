@@ -31,6 +31,7 @@ Evaluator: Codex
 - **Phase 4G profile-policy audit visibility baseline is now implemented**: runtime profile mutations are now persisted as audit events and exposed through memory core + REST (`/profiles/model/events`) + MCP (`get_model_profile_events`) + SDK sync/async.
 - **Phase 4H local model-matrix benchmarking baseline is now implemented**: versioned Ollama model matrix + prompt pack + sync/benchmark CLI are now shipped for reproducible local model selection under 16GB-class helper-first workflows.
 - **Phase 4I model ability/resource benchmarking baseline is now implemented**: benchmark reports now include rubric-based ability scoring + ability-per-resource metrics, and a new legacy-ingestion benchmark mode can generate deterministic test cases from old project roots.
+- **Phase 4J profile-promotion gate framework is now implemented in-branch**: profile gate policy file + `profile-gate` evaluator command now convert live/legacy benchmark evidence into deterministic pass/fail + recommendation decisions per profile tier.
 
 ## Status vs Plan
 
@@ -106,7 +107,7 @@ Evaluator: Codex
   - `python -m eval.ollama_local_benchmark sync --dry-run`
 - Phase 4I benchmark extensions now pass targeted checks:
   - `python -m py_compile eval/ollama_local_benchmark.py`
-  - `5 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `7 passed` (`tests/test_ollama_local_benchmark.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -180,6 +181,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-14-browser-ui-model-policy-design.md`
 - `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
 - `docs/plans/2026-02-15-phase4i-ability-resource-benchmarking.md`
+- `docs/plans/2026-02-15-phase4j-profile-promotion-gates.md`
 
 ## Model-Caliber Research Update (2026-02-14)
 

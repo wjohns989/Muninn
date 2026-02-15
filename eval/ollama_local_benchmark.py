@@ -16,6 +16,7 @@ from urllib import error, request
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX_PATH = ROOT / "eval" / "ollama_model_matrix.json"
 DEFAULT_PROMPTS_PATH = ROOT / "eval" / "ollama_benchmark_prompts.jsonl"
+DEFAULT_PROMOTION_POLICY_PATH = ROOT / "eval" / "ollama_profile_promotion_policy.json"
 DEFAULT_OUTPUT_DIR = ROOT / "eval" / "reports" / "ollama"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 LEGACY_TEXT_EXTENSIONS = {
@@ -371,6 +372,159 @@ def _resource_efficiency(summary: dict[str, Any], matrix_entry: dict[str, Any]) 
         "ability_per_second": round(avg_ability / avg_wall, 6) if avg_wall > 0 else 0.0,
         "ability_per_vram_gb": round(avg_ability / vram_min_gb, 6) if vram_min_gb > 0 else 0.0,
     }
+
+
+def _to_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _suite_model_summary(report: dict[str, Any], model: str) -> dict[str, Any] | None:
+    models = report.get("models")
+    if not isinstance(models, dict):
+        return None
+    details = models.get(model)
+    if not isinstance(details, dict):
+        return None
+    summary = details.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    return summary
+
+
+def _weighted_average(
+    first: float | None,
+    second: float | None,
+    *,
+    first_weight: float,
+    second_weight: float,
+) -> float | None:
+    weighted = 0.0
+    weight_sum = 0.0
+    if first is not None:
+        weighted += first * first_weight
+        weight_sum += first_weight
+    if second is not None:
+        weighted += second * second_weight
+        weight_sum += second_weight
+    if weight_sum <= 0:
+        return None
+    return weighted / weight_sum
+
+
+def _load_promotion_policy(path: Path) -> dict[str, Any]:
+    policy = _load_json(path)
+    profiles = policy.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError("Promotion policy must define non-empty 'profiles' object.")
+    for profile_name in ("low_latency", "balanced", "high_reasoning"):
+        if profile_name not in profiles:
+            raise ValueError(f"Promotion policy missing required profile '{profile_name}'.")
+    return policy
+
+
+def _evaluate_candidate(
+    *,
+    model: str,
+    gate: dict[str, Any],
+    live_summary: dict[str, Any] | None,
+    legacy_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    violations: list[str] = []
+
+    live_ability = _to_float((live_summary or {}).get("avg_ability_score"))
+    legacy_ability = _to_float((legacy_summary or {}).get("avg_ability_score"))
+    live_p95 = _to_float((live_summary or {}).get("p95_wall_seconds"))
+    legacy_p95 = _to_float((legacy_summary or {}).get("p95_wall_seconds"))
+    live_efficiency = _to_float(
+        ((live_summary or {}).get("resource_efficiency") or {}).get("ability_per_vram_gb")
+    )
+
+    require_live = bool(gate.get("require_live_suite", True))
+    require_legacy = bool(gate.get("require_legacy_suite", True))
+
+    if require_live and live_summary is None:
+        violations.append("missing_live_suite")
+    if require_legacy and legacy_summary is None:
+        violations.append("missing_legacy_suite")
+
+    min_live_ability = _to_float(gate.get("min_live_ability"))
+    if min_live_ability is not None:
+        if live_ability is None:
+            violations.append("missing_live_ability")
+        elif live_ability < min_live_ability:
+            violations.append("live_ability_below_threshold")
+
+    min_legacy_ability = _to_float(gate.get("min_legacy_ability"))
+    if min_legacy_ability is not None:
+        if legacy_ability is None:
+            violations.append("missing_legacy_ability")
+        elif legacy_ability < min_legacy_ability:
+            violations.append("legacy_ability_below_threshold")
+
+    max_live_p95 = _to_float(gate.get("max_live_p95_seconds"))
+    if max_live_p95 is not None:
+        if live_p95 is None:
+            violations.append("missing_live_p95")
+        elif live_p95 > max_live_p95:
+            violations.append("live_p95_above_threshold")
+
+    max_legacy_p95 = _to_float(gate.get("max_legacy_p95_seconds"))
+    if max_legacy_p95 is not None and legacy_p95 is not None and legacy_p95 > max_legacy_p95:
+        violations.append("legacy_p95_above_threshold")
+
+    min_ability_per_vram = _to_float(gate.get("min_live_ability_per_vram_gb"))
+    if min_ability_per_vram is not None:
+        if live_efficiency is None:
+            violations.append("missing_live_ability_per_vram")
+        elif live_efficiency < min_ability_per_vram:
+            violations.append("live_ability_per_vram_below_threshold")
+
+    live_weight = _to_float(gate.get("live_weight")) or 0.6
+    legacy_weight = _to_float(gate.get("legacy_weight")) or 0.4
+    combined_ability = _weighted_average(
+        live_ability,
+        legacy_ability,
+        first_weight=live_weight,
+        second_weight=legacy_weight,
+    )
+
+    objective = gate.get("objective") or {}
+    ability_weight = _to_float(objective.get("ability_weight")) or 1.0
+    resource_weight = _to_float(objective.get("resource_weight")) or 0.25
+    latency_penalty = _to_float(objective.get("latency_penalty")) or 0.02
+    live_avg_wall = _to_float((live_summary or {}).get("avg_wall_seconds")) or 0.0
+    composite_score = (
+        (combined_ability or 0.0) * ability_weight
+        + (live_efficiency or 0.0) * resource_weight
+        - live_avg_wall * latency_penalty
+    )
+
+    return {
+        "model": model,
+        "passed": len(violations) == 0,
+        "violations": violations,
+        "live_summary": live_summary,
+        "legacy_summary": legacy_summary,
+        "combined_ability_score": round(combined_ability, 6) if combined_ability is not None else None,
+        "composite_score": round(composite_score, 6),
+    }
+
+
+def _pick_recommendation(results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    passing = [result for result in results if result.get("passed") is True]
+    if not passing:
+        return None
+    ranked = sorted(
+        passing,
+        key=lambda item: (
+            float(item.get("composite_score", 0.0)),
+            float(item.get("combined_ability_score") or 0.0),
+        ),
+        reverse=True,
+    )
+    return ranked[0]
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -802,6 +956,94 @@ def cmd_legacy_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_profile_gate(args: argparse.Namespace) -> int:
+    matrix_path = Path(args.matrix).resolve()
+    policy_path = Path(args.policy).resolve()
+    live_report_path = Path(args.live_report).resolve()
+    legacy_report_path = Path(args.legacy_report).resolve() if args.legacy_report else None
+    output_dir = Path(args.output_dir).resolve()
+
+    matrix = _load_json(matrix_path)
+    policy = _load_promotion_policy(policy_path)
+    live_report = _load_json(live_report_path)
+    legacy_report = _load_json(legacy_report_path) if legacy_report_path else {}
+
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = (
+        Path(args.output).resolve() if args.output else output_dir / f"profile_gate_{run_id}.json"
+    )
+
+    profiles = policy.get("profiles", {})
+    result_profiles: dict[str, Any] = {}
+    any_failures = False
+
+    for profile_name, gate in profiles.items():
+        if not isinstance(gate, dict):
+            raise ValueError(f"Policy profile '{profile_name}' must be an object.")
+        candidates = gate.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            raise ValueError(f"Policy profile '{profile_name}' requires non-empty candidates list.")
+
+        candidate_results: list[dict[str, Any]] = []
+        for model in [str(item).strip() for item in candidates if str(item).strip()]:
+            live_summary = _suite_model_summary(live_report, model)
+            legacy_summary = _suite_model_summary(legacy_report, model) if legacy_report else None
+            evaluated = _evaluate_candidate(
+                model=model,
+                gate=gate,
+                live_summary=live_summary,
+                legacy_summary=legacy_summary,
+            )
+            matrix_entry = _entry_for_model(matrix, model)
+            if matrix_entry:
+                evaluated["matrix_entry"] = matrix_entry
+            candidate_results.append(evaluated)
+
+        recommendation = _pick_recommendation(candidate_results)
+        profile_passed = recommendation is not None
+        if not profile_passed:
+            any_failures = True
+
+        result_profiles[profile_name] = {
+            "gate": gate,
+            "passed": profile_passed,
+            "recommendation": recommendation,
+            "candidates": candidate_results,
+        }
+
+    output_payload = {
+        "run_id": run_id,
+        "event": "PROFILE_PROMOTION_GATE_EVALUATED",
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "matrix_path": str(matrix_path),
+        "policy_path": str(policy_path),
+        "live_report_path": str(live_report_path),
+        "legacy_report_path": str(legacy_report_path) if legacy_report_path else None,
+        "passed": not any_failures,
+        "profiles": result_profiles,
+    }
+
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(output_payload, f, indent=2)
+        f.write("\n")
+
+    for profile_name, profile_result in result_profiles.items():
+        recommendation = profile_result.get("recommendation")
+        if recommendation:
+            print(
+                f"[gate] {profile_name}: PASS "
+                f"-> {recommendation['model']} (score={recommendation['composite_score']})"
+            )
+        else:
+            print(f"[gate] {profile_name}: FAIL (no passing candidate)")
+
+    print(f"Profile gate report written to: {output_path}")
+    if any_failures and not bool(args.allow_failures):
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Local Ollama model sync and benchmark utility for Muninn profile testing."
@@ -962,6 +1204,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSONL output path for generated legacy benchmark cases.",
     )
     legacy_parser.set_defaults(func=cmd_legacy_benchmark)
+
+    gate_parser = subparsers.add_parser(
+        "profile-gate",
+        help="Evaluate profile-promotion gates from live and legacy benchmark reports.",
+    )
+    gate_parser.add_argument(
+        "--policy",
+        default=str(DEFAULT_PROMOTION_POLICY_PATH),
+        help="Path to profile-promotion gate policy JSON.",
+    )
+    gate_parser.add_argument(
+        "--live-report",
+        required=True,
+        help="Path to benchmark report produced by the 'benchmark' command.",
+    )
+    gate_parser.add_argument(
+        "--legacy-report",
+        help="Path to benchmark report produced by the 'legacy-benchmark' command.",
+    )
+    gate_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for generated gate reports.",
+    )
+    gate_parser.add_argument(
+        "--output",
+        help="Explicit gate report output path; defaults to output-dir/profile_gate_<timestamp>.json.",
+    )
+    gate_parser.add_argument(
+        "--allow-failures",
+        action="store_true",
+        help="Return success exit code even when one or more profile gates fail.",
+    )
+    gate_parser.set_defaults(func=cmd_profile_gate)
 
     return parser
 
