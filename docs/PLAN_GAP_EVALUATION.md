@@ -167,9 +167,10 @@ Evaluator: Codex
   - task registry now enforces TTL purge + retention cap + cursor pagination semantics.
 - Phase 4U blocking-result dispatch tranche now passes targeted checks:
   - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
-  - `50 passed` (`tests/test_mcp_wrapper_protocol.py`)
-  - `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - `52 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - blocking lifecycle semantics now run on background dispatch paths (`tasks/result`, `tools/call`) so wrapper channel remains responsive under concurrent requests.
+  - review follow-up now bounds background dispatch with a thread pool and removes reflected exception text from guarded-dispatch logs.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 

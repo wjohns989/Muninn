@@ -247,6 +247,7 @@
 - Phase 4S MCP task lifecycle verification: `45 passed` (`tests/test_mcp_wrapper_protocol.py`) + `81 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_051620.json`).
 - Phase 4T task-augmented tools/call verification: `50 passed` (`tests/test_mcp_wrapper_protocol.py`) + `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_055320.json`).
 - Phase 4U blocking-result dispatch verification: `50 passed` (`tests/test_mcp_wrapper_protocol.py`) + `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_055320.json`).
+- Phase 4U review-hardening verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_060835.json`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -282,6 +283,7 @@
 31. **Hygiene-gate reliability ROI**: encoding-robust subprocess decoding prevents Windows locale crashes in PR-boundary governance checks.
 32. **Task-orchestration reliability ROI**: task-augmented `tools/call` + status notifications + retention governance reduce client polling complexity and prevent unbounded task-state memory growth in long-lived sessions.
 33. **Protocol-correctness without throughput regression ROI**: background dispatch for blocking lifecycle methods keeps `tasks/result` spec-aligned while preserving responsiveness for concurrent health/poll/tool traffic.
+34. **Concurrency guardrail ROI**: bounded dispatch executor + generic guarded logging reduce thread-exhaustion and log-forging risk under adversarial or malformed request bursts.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).

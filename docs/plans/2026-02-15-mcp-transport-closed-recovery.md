@@ -165,6 +165,9 @@ Blocking-result compliance follow-on is now implemented in `docs/plans/2026-02-1
 3. Concurrent write safety:
    - stdout JSON-RPC writes now use a process-wide lock to prevent interleaved payload corruption.
 4. Validation increment:
-   - protocol tests now at `50 passed` (`tests/test_mcp_wrapper_protocol.py`),
-   - combined targeted checks at `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`),
-   - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_055320.json`.
+   - protocol tests now at `52 passed` (`tests/test_mcp_wrapper_protocol.py`),
+   - combined targeted checks at `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`),
+   - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_060835.json`.
+5. Review hardening increment:
+   - blocking dispatch now uses a bounded thread pool instead of unbounded per-request thread creation.
+   - guarded-dispatch error logging now uses generic text to prevent reflected log-forging via exception strings.

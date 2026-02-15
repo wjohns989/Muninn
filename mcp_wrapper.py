@@ -13,6 +13,7 @@ import json
 import logging
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 import requests
 from datetime import datetime, timezone
@@ -46,6 +47,9 @@ _TASKS_LIST_PAGE_SIZE = max(1, int(os.environ.get("MUNINN_MCP_TASKS_LIST_PAGE_SI
 _TASKS_MAX_RETAINED = max(_TASKS_LIST_PAGE_SIZE, int(os.environ.get("MUNINN_MCP_TASKS_MAX_RETAINED", "500")))
 _thread_local = threading.local()
 _RPC_WRITE_LOCK = threading.Lock()
+_DISPATCH_MAX_WORKERS = max(1, int(os.environ.get("MUNINN_MCP_DISPATCH_MAX_WORKERS", "8")))
+_DISPATCH_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_DISPATCH_EXECUTOR_LOCK = threading.Lock()
 
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
@@ -1941,8 +1945,26 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
 def _dispatch_rpc_message_guarded(msg: Dict[str, Any]) -> None:
     try:
         _dispatch_rpc_message(msg)
-    except Exception as exc:
-        logger.error(f"Dispatch error: {exc}")
+    except Exception:
+        logger.error("An unexpected error occurred during RPC dispatch.")
+
+
+def _get_dispatch_executor() -> ThreadPoolExecutor:
+    global _DISPATCH_EXECUTOR
+    executor = _DISPATCH_EXECUTOR
+    if executor is not None:
+        return executor
+    with _DISPATCH_EXECUTOR_LOCK:
+        if _DISPATCH_EXECUTOR is None:
+            _DISPATCH_EXECUTOR = ThreadPoolExecutor(
+                max_workers=_DISPATCH_MAX_WORKERS,
+                thread_name_prefix="muninn-mcp-dispatch",
+            )
+        return _DISPATCH_EXECUTOR
+
+
+def _submit_background_dispatch(msg: Dict[str, Any]) -> None:
+    _get_dispatch_executor().submit(_dispatch_rpc_message_guarded, msg)
 
 
 def _should_dispatch_in_background(msg: Dict[str, Any]) -> bool:
@@ -1961,23 +1983,22 @@ def main():
     ).start()
     
     # Standard input loop
-    while True:
-        try:
-            msg = _read_rpc_message(sys.stdin.buffer)
-            if msg is None:
-                break
-            if _should_dispatch_in_background(msg):
-                threading.Thread(
-                    target=_dispatch_rpc_message_guarded,
-                    args=(msg,),
-                    daemon=True,
-                    name="muninn-mcp-rpc-bg",
-                ).start()
-            else:
-                _dispatch_rpc_message(msg)
-                
-        except Exception as e:
-            logger.error(f"Loop error: {e}")
+    try:
+        while True:
+            try:
+                msg = _read_rpc_message(sys.stdin.buffer)
+                if msg is None:
+                    break
+                if _should_dispatch_in_background(msg):
+                    _submit_background_dispatch(msg)
+                else:
+                    _dispatch_rpc_message(msg)
+            except Exception as e:
+                logger.error(f"Loop error: {e}")
+    finally:
+        executor = _DISPATCH_EXECUTOR
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 if __name__ == "__main__":
     main()

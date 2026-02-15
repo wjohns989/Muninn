@@ -21,7 +21,7 @@ Resolve protocol-vs-runtime tension discovered during PR review by keeping MCP l
    - `tasks/result` now waits until task status becomes terminal or `input_required`.
 
 2. Wrapper responsiveness hardening:
-   - main dispatch loop now routes potentially blocking methods (`tasks/result`, `tools/call`) to background worker threads.
+   - main dispatch loop now routes potentially blocking methods (`tasks/result`, `tools/call`) to a bounded background thread pool.
    - dispatch guard added so background thread exceptions are logged without crashing stdio loop.
 
 3. Output-channel integrity:
@@ -30,22 +30,24 @@ Resolve protocol-vs-runtime tension discovered during PR review by keeping MCP l
 4. Review-thread hardening retained:
    - terminal-cancel error messages remain non-reflective (no raw user `taskId` reflection).
    - async worker internal errors remain generic for client output (details remain log-side only).
+   - dispatch-guard exceptions now use generic log text to avoid log-forging via reflected user-originated exception strings.
 
 ## Validation
 
 1. `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
 2. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_mcp_wrapper_protocol.py`
-3. Result: `50 passed`
+3. Result: `52 passed`
 4. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_phase_hygiene.py tests/test_ollama_local_benchmark.py tests/test_mcp_wrapper_protocol.py`
-5. Result: `86 passed`
+5. Result: `88 passed`
 6. `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command ""`
-7. Result: `PASS` (`eval/reports/hygiene/phase_hygiene_20260215_055320.json`)
+7. Result: `PASS` (`eval/reports/hygiene/phase_hygiene_20260215_060835.json`)
 
 ## ROI / Impact
 
 1. Preserves MCP lifecycle correctness (`tasks/result` wait semantics) without serial-channel starvation.
 2. Improves multi-request robustness for assistants that pipeline polling, health probes, and tool calls concurrently.
 3. Reduces risk of malformed outbound JSON under concurrent task/status emissions.
+4. Bounded executor usage reduces thread-exhaustion risk under high request concurrency.
 
 ## Follow-up opportunities
 
