@@ -43,6 +43,19 @@ def reset_session_state():
     mcp_wrapper._SESSION_STATE.update(previous)
 
 
+@pytest.fixture(autouse=True)
+def reset_transport_and_backend_state():
+    mcp_wrapper._TRANSPORT_CLOSED.clear()
+    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
+        previous = dict(mcp_wrapper._BACKEND_CIRCUIT_STATE)
+        mcp_wrapper._BACKEND_CIRCUIT_STATE["consecutive_failures"] = 0
+        mcp_wrapper._BACKEND_CIRCUIT_STATE["open_until_epoch"] = 0.0
+    yield
+    mcp_wrapper._TRANSPORT_CLOSED.clear()
+    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
+        mcp_wrapper._BACKEND_CIRCUIT_STATE.update(previous)
+
+
 def test_negotiate_protocol_supported():
     assert mcp_wrapper._negotiate_protocol_version("2025-11-25") == "2025-11-25"
     assert mcp_wrapper._negotiate_protocol_version("2025-06-18") == "2025-06-18"
@@ -79,9 +92,35 @@ def test_read_rpc_message_supports_content_length_framing():
     assert msg["id"] == 2
 
 
-def test_read_rpc_message_invalid_content_length_returns_none():
-    stream = io.BytesIO(b"Content-Length: nope\r\n\r\n{}")
-    assert mcp_wrapper._read_rpc_message(stream) is None
+def test_read_rpc_message_invalid_content_length_skips_to_next_message():
+    stream = io.BytesIO(
+        b"Content-Length: nope\r\n\r\n"
+        b'{"jsonrpc":"2.0","id":3,"method":"ping"}\n'
+    )
+    msg = mcp_wrapper._read_rpc_message(stream)
+    assert msg is not None
+    assert msg["id"] == 3
+    assert msg["method"] == "ping"
+
+
+def test_read_rpc_message_invalid_framed_payload_skips_to_next_message():
+    invalid_payload = b"{bad-json}"
+    valid_payload = b'{"jsonrpc":"2.0","id":4,"method":"ping"}'
+    framed = (
+        b"Content-Length: "
+        + str(len(invalid_payload)).encode("ascii")
+        + b"\r\n\r\n"
+        + invalid_payload
+        + b"Content-Length: "
+        + str(len(valid_payload)).encode("ascii")
+        + b"\r\n\r\n"
+        + valid_payload
+    )
+    stream = io.BytesIO(framed)
+    msg = mcp_wrapper._read_rpc_message(stream)
+    assert msg is not None
+    assert msg["id"] == 4
+    assert msg["method"] == "ping"
 
 
 def test_initialize_rejects_unsupported_protocol(monkeypatch):
@@ -368,12 +407,42 @@ def test_dispatch_guard_logs_generic_message(monkeypatch):
     assert logged == ["An unexpected error occurred during RPC dispatch."]
 
 
+def test_send_json_rpc_marks_transport_closed_on_broken_pipe(monkeypatch):
+    sent = []
+
+    class _StdoutStub:
+        def write(self, _value):
+            sent.append("write")
+            return 0
+
+        def flush(self):
+            raise BrokenPipeError("pipe closed")
+
+    monkeypatch.setattr(mcp_wrapper.sys, "stdout", _StdoutStub())
+
+    mcp_wrapper.send_json_rpc({"jsonrpc": "2.0", "id": "req", "result": {}})
+    assert mcp_wrapper._TRANSPORT_CLOSED.is_set() is True
+    writes_before = len(sent)
+
+    # No-op once transport is closed.
+    mcp_wrapper.send_json_rpc({"jsonrpc": "2.0", "id": "req-2", "result": {}})
+    assert len(sent) == writes_before
+
+
 def test_submit_background_dispatch_uses_executor(monkeypatch):
     calls = []
+
+    class _StubFuture:
+        def __init__(self):
+            self.callbacks = []
+
+        def add_done_callback(self, cb):
+            self.callbacks.append(cb)
 
     class _StubExecutor:
         def submit(self, fn, *args):
             calls.append((fn, args))
+            return _StubFuture()
 
     monkeypatch.setattr(mcp_wrapper, "_get_dispatch_executor", lambda: _StubExecutor())
     payload = {"method": "tasks/result", "id": "req"}
@@ -381,6 +450,44 @@ def test_submit_background_dispatch_uses_executor(monkeypatch):
     assert len(calls) == 1
     assert calls[0][0] is mcp_wrapper._dispatch_rpc_message_guarded
     assert calls[0][1][0] == payload
+
+
+def test_submit_background_dispatch_rejects_when_queue_saturated(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    class _SaturatedSemaphore:
+        def acquire(self, blocking=True):
+            return False
+
+    monkeypatch.setattr(mcp_wrapper, "_DISPATCH_QUEUE_SEMAPHORE", _SaturatedSemaphore())
+
+    mcp_wrapper._submit_background_dispatch(
+        {"jsonrpc": "2.0", "id": "req-busy", "method": "tools/call"}
+    )
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32001
+    assert "dispatch queue is saturated" in sent[0]["error"]["message"]
+
+
+def test_make_request_with_retry_fast_fails_when_circuit_is_open(monkeypatch):
+    calls = {"request": 0}
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+
+    def _never_called(_method, _url, **_kwargs):
+        calls["request"] += 1
+        raise AssertionError("requests.request should not be called when circuit is open")
+
+    monkeypatch.setattr(mcp_wrapper.requests, "request", _never_called)
+    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
+        mcp_wrapper._BACKEND_CIRCUIT_STATE["consecutive_failures"] = (
+            mcp_wrapper._BACKEND_CIRCUIT_FAILURE_THRESHOLD
+        )
+        mcp_wrapper._BACKEND_CIRCUIT_STATE["open_until_epoch"] = time.time() + 10
+
+    with pytest.raises(mcp_wrapper._BackendCircuitOpenError):
+        mcp_wrapper.make_request_with_retry("GET", "http://localhost:42069/health", timeout=0.1)
+    assert calls["request"] == 0
 
 
 def test_initialized_notification_requires_prior_initialize(monkeypatch):
