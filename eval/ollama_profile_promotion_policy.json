@@ -1,6 +1,15 @@
 {
   "version": "2026-02-15",
   "description": "Profile promotion gates for 16GB helper-first workflows. Requires evidence from live and legacy benchmark suites before default policy changes.",
+  "governance": {
+    "alerts": {
+      "min_composite_score": 0.55,
+      "min_score_margin": 0.02,
+      "blocking_severities": [
+        "critical"
+      ]
+    }
+  },
   "profiles": {
     "low_latency": {
       "candidates": [

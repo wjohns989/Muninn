@@ -185,12 +185,80 @@ def test_cmd_profile_gate_recommends_model(tmp_path: Path) -> None:
         output_dir=str(tmp_path),
         output=str(out_path),
         allow_failures=False,
+        enforce_governance=False,
     )
     rc = bench.cmd_profile_gate(args)
     assert rc == 0
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["passed"] is True
     assert payload["profiles"]["low_latency"]["recommendation"]["model"] == "xlam:latest"
+    assert payload["governance"]["blocked"] is False
+
+
+def test_cmd_profile_gate_enforce_governance_blocks_on_critical_alert(tmp_path: Path) -> None:
+    matrix = {"models": [{"tag": "qwen3:8b", "vram_min_gb": 6}]}
+    policy = {
+        "governance": {
+            "alerts": {
+                "blocking_severities": ["critical"],
+            }
+        },
+        "profiles": {
+            "low_latency": {
+                "candidates": ["qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.95,
+            },
+            "balanced": {
+                "candidates": ["qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.95,
+            },
+            "high_reasoning": {
+                "candidates": ["qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.95,
+            },
+        },
+    }
+    live_report = {
+        "models": {
+            "qwen3:8b": {
+                "summary": {
+                    "avg_ability_score": 0.7,
+                    "avg_wall_seconds": 10.0,
+                    "p95_wall_seconds": 15.0,
+                    "resource_efficiency": {"ability_per_vram_gb": 0.11},
+                }
+            }
+        }
+    }
+    matrix_path = tmp_path / "matrix_governance.json"
+    policy_path = tmp_path / "policy_governance.json"
+    live_path = tmp_path / "live_governance.json"
+    out_path = tmp_path / "gate_governance.json"
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    live_path.write_text(json.dumps(live_report), encoding="utf-8")
+
+    args = SimpleNamespace(
+        matrix=str(matrix_path),
+        policy=str(policy_path),
+        live_report=str(live_path),
+        legacy_report=None,
+        output_dir=str(tmp_path),
+        output=str(out_path),
+        allow_failures=True,
+        enforce_governance=True,
+    )
+    rc = bench.cmd_profile_gate(args)
+    assert rc == 1
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["governance"]["blocked"] is True
+    assert payload["governance"]["blocking_alerts_count"] >= 1
 
 
 def test_evaluate_candidate_flags_missing_legacy_p95_when_required() -> None:
@@ -291,9 +359,11 @@ def test_cmd_dev_cycle_writes_role_recommendations(tmp_path: Path, monkeypatch) 
         snippet_chars=800,
         dump_cases=None,
         allow_gate_failures=False,
+        enforce_governance=False,
         apply_policy=False,
         apply_dry_run=False,
         allow_apply_when_gate_fails=False,
+        require_governance_clean=False,
         muninn_url="http://127.0.0.1:42069",
         muninn_timeout_seconds=20,
         apply_source="dev_cycle_cli",
@@ -423,9 +493,11 @@ def test_cmd_dev_cycle_apply_policy_writes_checkpoint(tmp_path: Path, monkeypatc
         snippet_chars=800,
         dump_cases=None,
         allow_gate_failures=False,
+        enforce_governance=False,
         apply_policy=True,
         apply_dry_run=False,
         allow_apply_when_gate_fails=False,
+        require_governance_clean=False,
         muninn_url="http://127.0.0.1:42069",
         muninn_timeout_seconds=20,
         apply_source="dev_cycle_test",

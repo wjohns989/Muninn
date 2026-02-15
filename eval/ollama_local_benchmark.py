@@ -539,6 +539,140 @@ def _pick_recommendation(results: list[dict[str, Any]]) -> dict[str, Any] | None
     return ranked[0]
 
 
+def _governance_alert_config(policy: dict[str, Any]) -> dict[str, Any]:
+    governance = policy.get("governance")
+    alerts = {}
+    if isinstance(governance, dict):
+        maybe_alerts = governance.get("alerts")
+        if isinstance(maybe_alerts, dict):
+            alerts = maybe_alerts
+
+    min_composite_score = _to_float(alerts.get("min_composite_score"))
+    if min_composite_score is None:
+        min_composite_score = 0.7
+
+    min_score_margin = _to_float(alerts.get("min_score_margin"))
+    if min_score_margin is None:
+        min_score_margin = 0.02
+
+    blocking_raw = alerts.get("blocking_severities")
+    blocking_candidates: list[str] = []
+    if isinstance(blocking_raw, list):
+        for item in blocking_raw:
+            level = str(item).strip().lower()
+            if level in {"critical", "warning", "info"}:
+                blocking_candidates.append(level)
+    blocking_severities = sorted(set(blocking_candidates)) or ["critical"]
+
+    return {
+        "min_composite_score": float(min_composite_score),
+        "min_score_margin": float(min_score_margin),
+        "blocking_severities": blocking_severities,
+    }
+
+
+def _build_governance_alerts(
+    *,
+    policy: dict[str, Any],
+    result_profiles: dict[str, Any],
+) -> dict[str, Any]:
+    config = _governance_alert_config(policy)
+    severity_counts = {"critical": 0, "warning": 0, "info": 0}
+    alerts: list[dict[str, Any]] = []
+
+    def _append_alert(
+        *,
+        severity: str,
+        profile: str,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        normalized = severity if severity in severity_counts else "warning"
+        severity_counts[normalized] += 1
+        alert_payload = {
+            "severity": normalized,
+            "profile": profile,
+            "code": code,
+            "message": message,
+        }
+        if details:
+            alert_payload["details"] = details
+        alerts.append(alert_payload)
+
+    for profile_name, profile_payload in result_profiles.items():
+        if not isinstance(profile_payload, dict):
+            continue
+        recommendation = profile_payload.get("recommendation")
+        candidates_raw = profile_payload.get("candidates")
+        candidates = candidates_raw if isinstance(candidates_raw, list) else []
+        passing = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict) and bool(candidate.get("passed"))
+        ]
+
+        if not isinstance(recommendation, dict):
+            _append_alert(
+                severity="critical",
+                profile=profile_name,
+                code="no_passing_candidate",
+                message=f"Profile '{profile_name}' has no passing model candidate.",
+                details={"candidate_count": len(candidates), "passing_count": len(passing)},
+            )
+            continue
+
+        top_score = _to_float(recommendation.get("composite_score")) or 0.0
+        if top_score < float(config["min_composite_score"]):
+            _append_alert(
+                severity="warning",
+                profile=profile_name,
+                code="low_composite_score",
+                message=f"Profile '{profile_name}' recommendation score is below governance floor.",
+                details={
+                    "model": recommendation.get("model"),
+                    "composite_score": top_score,
+                    "min_composite_score": config["min_composite_score"],
+                },
+            )
+
+        if len(passing) >= 2:
+            ranked = sorted(
+                passing,
+                key=lambda item: (
+                    float(_to_float(item.get("composite_score")) or 0.0),
+                    float(_to_float(item.get("combined_ability_score")) or 0.0),
+                ),
+                reverse=True,
+            )
+            top = _to_float(ranked[0].get("composite_score")) or 0.0
+            second = _to_float(ranked[1].get("composite_score")) or 0.0
+            margin = top - second
+            if margin < float(config["min_score_margin"]):
+                _append_alert(
+                    severity="warning",
+                    profile=profile_name,
+                    code="narrow_recommendation_margin",
+                    message=f"Profile '{profile_name}' recommendation margin is below governance threshold.",
+                    details={
+                        "top_model": ranked[0].get("model"),
+                        "runner_up_model": ranked[1].get("model"),
+                        "score_margin": round(margin, 6),
+                        "min_score_margin": config["min_score_margin"],
+                    },
+                )
+
+    blocking_levels = set(config["blocking_severities"])
+    blocking_alerts = [alert for alert in alerts if str(alert.get("severity")) in blocking_levels]
+    return {
+        "policy": config,
+        "alerts": alerts,
+        "severity_counts": severity_counts,
+        "blocking_alerts_count": len(blocking_alerts),
+        "blocked": len(blocking_alerts) > 0,
+    }
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     matrix = _load_json(Path(args.matrix).resolve())
     installed = _installed_models()
@@ -925,11 +1059,19 @@ def _apply_profile_policy_checkpoint(
     checkpoint_output: Path,
     dry_run: bool,
     allow_gate_failures: bool,
+    require_governance_clean: bool,
 ) -> dict[str, Any]:
     if not bool(gate_report.get("passed", False)) and not allow_gate_failures:
         raise ValueError(
             "Refusing to apply profile policy because profile gate did not pass. "
             "Use --allow-apply-when-gate-fails to override."
+        )
+    governance = gate_report.get("governance")
+    governance_blocked = bool(isinstance(governance, dict) and governance.get("blocked"))
+    if require_governance_clean and governance_blocked:
+        raise ValueError(
+            "Refusing to apply profile policy because governance alerts are blocking. "
+            "Use profile-gate output and policy thresholds to resolve alerts first."
         )
 
     target_policy = {
@@ -1013,6 +1155,7 @@ def _apply_profile_policy_checkpoint(
         "source": source,
         "target_policy": target_policy,
         "recommendation_models": recommendation_models,
+        "governance": governance,
         "previous_policy": current_policy,
         "apply_result": apply_result,
     }
@@ -1025,6 +1168,7 @@ def _apply_profile_policy_checkpoint(
         "checkpoint_path": str(checkpoint_output),
         "target_policy": target_policy,
         "recommendation_models": recommendation_models,
+        "governance_blocked": governance_blocked,
         "applied": bool(apply_result.get("applied", False)),
         "apply_result": apply_result,
     }
@@ -1684,6 +1828,11 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
             "candidates": candidate_results,
         }
 
+    governance = _build_governance_alerts(
+        policy=policy,
+        result_profiles=result_profiles,
+    )
+
     output_payload = {
         "run_id": run_id,
         "event": "PROFILE_PROMOTION_GATE_EVALUATED",
@@ -1694,6 +1843,7 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
         "legacy_report_path": str(legacy_report_path) if legacy_report_path else None,
         "passed": not any_failures,
         "profiles": result_profiles,
+        "governance": governance,
     }
 
     with output_path.open("w", encoding="utf-8") as f:
@@ -1709,9 +1859,16 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
             )
         else:
             print(f"[gate] {profile_name}: FAIL (no passing candidate)")
+    if governance["alerts"]:
+        print(
+            f"[gate] governance alerts: {len(governance['alerts'])} "
+            f"(blocking={governance['blocking_alerts_count']})"
+        )
 
     print(f"Profile gate report written to: {output_path}")
     if any_failures and not bool(args.allow_failures):
+        return 1
+    if bool(getattr(args, "enforce_governance", False)) and bool(governance.get("blocked", False)):
         return 1
     return 0
 
@@ -1822,6 +1979,7 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
         output_dir=str(output_dir),
         output=str(gate_output),
         allow_failures=bool(args.allow_gate_failures),
+        enforce_governance=bool(args.enforce_governance),
     )
     gate_rc = cmd_profile_gate(gate_args)
 
@@ -1850,6 +2008,7 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
             "gate_report": str(gate_output),
         },
         "passed": bool(gate_report.get("passed", False)),
+        "governance": gate_report.get("governance", {}),
         "recommendations": recommendations,
     }
 
@@ -1873,6 +2032,7 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
             checkpoint_output=checkpoint_output,
             dry_run=bool(args.apply_dry_run),
             allow_gate_failures=bool(args.allow_apply_when_gate_fails),
+            require_governance_clean=bool(args.require_governance_clean),
         )
         cycle_summary["policy_apply"] = policy_apply
 
@@ -2087,6 +2247,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return success exit code even when one or more profile gates fail.",
     )
+    gate_parser.add_argument(
+        "--enforce-governance",
+        action="store_true",
+        help="Return failure exit code when governance policy marks alerts as blocking.",
+    )
     gate_parser.set_defaults(func=cmd_profile_gate)
 
     cycle_parser = subparsers.add_parser(
@@ -2165,6 +2330,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Return success even if profile gate fails one or more profiles.",
     )
     cycle_parser.add_argument(
+        "--enforce-governance",
+        action="store_true",
+        help="Fail cycle when profile-gate governance policy marks alerts as blocking.",
+    )
+    cycle_parser.add_argument(
         "--apply-policy",
         action="store_true",
         help="Apply profile defaults to running Muninn server when gate evidence is acceptable.",
@@ -2178,6 +2348,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-apply-when-gate-fails",
         action="store_true",
         help="Allow policy apply even when profile gate report failed.",
+    )
+    cycle_parser.add_argument(
+        "--require-governance-clean",
+        action="store_true",
+        help="Refuse policy apply when profile-gate governance alerts are blocking.",
     )
     cycle_parser.add_argument(
         "--muninn-url",
