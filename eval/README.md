@@ -191,5 +191,8 @@ python -m eval.phase_hygiene \
 The report is written to `eval/reports/hygiene/phase_hygiene_<timestamp>.json` and includes:
 - open PR inventory,
 - selected PR review/check summary,
-- parsed pytest summary (passed/failed/skipped/warnings),
+- parsed pytest summary (passed/failed/skipped/warnings) using JUnit XML when pytest is detected,
 - deterministic pass/fail + violations list.
+
+Implementation note:
+- test command execution is tokenized (`shell=False`) to avoid shell-injection surface.

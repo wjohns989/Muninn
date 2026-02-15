@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from eval import phase_hygiene as hygiene
 
 
@@ -63,3 +65,26 @@ def test_evaluate_policy_passes_within_budgets() -> None:
     )
 
     assert violations == []
+
+
+def test_split_command_handles_quoted_args() -> None:
+    tokens = hygiene._split_command('python -m pytest -q "tests/test_phase_hygiene.py"')
+    assert tokens[:3] == ["python", "-m", "pytest"]
+    assert tokens[-1] == "tests/test_phase_hygiene.py"
+
+
+def test_parse_junit_summary(tmp_path: Path) -> None:
+    xml_path = tmp_path / "junit.xml"
+    xml_path.write_text(
+        (
+            "<testsuite tests=\"5\" failures=\"1\" errors=\"1\" skipped=\"1\">"
+            "<testcase classname=\"a\" name=\"t1\"/>"
+            "</testsuite>"
+        ),
+        encoding="utf-8",
+    )
+    summary = hygiene._parse_junit_summary(xml_path)
+    assert summary["passed"] == 2
+    assert summary["failed"] == 1
+    assert summary["errors"] == 1
+    assert summary["skipped"] == 1

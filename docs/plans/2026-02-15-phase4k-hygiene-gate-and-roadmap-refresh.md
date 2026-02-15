@@ -16,7 +16,7 @@ Codify phase-boundary discipline so PR hygiene and test-quality signals are chec
    - enforces one-open-PR policy (`--max-open-prs`, default `1`),
    - inspects a target PR (explicit `--pr-number` or auto-selected when exactly one open PR exists),
    - surfaces review/check health (`reviewDecision`, status-check rollup summary),
-   - runs configurable test command and parses summary counts (`passed`, `failed`, `skipped`, `warnings`),
+   - runs configurable test command with shell-safe tokenized execution and parses deterministic JUnit counts (`passed`, `failed`, `skipped`) plus warning budgets,
    - applies deterministic thresholds for skipped tests and warnings.
 3. Added focused tests:
    - `tests/test_phase_hygiene.py`
@@ -32,13 +32,13 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_ollama_local_ben
 ```
 
 Observed in-session:
-- `3 passed` (`tests/test_phase_hygiene.py`)
-- `11 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`)
+- `5 passed` (`tests/test_phase_hygiene.py`)
+- `13 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`)
 
 ## Brainstormed Missing Features (ROI-ordered)
 
-1. CI/nightly benchmark orchestration:
-   - run `benchmark`, `legacy-benchmark`, and `profile-gate` on schedule,
+1. On-demand benchmark orchestration:
+   - run `benchmark`, `legacy-benchmark`, and `profile-gate` as explicit operator-controlled workflows,
    - archive reports/artifacts for trend analysis and promotion auditability.
 2. Controlled profile-promotion automation:
    - apply gate recommendations to runtime profile policy only when guardrails pass,
@@ -75,8 +75,8 @@ Reference checkpoints used for policy sanity:
 
 ## Full Remaining Roadmap (post-Phase 4K)
 
-### Phase 4L - Benchmark Automation Pipeline
-1. Add CI/nightly workflow for:
+### Phase 4L - Operator-Triggered Benchmark Pipeline
+1. Add operator-triggered workflow for:
    - `python -m eval.ollama_local_benchmark benchmark ...`
    - `python -m eval.ollama_local_benchmark legacy-benchmark ...`
    - `python -m eval.ollama_local_benchmark profile-gate ...`
@@ -84,8 +84,8 @@ Reference checkpoints used for policy sanity:
 3. Fail workflow on gate violations.
 
 Exit criteria:
-- Nightly report artifacts are generated and retained.
-- Gate failures are visible in CI and block promotion jobs.
+- On-demand report artifacts are generated and retained.
+- Gate failures are visible and block manual promotion actions.
 
 ### Phase 4M - Safe Auto-Promotion + Rollback
 1. Apply `profile-gate` recommendation to active profile policy via API/MCP path.

@@ -116,6 +116,7 @@ Completed since last update:
 37. Phase 4K hygiene-gate + roadmap refresh baseline implemented:
    - new phase-boundary gate utility shipped (`python -m eval.phase_hygiene`),
    - deterministic checks added for open-PR limits, review/check health, and pytest skipped/warning budgets,
+   - security hardening applied from PR review: tokenized subprocess execution (`shell=False`) and JUnit-first pytest summary parsing,
    - JSON hygiene reports now emitted under `eval/reports/hygiene/`,
    - implementation plan + remaining-roadmap refresh documented (`docs/plans/2026-02-15-phase4k-hygiene-gate-and-roadmap-refresh.md`).
 
@@ -134,7 +135,7 @@ Verification:
   - local benchmark tooling smoke checks pass (`python -m eval.ollama_local_benchmark list`, `python -m eval.ollama_local_benchmark sync --dry-run`).
   - initial 5-model quick-pass latency/throughput snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
   - `8 passed` across Phase 4I/4J benchmark helper tests (`tests/test_ollama_local_benchmark.py`).
-  - `11 passed` across benchmark+hygiene helper tests (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
+  - `13 passed` across benchmark+hygiene helper tests (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
@@ -548,7 +549,7 @@ This is core for vibecoders, not optional polish.
 2. Preserve reviewer soak window: do not merge a newly created PR in the same execution response; check comments/reviews/checks on a subsequent interaction before merge.
 3. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
 4. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
-5. Promote Phase 4I benchmark suite to CI/nightly: run `benchmark` + `legacy-benchmark` + `profile-gate` on calibrated roots and archive reports.
+5. Promote Phase 4I benchmark suite to operator-triggered gate workflow: run `benchmark` + `legacy-benchmark` + `profile-gate` on calibrated roots and archive reports.
 6. Bind successful `profile-gate` outputs to controlled default-profile policy updates with rollback checkpoints.
 7. Extend browser control center with profile-policy controls and benchmark/gate report visualization.
 8. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.

@@ -32,7 +32,7 @@ Evaluator: Codex
 - **Phase 4H local model-matrix benchmarking baseline is now implemented**: versioned Ollama model matrix + prompt pack + sync/benchmark CLI are now shipped for reproducible local model selection under 16GB-class helper-first workflows.
 - **Phase 4I model ability/resource benchmarking baseline is now implemented**: benchmark reports now include rubric-based ability scoring + ability-per-resource metrics, and a new legacy-ingestion benchmark mode can generate deterministic test cases from old project roots.
 - **Phase 4J profile-promotion gate framework is now implemented in-branch**: profile gate policy file + `profile-gate` evaluator command now convert live/legacy benchmark evidence into deterministic pass/fail + recommendation decisions per profile tier.
-- **Phase 4K phase-boundary hygiene gate baseline is now implemented**: `eval.phase_hygiene` now enforces one-open-PR policy and checks review/check + skipped-test/warning budgets with machine-readable reports.
+- **Phase 4K phase-boundary hygiene gate baseline is now implemented**: `eval.phase_hygiene` now enforces one-open-PR policy, executes test commands with shell-safe tokenization, parses pytest JUnit summaries, and checks review/check + skipped-test/warning budgets with machine-readable reports.
 
 ## Status vs Plan
 
@@ -112,8 +112,8 @@ Evaluator: Codex
   - `8 passed` (`tests/test_ollama_local_benchmark.py`)
 - Phase 4K hygiene-gate tranche now passes targeted checks:
   - `python -m py_compile eval/phase_hygiene.py tests/test_phase_hygiene.py`
-  - `3 passed` (`tests/test_phase_hygiene.py`)
-  - `11 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`)
+  - `5 passed` (`tests/test_phase_hygiene.py`)
+  - `13 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
