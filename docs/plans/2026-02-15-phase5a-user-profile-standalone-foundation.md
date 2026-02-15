@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening/diagnostics applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics/host-safe task-result gating applied)
 
 ## Objective
 
@@ -113,6 +113,17 @@ Deliver the first production slice of Phase 5 improvements focused on:
 - Telemetry is emitted for both direct and task-backed tool execution paths, improving diagnosis for intermittent host transport closures.
 - Detailed tranche note: `docs/plans/2026-02-15-phase5a3-mcp-tool-call-telemetry-hardening.md`.
 
+### 8) Host-Safe `tasks/result` Wait Budget Hardening (Phase 5A.4)
+
+- `tasks/result` wait path now enforces a configurable maximum blocking budget:
+  - `MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC`
+  - defaults to host-safe budget (`MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC - MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`).
+- When non-terminal task wait exceeds budget, wrapper now returns deterministic retryable JSON-RPC error:
+  - code `-32002`
+  - message instructs caller to continue polling `tasks/get` and retry `tasks/result`.
+- This prevents indefinite blocking inside `tasks/result` from overrunning host-side timeout windows and triggering transport teardown.
+- Detailed tranche note: `docs/plans/2026-02-15-phase5a4-mcp-task-result-host-safe-wait-budget.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -150,6 +161,12 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - tool-call telemetry hardening verification:
     - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
     - `88 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+  - host-safe `tasks/result` wait-budget hardening verification:
+    - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+    - `92 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+    - `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`)
+    - soak regression check pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`
+    - closure mini-campaign pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 
