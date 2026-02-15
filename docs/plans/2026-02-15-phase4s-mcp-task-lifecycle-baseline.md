@@ -60,6 +60,7 @@ Implementation semantics were checked against the official MCP schema source:
 
 ## Follow-up opportunities
 
-1. Add server-side creation of task records for task-augmented `tools/call`.
-2. Emit `notifications/tasks/status` transitions for active task observers.
-3. Introduce task retention/eviction policy and paginated cursor continuation semantics for high task volume.
+1. Completed in Phase 4T (`docs/plans/2026-02-15-phase4t-tools-call-task-support.md`): server-side task creation for task-augmented `tools/call`.
+2. Completed in Phase 4T (`docs/plans/2026-02-15-phase4t-tools-call-task-support.md`): `notifications/tasks/status` transition emission.
+3. Completed in Phase 4T (`docs/plans/2026-02-15-phase4t-tools-call-task-support.md`): task TTL retention/eviction policy plus paginated cursor semantics.
+4. Remaining advanced follow-up: support explicit `input_required` task flows and optional persistent task-store backing.
