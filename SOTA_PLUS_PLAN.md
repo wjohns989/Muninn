@@ -241,7 +241,7 @@
 - Phase 4Q git-ancestry enforcement verification: `29 passed` (`tests/test_ollama_local_benchmark.py`) + `64 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
 - Phase 4R MCP 2025-11-25 compatibility verification: `36 passed` (`tests/test_mcp_wrapper_protocol.py`) + `70 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
 - Phase 4S MCP task lifecycle verification: `45 passed` (`tests/test_mcp_wrapper_protocol.py`) + `81 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_051620.json`).
-- Phase 4T task-augmented tools/call verification: `49 passed` (`tests/test_mcp_wrapper_protocol.py`) + `85 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_052920.json`).
+- Phase 4T task-augmented tools/call verification: `49 passed` (`tests/test_mcp_wrapper_protocol.py`) + `85 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_054744.json`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
