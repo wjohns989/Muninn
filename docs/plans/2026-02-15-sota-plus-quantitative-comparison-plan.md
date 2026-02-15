@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline implemented)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening applied)
 
 ## Objective
 
@@ -39,6 +39,20 @@ Rationale:
 - Reduces wasted benchmark spend while core capabilities are still moving.
 - Avoids noisy intermediate benchmark churn from partially implemented features.
 - Preserves final evidentiary rigor by requiring full matrix + gate-family pass before SOTA+ labeling.
+
+## Interim Mitigation Update (2026-02-15, continuation tranche)
+
+Implemented to reduce external host-side 120s transport timeout risk while blocker remains open:
+
+1. MCP tool response payloads are now bounded in wrapper transport (`MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS`), with deterministic truncation metadata.
+2. Search text responses now use the same bounded transport limiter.
+3. MCP public error messages now redact connection/timeout/internal details while preserving actionable validation errors.
+4. Browser dashboard rendering now avoids dynamic `innerHTML` injection paths for operator-visible result/table payloads.
+
+Current assessment:
+
+- Risk is reduced for large-response and reflected-error classes.
+- Blocker remains open until closure criteria are met across rolling soak windows in host runtime.
 
 ## Decision Rule
 
@@ -186,3 +200,4 @@ The transport intermittency blocker is closed only when:
 3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
+6. Add host-runtime transport diagnostics bundle capture for timeout regressions (wrapper log snapshot + response-size distribution + per-tool p95 wall time).

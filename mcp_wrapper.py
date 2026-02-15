@@ -682,6 +682,62 @@ def _send_json_rpc_error(msg_id: Any, code: int, message: str):
         },
     })
 
+
+def _get_tool_response_max_chars() -> int:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "12000")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS=%r; using default of 12000.",
+            raw_value,
+        )
+        return 12000
+    return max(256, parsed)
+
+
+def _safe_json_dumps(payload: Any) -> str:
+    try:
+        return json.dumps(payload, indent=2)
+    except TypeError:
+        return json.dumps(str(payload), indent=2)
+
+
+def _truncate_tool_text(text: str, tool_name: str) -> str:
+    max_chars = _get_tool_response_max_chars()
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    trailer = (
+        f"\n... [truncated {omitted} chars; set MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS to increase limit]"
+    )
+    keep_chars = max(0, max_chars - len(trailer))
+    logger.warning(
+        "Truncating MCP tool response for '%s' from %d to %d chars.",
+        tool_name,
+        len(text),
+        max_chars,
+    )
+    return text[:keep_chars] + trailer
+
+
+def _format_tool_result_text(result: Any, tool_name: str) -> str:
+    return _truncate_tool_text(_safe_json_dumps(result), tool_name)
+
+
+def _public_tool_error_message(exc: Exception) -> str:
+    if isinstance(exc, ValueError):
+        return str(exc)
+    if isinstance(exc, _RequestDeadlineExceededError):
+        return "Tool call deadline exceeded before backend completed."
+    if isinstance(exc, _BackendCircuitOpenError):
+        return "Backend temporarily unavailable (circuit open during cooldown)."
+    if isinstance(exc, requests.Timeout):
+        return "Backend request timed out before completion."
+    if isinstance(exc, requests.ConnectionError):
+        return "Unable to reach backend service. Check health and retry."
+    return "Internal tool execution error. See mcp_wrapper.log for details."
+
 def _negotiate_protocol_version(requested: Optional[str]) -> Optional[str]:
     """Return requested protocol version only when explicitly supported."""
     if requested and requested in SUPPORTED_PROTOCOL_VERSIONS:
@@ -1889,7 +1945,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -1942,7 +1998,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": text_response
+                        "text": _truncate_tool_text(text_response, name)
                     }]
                 }
             })
@@ -1958,7 +2014,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -1977,7 +2033,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -1994,7 +2050,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2022,7 +2078,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2043,7 +2099,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2062,7 +2118,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2081,7 +2137,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2097,7 +2153,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2110,7 +2166,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2136,7 +2192,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2157,7 +2213,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2177,7 +2233,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2198,7 +2254,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2224,7 +2280,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2251,7 +2307,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2275,7 +2331,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2312,7 +2368,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2321,13 +2377,13 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             raise ValueError(f"Unknown tool: {name}")
             
     except Exception as e:
-        logger.error(f"Tool execution error: {e}")
+        logger.exception("Tool execution error")
         send_json_rpc({
             "jsonrpc": "2.0",
             "id": msg_id,
             "error": {
                 "code": -32603,
-                "message": str(e)
+                "message": _public_tool_error_message(e)
             }
         })
 
