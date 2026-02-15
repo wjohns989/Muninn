@@ -158,6 +158,25 @@ def _get_tool_call_deadline_epoch() -> Optional[float]:
     return time.monotonic() + seconds
 
 
+def _get_startup_recovery_min_budget_seconds() -> float:
+    raw_value = os.environ.get("MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC", "28")
+    try:
+        seconds = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC=%r; using default of 28 seconds.",
+            raw_value,
+        )
+        return 28.0
+    if not math.isfinite(seconds):
+        logger.warning(
+            "Non-finite MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC=%r; using default of 28 seconds.",
+            raw_value,
+        )
+        return 28.0
+    return max(0.0, seconds)
+
+
 def _read_operator_model_profile(env_var: str) -> Optional[str]:
     profile = os.environ.get(env_var, "").strip()
     if not profile:
@@ -241,6 +260,14 @@ def _remaining_deadline_seconds(deadline_epoch: Optional[float]) -> Optional[flo
     return deadline_epoch - time.monotonic()
 
 
+def _startup_recovery_allowed(deadline_epoch: Optional[float]) -> bool:
+    remaining = _remaining_deadline_seconds(deadline_epoch)
+    if remaining is None:
+        return True
+    min_budget = _get_startup_recovery_min_budget_seconds()
+    return remaining >= min_budget
+
+
 def _clamp_timeout_to_budget(timeout_value: Any, budget_seconds: float) -> Any:
     """Clamp requests timeout values to a remaining deadline budget."""
     min_timeout = 0.001
@@ -314,8 +341,13 @@ def make_request_with_retry(method: str, url: str, **kwargs) -> requests.Respons
             
             # If server might be down, ensure it's running
             if attempt < max_retries - 1:
-                if not _backend_circuit_open():
+                if not _backend_circuit_open() and _startup_recovery_allowed(deadline_epoch):
                     ensure_server_running()
+                elif not _backend_circuit_open() and deadline_epoch is not None:
+                    logger.info(
+                        "Skipping startup recovery due to low remaining deadline budget (%.3fs).",
+                        max(0.0, _remaining_deadline_seconds(deadline_epoch) or 0.0),
+                    )
                 delay = base_delay * (2 ** attempt)
                 remaining = _remaining_deadline_seconds(deadline_epoch)
                 if remaining is not None:
@@ -1730,7 +1762,13 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
         # Avoid costly preflight start probes when backend is already in cooldown
         # or when autostart is explicitly disabled by operator policy.
         if _env_flag("MUNINN_MCP_AUTOSTART_SERVER", True) and not _backend_circuit_open():
-            ensure_server_running()
+            if _startup_recovery_allowed(tool_call_deadline_epoch):
+                ensure_server_running()
+            elif tool_call_deadline_epoch is not None:
+                logger.info(
+                    "Skipping preflight startup recovery due to low remaining deadline budget (%.3fs).",
+                    max(0.0, _remaining_deadline_seconds(tool_call_deadline_epoch) or 0.0),
+                )
 
         if name == "add_memory":
             # SOTA: Inject current working directory as 'project' metadata
