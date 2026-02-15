@@ -357,6 +357,7 @@
 - Phase 5A continuation security follow-up verification: `104 passed` (`tests/test_memory_user_profile.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`).
 - Phase 5A.1 long-tool auto-task mitigation verification: `82 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 - Phase 5A.2 closure campaign automation verification: transport eval utility compile pass (`python -m py_compile eval/mcp_transport_closure.py`) + `86 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
+- Phase 5A.2 closure campaign smoke-run evidence: `closure_ready=true` for a 5-run dual-transport window (`eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`); 30-run closure window still pending.
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
