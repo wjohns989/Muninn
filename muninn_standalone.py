@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone launcher for Muninn browser-first operation.
+Standalone launcher for Huginn (Muninn browser-first mode).
 
 This entrypoint is intended for direct execution or packaging into an
 executable (e.g., with PyInstaller) so users can run Muninn without an
@@ -18,7 +18,7 @@ import uvicorn
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run Muninn as a standalone browser-first memory service."
+        description="Run Huginn (Muninn standalone browser-first memory service)."
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host for the API/UI server.")
     parser.add_argument("--port", default=42069, type=int, help="Bind port for the API/UI server.")

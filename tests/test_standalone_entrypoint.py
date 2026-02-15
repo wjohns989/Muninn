@@ -9,6 +9,11 @@ def test_standalone_parser_defaults():
     assert args.log_level == "info"
 
 
+def test_standalone_parser_description_mentions_huginn():
+    parser = muninn_standalone.build_arg_parser()
+    assert "Huginn" in parser.description
+
+
 def test_standalone_main_skips_browser_when_no_browser_flag(monkeypatch):
     captured = {}
 
