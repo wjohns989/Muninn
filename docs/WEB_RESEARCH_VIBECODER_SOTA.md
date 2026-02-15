@@ -122,6 +122,19 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
    - https://huggingface.co/deepseek-ai/DeepSeek-OCR-2
 52. Ollama context-length guidance:
    - https://docs.ollama.com/context-length
+53. MemoryAgentBench primary paper (agent-memory competency benchmark):
+   - https://arxiv.org/abs/2507.05257
+54. LongMemEval benchmark (long-context and long-horizon memory stress):
+   - https://arxiv.org/abs/2410.10813
+55. StructMemEval benchmark (structured memory retrieval and relation fidelity):
+   - https://arxiv.org/abs/2509.09090
+56. Mem2Act benchmark (memory-grounded action quality under retrieval pressure):
+   - https://arxiv.org/abs/2505.08200
+57. OpenTelemetry GenAI semantic conventions (stable status + attribute/event contract):
+   - https://opentelemetry.io/docs/specs/semconv/gen-ai/
+58. MCP base protocol and revisions index (compatibility baselining):
+   - https://modelcontextprotocol.io/specification/2025-11-25/basic
+   - https://modelcontextprotocol.io/specification/2025-11-05
 
 ## Legacy Chat/Memory Storage Research (2026-02-14)
 
@@ -217,6 +230,43 @@ Implementation impact:
 - Add compatibility review against 2025-11 key changes (tasks, elicitation enum/default behavior, JSON Schema 2020-12 assumptions).
 - Update wrapper schema metadata and validation behavior where required.
 - Add conformance tests for tool error semantics and schema correctness.
+
+## 2026-02-15 Incremental SOTA Additions (Research-Backed)
+
+### F) Multi-Benchmark Memory Competency Expansion
+
+**Gap:** current benchmarking is strong but still too narrow for robust SOTA+ claims across long-horizon and structured-memory workloads.
+
+**Addition:**
+- Extend benchmark matrix to include:
+  - MemoryAgentBench (agent-memory competency),
+  - LongMemEval (long-horizon memory retention/retrieval),
+  - StructMemEval (structured relation memory),
+  - Mem2Act (memory-conditioned action quality).
+- Normalize outputs into a single schema (`task`, `track`, `metric`, `latency`, `seed`, `artifact_hash`) for deterministic comparison.
+
+### G) Quantitative SOTA+ Decision Gate
+
+**Gap:** roadmap has strong eval components but no single final go/no-go gate definition for SOTA+ declaration.
+
+**Addition:**
+- Introduce a formal promotion gate requiring:
+  - quality superiority on primary tracks,
+  - non-inferiority on safety/latency tracks,
+  - significance + multiple-testing correction,
+  - reproducibility checks and artifact integrity.
+- Store gate decisions as immutable promotion manifests bound to benchmark artifact checksums.
+
+### H) Reliability Closure Criterion for Transport Stability
+
+**Gap:** transport reliability is improving, but blocker closure criteria are not yet quantitatively explicit.
+
+**Addition:**
+- Define blocker closure criterion based on rolling soak windows:
+  - minimum successful run count,
+  - p95 latency ceiling,
+  - zero unresolved timeout/transport-closed regressions over window,
+  - failure taxonomy with explicit ownership buckets (wrapper vs host environment).
 
 **Implemented in current tranche:**
 - Protocol negotiation now accepts supported versions and rejects unsupported protocol versions explicitly.
