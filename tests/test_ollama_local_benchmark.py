@@ -1011,3 +1011,224 @@ def test_cmd_apply_checkpoint_accepts_required_change_context_fields(
     assert report["change_context"]["pr_number"] == 28
     assert report["change_context"]["commit_sha"] == "f2e6c53"
     assert report["result"]["applied"] is False
+
+
+def test_cmd_apply_checkpoint_requires_commit_sha_for_reachability_flag(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+                "change_context": {"pr_number": 29, "branch_name": "main"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "apply_report.json"),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=True,
+        require_change_context=False,
+        require_pr_number=False,
+        require_commit_sha=False,
+        require_branch_name=False,
+        require_commit_reachable_from="main",
+    )
+    with pytest.raises(ValueError, match="commit_sha is required when"):
+        bench.cmd_apply_checkpoint(args)
+
+
+def test_cmd_apply_checkpoint_rejects_unreachable_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+                "change_context": {"commit_sha": "18d21cf", "branch_name": "main"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        bench,
+        "_git_commit_reachable_from",
+        lambda commit_sha, ref: (False, None),
+    )
+
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "apply_report.json"),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=True,
+        require_change_context=False,
+        require_pr_number=False,
+        require_commit_sha=False,
+        require_branch_name=False,
+        require_commit_reachable_from="main",
+    )
+    with pytest.raises(ValueError, match="is not reachable from 'main'"):
+        bench.cmd_apply_checkpoint(args)
+
+
+def test_cmd_apply_checkpoint_rejects_when_git_verify_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+                "change_context": {"commit_sha": "18d21cf", "branch_name": "main"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        bench,
+        "_git_commit_reachable_from",
+        lambda commit_sha, ref: (False, "Ref 'main' is not resolvable."),
+    )
+
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "apply_report.json"),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=True,
+        require_change_context=False,
+        require_pr_number=False,
+        require_commit_sha=False,
+        require_branch_name=False,
+        require_commit_reachable_from="main",
+    )
+    with pytest.raises(ValueError, match="Unable to verify commit ancestry"):
+        bench.cmd_apply_checkpoint(args)
+
+
+def test_cmd_apply_checkpoint_accepts_reachable_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+                "change_context": {"commit_sha": "18d21cf", "branch_name": "main"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        bench,
+        "_git_commit_reachable_from",
+        lambda commit_sha, ref: (True, None),
+    )
+
+    apply_output = tmp_path / "apply_report.json"
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(apply_output),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=True,
+        require_change_context=False,
+        require_pr_number=False,
+        require_commit_sha=False,
+        require_branch_name=False,
+        require_commit_reachable_from="main",
+    )
+    rc = bench.cmd_apply_checkpoint(args)
+    assert rc == 0
+    report = json.loads(apply_output.read_text(encoding="utf-8"))
+    assert report["result"]["applied"] is False
