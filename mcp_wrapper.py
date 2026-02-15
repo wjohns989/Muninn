@@ -799,15 +799,18 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
     if task_id is None:
         return
     with _TASKS_CONDITION:
-        while True:
-            task = _lookup_task_locked(task_id)
-            if not isinstance(task, dict):
-                _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
-                return
-            status = str(task.get("status") or "")
-            if status in _TASK_TERMINAL_STATUSES or status == "input_required":
-                break
-            _TASKS_CONDITION.wait(timeout=0.1)
+        task = _lookup_task_locked(task_id)
+        if not isinstance(task, dict):
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
+            return
+        status = str(task.get("status") or "")
+        if status not in _TASK_TERMINAL_STATUSES and status != "input_required":
+            _send_json_rpc_error(
+                msg_id,
+                -32001,
+                f"Task '{task_id}' is not complete; current status is '{status or 'unknown'}'.",
+            )
+            return
         payload = task.get("result")
         error = task.get("error")
 
@@ -850,7 +853,7 @@ def handle_cancel_task(msg_id: Any, params: Dict[str, Any]) -> None:
             _send_json_rpc_error(
                 msg_id,
                 -32602,
-                f"Invalid params: task '{task_id}' is already terminal with status '{status}'.",
+                "Invalid params: task is already in a terminal state.",
             )
             return
         _set_task_state_locked(
@@ -932,12 +935,12 @@ def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any
     setattr(_thread_local, "rpc_emitter", _capture_rpc)
     try:
         handle_call_tool(task_id, {"name": name, "arguments": arguments})
-    except Exception as exc:
+    except Exception:
         logger.exception("Unhandled exception while executing task-backed tool call")
         captured.append({
             "jsonrpc": "2.0",
             "id": task_id,
-            "error": {"code": -32603, "message": f"Internal error during task execution: {exc}"},
+            "error": {"code": -32603, "message": "Internal error during task execution."},
         })
     finally:
         setattr(_thread_local, "rpc_emitter", None)
