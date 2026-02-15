@@ -131,24 +131,72 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 def _get_tool_call_deadline_seconds() -> Optional[float]:
-    raw_value = os.environ.get("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "110")
+    explicit_raw = os.environ.get("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC")
+    if explicit_raw is not None:
+        try:
+            seconds = float(explicit_raw)
+        except ValueError:
+            logger.warning(
+                "Invalid MUNINN_MCP_TOOL_CALL_DEADLINE_SEC=%r; falling back to host-timeout-derived budget.",
+                explicit_raw,
+            )
+        else:
+            if not math.isfinite(seconds):
+                logger.warning(
+                    "Non-finite MUNINN_MCP_TOOL_CALL_DEADLINE_SEC=%r; falling back to host-timeout-derived budget.",
+                    explicit_raw,
+                )
+            elif seconds <= 0:
+                return None
+            else:
+                return seconds
+
+    host_timeout = 120.0
+    host_timeout_raw = os.environ.get("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
     try:
-        seconds = float(raw_value)
+        parsed_host_timeout = float(host_timeout_raw)
     except ValueError:
         logger.warning(
-            "Invalid MUNINN_MCP_TOOL_CALL_DEADLINE_SEC=%r; using default of 110 seconds.",
-            raw_value,
+            "Invalid MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC=%r; using default of 120 seconds.",
+            host_timeout_raw,
         )
-        return 110.0
-    if not math.isfinite(seconds):
+    else:
+        if math.isfinite(parsed_host_timeout) and parsed_host_timeout > 0:
+            host_timeout = parsed_host_timeout
+        else:
+            logger.warning(
+                "Non-positive/non-finite MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC=%r; using default of 120 seconds.",
+                host_timeout_raw,
+            )
+
+    margin = 10.0
+    margin_raw = os.environ.get("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+    try:
+        parsed_margin = float(margin_raw)
+    except ValueError:
         logger.warning(
-            "Non-finite MUNINN_MCP_TOOL_CALL_DEADLINE_SEC=%r; using default of 110 seconds.",
-            raw_value,
+            "Invalid MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC=%r; using default of 10 seconds.",
+            margin_raw,
         )
-        return 110.0
-    if seconds <= 0:
-        return None
-    return seconds
+    else:
+        if math.isfinite(parsed_margin) and parsed_margin >= 0:
+            margin = parsed_margin
+        else:
+            logger.warning(
+                "Negative/non-finite MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC=%r; using default of 10 seconds.",
+                margin_raw,
+            )
+
+    derived = host_timeout - margin
+    if derived <= 0:
+        logger.warning(
+            "Derived deadline budget %.3fs is non-positive (host_timeout=%.3fs margin=%.3fs); clamping to 1s.",
+            derived,
+            host_timeout,
+            margin,
+        )
+        return 1.0
+    return derived
 
 
 def _get_tool_call_deadline_epoch() -> Optional[float]:

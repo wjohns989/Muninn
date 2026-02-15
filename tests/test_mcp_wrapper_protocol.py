@@ -630,6 +630,35 @@ def test_make_request_with_retry_fails_before_request_when_deadline_exhausted(mo
     assert calls["request"] == 0
 
 
+def test_get_tool_call_deadline_seconds_uses_explicit_override(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "42")
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 42.0
+
+
+def test_get_tool_call_deadline_seconds_can_disable_budget(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "0")
+    assert mcp_wrapper._get_tool_call_deadline_seconds() is None
+
+
+def test_get_tool_call_deadline_seconds_derives_from_host_timeout_and_margin(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", raising=False)
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "90")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "15")
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 75.0
+
+
+def test_get_tool_call_deadline_seconds_clamps_to_minimum_when_margin_exceeds_host(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", raising=False)
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "5")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "9")
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 1.0
+
+
 def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low(monkeypatch):
     calls = {"ensure": 0}
 
