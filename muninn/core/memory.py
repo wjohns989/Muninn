@@ -895,6 +895,95 @@ class MuninnMemory:
             "source": source,
         }
 
+    @classmethod
+    def _merge_profile_patch(
+        cls,
+        base: Dict[str, Any],
+        patch: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Recursively merge profile patch data into an existing profile object.
+
+        Dict values are deep-merged; non-dict values replace the target key.
+        """
+        merged = dict(base)
+        for key, value in patch.items():
+            if (
+                isinstance(value, dict)
+                and isinstance(merged.get(key), dict)
+            ):
+                merged[key] = cls._merge_profile_patch(
+                    merged[key],  # type: ignore[arg-type]
+                    value,
+                )
+            else:
+                merged[key] = value
+        return merged
+
+    async def set_user_profile(
+        self,
+        *,
+        profile: Dict[str, Any],
+        user_id: str = "global_user",
+        merge: bool = True,
+        source: str = "runtime_api",
+    ) -> Dict[str, Any]:
+        """Set/update editable user profile and global context data."""
+        self._check_initialized()
+        if not isinstance(profile, dict):
+            raise ValueError("profile must be a JSON object")
+
+        existing = self._metadata.get_user_profile(user_id=user_id)
+        current_profile = (
+            dict(existing.get("profile", {}))
+            if existing and isinstance(existing.get("profile"), dict)
+            else {}
+        )
+        next_profile = (
+            self._merge_profile_patch(current_profile, profile)
+            if merge
+            else dict(profile)
+        )
+
+        self._metadata.set_user_profile(
+            user_id=user_id,
+            profile=next_profile,
+            source=source,
+        )
+        stored = self._metadata.get_user_profile(user_id=user_id)
+        return {
+            "event": "USER_PROFILE_UPDATED",
+            "user_id": user_id,
+            "merge": bool(merge),
+            "profile": stored.get("profile", {}) if stored else {},
+            "source": stored.get("source") if stored else source,
+            "updated_at": stored.get("updated_at") if stored else None,
+        }
+
+    async def get_user_profile(
+        self,
+        *,
+        user_id: str = "global_user",
+    ) -> Dict[str, Any]:
+        """Fetch editable user profile and global context data for a user."""
+        self._check_initialized()
+        profile = self._metadata.get_user_profile(user_id=user_id)
+        if profile is None:
+            return {
+                "event": "USER_PROFILE_EMPTY",
+                "user_id": user_id,
+                "profile": {},
+                "source": None,
+                "updated_at": None,
+            }
+        return {
+            "event": "USER_PROFILE_LOADED",
+            "user_id": user_id,
+            "profile": profile.get("profile", {}),
+            "source": profile.get("source"),
+            "updated_at": profile.get("updated_at"),
+        }
+
     async def set_project_goal(
         self,
         *,
@@ -1372,11 +1461,20 @@ class MuninnMemory:
             norm = str(ingestion.ensure_allowed_path(path))
             item = by_path.get(norm)
             if item is None:
+                resolved_path = Path(norm)
                 source_type = infer_source_type(Path(norm))
                 parser_supported = source_type != "unsupported"
                 size_bytes = 0
+                modified_at_epoch = None
+                modified_at_iso = None
                 try:
-                    size_bytes = Path(norm).stat().st_size
+                    stat = resolved_path.stat()
+                    size_bytes = stat.st_size
+                    modified_at_epoch = float(stat.st_mtime)
+                    modified_at_iso = time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ",
+                        time.gmtime(modified_at_epoch),
+                    )
                 except OSError:
                     pass
                 item = {
@@ -1389,6 +1487,11 @@ class MuninnMemory:
                     "confidence": "manual",
                     "size_bytes": size_bytes,
                     "notes": "Explicit path selected by user",
+                    "parent_path": str(resolved_path.parent),
+                    "path_depth": len(resolved_path.parts),
+                    "modified_at_epoch": modified_at_epoch,
+                    "modified_at_iso": modified_at_iso,
+                    "relative_path_hint": resolved_path.name,
                 }
             if item["path"] in seen_paths:
                 continue
@@ -1431,6 +1534,12 @@ class MuninnMemory:
                 "legacy_source_category": item.get("category"),
                 "legacy_source_confidence": item.get("confidence"),
                 "legacy_source_notes": item.get("notes"),
+                "legacy_source_parent_path": item.get("parent_path"),
+                "legacy_source_path_depth": item.get("path_depth"),
+                "legacy_source_relative_path": item.get("relative_path_hint"),
+                "legacy_source_modified_at_epoch": item.get("modified_at_epoch"),
+                "legacy_source_modified_at_iso": item.get("modified_at_iso"),
+                "legacy_contextualization_mode": "chronological_hierarchy",
             }
 
         base_metadata = dict(metadata or {})

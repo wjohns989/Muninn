@@ -286,6 +286,11 @@ async def test_memory_ingest_legacy_sources_injects_context_metadata(monkeypatch
                 "confidence": "high",
                 "size_bytes": 321,
                 "notes": "Serena memory files",
+                "parent_path": "/tmp",
+                "path_depth": 3,
+                "modified_at_epoch": 1700000000.0,
+                "modified_at_iso": "2023-11-14T22:13:20Z",
+                "relative_path_hint": "serena.md",
             },
             {
                 "source_id": "src_unknown",
@@ -324,6 +329,11 @@ async def test_memory_ingest_legacy_sources_injects_context_metadata(monkeypatch
     assert metadata["legacy_source_provider"] == "serena_memory"
     assert metadata["legacy_source_category"] == "mcp_memory"
     assert metadata["legacy_import"] is True
+    assert metadata["legacy_source_parent_path"] == "/tmp"
+    assert metadata["legacy_source_path_depth"] == 3
+    assert metadata["legacy_source_relative_path"] == "serena.md"
+    assert metadata["legacy_source_modified_at_iso"] == "2023-11-14T22:13:20Z"
+    assert metadata["legacy_contextualization_mode"] == "chronological_hierarchy"
 
 
 @pytest.mark.asyncio

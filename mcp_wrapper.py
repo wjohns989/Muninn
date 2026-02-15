@@ -1449,6 +1449,38 @@ def handle_list_tools(msg_id: Any):
             }
         },
         {
+            "name": "set_user_profile",
+            "description": "Set or update editable user profile/global context (skills, environments, paths, hardware, preferences).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "object",
+                        "description": "User profile patch/object to store. Can include skills, tools, paths, environment, hardware, and preferences."
+                    },
+                    "merge": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "When true, deep-merge patch into existing profile; when false, replace profile."
+                    },
+                    "source": {
+                        "type": "string",
+                        "default": "mcp_tool",
+                        "description": "Optional mutation source tag for auditability."
+                    }
+                },
+                "required": ["profile"]
+            }
+        },
+        {
+            "name": "get_user_profile",
+            "description": "Fetch editable user profile/global context for the active user scope.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
             "name": "get_model_profiles",
             "description": "Fetch active runtime extraction profile policy for helper/ingestion routing.",
             "inputSchema": {
@@ -1768,6 +1800,7 @@ def handle_list_tools(msg_id: Any):
         "search_memory",
         "get_all_memories",
         "get_project_goal",
+        "get_user_profile",
         "get_model_profiles",
         "get_model_profile_events",
         "export_handoff",
@@ -1779,6 +1812,7 @@ def handle_list_tools(msg_id: Any):
         "delete_memory",
         "delete_all_memories",
         "set_project_goal",
+        "set_user_profile",
         "set_model_profiles",
         "import_handoff",
     })
@@ -2021,6 +2055,41 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "project": arguments.get("project", git_info["project"]),
             }
             resp = _request("GET", f"{SERVER_URL}/goal/get", params=params, timeout=10)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "set_user_profile":
+            payload = {
+                "user_id": "global_user",
+                "profile": arguments.get("profile", {}),
+                "merge": bool(arguments.get("merge", True)),
+                "source": arguments.get("source", "mcp_tool"),
+            }
+            resp = _request("POST", f"{SERVER_URL}/profile/user/set", json=payload, timeout=15)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(result, indent=2)
+                    }]
+                }
+            })
+        elif name == "get_user_profile":
+            params = {
+                "user_id": "global_user",
+            }
+            resp = _request("GET", f"{SERVER_URL}/profile/user/get", params=params, timeout=10)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
