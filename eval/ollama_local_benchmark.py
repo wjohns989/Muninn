@@ -694,8 +694,6 @@ def _build_change_context(
             or normalized_pr_url.startswith("http://")
         ):
             raise ValueError("--pr-url must start with https:// or http://.")
-    else:
-        normalized_pr_url = ""
 
     normalized_commit_sha = _normalize_commit_sha(str(commit_sha or ""))
     if normalized_commit_sha is None:
@@ -704,7 +702,6 @@ def _build_change_context(
     normalized_branch = str(branch_name or "").strip()
     if not normalized_branch:
         normalized_branch = str(_git_output(["rev-parse", "--abbrev-ref", "HEAD"]) or "")
-    normalized_branch = normalized_branch.strip()
 
     return {
         "pr_number": normalized_pr_number,
