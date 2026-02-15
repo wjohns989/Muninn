@@ -174,6 +174,10 @@
     - `dev-cycle` now supports controlled `--apply-policy` updates to running profile defaults,
     - policy apply now writes pre-mutation checkpoint artifacts with prior active policy,
     - `rollback-policy` command now restores profile defaults from checkpoint with deterministic report output.
+48. Phase 4N policy-approval manifest baseline implemented:
+    - `approval-manifest` command now records explicit approve/reject decisions for checkpoint artifacts with SHA-256 binding,
+    - `apply-checkpoint` command now enforces approved-manifest + checkpoint integrity checks before policy mutation,
+    - deterministic apply reports now include approval provenance (`approved_by`, manifest path, checkpoint digest).
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -203,6 +207,7 @@
 - MCP transport framing verification: `28 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - MCP startup/bootstrap verification: `30 passed` (`tests/test_mcp_wrapper_protocol.py`) + wrapper initialize smoke check via stdio.
 - Phase 4M benchmark-policy apply/rollback verification: `11 passed` (`tests/test_ollama_local_benchmark.py`).
+- Phase 4N policy-approval manifest verification: `15 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -227,6 +232,7 @@
 20. **Live policy adaptation ROI**: runtime profile control API removes restart overhead and enables assistant/IDE orchestration to adjust helper vs ingest compute posture in-session.
 21. **Operational traceability ROI**: profile-policy mutation events make dynamic runtime tuning auditable across sessions and assistants, reducing silent drift risk.
 22. **Local model-selection evidence ROI**: versioned model matrix plus prompt-stable benchmark harness enables repeatable 16GB-class profiling decisions instead of ad-hoc model swaps.
+23. **Policy-governance ROI**: approval manifests + hash-bound checkpoint apply close evidence-to-mutation audit gaps and reduce accidental/unauthorized policy drift.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
@@ -247,7 +253,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 **Still open gaps:**
 1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
 2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
-3. Profile auto-promotion operationalization still needs implementation (operator-triggered orchestration, controlled policy-apply pipeline, rollback checkpoints, and alerting)
+3. Profile auto-promotion operationalization still needs implementation (automatic governance rules/alerts and promotion automation are still open; operator-triggered apply/rollback plus approval-gated checkpoint apply are now implemented)
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
