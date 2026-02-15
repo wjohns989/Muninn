@@ -26,12 +26,16 @@ Close the remaining governance gap after Phase 4M by requiring explicit approval
    - approval artifact generation + hash checks.
    - approved manifest apply success path.
    - rejection path and hash-mismatch path.
+   - checkpoint-path mismatch path.
+5. Review-hardening follow-up:
+   - standardized per-command report timestamps from a single captured UTC timestamp context,
+   - reduced policy-field validation duplication via a shared helper for profile payload validation.
 
 ## Validation
 
 1. `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
 2. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_ollama_local_benchmark.py`
-3. Result: `15 passed`
+3. Result: `16 passed`
 
 ## ROI / Risk Reduction
 

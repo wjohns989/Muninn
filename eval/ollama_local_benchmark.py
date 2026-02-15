@@ -638,6 +638,37 @@ def _sha256_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _timestamp_context(now: datetime | None = None) -> dict[str, str]:
+    current = now or datetime.now(timezone.utc)
+    return {
+        "created_at_utc": current.isoformat(),
+        "run_id": current.strftime("%Y%m%dT%H%M%SZ"),
+    }
+
+
+def _validated_profile_payload(
+    active: dict[str, Any], *, source: str | None = None
+) -> dict[str, str]:
+    payload = {
+        "model_profile": _validate_profile_name(
+            "model_profile", str(active.get("model_profile", ""))
+        ),
+        "runtime_model_profile": _validate_profile_name(
+            "runtime_model_profile", str(active.get("runtime_model_profile", ""))
+        ),
+        "ingestion_model_profile": _validate_profile_name(
+            "ingestion_model_profile", str(active.get("ingestion_model_profile", ""))
+        ),
+        "legacy_ingestion_model_profile": _validate_profile_name(
+            "legacy_ingestion_model_profile",
+            str(active.get("legacy_ingestion_model_profile", "")),
+        ),
+    }
+    if source is not None:
+        payload["source"] = source
+    return payload
+
+
 def _muninn_api_request(
     muninn_url: str,
     path: str,
@@ -680,25 +711,7 @@ def _checkpoint_target_policy(checkpoint: dict[str, Any]) -> dict[str, str]:
     target = checkpoint.get("target_policy")
     if not isinstance(target, dict):
         raise ValueError("Checkpoint is missing 'target_policy' object.")
-
-    return {
-        "model_profile": _validate_profile_name(
-            "model_profile",
-            str(target.get("model_profile", "")),
-        ),
-        "runtime_model_profile": _validate_profile_name(
-            "runtime_model_profile",
-            str(target.get("runtime_model_profile", "")),
-        ),
-        "ingestion_model_profile": _validate_profile_name(
-            "ingestion_model_profile",
-            str(target.get("ingestion_model_profile", "")),
-        ),
-        "legacy_ingestion_model_profile": _validate_profile_name(
-            "legacy_ingestion_model_profile",
-            str(target.get("legacy_ingestion_model_profile", "")),
-        ),
-    }
+    return _validated_profile_payload(target)
 
 
 def _gate_recommendation_models(gate_report: dict[str, Any]) -> dict[str, str]:
@@ -854,22 +867,7 @@ def cmd_rollback_policy(args: argparse.Namespace) -> int:
     if not isinstance(active, dict):
         raise ValueError("Checkpoint previous_policy is missing 'active' policy object.")
 
-    restore_payload = {
-        "model_profile": _validate_profile_name(
-            "model_profile", str(active.get("model_profile", ""))
-        ),
-        "runtime_model_profile": _validate_profile_name(
-            "runtime_model_profile", str(active.get("runtime_model_profile", ""))
-        ),
-        "ingestion_model_profile": _validate_profile_name(
-            "ingestion_model_profile", str(active.get("ingestion_model_profile", ""))
-        ),
-        "legacy_ingestion_model_profile": _validate_profile_name(
-            "legacy_ingestion_model_profile",
-            str(active.get("legacy_ingestion_model_profile", "")),
-        ),
-        "source": source,
-    }
+    restore_payload = _validated_profile_payload(active, source=source)
 
     rollback_result: dict[str, Any]
     if dry_run:
@@ -896,17 +894,17 @@ def cmd_rollback_policy(args: argparse.Namespace) -> int:
             "response": response,
         }
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    time_ctx = _timestamp_context()
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = (
         Path(args.output).resolve()
         if args.output
-        else output_dir / f"policy_rollback_{run_id}.json"
+        else output_dir / f"policy_rollback_{time_ctx['run_id']}.json"
     )
     payload = {
-        "run_id": run_id,
+        "run_id": time_ctx["run_id"],
         "event": "MODEL_PROFILE_POLICY_ROLLBACK_COMPLETED",
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": time_ctx["created_at_utc"],
         "checkpoint_path": str(checkpoint_path),
         "muninn_url": muninn_url,
         "result": rollback_result,
@@ -932,19 +930,19 @@ def cmd_approval_manifest(args: argparse.Namespace) -> int:
     if not approved_by:
         raise ValueError("--approved-by must be non-empty.")
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    time_ctx = _timestamp_context()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = (
         Path(args.output).resolve()
         if args.output
-        else output_dir / f"policy_approval_{run_id}.json"
+        else output_dir / f"policy_approval_{time_ctx['run_id']}.json"
     )
 
     payload = {
-        "run_id": run_id,
+        "run_id": time_ctx["run_id"],
         "event": "MODEL_PROFILE_POLICY_APPROVAL_RECORDED",
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": time_ctx["created_at_utc"],
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": _sha256_file(checkpoint_path),
         "decision": decision,
@@ -1014,17 +1012,17 @@ def cmd_apply_checkpoint(args: argparse.Namespace) -> int:
             "response": response,
         }
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    time_ctx = _timestamp_context()
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = (
         Path(args.output).resolve()
         if args.output
-        else output_dir / f"policy_apply_checkpoint_{run_id}.json"
+        else output_dir / f"policy_apply_checkpoint_{time_ctx['run_id']}.json"
     )
     payload = {
-        "run_id": run_id,
+        "run_id": time_ctx["run_id"],
         "event": "MODEL_PROFILE_POLICY_CHECKPOINT_APPLY_RECORDED",
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": time_ctx["created_at_utc"],
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": actual_sha,
         "approval_manifest_path": str(manifest_path),

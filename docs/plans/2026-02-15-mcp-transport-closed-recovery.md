@@ -64,4 +64,4 @@ Operational governance follow-on is now implemented in `docs/plans/2026-02-15-ph
 2. Controlled checkpoint apply:
    - apply from checkpoint now requires approved manifest and integrity match checks.
 3. Validation increment:
-   - benchmark/policy command tests now include approval/apply flows (`15 passed`, `tests/test_ollama_local_benchmark.py`).
+   - benchmark/policy command tests now include approval/apply flows (`16 passed`, `tests/test_ollama_local_benchmark.py`).
