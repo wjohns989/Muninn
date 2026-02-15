@@ -73,19 +73,9 @@ Reference checkpoints used for policy sanity:
 - Ollama library community model page for `xlam`
 - xLAM and Qwen3 technical reports
 
-## Full Remaining Roadmap (post-Phase 4K)
+## Full Remaining Roadmap (post-Phase 4L)
 
-### Phase 4L - Operator-Triggered Benchmark Pipeline
-1. Add operator-triggered workflow for:
-   - `python -m eval.ollama_local_benchmark benchmark ...`
-   - `python -m eval.ollama_local_benchmark legacy-benchmark ...`
-   - `python -m eval.ollama_local_benchmark profile-gate ...`
-2. Persist reports under versioned artifact paths.
-3. Fail workflow on gate violations.
-
-Exit criteria:
-- On-demand report artifacts are generated and retained.
-- Gate failures are visible and block manual promotion actions.
+Phase 4L is now implemented in `docs/plans/2026-02-15-phase4l-dev-cycle-benchmark-orchestration.md`.
 
 ### Phase 4M - Safe Auto-Promotion + Rollback
 1. Apply `profile-gate` recommendation to active profile policy via API/MCP path.
