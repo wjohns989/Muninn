@@ -54,3 +54,14 @@ Follow-on hardening now implemented in `docs/plans/2026-02-15-phase4l2-mcp-start
    - `View MCP Wrapper Log`.
 3. Verification increment:
    - protocol/startup tests now at `30 passed` (`tests/test_mcp_wrapper_protocol.py`).
+
+## Continuation Update (Phase 4N)
+
+Operational governance follow-on is now implemented in `docs/plans/2026-02-15-phase4n-policy-approval-manifest.md`:
+
+1. Checkpoint approval manifests:
+   - explicit approve/reject artifacts now bind checkpoint path + SHA-256.
+2. Controlled checkpoint apply:
+   - apply from checkpoint now requires approved manifest and integrity match checks.
+3. Validation increment:
+   - benchmark/policy command tests now include approval/apply flows (`15 passed`, `tests/test_ollama_local_benchmark.py`).
