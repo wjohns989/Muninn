@@ -389,11 +389,7 @@ def _negotiate_protocol_version(requested: Optional[str]) -> Optional[str]:
 
 def _extract_client_elicitation_modes(capabilities: Any) -> tuple[str, ...]:
     """Read declared client elicitation modes with 2025-11-25 defaults."""
-    if not isinstance(capabilities, dict):
-        return tuple()
-    elicitation = capabilities.get("elicitation")
-    if elicitation is None:
-        return tuple()
+    elicitation = capabilities.get("elicitation") if isinstance(capabilities, dict) else None
     if not isinstance(elicitation, dict):
         return tuple()
     if not elicitation:
@@ -429,9 +425,8 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     _SESSION_STATE["negotiated"] = True
     _SESSION_STATE["initialized"] = False
     _SESSION_STATE["protocol_version"] = negotiated
-    client_capabilities = params.get("capabilities") if isinstance(params, dict) else {}
-    if not isinstance(client_capabilities, dict):
-        client_capabilities = {}
+    raw_capabilities = params.get("capabilities") if isinstance(params, dict) else None
+    client_capabilities = raw_capabilities if isinstance(raw_capabilities, dict) else {}
     _SESSION_STATE["client_capabilities"] = client_capabilities
     _SESSION_STATE["client_elicitation_modes"] = _extract_client_elicitation_modes(client_capabilities)
     startup_warnings = _collect_startup_warnings()
@@ -1071,6 +1066,14 @@ def handle_list_tools(msg_id: Any):
         "discover_legacy_sources",
     }
     destructive_tools = {"delete_memory", "delete_all_memories"}
+    idempotent_tools = read_only_tools.union({
+        "update_memory",
+        "delete_memory",
+        "delete_all_memories",
+        "set_project_goal",
+        "set_model_profiles",
+        "import_handoff",
+    })
     for tool in tools:
         schema = tool.get("inputSchema", {})
         if isinstance(schema, dict) and "$schema" not in schema:
@@ -1081,7 +1084,7 @@ def handle_list_tools(msg_id: Any):
         annotations.update({
             "readOnlyHint": read_only,
             "destructiveHint": name in destructive_tools,
-            "idempotentHint": read_only,
+            "idempotentHint": name in idempotent_tools,
             "openWorldHint": True,
         })
         tool["annotations"] = annotations

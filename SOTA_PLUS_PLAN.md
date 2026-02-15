@@ -193,7 +193,8 @@
     - wrapper initialize now advertises `capabilities.tasks.list`,
     - client elicitation capability parsing now applies empty-object form default semantics,
     - `tasks/list` request handling now enforces lifecycle + params shape with deterministic empty-task response,
-    - tools now declare explicit `execution.taskSupport` and expanded annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`).
+    - tools now declare explicit `execution.taskSupport` and expanded annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`),
+    - review-driven correction ensures `idempotentHint` reflects true idempotent tool behavior for safe retry semantics.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
