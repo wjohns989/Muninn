@@ -1,15 +1,10 @@
 # Muninn v3.3 SOTA+ Plan Gap Evaluation (Codebase Snapshot)
 
-<<<<<<< ours
 Date: 2026-02-15
-=======
-Date: 2026-02-14
->>>>>>> theirs
 Evaluator: Codex
 
 ## TL;DR
 
-<<<<<<< ours
 - **Phase 1 correctness blockers are now fixed in-code** (Instructor wiring, Docker path behavior, trace score fidelity, adaptive score entropy, and version consistency).
 - **ROI continuity tranche is now implemented** (Goal Compass + idempotent handoff bundles + MCP/API wiring).
 - **Eval gate is now enforceable in CI** (latency + baseline regression checks).
@@ -60,11 +55,8 @@ Evaluator: Codex
 - **Phase 4AC host-timeout-derived deadline budgeting baseline is now implemented**: when explicit deadline is not set, wrapper now derives tool-call budget from host timeout minus safety margin (`MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC` - `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`) with safe minimum clamping, improving cross-client timeout compatibility.
 - **Phase 4AD explicit-deadline overrun guardrail baseline is now implemented**: explicit deadline values now default-clamp to host-safe budgets unless operator opt-out is set (`MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN=1`), preventing misconfiguration-driven timeout-window overruns.
 - **Phase 4AE guarded-dispatch fail-fast response baseline is now implemented**: guarded RPC dispatch now emits deterministic `-32603` replies for request IDs when unexpected dispatch exceptions occur, preventing silent hangs on background-dispatched request paths.
-=======
-- **Phase 1 is mostly present, but with important correctness/integration gaps** (Instructor wiring, Docker path detection behavior, and recall trace fidelity).
-- **Phase 2 is partially present** (conflict/dedup/weight-adapter modules exist) but not fully aligned with the plan’s dependency, data, and quality assumptions.
-- **Phase 3 is largely missing** (no memory chains package, no ingestion pipeline package, no Python SDK package).
->>>>>>> theirs
+- **Restart artifact hygiene is now complete**: stale staged restart artifacts are cleared, obsolete `.bak` backup artifact removed, and unresolved conflict markers are no longer present in working docs.
+- **SOTA+ quantitative decision framework is now documented**: final release verdict gates and benchmark normalization requirements are captured in `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`.
 
 ## Status vs Plan
 
@@ -74,16 +66,10 @@ Evaluator: Codex
 |---|---|---|
 | 1A Platform abstraction | **Mostly implemented** | `muninn/platform.py` exists with cross-platform dirs/process helpers. |
 | 1A Docker support | **Implemented** | `Dockerfile` and `docker-compose.yml` exist. |
-<<<<<<< ours
 | 1B Instructor extraction | **Implemented + wired** | `MuninnMemory.initialize()` now passes `instructor_base_url/model/api_key` into `ExtractionPipeline`. |
 | 1C Explainable recall traces | **Implemented + fidelity fixed** | Trace attribution now uses signal-native `raw_score` values, not rank proxy. |
 | 1D Feature flags | **Implemented** | `muninn/core/feature_flags.py` present and used across retrieval/extraction/memory initialization. |
 | 1.1 Version consistency | **Implemented** | Single source of truth in `muninn/version.py`; package/server/MCP versions aligned. |
-=======
-| 1B Instructor extraction | **Partially implemented** | Instructor modules exist, but `MuninnMemory.initialize()` builds `ExtractionPipeline` without passing instructor config values, so configured Instructor endpoint/model are not actually wired in. |
-| 1C Explainable recall traces | **Implemented with fidelity issues** | Trace models + hybrid retriever trace path exist, but raw score attribution uses rank proxies rather than signal-native scores. |
-| 1D Feature flags | **Implemented** | `muninn/core/feature_flags.py` present and used across retrieval/extraction/memory initialization. |
->>>>>>> theirs
 
 ### Phase 2 (v3.2.0)
 
@@ -91,7 +77,6 @@ Evaluator: Codex
 |---|---|---|
 | 2A Conflict detection | **Implemented (feature-gated)** | `muninn/conflict/*` + memory integration present. |
 | 2B Semantic dedup | **Implemented (feature-gated)** | `muninn/dedup/semantic_dedup.py` + memory add path integration present. |
-<<<<<<< ours
 | 2C Adaptive weights | **Implemented + improved** | `WeightAdapter` entropy now derives from native signal score distributions. |
 | Retrieval eval gates | **Implemented (v1)** | `eval/run.py` now supports baseline-regression and p95 latency gating. |
 | retrieval feedback persistence | **Implemented (feature-gated)** | `retrieval_feedback` table + API/MCP recording + adaptive multipliers are wired into retrieval path. |
@@ -100,16 +85,11 @@ Evaluator: Codex
 | Paired significance/effect-size gate | **Implemented** | `eval/statistics.py` + `eval/run.py` support paired bootstrap CI, permutation p-values, `cohens_d`, and optional significant-regression fail gate. |
 | Multiple-comparison correction policy | **Implemented** | `eval/statistics.py` + `eval/run.py` now support `none`/`bonferroni`/`holm`/`bh` correction and `all`/`by_track` family scoping with adjusted p-value gate decisions. |
 | Canonical artifact verifier | **Implemented** | `eval/artifacts/vibecoder_memoryagentbench_v1/*` + `eval/artifacts.py` provide checksum and reproducibility verification. |
-=======
-| 2C Adaptive weights | **Implemented but mathematically weak** | `WeightAdapter` exists, but entropy currently derives from rank transforms, reducing discriminative value between signals with similar list lengths. |
-| retrieval feedback persistence | **Missing** | Plan called for feedback table, but no retrieval feedback feature surfaced in current API/state flow. |
->>>>>>> theirs
 
 ### Phase 3 (v3.3.0)
 
 | Plan item | Status | Evidence |
 |---|---|---|
-<<<<<<< ours
 | 3A Memory chains | **Implemented (feature-gated)** | `muninn/chains/*` added; graph `PRECEDES/CAUSES` edges + memory add/update linking + hybrid chain signal are wired. |
 | 3B Multi-source ingestion | **Implemented + expanded** | `muninn/ingestion/` now provides fail-open parser pipeline with provenance metadata, chat-context extraction for `.jsonl/.ndjson`, sqlite-backed source parsing (`.vscdb/.db/.sqlite*`), runtime guardrails (allow-list roots + chunk/file bounds), REST (`/ingest`, `/ingest/legacy/discover`, `/ingest/legacy/import`), MCP (`ingest_sources`, `discover_legacy_sources`, `ingest_legacy_sources`), and SDK parity methods. |
 | 3C Python SDK | **Implemented** | `muninn/sdk/` now ships sync+async clients with typed errors; top-level exports include `Memory` and `AsyncMemory`. |
@@ -126,6 +106,7 @@ Evaluator: Codex
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
 9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls + startup-recovery budget gating + host-timeout-derived budgeting + explicit-overrun guardrails + guarded-dispatch fail-fast replies are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`, `MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC`, `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`, `MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, and `MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN` as needed). Post-restart in-session signal: `get_model_profiles` and `add_memory` MCP calls succeeded, and latest framed transport soak run passed (`run_id=20260215_170548`), but continued runtime observation is still required before closing blocker status.
+10. **Unified SOTA+ verdict automation (open):** benchmark breadth extension (LongMemEval/StructMemEval/Mem2Act), cross-benchmark normalization, and one authoritative go/no-go verdict artifact are defined but not yet wired into a single command path.
 
 ## Validation Snapshot
 
@@ -258,24 +239,6 @@ Evaluator: Codex
 1. User scope filtering no longer relies on brittle `metadata LIKE` patterns; JSON1 exact match is used with fallback.
 2. MCP wrapper no longer hardcodes a single old protocol date; it negotiates and rejects unsupported protocol versions explicitly.
 3. Eval harness now produces enforceable gate outcomes instead of report-only metrics.
-=======
-| 3A Memory chains | **Missing** | No `muninn/chains/` package in repository tree. |
-| 3B Multi-source ingestion | **Missing** | No `muninn/ingestion/` package, no `/ingest` server endpoint, no MCP ingest tool. |
-| 3C Python SDK | **Missing** | No `muninn/sdk/` package; `muninn/__init__.py` does not export `Memory`/`AsyncMemory`. |
-
-## High-Impact Issues Discovered
-
-1. **Instructor integration gap (functional):** config contains Instructor fields, but `ExtractionPipeline` is initialized without instructor args in `MuninnMemory.initialize()`. Result: Instructor may never activate despite config/feature flag intent.
-2. **Docker data-dir behavior mismatch:** tests currently expect Docker default `/data` when Docker-detected, but `get_data_dir()` only switches to Docker defaults when `MUNINN_DOCKER=1`, not when `is_running_in_docker()` is true. This creates an internal behavioral inconsistency.
-3. **Explainability quality gap:** recall trace currently records `raw_score=float(rank)` for signals during fusion, which weakens “why” fidelity and undermines the uniqueness claim for explainable recall.
-4. **Adaptive weighting signal-confidence quality gap:** entropy confidence is computed from rank-derived pseudo-scores, so confidence mostly tracks result-count shape rather than true retrieval certainty.
-5. **Versioning inconsistency:** package version in `pyproject.toml` (3.1.0), MCP wrapper serverInfo (3.2.0), and `muninn.__version__` (3.0.0) are inconsistent.
-6. **Plan/dependency mismatch:** `pyproject.toml` lacks the plan’s optional dependency groups (`conflict`, `ingestion`, `sdk`) and does not expose the roadmap-aligned install surfaces.
-
-## Validation Snapshot
-
-- Full test run is near-green, but one platform behavior test currently fails (`tests/test_platform.py::TestDataDir::test_docker_default`).
->>>>>>> theirs
 
 ## Unthought SOTA Enhancements (Recommended Additions)
 
@@ -287,15 +250,9 @@ Evaluator: Codex
    - Per-memory retention TTL, PII tags, redaction/transformation policies, and auditable deletion proofs.
    - Distinguishes enterprise/local-first deployments from generic OSS memory stores.
 
-<<<<<<< ours
 3. **Off-policy model upgrade over current SNIPS calibration**
    - Extend from scalar multipliers to feature-aware off-policy ranking updates (e.g., doubly robust estimators over trace features).
    - Improves long-horizon ranking quality beyond per-signal scalar adaptation.
-=======
-3. **Online learning-to-rank from implicit feedback**
-   - Track clicks/uses/acceptance in downstream agent actions and optimize re-ranking/weighting over time.
-   - Strong complement to current static heuristics.
->>>>>>> theirs
 
 4. **Trust/uncertainty propagation**
    - Carry confidence from extraction + contradiction scores + source reliability into final ranking and response generation.
@@ -304,7 +261,6 @@ Evaluator: Codex
 5. **Memory compression/summarization layer for long-lived stores**
    - Periodic abstraction of dense episodic clusters into semantic memories with reversible provenance links.
    - Helps scale and keeps retrieval focused.
-<<<<<<< ours
 6. **MCP 2025-11 conformance tranche (follow-up now narrower)**
    - Baseline tasks/list/get/result/cancel + task-augmented `tools/call` + status notifications + retention/pagination governance + blocking-result responsive dispatch + metadata/cursor compliance are now implemented; remaining high-ROI work is advanced `input_required` task flows and optional persistent task-store backing.
 7. **OpenTelemetry GenAI semantic instrumentation**
@@ -321,16 +277,6 @@ Evaluator: Codex
 6. Add a Phase 4 adaptive operator tranche for browser UI preferences + model profile routing (latency/quality/compute caliber control) with safe defaults.
 7. Enforce single-PR workflow policy operationally: one branch/one open PR per phase, merge before next branch starts, with PR/comment checks at each phase boundary.
 8. Add explicit Phase 4I acceptance criteria: ability-score + ability-per-resource thresholds for live and legacy-ingestion benchmark suites before profile default promotion.
-=======
-
-## Suggested Plan Adjustments
-
-1. Add a **Phase 1.1 Stabilization** mini-phase:
-   - Fix Instructor wiring, Docker detection contract, trace raw-score fidelity, and version consistency.
-2. Re-scope Phase 2 acceptance criteria around **measurable retrieval quality metrics** (not just feature existence).
-3. Expand Phase 3 to include **ingestion safety hardening** (parser sandboxing, fail-open/skip semantics, and provenance metadata standards).
-4. Add a cross-platform CI matrix + optional-dependency matrix as explicit deliverables before v3.2/v3.3 claims.
->>>>>>> theirs
 
 
 ## Vibecoder-Centric Additions (Multi-Assistant Continuity)
@@ -355,7 +301,6 @@ To align with the product intent (not enterprise-heavy), the highest-ROI additio
 
 Research notes and implementation guidance are documented in:
 - `docs/WEB_RESEARCH_VIBECODER_SOTA.md`
-<<<<<<< ours
 - `docs/plans/2026-02-14-browser-ui-model-policy-design.md`
 - `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
 - `docs/plans/2026-02-15-phase4i-ability-resource-benchmarking.md`
@@ -375,6 +320,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4ac-mcp-host-timeout-derived-deadline-budget.md`
 - `docs/plans/2026-02-15-phase4ad-mcp-explicit-deadline-overrun-guardrail.md`
 - `docs/plans/2026-02-15-phase4ae-mcp-guarded-dispatch-fail-fast-response.md`
+- `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
 ## Model-Caliber Research Update (2026-02-14)
@@ -397,8 +343,3 @@ Primary references for this recommendation:
 - Qwen3 technical report for current open-weight reasoning capability trajectory.
 
 Key references reviewed include Elastic RRF docs, Qdrant/Pinecone hybrid search writeups, BEIR benchmark, Self-RAG, MCP specification, and idempotent receiver patterns.
-=======
-
-Key references reviewed include Elastic RRF docs, Qdrant/Pinecone hybrid search writeups, BEIR benchmark, Self-RAG, MCP specification, and idempotent receiver patterns.
-
->>>>>>> theirs
