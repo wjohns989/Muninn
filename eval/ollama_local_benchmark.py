@@ -646,6 +646,71 @@ def _timestamp_context(now: datetime | None = None) -> dict[str, str]:
     }
 
 
+def _git_output(args: list[str]) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value if value else None
+
+
+def _normalize_commit_sha(value: str | None) -> str | None:
+    candidate = str(value or "").strip().lower()
+    if not candidate:
+        return None
+    if not re.fullmatch(r"[0-9a-f]{7,40}", candidate):
+        raise ValueError(
+            "Invalid commit SHA format in approval manifest context. "
+            "Expected 7-40 lowercase hex characters."
+        )
+    return candidate
+
+
+def _build_change_context(
+    *,
+    pr_number: Any,
+    pr_url: Any,
+    commit_sha: Any,
+    branch_name: Any,
+) -> dict[str, Any]:
+    normalized_pr_number: int | None = None
+    if pr_number is not None:
+        normalized_pr_number = int(pr_number)
+        if normalized_pr_number <= 0:
+            raise ValueError("--pr-number must be > 0 when provided.")
+
+    normalized_pr_url = str(pr_url or "").strip()
+    if normalized_pr_url:
+        if not (
+            normalized_pr_url.startswith("https://")
+            or normalized_pr_url.startswith("http://")
+        ):
+            raise ValueError("--pr-url must start with https:// or http://.")
+
+    normalized_commit_sha = _normalize_commit_sha(str(commit_sha or ""))
+    if normalized_commit_sha is None:
+        normalized_commit_sha = _normalize_commit_sha(_git_output(["rev-parse", "HEAD"]))
+
+    normalized_branch = str(branch_name or "").strip()
+    if not normalized_branch:
+        normalized_branch = str(_git_output(["rev-parse", "--abbrev-ref", "HEAD"]) or "")
+
+    return {
+        "pr_number": normalized_pr_number,
+        "pr_url": normalized_pr_url or None,
+        "commit_sha": normalized_commit_sha,
+        "branch_name": normalized_branch or None,
+    }
+
+
 def _validated_profile_payload(
     active: dict[str, Any], *, source: str | None = None
 ) -> dict[str, str]:
@@ -930,6 +995,13 @@ def cmd_approval_manifest(args: argparse.Namespace) -> int:
     if not approved_by:
         raise ValueError("--approved-by must be non-empty.")
 
+    change_context = _build_change_context(
+        pr_number=getattr(args, "pr_number", None),
+        pr_url=getattr(args, "pr_url", None),
+        commit_sha=getattr(args, "commit_sha", None),
+        branch_name=getattr(args, "branch_name", None),
+    )
+
     time_ctx = _timestamp_context()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -949,6 +1021,7 @@ def cmd_approval_manifest(args: argparse.Namespace) -> int:
         "approved_by": approved_by,
         "notes": str(args.notes or "").strip(),
         "source": str(args.source).strip() or "policy_approval_cli",
+        "change_context": change_context,
     }
     with output_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -985,6 +1058,14 @@ def cmd_apply_checkpoint(args: argparse.Namespace) -> int:
     recorded_path = str(manifest.get("checkpoint_path", "")).strip()
     if recorded_path and Path(recorded_path).resolve() != checkpoint_path:
         raise ValueError("Approval manifest checkpoint_path does not match provided checkpoint.")
+
+    change_context_raw = manifest.get("change_context")
+    if change_context_raw is None:
+        change_context: dict[str, Any] = {}
+    elif isinstance(change_context_raw, dict):
+        change_context = change_context_raw
+    else:
+        raise ValueError("Approval manifest change_context must be an object when present.")
 
     apply_payload = {**target_policy, "source": source}
     apply_result: dict[str, Any]
@@ -1027,6 +1108,7 @@ def cmd_apply_checkpoint(args: argparse.Namespace) -> int:
         "checkpoint_sha256": actual_sha,
         "approval_manifest_path": str(manifest_path),
         "approved_by": str(manifest.get("approved_by", "")),
+        "change_context": change_context,
         "muninn_url": muninn_url,
         "result": apply_result,
     }
@@ -2062,6 +2144,23 @@ def build_parser() -> argparse.ArgumentParser:
     approval_parser.add_argument(
         "--notes",
         help="Optional rationale notes for approval/rejection.",
+    )
+    approval_parser.add_argument(
+        "--pr-number",
+        type=int,
+        help="Optional PR number associated with this approval decision.",
+    )
+    approval_parser.add_argument(
+        "--pr-url",
+        help="Optional PR URL associated with this approval decision.",
+    )
+    approval_parser.add_argument(
+        "--commit-sha",
+        help="Optional commit SHA associated with this approval decision.",
+    )
+    approval_parser.add_argument(
+        "--branch-name",
+        help="Optional branch name associated with this approval decision.",
     )
     approval_parser.add_argument(
         "--source",

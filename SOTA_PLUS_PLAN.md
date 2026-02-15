@@ -178,6 +178,10 @@
     - `approval-manifest` command now records explicit approve/reject decisions for checkpoint artifacts with SHA-256 binding,
     - `apply-checkpoint` command now enforces approved-manifest + checkpoint integrity checks before policy mutation,
     - deterministic apply reports now include approval provenance (`approved_by`, manifest path, checkpoint digest).
+49. Phase 4O approval provenance-context baseline implemented:
+    - `approval-manifest` now accepts optional PR/URL/commit/branch context with validation,
+    - manifest provenance now auto-detects git commit/branch when not explicitly provided,
+    - `apply-checkpoint` now propagates `change_context` into apply reports and rejects malformed context types.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -208,6 +212,7 @@
 - MCP startup/bootstrap verification: `30 passed` (`tests/test_mcp_wrapper_protocol.py`) + wrapper initialize smoke check via stdio.
 - Phase 4M benchmark-policy apply/rollback verification: `11 passed` (`tests/test_ollama_local_benchmark.py`).
 - Phase 4N policy-approval manifest verification: `16 passed` (`tests/test_ollama_local_benchmark.py`).
+- Phase 4O approval provenance-context verification: `18 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -233,6 +238,7 @@
 21. **Operational traceability ROI**: profile-policy mutation events make dynamic runtime tuning auditable across sessions and assistants, reducing silent drift risk.
 22. **Local model-selection evidence ROI**: versioned model matrix plus prompt-stable benchmark harness enables repeatable 16GB-class profiling decisions instead of ad-hoc model swaps.
 23. **Policy-governance ROI**: approval manifests + hash-bound checkpoint apply close evidence-to-mutation audit gaps and reduce accidental/unauthorized policy drift.
+24. **Review-to-runtime traceability ROI**: PR/commit/branch provenance in approval/apply artifacts enables deterministic incident forensics and future policy enforcement on reviewed changes only.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
