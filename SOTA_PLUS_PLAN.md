@@ -151,6 +151,10 @@
     - model summaries now include `ability_per_second` and `ability_per_vram_gb`,
     - `legacy-benchmark` mode added for deterministic old-project ingestion-like evaluation,
     - targeted unit tests added (`tests/test_ollama_local_benchmark.py`).
+42. Phase 4J profile-promotion gate baseline implemented in-branch:
+    - policy file added (`eval/ollama_profile_promotion_policy.json`),
+    - `profile-gate` command added to evaluate live/legacy benchmark reports against profile thresholds,
+    - deterministic recommendation output added for `low_latency`, `balanced`, and `high_reasoning` promotion decisions.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -175,7 +179,7 @@
 - Phase 4G profile-policy audit visibility verification: `49 passed` (`tests/test_memory_profiles.py`, `tests/test_sqlite_profile_policy_events.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 - Phase 4H local benchmark tooling smoke checks: `python -m eval.ollama_local_benchmark list` and `python -m eval.ollama_local_benchmark sync --dry-run`.
 - Phase 4H initial five-model quick-pass benchmark snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
-- Phase 4I benchmark helper verification: `5 passed` (`tests/test_ollama_local_benchmark.py`).
+- Phase 4I/4J benchmark helper verification: `8 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.

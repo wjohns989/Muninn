@@ -147,11 +147,17 @@ python -m eval.ollama_local_benchmark legacy-benchmark \
   --legacy-roots "C:/projects/old_repo_1,C:/projects/old_repo_2" \
   --repeats 1 \
   --dump-cases eval/reports/ollama/legacy_cases.jsonl
+
+# Evaluate profile-promotion gates using live + legacy reports
+python -m eval.ollama_local_benchmark profile-gate \
+  --live-report eval/reports/ollama/report_<live>.json \
+  --legacy-report eval/reports/ollama/legacy_report_<legacy>.json
 ```
 
 Versioned inputs:
 - Model matrix: `eval/ollama_model_matrix.json`
 - Prompt pack: `eval/ollama_benchmark_prompts.jsonl`
+- Profile promotion policy: `eval/ollama_profile_promotion_policy.json`
 
 Generated reports are written to `eval/reports/ollama/` (gitignored).
 
@@ -162,3 +168,5 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 - `resource_efficiency.ability_per_vram_gb`
 
 `legacy-benchmark` generates deterministic ingestion-like extraction cases from local project files and reports the same ability/resource metrics per model.
+
+`profile-gate` consumes benchmark reports and emits per-profile pass/fail + recommendation decisions for `low_latency`, `balanced`, and `high_reasoning` promotion policies.

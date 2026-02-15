@@ -31,6 +31,7 @@ Evaluator: Codex
 - **Phase 4G profile-policy audit visibility baseline is now implemented**: runtime profile mutations are now persisted as audit events and exposed through memory core + REST (`/profiles/model/events`) + MCP (`get_model_profile_events`) + SDK sync/async.
 - **Phase 4H local model-matrix benchmarking baseline is now implemented**: versioned Ollama model matrix + prompt pack + sync/benchmark CLI are now shipped for reproducible local model selection under 16GB-class helper-first workflows.
 - **Phase 4I model ability/resource benchmarking baseline is now implemented**: benchmark reports now include rubric-based ability scoring + ability-per-resource metrics, and a new legacy-ingestion benchmark mode can generate deterministic test cases from old project roots.
+- **Phase 4J profile-promotion gate framework is now implemented in-branch**: profile gate policy file + `profile-gate` evaluator command now convert live/legacy benchmark evidence into deterministic pass/fail + recommendation decisions per profile tier.
 
 ## Status vs Plan
 
@@ -79,6 +80,7 @@ Evaluator: Codex
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, and ability/resource benchmark scoring are now implemented, but profile-level eval/telemetry promotion gates and alerting thresholds still need completion before default-policy promotion.
+9. **MCP Muninn transport reliability intermittency (open):** `mcp__muninn__search_memory` returned `Transport closed` during Phase 4J work, requiring local fallback for memory retrieval in this session.
 
 ## Validation Snapshot
 
@@ -106,7 +108,7 @@ Evaluator: Codex
   - `python -m eval.ollama_local_benchmark sync --dry-run`
 - Phase 4I benchmark extensions now pass targeted checks:
   - `python -m py_compile eval/ollama_local_benchmark.py`
-  - `5 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `8 passed` (`tests/test_ollama_local_benchmark.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -180,6 +182,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-14-browser-ui-model-policy-design.md`
 - `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
 - `docs/plans/2026-02-15-phase4i-ability-resource-benchmarking.md`
+- `docs/plans/2026-02-15-phase4j-profile-promotion-gates.md`
 
 ## Model-Caliber Research Update (2026-02-14)
 
