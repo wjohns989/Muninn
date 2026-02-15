@@ -131,6 +131,11 @@ Completed since last update:
    - `mcp_wrapper` now performs launch-time dependency bootstrap (best effort) and triggers Ollama/server startup when enabled,
    - Windows tray now acts as an operational MCP entrypoint with Browser UI open, MCP health probe, explicit Ollama start action, and wrapper-log shortcut,
    - implementation plan documented (`docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`).
+41. Phase 4M dev-cycle policy apply + rollback checkpoint baseline implemented:
+   - `eval.ollama_local_benchmark dev-cycle` now supports controlled `--apply-policy` mutation path for runtime profile defaults,
+   - apply flow now validates gate/recommendation evidence and writes checkpoint artifact before mutation,
+   - new `rollback-policy` command restores prior profile defaults from checkpoint artifacts,
+   - implementation plan documented (`docs/plans/2026-02-15-phase4m-dev-cycle-policy-apply-rollback.md`).
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -150,6 +155,7 @@ Verification:
   - `14 passed` across benchmark+hygiene helper tests (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
   - `28 passed` across MCP transport protocol tests (`tests/test_mcp_wrapper_protocol.py`).
   - `30 passed` across MCP startup/bootstrap protocol tests (`tests/test_mcp_wrapper_protocol.py`) plus initialize smoke probe.
+  - `11 passed` across benchmark helper apply/rollback flows (`tests/test_ollama_local_benchmark.py`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
@@ -174,7 +180,7 @@ Fixed in current implementation slice:
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
-3. Profile-level promotion criteria remain open: routing, audit visibility, and ability/resource benchmark plumbing are implemented, but per-profile gate thresholds and telemetry-backed auto-default policy are still pending.
+3. Profile-level promotion criteria are partially open: routing, audit visibility, ability/resource benchmark plumbing, and controlled apply/rollback paths are now implemented; telemetry-backed automatic default-policy alerting and governance thresholds are still pending.
 4. Browser UI preference depth remains partially open: persistence is implemented, but advanced user-adaptive controls (profile presets, safety mode templates, benchmark launch UX) still need phased rollout.
 
 ---
@@ -563,7 +569,7 @@ This is core for vibecoders, not optional polish.
 2. Preserve reviewer soak window: do not merge a newly created PR in the same execution response; check comments/reviews/checks on a subsequent interaction before merge.
 3. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
 4. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
-5. Bind successful `dev-cycle` outputs to controlled default-profile policy updates with rollback checkpoints.
+5. Add policy-approval manifest workflow so `dev-cycle --apply-policy` checkpoints are explicitly accepted/rejected before long-lived default policy adoption.
 6. Extend browser control center with profile-policy controls and benchmark/gate report visualization.
 7. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
 

@@ -43,5 +43,12 @@ python -m eval.ollama_local_benchmark dev-cycle \
 ## Next Follow-ups
 
 1. Add browser UI trigger for `dev-cycle` plus recommendation visualization.
-2. Add controlled profile-policy apply/rollback action from dev-cycle summary output.
-3. Add policy note section that records why each profile recommendation was accepted/rejected in the active branch.
+2. Add policy note section that records why each profile recommendation was accepted/rejected in the active branch.
+
+## Continuation Update (Phase 4M)
+
+Follow-on implementation now completed in `docs/plans/2026-02-15-phase4m-dev-cycle-policy-apply-rollback.md`:
+
+1. `dev-cycle --apply-policy` now supports controlled policy apply to running Muninn server.
+2. Policy apply now writes rollback checkpoint artifacts before mutation.
+3. New `rollback-policy` command restores prior profile defaults from checkpoint.
