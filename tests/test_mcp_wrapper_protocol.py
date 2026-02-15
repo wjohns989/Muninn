@@ -14,6 +14,8 @@ def reset_session_state():
         "negotiated": False,
         "initialized": False,
         "protocol_version": mcp_wrapper.SUPPORTED_PROTOCOL_VERSIONS[0],
+        "client_capabilities": {},
+        "client_elicitation_modes": tuple(),
     })
     yield
     mcp_wrapper._SESSION_STATE.clear()
@@ -135,6 +137,60 @@ def test_initialize_includes_session_model_profile(monkeypatch):
     assert len(sent) == 1
     instructions = sent[0]["result"]["instructions"]
     assert "Session model profile: high_reasoning" in instructions
+
+
+def test_initialize_advertises_tasks_capability(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "_collect_startup_warnings", lambda: [])
+
+    mcp_wrapper.handle_initialize("req-capabilities", {"protocolVersion": "2025-11-25"})
+
+    assert len(sent) == 1
+    capabilities = sent[0]["result"]["capabilities"]
+    assert capabilities["tools"]["listChanged"] is False
+    assert capabilities["tasks"]["list"] == {}
+
+
+def test_initialize_elicitation_empty_object_defaults_to_form_mode(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "_collect_startup_warnings", lambda: [])
+
+    mcp_wrapper.handle_initialize(
+        "req-elicitation-default",
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {
+                "elicitation": {}
+            },
+        },
+    )
+
+    assert len(sent) == 1
+    assert mcp_wrapper._SESSION_STATE["client_elicitation_modes"] == ("form",)
+
+
+def test_initialize_elicitation_modes_include_form_and_url(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "_collect_startup_warnings", lambda: [])
+
+    mcp_wrapper.handle_initialize(
+        "req-elicitation-modes",
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {
+                "elicitation": {
+                    "form": {},
+                    "url": {},
+                }
+            },
+        },
+    )
+
+    assert len(sent) == 1
+    assert mcp_wrapper._SESSION_STATE["client_elicitation_modes"] == ("form", "url")
 
 
 def test_collect_startup_warnings_when_dependencies_unavailable(monkeypatch):
@@ -297,6 +353,57 @@ def test_tools_list_before_initialized_rejected(monkeypatch):
     assert "Server not initialized" in sent[0]["error"]["message"]
 
 
+def test_tasks_list_before_initialized_rejected(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-list",
+        "method": "tasks/list",
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32600
+    assert "Server not initialized" in sent[0]["error"]["message"]
+
+
+def test_tasks_list_invalid_params_rejected(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-list-invalid",
+        "method": "tasks/list",
+        "params": [],
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32602
+    assert "tasks/list params must be an object" in sent[0]["error"]["message"]
+
+
+def test_tasks_list_returns_empty_collection(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-list-ok",
+        "method": "tasks/list",
+        "params": {"cursor": "cursor-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == "req-tasks-list-ok"
+    assert sent[0]["result"]["tasks"] == []
+
+
 def test_tools_call_invalid_params_rejected(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -340,6 +447,10 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
         assert schema["$schema"] == mcp_wrapper.JSON_SCHEMA_2020_12
         assert "annotations" in tool
         assert "readOnlyHint" in tool["annotations"]
+        assert "destructiveHint" in tool["annotations"]
+        assert "idempotentHint" in tool["annotations"]
+        assert "openWorldHint" in tool["annotations"]
+        assert tool["execution"]["taskSupport"] == "forbidden"
 
     assert by_name["search_memory"]["annotations"]["readOnlyHint"] is True
     assert by_name["get_model_profiles"]["annotations"]["readOnlyHint"] is True
@@ -349,6 +460,10 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert by_name["ingest_sources"]["annotations"]["readOnlyHint"] is False
     assert by_name["discover_legacy_sources"]["annotations"]["readOnlyHint"] is True
     assert by_name["ingest_legacy_sources"]["annotations"]["readOnlyHint"] is False
+    assert by_name["delete_memory"]["annotations"]["destructiveHint"] is True
+    assert by_name["delete_all_memories"]["annotations"]["destructiveHint"] is True
+    assert by_name["search_memory"]["annotations"]["idempotentHint"] is True
+    assert by_name["set_model_profiles"]["annotations"]["idempotentHint"] is False
     feedback_props = by_name["record_retrieval_feedback"]["inputSchema"]["properties"]
     assert "rank" in feedback_props
     assert "sampling_prob" in feedback_props

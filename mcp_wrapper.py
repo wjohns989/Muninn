@@ -31,6 +31,8 @@ _SESSION_STATE = {
     "negotiated": False,
     "initialized": False,
     "protocol_version": SUPPORTED_PROTOCOL_VERSIONS[0],
+    "client_capabilities": {},
+    "client_elicitation_modes": tuple(),
 }
 
 def get_git_info() -> Dict[str, str]:
@@ -385,6 +387,26 @@ def _negotiate_protocol_version(requested: Optional[str]) -> Optional[str]:
     return None
 
 
+def _extract_client_elicitation_modes(capabilities: Any) -> tuple[str, ...]:
+    """Read declared client elicitation modes with 2025-11-25 defaults."""
+    if not isinstance(capabilities, dict):
+        return tuple()
+    elicitation = capabilities.get("elicitation")
+    if elicitation is None:
+        return tuple()
+    if not isinstance(elicitation, dict):
+        return tuple()
+    if not elicitation:
+        # Spec compatibility: empty elicitation object implies form mode.
+        return ("form",)
+    modes: list[str] = []
+    if isinstance(elicitation.get("form"), dict):
+        modes.append("form")
+    if isinstance(elicitation.get("url"), dict):
+        modes.append("url")
+    return tuple(modes)
+
+
 def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     """Handle the initialize request from the client."""
     requested = None
@@ -407,6 +429,11 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     _SESSION_STATE["negotiated"] = True
     _SESSION_STATE["initialized"] = False
     _SESSION_STATE["protocol_version"] = negotiated
+    client_capabilities = params.get("capabilities") if isinstance(params, dict) else {}
+    if not isinstance(client_capabilities, dict):
+        client_capabilities = {}
+    _SESSION_STATE["client_capabilities"] = client_capabilities
+    _SESSION_STATE["client_elicitation_modes"] = _extract_client_elicitation_modes(client_capabilities)
     startup_warnings = _collect_startup_warnings()
 
     send_json_rpc({
@@ -417,6 +444,9 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
             "capabilities": {
                 "tools": {
                     "listChanged": False
+                },
+                "tasks": {
+                    "list": {}
                 }
             },
             "serverInfo": {
@@ -487,6 +517,26 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         handle_list_tools(msg_id)
         return
 
+    if method == "tasks/list":
+        if not _SESSION_STATE["initialized"]:
+            if msg_id is not None:
+                _send_json_rpc_error(
+                    msg_id,
+                    -32600,
+                    "Server not initialized. Send initialize then notifications/initialized.",
+                )
+            return
+        if msg_id is None:
+            logger.debug("Ignoring tasks/list notification without id")
+            return
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list params must be an object")
+            return
+        handle_list_tasks(msg_id, params)
+        return
+
     if method == "tools/call":
         if not _SESSION_STATE["initialized"]:
             if msg_id is not None:
@@ -521,6 +571,23 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         _send_json_rpc_error(msg_id, -32601, f"Method not found: {method}")
     else:
         logger.debug(f"Ignoring unknown notification method: {method}")
+
+
+def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
+    """Return active tasks for this server (currently no async task lifecycle)."""
+    params = params or {}
+    cursor = params.get("cursor")
+    if cursor is not None and not isinstance(cursor, str):
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be a string")
+        return
+    send_json_rpc({
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": {
+            "tasks": []
+        }
+    })
+
 
 def handle_list_tools(msg_id: Any):
     """Return list of available tools."""
@@ -1003,11 +1070,24 @@ def handle_list_tools(msg_id: Any):
         "export_handoff",
         "discover_legacy_sources",
     }
+    destructive_tools = {"delete_memory", "delete_all_memories"}
     for tool in tools:
         schema = tool.get("inputSchema", {})
         if isinstance(schema, dict) and "$schema" not in schema:
             schema["$schema"] = JSON_SCHEMA_2020_12
-        tool["annotations"] = {"readOnlyHint": tool.get("name") in read_only_tools}
+        name = tool.get("name")
+        read_only = name in read_only_tools
+        annotations = dict(tool.get("annotations") or {})
+        annotations.update({
+            "readOnlyHint": read_only,
+            "destructiveHint": name in destructive_tools,
+            "idempotentHint": read_only,
+            "openWorldHint": True,
+        })
+        tool["annotations"] = annotations
+        execution = dict(tool.get("execution") or {})
+        execution.setdefault("taskSupport", "forbidden")
+        tool["execution"] = execution
 
     send_json_rpc({
         "jsonrpc": "2.0",

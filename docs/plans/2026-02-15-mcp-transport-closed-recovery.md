@@ -100,3 +100,18 @@ Governance-lineage follow-on is now implemented in `docs/plans/2026-02-15-phase4
    - git ancestry helper now uses `rev-parse --verify -- <ref>` and evaluates ancestry against resolved ref SHA to prevent option-injection behavior from dash-prefixed refs.
 4. Validation increment:
    - benchmark/policy command tests now at `29 passed` (`tests/test_ollama_local_benchmark.py`).
+
+## Continuation Update (Phase 4R)
+
+MCP-compatibility follow-on is now implemented in `docs/plans/2026-02-15-phase4r-mcp-2025-11-25-compatibility.md`:
+
+1. MCP 2025-11-25 capability alignment:
+   - wrapper initialize now advertises `tasks.list` support and tracks client elicitation capabilities.
+2. Elicitation default semantics:
+   - empty client `capabilities.elicitation` now defaults to form-mode support for compatibility.
+3. Deterministic tasks/list handling:
+   - lifecycle + params validation added for `tasks/list`, with deterministic empty task result until async lifecycle is enabled.
+4. Tool metadata hardening:
+   - each tool now returns `execution.taskSupport` plus richer annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`).
+5. Validation increment:
+   - protocol tests now at `36 passed` (`tests/test_mcp_wrapper_protocol.py`).

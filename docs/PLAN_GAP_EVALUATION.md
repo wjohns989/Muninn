@@ -41,6 +41,7 @@ Evaluator: Codex
 - **Phase 4O approval provenance-context baseline is now implemented**: approval manifests now capture optional PR/commit/branch provenance with validation + git fallback, and checkpoint apply reports now propagate the provenance context.
 - **Phase 4P apply-checkpoint provenance enforcement baseline is now implemented**: checkpoint apply now supports required-provenance enforcement flags so policy mutation can be blocked when manifest provenance fields are missing.
 - **Phase 4Q git-ancestry enforcement baseline is now implemented**: checkpoint apply now supports commit lineage verification (`--require-commit-reachable-from`) to block mutations when commit ancestry does not match required branch/ref.
+- **Phase 4R MCP 2025-11-25 compatibility baseline is now implemented**: wrapper now advertises `tasks.list`, applies elicitation empty-object form defaults, supports deterministic `tasks/list`, and returns explicit task-support/tool-annotation metadata contracts.
 
 ## Status vs Plan
 
@@ -144,6 +145,10 @@ Evaluator: Codex
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
   - `29 passed` (`tests/test_ollama_local_benchmark.py`)
   - security hardening now enforces `rev-parse --verify -- <ref>` + resolved-SHA ancestry checks for dash-prefixed ref safety.
+- Phase 4R MCP 2025-11-25 compatibility tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `36 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `70 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -174,8 +179,8 @@ Evaluator: Codex
 5. **Memory compression/summarization layer for long-lived stores**
    - Periodic abstraction of dense episodic clusters into semantic memories with reversible provenance links.
    - Helps scale and keeps retrieval focused.
-6. **MCP 2025-11 conformance tranche**
-   - Align wrapper/protocol behavior with latest spec changes (tasks support trajectory, elicitation schema/default semantics, JSON Schema 2020-12 assumptions).
+6. **MCP 2025-11 conformance tranche (follow-up now narrower)**
+   - Baseline tasks/list + elicitation defaults + tool metadata assumptions are implemented; remaining high-ROI work is full task lifecycle (`tasks/get`, `tasks/result`, `tasks/cancel`) and selective async task support.
 7. **OpenTelemetry GenAI semantic instrumentation**
    - Standardized retrieval/add trace telemetry is implemented; next maturity step is dashboard/alert packs for regression triage.
 
@@ -225,6 +230,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4o-approval-provenance-context.md`
 - `docs/plans/2026-02-15-phase4p-apply-checkpoint-provenance-enforcement.md`
 - `docs/plans/2026-02-15-phase4q-git-ancestry-enforcement.md`
+- `docs/plans/2026-02-15-phase4r-mcp-2025-11-25-compatibility.md`
 - `docs/plans/2026-02-15-mcp-transport-closed-recovery.md`
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
