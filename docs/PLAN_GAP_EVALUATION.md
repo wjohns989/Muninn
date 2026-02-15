@@ -48,6 +48,7 @@ Evaluator: Codex
 - **Phase 4V task metadata/cursor compliance baseline is now implemented**: related-task metadata now uses `taskId`, task records now include `pollInterval`, and `tasks/list` now emits opaque cursor tokens.
 - **Phase 4W MCP transport resilience baseline is now implemented**: malformed framed payloads are now recoverable, backend outages now use circuit-breaker fast-fail cooldown, dispatch queue saturation now returns explicit `-32001`, and broken-pipe writes are now transport-guarded.
 - **Phase 4X transport soak + dispatch-policy baseline is now implemented**: deterministic MCP soak harness reports are now generated, `tools/call` background dispatch is now opt-in for transport determinism, and outage preflight start probes are now skipped when autostart is disabled or circuit is open.
+- **Phase 4Y profile-governance telemetry + guardrail baseline is now implemented**: profile-gate now emits governance alerts with policy thresholds, governance enforcement is now available in gate/cycle commands, and policy apply can now require governance-clean gate output.
 
 ## Status vs Plan
 
@@ -95,7 +96,7 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, and git ancestry enforcement are now implemented, but profile-level telemetry/alert thresholds and auto-governance promotion controls still need completion before default-policy automation.
+8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
 9. **MCP Muninn transport reliability intermittency (still partially open):** framing + parser resilience + queue/backoff + soak harness validations are now in-code, but external `muninn/search_memory` calls from this assistant session still hit 120s host-side deadlines; host MCP process restart/diagnostics remain required.
 
 ## Validation Snapshot
@@ -191,6 +192,11 @@ Evaluator: Codex
   - `python -m eval.mcp_transport_soak --iterations 6 --warmup-requests 1 --timeout-sec 12 --transport framed --server-url http://127.0.0.1:1 --failure-threshold 1 --cooldown-sec 30 --max-p95-ms 2500 --inject-malformed-frame` -> PASS (`eval/reports/mcp_transport/mcp_transport_soak_20260215_074136.json`)
   - `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command ""` -> PASS (`eval/reports/hygiene/phase_hygiene_20260215_074404.json`)
   - `tools/call` background dispatch is now opt-in (`MUNINN_MCP_BACKGROUND_TOOLS_CALL=1`) while `tasks/result` remains background-dispatched by default.
+- Phase 4Y profile-governance telemetry + guardrail tranche now passes targeted checks:
+  - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
+  - `30 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `profile-gate` now emits deterministic governance alerts and supports `--enforce-governance`.
+  - `dev-cycle` now supports `--enforce-governance` and `--require-governance-clean` for apply gating.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
