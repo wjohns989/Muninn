@@ -43,6 +43,7 @@ Evaluator: Codex
 - **Phase 4Q git-ancestry enforcement baseline is now implemented**: checkpoint apply now supports commit lineage verification (`--require-commit-reachable-from`) to block mutations when commit ancestry does not match required branch/ref.
 - **Phase 4R MCP 2025-11-25 compatibility baseline is now implemented**: wrapper now advertises `tasks.list`, applies elicitation empty-object form defaults, supports deterministic `tasks/list`, and returns explicit task-support/tool-annotation metadata contracts.
 - **Phase 4S MCP task lifecycle baseline is now implemented**: wrapper now handles `tasks/get`, `tasks/result`, and `tasks/cancel` with schema-aligned `taskId` validation and deterministic lifecycle error behavior.
+- **Phase 4T task-augmented tools/call baseline is now implemented**: wrapper now supports task-backed `tools/call` execution with status notifications plus TTL/retention/pagination governance for task state.
 
 ## Status vs Plan
 
@@ -157,6 +158,12 @@ Evaluator: Codex
   - `81 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - review follow-up now rejects terminal tasks without result payload and avoids reflecting raw unknown-task IDs in error strings.
   - workflow follow-up now hardens `eval.phase_hygiene` command decoding for mixed UTF-8/CP1252 output on Windows.
+- Phase 4T task-augmented tools/call tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `49 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `85 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - `tasks/result` now blocks until terminal completion and includes related-task metadata for deterministic correlation.
+  - task registry now enforces TTL purge + retention cap + cursor pagination semantics.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -188,7 +195,7 @@ Evaluator: Codex
    - Periodic abstraction of dense episodic clusters into semantic memories with reversible provenance links.
    - Helps scale and keeps retrieval focused.
 6. **MCP 2025-11 conformance tranche (follow-up now narrower)**
-   - Baseline tasks/list/get/result/cancel + elicitation defaults + tool metadata assumptions are implemented; remaining high-ROI work is task-augmented `tools/call`, task status notifications, and task retention/pagination governance.
+   - Baseline tasks/list/get/result/cancel + task-augmented `tools/call` + status notifications + retention/pagination governance are now implemented; remaining high-ROI work is advanced `input_required` task flows and optional persistent task-store backing.
 7. **OpenTelemetry GenAI semantic instrumentation**
    - Standardized retrieval/add trace telemetry is implemented; next maturity step is dashboard/alert packs for regression triage.
 
