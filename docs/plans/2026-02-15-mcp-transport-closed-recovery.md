@@ -40,3 +40,17 @@ If a current assistant/IDE session still returns `Transport closed`, apply:
 5. Re-test with a read-only tool call (`search_memory`/`get_project_goal`).
 
 Note: Parser hardening fixes future session initialization compatibility; it does not resurrect an already closed transport object in a running client process.
+
+## Continuation Update (Phase 4L.2)
+
+Follow-on hardening now implemented in `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`:
+
+1. Launch-time dependency bootstrap:
+   - wrapper startup now triggers best-effort server/Ollama readiness when autostart flags are enabled.
+2. Windows tray operational controls:
+   - direct `Open Browser UI`,
+   - `MCP Health Check` (server + Ollama + wrapper probe),
+   - explicit `Start Ollama`,
+   - `View MCP Wrapper Log`.
+3. Verification increment:
+   - protocol/startup tests now at `30 passed` (`tests/test_mcp_wrapper_protocol.py`).

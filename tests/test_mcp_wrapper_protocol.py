@@ -150,6 +150,48 @@ def test_collect_startup_warnings_when_dependencies_unavailable(monkeypatch):
     assert any("ollama serve" in warning for warning in warnings)
 
 
+def test_bootstrap_dependencies_on_launch_honors_flags(monkeypatch):
+    calls = {"server": 0, "ollama": 0}
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_ON_LAUNCH", "1")
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER", "1")
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_OLLAMA", "0")
+
+    def _server():
+        calls["server"] += 1
+        return True
+
+    def _ollama():
+        calls["ollama"] += 1
+        return True
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _server)
+    monkeypatch.setattr(mcp_wrapper, "check_and_start_ollama", _ollama)
+
+    mcp_wrapper._bootstrap_dependencies_on_launch()
+    assert calls["server"] == 1
+    assert calls["ollama"] == 0
+
+
+def test_bootstrap_dependencies_on_launch_disabled(monkeypatch):
+    calls = {"server": 0, "ollama": 0}
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_ON_LAUNCH", "0")
+
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "ensure_server_running",
+        lambda: calls.__setitem__("server", calls["server"] + 1) or True,
+    )
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "check_and_start_ollama",
+        lambda: calls.__setitem__("ollama", calls["ollama"] + 1) or True,
+    )
+
+    mcp_wrapper._bootstrap_dependencies_on_launch()
+    assert calls["server"] == 0
+    assert calls["ollama"] == 0
+
+
 def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))

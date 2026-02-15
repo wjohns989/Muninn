@@ -31,6 +31,7 @@ OLLAMA_URL = os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434")
 CWD = Path(__file__).parent.resolve()
 ASSETS_DIR = CWD / "assets"
 SERVER_SCRIPT = CWD / "server.py"
+MCP_WRAPPER_SCRIPT = CWD / "mcp_wrapper.py"
 LOG_FILE = CWD / "tray_app.log"
 PYTHON_EXE = sys.executable
 
@@ -75,6 +76,21 @@ class MuninnTrayApp:
         self.graph_nodes = 0
         self.ollama_ok = False
         self._status_lock = threading.Lock()
+
+    def _cli_python_executable(self) -> str:
+        """Return python.exe for subprocesses that rely on stdout piping."""
+        exe = Path(PYTHON_EXE)
+        if exe.name.lower() == "pythonw.exe":
+            candidate = exe.with_name("python.exe")
+            if candidate.exists():
+                return str(candidate)
+        return PYTHON_EXE
+
+    def _env_flag(self, name: str, default: bool = True) -> bool:
+        value = os.environ.get(name)
+        if value is None:
+            return default
+        return value.strip().lower() not in {"0", "false", "no", "off"}
 
     # --- Icon Generation ---
 
@@ -192,6 +208,34 @@ class MuninnTrayApp:
         except Exception:
             return False
 
+    def _ensure_ollama_running(self) -> bool:
+        """Start Ollama when enabled and not already running."""
+        if self._check_ollama():
+            return True
+
+        if not self._env_flag("MUNINN_TRAY_AUTOSTART_OLLAMA", True):
+            logger.info("Tray autostart for Ollama disabled by MUNINN_TRAY_AUTOSTART_OLLAMA.")
+            return False
+
+        try:
+            from muninn.platform import find_ollama_executable, spawn_detached_process
+
+            ollama_path = find_ollama_executable()
+            if not ollama_path:
+                logger.warning("Ollama executable not found from tray bootstrap.")
+                return False
+
+            spawn_detached_process([ollama_path, "serve"])
+            for _ in range(20):
+                if self._check_ollama():
+                    logger.info("Ollama started from tray bootstrap.")
+                    return True
+                time.sleep(0.5)
+        except Exception as exc:
+            logger.error("Failed to launch Ollama from tray app: %s", exc)
+            return False
+        return False
+
     def _update_status(self):
         """Poll server and Ollama status, update icon accordingly."""
         health = self._check_server_health()
@@ -241,6 +285,8 @@ class MuninnTrayApp:
 
     def start_server(self):
         """Start the Muninn server as a detached process."""
+        self._ensure_ollama_running()
+
         if self._check_port(SERVER_PORT):
             logger.info("Server already running on port %d", SERVER_PORT)
             self._update_status()
@@ -339,10 +385,23 @@ class MuninnTrayApp:
     # --- Menu Actions ---
 
     def _on_open_dashboard(self, icon, item):
+        if self.status == ServerStatus.OFFLINE:
+            threading.Thread(target=self.start_server, daemon=True).start()
         webbrowser.open(SERVER_URL)
 
     def _on_start(self, icon, item):
         threading.Thread(target=self.start_server, daemon=True).start()
+
+    def _on_start_ollama(self, icon, item):
+        def _start_ollama():
+            ok = self._ensure_ollama_running()
+            self._update_status()
+            self._show_message(
+                "Muninn MCP Tray",
+                "Ollama is ready." if ok else "Ollama could not be started. Check tray/server logs.",
+            )
+
+        threading.Thread(target=_start_ollama, daemon=True).start()
 
     def _on_stop(self, icon, item):
         threading.Thread(target=self.stop_server, daemon=True).start()
@@ -363,6 +422,91 @@ class MuninnTrayApp:
             # Fallback to tray log
             if LOG_FILE.exists():
                 os.startfile(str(LOG_FILE))
+
+    def _on_view_mcp_wrapper_log(self, icon, item):
+        """Open MCP wrapper log file for transport diagnostics."""
+        wrapper_log = CWD / "mcp_wrapper.log"
+        if wrapper_log.exists():
+            os.startfile(str(wrapper_log))
+        elif LOG_FILE.exists():
+            os.startfile(str(LOG_FILE))
+
+    def _probe_mcp_wrapper(self) -> tuple[bool, str]:
+        """Launch wrapper with a minimal handshake to validate MCP responsiveness."""
+        if not MCP_WRAPPER_SCRIPT.exists():
+            return False, "mcp_wrapper.py was not found."
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {"protocolVersion": "2025-11-25"},
+                    }
+                ),
+                json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+                "",
+            ]
+        )
+
+        try:
+            result = subprocess.run(
+                [self._cli_python_executable(), str(MCP_WRAPPER_SCRIPT)],
+                cwd=str(CWD),
+                input=payload,
+                capture_output=True,
+                text=True,
+                timeout=25,
+            )
+        except Exception as exc:
+            return False, f"Wrapper probe failed to execute: {exc}"
+
+        if not result.stdout.strip():
+            return False, "Wrapper probe produced no stdout payload."
+
+        responses = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                responses.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+        init_ok = any(resp.get("id") == 1 and "result" in resp for resp in responses)
+        tools_ok = any(resp.get("id") == 2 and "result" in resp for resp in responses)
+        if init_ok and tools_ok:
+            return True, "Wrapper initialize/tools-list probe passed."
+        return False, "Wrapper handshake failed. Review mcp_wrapper.log for details."
+
+    def _show_message(self, title: str, text: str) -> None:
+        """Show a native Windows message box fallbacking to logs only on failure."""
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(0, text, title, 0x00000040)
+        except Exception:
+            logger.info("%s: %s", title, text)
+
+    def _on_mcp_health_check(self, icon, item):
+        def _run():
+            server_ok = bool(self._check_server_health())
+            ollama_ok = self._check_ollama()
+            wrapper_ok, wrapper_msg = self._probe_mcp_wrapper()
+            status_lines = [
+                f"Server: {'OK' if server_ok else 'DOWN'}",
+                f"Ollama: {'OK' if ollama_ok else 'DOWN'}",
+                f"MCP Wrapper: {'OK' if wrapper_ok else 'FAILED'}",
+                wrapper_msg,
+            ]
+            self._show_message("Muninn MCP Health Check", "\n".join(status_lines))
+            self._update_status()
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _on_open_folder(self, icon, item):
         """Open the Muninn installation folder."""
@@ -403,8 +547,8 @@ class MuninnTrayApp:
                 visible=lambda item: self.status in (ServerStatus.ONLINE, ServerStatus.DEGRADED)
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Open Dashboard", self._on_open_dashboard,
-                             enabled=lambda item: self.status in (ServerStatus.ONLINE, ServerStatus.DEGRADED)),
+            pystray.MenuItem("Open Browser UI", self._on_open_dashboard),
+            pystray.MenuItem("MCP Health Check", self._on_mcp_health_check),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Start Server", self._on_start,
                              visible=lambda item: self.status == ServerStatus.OFFLINE),
@@ -412,8 +556,11 @@ class MuninnTrayApp:
                              visible=lambda item: self.status in (ServerStatus.ONLINE, ServerStatus.DEGRADED, ServerStatus.STARTING)),
             pystray.MenuItem("Restart Server", self._on_restart,
                              visible=lambda item: self.status in (ServerStatus.ONLINE, ServerStatus.DEGRADED)),
+            pystray.MenuItem("Start Ollama", self._on_start_ollama,
+                             visible=lambda item: not self.ollama_ok),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("View Logs", self._on_view_logs),
+            pystray.MenuItem("View MCP Wrapper Log", self._on_view_mcp_wrapper_log),
             pystray.MenuItem("Open Folder", self._on_open_folder),
             pystray.MenuItem(
                 "Start with Windows",
