@@ -501,6 +501,25 @@ def test_dispatch_guard_logs_generic_message(monkeypatch):
     assert logged == ["An unexpected error occurred during RPC dispatch."]
 
 
+def test_dispatch_guard_returns_internal_error_for_request_id(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "_dispatch_rpc_message",
+        lambda _msg: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    mcp_wrapper._dispatch_rpc_message_guarded(
+        {"jsonrpc": "2.0", "id": "req-dispatch-crash", "method": "tasks/result"}
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == "req-dispatch-crash"
+    assert sent[0]["error"]["code"] == -32603
+    assert "Internal error during request dispatch." in sent[0]["error"]["message"]
+
+
 def test_send_json_rpc_marks_transport_closed_on_broken_pipe(monkeypatch):
     sent = []
 
