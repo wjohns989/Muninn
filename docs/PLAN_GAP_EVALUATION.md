@@ -35,6 +35,7 @@ Evaluator: Codex
 - **Phase 4K phase-boundary hygiene gate baseline is now implemented**: `eval.phase_hygiene` now enforces one-open-PR policy, executes test commands with shell-safe tokenization, parses pytest JUnit summaries, and checks review/check + skipped-test/warning budgets with machine-readable reports.
 - **Phase 4L development-cycle benchmark orchestration baseline is now implemented**: `dev-cycle` now runs live benchmark + legacy benchmark + profile gate in one operator-triggered command and emits role-based model recommendations for runtime/balanced/high-reasoning usage.
 - **MCP transport framing compatibility fix is now implemented**: `mcp_wrapper` now accepts both newline-delimited JSON and `Content-Length` framed JSON-RPC payloads to prevent client transport disconnects caused by framing mismatch.
+- **MCP startup + tray operational hardening is now implemented**: wrapper launch now triggers autostart bootstrap for Ollama/server when enabled, and Windows tray now exposes direct Browser UI + MCP health check + wrapper diagnostics actions.
 
 ## Status vs Plan
 
@@ -83,7 +84,7 @@ Evaluator: Codex
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, and ability/resource benchmark scoring are now implemented, but profile-level eval/telemetry promotion gates and alerting thresholds still need completion before default-policy promotion.
-9. **MCP Muninn transport reliability intermittency (partially mitigated):** wrapper transport parsing now supports both newline and `Content-Length` framing; existing sessions that already hold a closed transport still require session/tool-runtime restart to recover.
+9. **MCP Muninn transport reliability intermittency (operationally mitigated):** framing mismatch is fixed and startup bootstrap is in place; stale closed handles still require session restart by design, now covered by explicit recovery runbook and tray health-probe tooling.
 
 ## Validation Snapshot
 
@@ -119,6 +120,9 @@ Evaluator: Codex
 - MCP transport framing compatibility tranche now passes targeted checks:
   - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
   - `28 passed` (`tests/test_mcp_wrapper_protocol.py`)
+- MCP startup + tray hardening tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tray_app.py tests/test_mcp_wrapper_protocol.py`
+  - `30 passed` (`tests/test_mcp_wrapper_protocol.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -196,6 +200,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4k-hygiene-gate-and-roadmap-refresh.md`
 - `docs/plans/2026-02-15-phase4l-dev-cycle-benchmark-orchestration.md`
 - `docs/plans/2026-02-15-mcp-transport-closed-recovery.md`
+- `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
 ## Model-Caliber Research Update (2026-02-14)
 
