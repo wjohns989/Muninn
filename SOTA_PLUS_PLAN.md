@@ -289,6 +289,7 @@
 75. Phase 5A continuation hardening for transport + UI security implemented:
     - MCP wrapper tool responses now enforce bounded output size (`MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS`) with deterministic truncation markers to reduce large-payload timeout pressure,
     - MCP wrapper public error responses now sanitize timeout/connection/internal failures while preserving actionable validation errors,
+    - profile REST endpoints now avoid returning raw internal exception strings on 500s and retain full stack traces only in server logs,
     - browser dashboard removed dynamic `innerHTML` rendering for result payloads and legacy source rows (DOM-safe node creation with `textContent`),
     - browser API error handling now summarizes/redacts sensitive backend detail strings before display.
 

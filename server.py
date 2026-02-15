@@ -452,8 +452,11 @@ async def set_user_profile_endpoint(req: SetUserProfileRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error("Error setting user profile: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error setting user profile: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An internal error occurred while setting the user profile.",
+        )
 
 
 @app.get("/profile/user/get")
@@ -470,8 +473,11 @@ async def get_user_profile_endpoint(
         )
         return {"success": True, "data": result}
     except Exception as e:
-        logger.error("Error getting user profile: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error getting user profile: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An internal error occurred while getting the user profile.",
+        )
 
 
 @app.get("/goal/get")

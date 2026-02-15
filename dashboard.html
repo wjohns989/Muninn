@@ -1035,8 +1035,9 @@
       try {
         profile = parseJsonOrEmpty(document.getElementById("user-profile-json").value);
       } catch (err) {
-        setResult("user-profile-result", { error: err.message });
-        logLine(err.message, "err");
+        const message = "Invalid JSON format in user profile.";
+        setResult("user-profile-result", { error: message });
+        logLine(message, "err");
         return;
       }
 

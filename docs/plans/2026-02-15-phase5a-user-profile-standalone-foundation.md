@@ -71,6 +71,7 @@ Deliver the first production slice of Phase 5 improvements focused on:
 - Public MCP error responses are now sanitized by error class:
   - retain actionable validation errors (`ValueError`),
   - redact connection/timeout/internal details to stable operator-safe messages.
+- User-profile REST endpoints now return generic 500-detail strings while logging full exception traces (`exc_info=True`) for operator diagnostics.
 - `dashboard.html` XSS surface reduced:
   - replaced dynamic `innerHTML` JSON rendering with DOM-safe `textContent` rendering,
   - replaced legacy discovery table string-HTML rendering with explicit DOM node creation.
