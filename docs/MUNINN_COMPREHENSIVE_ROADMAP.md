@@ -520,6 +520,8 @@ This is core for vibecoders, not optional polish.
    - Mitigation: publish evaluation artifacts with each release candidate.
 6. **Model-profile overengineering risk**
    - Mitigation: keep first release to 3 profile tiers + deterministic fallback policy; only expand with measured ROI.
+7. **Review automation quota risk**
+   - Mitigation: treat external auto-review signals as best-effort; require local deterministic validation and human reviewer soak before merge when bot quota is exhausted.
 
 ---
 
