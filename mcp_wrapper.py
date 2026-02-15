@@ -39,6 +39,7 @@ _SESSION_STATE = {
     "initialized": False,
     "protocol_version": SUPPORTED_PROTOCOL_VERSIONS[0],
     "client_capabilities": {},
+    "client_info": {},
     "client_elicitation_modes": tuple(),
     "tasks": {},
 }
@@ -75,6 +76,7 @@ _BACKEND_CIRCUIT_STATE = {
     "consecutive_failures": 0,
     "open_until_epoch": 0.0,
 }
+_TASK_RESULT_MODES = ("auto", "blocking", "immediate_retry")
 
 
 class _BackendCircuitOpenError(requests.ConnectionError):
@@ -273,6 +275,59 @@ def _get_task_result_max_wait_seconds() -> Optional[float]:
             else:
                 return seconds
     return host_safe_budget
+
+
+def _get_task_result_mode() -> str:
+    raw_mode = os.environ.get("MUNINN_MCP_TASK_RESULT_MODE", "auto").strip().lower()
+    if raw_mode in _TASK_RESULT_MODES:
+        return raw_mode
+    logger.warning(
+        "Invalid MUNINN_MCP_TASK_RESULT_MODE=%r; using 'auto'. Supported modes: %s",
+        raw_mode,
+        ",".join(_TASK_RESULT_MODES),
+    )
+    return "auto"
+
+
+def _get_task_result_auto_retry_clients() -> tuple[str, ...]:
+    raw_value = os.environ.get(
+        "MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS",
+        "claude desktop,claude code,cursor,windsurf,continue",
+    )
+    tokens = tuple(
+        token.strip().lower()
+        for token in raw_value.split(",")
+        if token.strip()
+    )
+    if tokens:
+        return tokens
+    return ("claude desktop", "claude code", "cursor", "windsurf", "continue")
+
+
+def _task_result_should_block(params: Dict[str, Any]) -> bool:
+    wait_hint = params.get("wait")
+    if wait_hint is not None:
+        if not isinstance(wait_hint, bool):
+            raise ValueError("Invalid params: tasks/result wait must be a boolean")
+        return wait_hint
+
+    mode = _get_task_result_mode()
+    if mode == "blocking":
+        return True
+    if mode == "immediate_retry":
+        return False
+
+    client_info = _SESSION_STATE.get("client_info")
+    client_name = ""
+    if isinstance(client_info, dict):
+        name = client_info.get("name")
+        if isinstance(name, str):
+            client_name = name.strip().lower()
+    if client_name:
+        for token in _get_task_result_auto_retry_clients():
+            if token in client_name:
+                return False
+    return True
 
 
 def _get_startup_recovery_min_budget_seconds() -> float:
@@ -879,6 +934,8 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     raw_capabilities = params.get("capabilities") if isinstance(params, dict) else None
     client_capabilities = raw_capabilities if isinstance(raw_capabilities, dict) else {}
     _SESSION_STATE["client_capabilities"] = client_capabilities
+    raw_client_info = params.get("clientInfo") if isinstance(params, dict) else None
+    _SESSION_STATE["client_info"] = raw_client_info if isinstance(raw_client_info, dict) else {}
     _SESSION_STATE["client_elicitation_modes"] = _extract_client_elicitation_modes(client_capabilities)
     if not isinstance(_SESSION_STATE.get("tasks"), dict):
         _SESSION_STATE["tasks"] = {}
@@ -1261,6 +1318,11 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
     task_id = _task_id_or_error(msg_id, params, "tasks/result")
     if task_id is None:
         return
+    try:
+        should_block = _task_result_should_block(params)
+    except ValueError as exc:
+        _send_json_rpc_error(msg_id, -32602, str(exc))
+        return
     max_wait_seconds = _get_task_result_max_wait_seconds()
     wait_started_at = time.monotonic()
     with _TASKS_CONDITION:
@@ -1272,6 +1334,16 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
             status = str(task.get("status") or "")
             if status in _TASK_TERMINAL_STATUSES or status == "input_required":
                 break
+            if not should_block:
+                _send_json_rpc_error(
+                    msg_id,
+                    -32002,
+                    (
+                        "Task result is not ready; task is still "
+                        f"'{status or 'working'}'. Poll tasks/get and retry tasks/result."
+                    ),
+                )
+                return
             wait_timeout = 0.1
             if max_wait_seconds is not None:
                 elapsed = time.monotonic() - wait_started_at
