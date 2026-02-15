@@ -1,5 +1,7 @@
 import copy
 import io
+import threading
+import time
 
 import pytest
 
@@ -347,6 +349,40 @@ def test_unknown_notification_method_is_ignored(monkeypatch):
     assert sent == []
 
 
+def test_background_dispatch_selection():
+    assert mcp_wrapper._should_dispatch_in_background({"method": "tasks/result"}) is True
+    assert mcp_wrapper._should_dispatch_in_background({"method": "tools/call"}) is True
+    assert mcp_wrapper._should_dispatch_in_background({"method": "ping"}) is False
+
+
+def test_dispatch_guard_logs_generic_message(monkeypatch):
+    logged = []
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "_dispatch_rpc_message",
+        lambda _msg: (_ for _ in ()).throw(ValueError("bad\nuser")),
+    )
+    monkeypatch.setattr(mcp_wrapper.logger, "error", lambda msg: logged.append(msg))
+
+    mcp_wrapper._dispatch_rpc_message_guarded({"method": "tasks/result"})
+    assert logged == ["An unexpected error occurred during RPC dispatch."]
+
+
+def test_submit_background_dispatch_uses_executor(monkeypatch):
+    calls = []
+
+    class _StubExecutor:
+        def submit(self, fn, *args):
+            calls.append((fn, args))
+
+    monkeypatch.setattr(mcp_wrapper, "_get_dispatch_executor", lambda: _StubExecutor())
+    payload = {"method": "tasks/result", "id": "req"}
+    mcp_wrapper._submit_background_dispatch(payload)
+    assert len(calls) == 1
+    assert calls[0][0] is mcp_wrapper._dispatch_rpc_message_guarded
+    assert calls[0][1][0] == payload
+
+
 def test_initialized_notification_requires_prior_initialize(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -569,15 +605,39 @@ def test_tasks_result_requires_terminal_status(monkeypatch):
     mcp_wrapper._SESSION_STATE["tasks"] = {
         "task-1": _sample_task(task_id="task-1", status="working"),
     }
-    mcp_wrapper._dispatch_rpc_message({
-        "jsonrpc": "2.0",
-        "id": "req-tasks-result-not-done",
-        "method": "tasks/result",
-        "params": {"taskId": "task-1"},
-    })
+    done = threading.Event()
+
+    def _invoke_result():
+        mcp_wrapper._dispatch_rpc_message({
+            "jsonrpc": "2.0",
+            "id": "req-tasks-result-blocking",
+            "method": "tasks/result",
+            "params": {"taskId": "task-1"},
+        })
+        done.set()
+
+    thread = threading.Thread(target=_invoke_result, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    assert done.is_set() is False
+    assert sent == []
+
+    with mcp_wrapper._TASKS_CONDITION:
+        task = mcp_wrapper._SESSION_STATE["tasks"]["task-1"]
+        mcp_wrapper._set_task_state_locked(
+            task,
+            status="completed",
+            status_message="done",
+            result={"content": [{"type": "text", "text": "ok"}]},
+        )
+        mcp_wrapper._TASKS_CONDITION.notify_all()
+
+    thread.join(timeout=1.0)
+    assert done.is_set() is True
     assert len(sent) == 1
-    assert sent[0]["error"]["code"] == -32001
-    assert "not complete" in sent[0]["error"]["message"]
+    assert sent[0]["id"] == "req-tasks-result-blocking"
+    assert sent[0]["result"]["content"][0]["text"] == "ok"
+    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["id"] == "task-1"
 
 
 def test_tasks_result_returns_payload_for_completed_task(monkeypatch):

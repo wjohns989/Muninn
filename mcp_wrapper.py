@@ -13,6 +13,7 @@ import json
 import logging
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 import requests
 from datetime import datetime, timezone
@@ -45,6 +46,10 @@ _TASKS_MAX_TTL_MS = max(_TASKS_DEFAULT_TTL_MS, int(os.environ.get("MUNINN_MCP_TA
 _TASKS_LIST_PAGE_SIZE = max(1, int(os.environ.get("MUNINN_MCP_TASKS_LIST_PAGE_SIZE", "50")))
 _TASKS_MAX_RETAINED = max(_TASKS_LIST_PAGE_SIZE, int(os.environ.get("MUNINN_MCP_TASKS_MAX_RETAINED", "500")))
 _thread_local = threading.local()
+_RPC_WRITE_LOCK = threading.Lock()
+_DISPATCH_MAX_WORKERS = max(1, int(os.environ.get("MUNINN_MCP_DISPATCH_MAX_WORKERS", "8")))
+_DISPATCH_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_DISPATCH_EXECUTOR_LOCK = threading.Lock()
 
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
@@ -378,8 +383,9 @@ def send_json_rpc(message: Dict[str, Any]):
     if callable(emitter):
         emitter(message)
         return
-    print(json.dumps(message))
-    sys.stdout.flush()
+    with _RPC_WRITE_LOCK:
+        print(json.dumps(message))
+        sys.stdout.flush()
 
 
 def _send_json_rpc_error(msg_id: Any, code: int, message: str):
@@ -799,18 +805,15 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
     if task_id is None:
         return
     with _TASKS_CONDITION:
-        task = _lookup_task_locked(task_id)
-        if not isinstance(task, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
-            return
-        status = str(task.get("status") or "")
-        if status not in _TASK_TERMINAL_STATUSES and status != "input_required":
-            _send_json_rpc_error(
-                msg_id,
-                -32001,
-                f"Task '{task_id}' is not complete; current status is '{status or 'unknown'}'.",
-            )
-            return
+        while True:
+            task = _lookup_task_locked(task_id)
+            if not isinstance(task, dict):
+                _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
+                return
+            status = str(task.get("status") or "")
+            if status in _TASK_TERMINAL_STATUSES or status == "input_required":
+                break
+            _TASKS_CONDITION.wait(timeout=0.1)
         payload = task.get("result")
         error = task.get("error")
 
@@ -1938,6 +1941,36 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             }
         })
 
+
+def _dispatch_rpc_message_guarded(msg: Dict[str, Any]) -> None:
+    try:
+        _dispatch_rpc_message(msg)
+    except Exception:
+        logger.error("An unexpected error occurred during RPC dispatch.")
+
+
+def _get_dispatch_executor() -> ThreadPoolExecutor:
+    global _DISPATCH_EXECUTOR
+    executor = _DISPATCH_EXECUTOR
+    if executor is not None:
+        return executor
+    with _DISPATCH_EXECUTOR_LOCK:
+        if _DISPATCH_EXECUTOR is None:
+            _DISPATCH_EXECUTOR = ThreadPoolExecutor(
+                max_workers=_DISPATCH_MAX_WORKERS,
+                thread_name_prefix="muninn-mcp-dispatch",
+            )
+        return _DISPATCH_EXECUTOR
+
+
+def _submit_background_dispatch(msg: Dict[str, Any]) -> None:
+    _get_dispatch_executor().submit(_dispatch_rpc_message_guarded, msg)
+
+
+def _should_dispatch_in_background(msg: Dict[str, Any]) -> bool:
+    method = msg.get("method")
+    return method in {"tasks/result", "tools/call"}
+
 def main():
     logger.info("Muninn MCP Wrapper started")
 
@@ -1950,15 +1983,22 @@ def main():
     ).start()
     
     # Standard input loop
-    while True:
-        try:
-            msg = _read_rpc_message(sys.stdin.buffer)
-            if msg is None:
-                break
-            _dispatch_rpc_message(msg)
-                
-        except Exception as e:
-            logger.error(f"Loop error: {e}")
+    try:
+        while True:
+            try:
+                msg = _read_rpc_message(sys.stdin.buffer)
+                if msg is None:
+                    break
+                if _should_dispatch_in_background(msg):
+                    _submit_background_dispatch(msg)
+                else:
+                    _dispatch_rpc_message(msg)
+            except Exception as e:
+                logger.error(f"Loop error: {e}")
+    finally:
+        executor = _DISPATCH_EXECUTOR
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 if __name__ == "__main__":
     main()
