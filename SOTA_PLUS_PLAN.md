@@ -146,6 +146,11 @@
     - benchmark prompt pack shipped (`eval/ollama_benchmark_prompts.jsonl`),
     - local sync/benchmark CLI shipped (`python -m eval.ollama_local_benchmark ...`),
     - phase plan documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
+41. Phase 4I model ability/resource benchmarking baseline implemented:
+    - rubric-based ability scoring added to live benchmark runs,
+    - model summaries now include `ability_per_second` and `ability_per_vram_gb`,
+    - `legacy-benchmark` mode added for deterministic old-project ingestion-like evaluation,
+    - targeted unit tests added (`tests/test_ollama_local_benchmark.py`).
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -170,6 +175,7 @@
 - Phase 4G profile-policy audit visibility verification: `49 passed` (`tests/test_memory_profiles.py`, `tests/test_sqlite_profile_policy_events.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 - Phase 4H local benchmark tooling smoke checks: `python -m eval.ollama_local_benchmark list` and `python -m eval.ollama_local_benchmark sync --dry-run`.
 - Phase 4H initial five-model quick-pass benchmark snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
+- Phase 4I benchmark helper verification: `5 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -214,7 +220,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 **Still open gaps:**
 1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
 2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
-3. Profile-level promotion gates still need implementation (routing exists; profile-specific eval + telemetry thresholds remain open)
+3. Profile-level promotion gates still need implementation (routing, audit history, and benchmark plumbing exist; profile-specific gate thresholds + telemetry promotion policy remain open)
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)

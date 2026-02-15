@@ -124,7 +124,7 @@ This command validates checksums, dataset contract invariants, and baseline repo
 
 ## Local Ollama Model Matrix + Benchmark
 
-Use this for local model-cache sync and side-by-side throughput/latency benchmarking.
+Use this for local model-cache sync and side-by-side throughput/latency plus ability-vs-resource benchmarking.
 
 ```bash
 # Show matrix install status
@@ -141,6 +141,12 @@ python -m eval.ollama_local_benchmark benchmark --repeats 2 --num-predict 192
 
 # Benchmark explicit model subset
 python -m eval.ollama_local_benchmark benchmark --models xlam:latest,qwen3:8b
+
+# Build legacy-ingestion benchmark cases from old project roots and score model ability/resource efficiency
+python -m eval.ollama_local_benchmark legacy-benchmark \
+  --legacy-roots "C:/projects/old_repo_1,C:/projects/old_repo_2" \
+  --repeats 1 \
+  --dump-cases eval/reports/ollama/legacy_cases.jsonl
 ```
 
 Versioned inputs:
@@ -148,3 +154,11 @@ Versioned inputs:
 - Prompt pack: `eval/ollama_benchmark_prompts.jsonl`
 
 Generated reports are written to `eval/reports/ollama/` (gitignored).
+
+`benchmark` report summaries now include:
+- `avg_ability_score`
+- `ability_pass_rate`
+- `resource_efficiency.ability_per_second`
+- `resource_efficiency.ability_per_vram_gb`
+
+`legacy-benchmark` generates deterministic ingestion-like extraction cases from local project files and reports the same ability/resource metrics per model.
