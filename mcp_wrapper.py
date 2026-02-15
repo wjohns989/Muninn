@@ -13,10 +13,11 @@ import json
 import logging
 import subprocess
 import threading
+from uuid import uuid4
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any, List, BinaryIO
+from typing import Optional, Dict, Any, List, BinaryIO, Callable
 from muninn.version import __version__
 
 # Configure logging to file since stdout is used for MCP protocol
@@ -37,6 +38,13 @@ _SESSION_STATE = {
     "tasks": {},
 }
 _TASK_TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
+_TASKS_LOCK = threading.RLock()
+_TASKS_CONDITION = threading.Condition(_TASKS_LOCK)
+_TASKS_DEFAULT_TTL_MS = max(1, int(os.environ.get("MUNINN_MCP_TASK_TTL_MS", "600000")))
+_TASKS_MAX_TTL_MS = max(_TASKS_DEFAULT_TTL_MS, int(os.environ.get("MUNINN_MCP_TASK_MAX_TTL_MS", "86400000")))
+_TASKS_LIST_PAGE_SIZE = max(1, int(os.environ.get("MUNINN_MCP_TASKS_LIST_PAGE_SIZE", "50")))
+_TASKS_MAX_RETAINED = max(_TASKS_LIST_PAGE_SIZE, int(os.environ.get("MUNINN_MCP_TASKS_MAX_RETAINED", "500")))
+_thread_local = threading.local()
 
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
@@ -366,6 +374,10 @@ def _read_rpc_message(stream: BinaryIO) -> Optional[Dict[str, Any]]:
 
 def send_json_rpc(message: Dict[str, Any]):
     """Send JSON-RPC message to stdout."""
+    emitter = getattr(_thread_local, "rpc_emitter", None)
+    if callable(emitter):
+        emitter(message)
+        return
     print(json.dumps(message))
     sys.stdout.flush()
 
@@ -448,6 +460,12 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
                 "tasks": {
                     "list": {},
                     "cancel": {},
+                    "requests": {
+                        "tools/call": {},
+                    },
+                    "notifications": {
+                        "status": {},
+                    },
                 }
             },
             "serverInfo": {
@@ -538,31 +556,17 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         return
 
     if method == "tools/call":
-        if not _SESSION_STATE["initialized"]:
-            if msg_id is not None:
-                _send_json_rpc_error(
-                    msg_id,
-                    -32600,
-                    "Server not initialized. Send initialize then notifications/initialized.",
-                )
+        validated = _validate_initialized_rpc_params(msg_id, method, params)
+        if validated is None:
             return
-        if msg_id is None:
-            logger.debug("Ignoring tools/call notification without id")
+        parsed = _validate_tools_call_params(msg_id, validated)
+        if parsed is None:
             return
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call params must be an object")
-            return
-        name = params.get("name")
-        arguments = params.get("arguments", {})
-        if not isinstance(name, str) or not name:
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call requires non-empty string name")
-            return
-        if arguments is None:
-            arguments = {}
-        if not isinstance(arguments, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call arguments must be an object")
+        name = parsed["name"]
+        arguments = parsed["arguments"]
+        task_request = parsed.get("task")
+        if isinstance(task_request, dict):
+            handle_call_tool_with_task(msg_id, name, arguments, task_request)
             return
         handle_call_tool(msg_id, {"name": name, "arguments": arguments})
         return
@@ -597,20 +601,162 @@ def _validate_initialized_rpc_params(
     return validated
 
 
+def _validate_tools_call_params(msg_id: Any, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    name = params.get("name")
+    if not isinstance(name, str) or not name.strip():
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call requires non-empty string name")
+        return None
+    arguments = params.get("arguments", {})
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call arguments must be an object")
+        return None
+    task_request = params.get("task")
+    if task_request is not None and not isinstance(task_request, dict):
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: tools/call task must be an object")
+        return None
+    return {
+        "name": name.strip(),
+        "arguments": arguments,
+        "task": task_request,
+    }
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _task_now_epoch() -> float:
+    return time.time()
+
+
+def _sanitize_task_ttl_ms(raw_ttl: Any) -> int:
+    if raw_ttl is None:
+        return _TASKS_DEFAULT_TTL_MS
+    if not isinstance(raw_ttl, int):
+        raise ValueError("tools/call task ttl must be an integer in milliseconds")
+    if raw_ttl <= 0:
+        raise ValueError("tools/call task ttl must be greater than zero")
+    return min(raw_ttl, _TASKS_MAX_TTL_MS)
+
+
+def _public_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    public = {}
+    for key, value in task.items():
+        if key.startswith("_"):
+            continue
+        public[key] = value
+    return public
+
+
+def _related_task_meta(task_id: str) -> Dict[str, Any]:
+    return {"io.modelcontextprotocol/related-task": {"id": task_id}}
+
+
+def _emit_task_status_notification(task: Dict[str, Any]) -> None:
+    if not _SESSION_STATE.get("initialized"):
+        return
+    send_json_rpc({
+        "jsonrpc": "2.0",
+        "method": "notifications/tasks/status",
+        "params": {
+            "task": _public_task(task),
+        },
+    })
+
+
+def _set_task_state_locked(
+    task: Dict[str, Any],
+    *,
+    status: str,
+    status_message: Optional[str] = None,
+    result: Optional[Dict[str, Any]] = None,
+    error: Optional[Dict[str, Any]] = None,
+) -> None:
+    task["status"] = status
+    task["lastUpdatedAt"] = _utc_now_iso()
+    if status_message:
+        task["statusMessage"] = status_message
+    if result is not None:
+        task["result"] = result
+        task.pop("error", None)
+    elif error is not None:
+        task["error"] = error
+        task.pop("result", None)
+
+
+def _purge_and_retain_tasks_locked(now_epoch: float) -> None:
+    tasks = _task_registry()
+    expired_ids: List[str] = []
+    for task_id, task in tasks.items():
+        expires_at = task.get("_expiresAtEpoch")
+        if isinstance(expires_at, (int, float)) and now_epoch >= float(expires_at):
+            expired_ids.append(task_id)
+    for task_id in expired_ids:
+        tasks.pop(task_id, None)
+
+    if len(tasks) <= _TASKS_MAX_RETAINED:
+        return
+
+    ordered = sorted(
+        tasks.items(),
+        key=lambda item: (
+            item[1].get("status") not in _TASK_TERMINAL_STATUSES,
+            item[1].get("lastUpdatedAt") or "",
+            item[0],
+        ),
+    )
+    for task_id, _ in ordered:
+        if len(tasks) <= _TASKS_MAX_RETAINED:
+            break
+        tasks.pop(task_id, None)
+
+
+def _lookup_task_locked(task_id: str) -> Optional[Dict[str, Any]]:
+    _purge_and_retain_tasks_locked(_task_now_epoch())
+    return _task_registry().get(task_id)
+
+
 def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
-    """Return active tasks for this server (currently no async task lifecycle)."""
+    """Return retained tasks with deterministic cursor pagination."""
     params = params or {}
     cursor = params.get("cursor")
     if cursor is not None and not isinstance(cursor, str):
         _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be a string")
         return
-    tasks = _task_registry()
+    limit = params.get("limit")
+    page_size = _TASKS_LIST_PAGE_SIZE
+    if limit is not None:
+        if not isinstance(limit, int) or limit <= 0:
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list limit must be a positive integer")
+            return
+        page_size = min(limit, _TASKS_LIST_PAGE_SIZE)
+
+    start = 0
+    if isinstance(cursor, str) and cursor:
+        try:
+            start = int(cursor)
+        except ValueError:
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be a decimal offset string")
+            return
+        if start < 0:
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be non-negative")
+            return
+
+    with _TASKS_LOCK:
+        _purge_and_retain_tasks_locked(_task_now_epoch())
+        tasks = [_public_task(task) for task in _task_registry().values()]
+    tasks.sort(key=lambda item: (item.get("lastUpdatedAt") or "", item.get("taskId") or ""), reverse=True)
+    page = tasks[start:start + page_size]
+    next_cursor = start + page_size if start + page_size < len(tasks) else None
+    result = {"tasks": page}
+    if next_cursor is not None:
+        result["nextCursor"] = str(next_cursor)
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
-        "result": {
-            "tasks": list(tasks.values())
-        }
+        "result": result,
     })
 
 
@@ -635,39 +781,11 @@ def handle_get_task(msg_id: Any, params: Dict[str, Any]) -> None:
     task_id = _task_id_or_error(msg_id, params, "tasks/get")
     if task_id is None:
         return
-    task = _task_registry().get(task_id)
-    if not isinstance(task, dict):
-        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
-        return
-    send_json_rpc({
-        "jsonrpc": "2.0",
-        "id": msg_id,
-        "result": task,
-    })
-
-
-def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
-    task_id = _task_id_or_error(msg_id, params, "tasks/result")
-    if task_id is None:
-        return
-    task = _task_registry().get(task_id)
-    if not isinstance(task, dict):
-        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
-        return
-    status = str(task.get("status") or "")
-    if status not in _TASK_TERMINAL_STATUSES:
-        _send_json_rpc_error(
-            msg_id,
-            -32001,
-            f"Task '{task_id}' is not complete; current status is '{status or 'unknown'}'.",
-        )
-        return
-    payload = task.get("result")
+    with _TASKS_LOCK:
+        task = _lookup_task_locked(task_id)
+        payload = _public_task(task) if isinstance(task, dict) else None
     if not isinstance(payload, dict):
-        if status == "completed":
-            _send_json_rpc_error(msg_id, -32001, "Task is completed but result payload is unavailable.")
-        else:
-            _send_json_rpc_error(msg_id, -32001, f"Task result is unavailable for status '{status}'.")
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
         return
     send_json_rpc({
         "jsonrpc": "2.0",
@@ -676,32 +794,194 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
     })
 
 
+def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
+    task_id = _task_id_or_error(msg_id, params, "tasks/result")
+    if task_id is None:
+        return
+    with _TASKS_CONDITION:
+        task = _lookup_task_locked(task_id)
+        if not isinstance(task, dict):
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
+            return
+        status = str(task.get("status") or "")
+        if status not in _TASK_TERMINAL_STATUSES and status != "input_required":
+            _send_json_rpc_error(
+                msg_id,
+                -32001,
+                f"Task '{task_id}' is not complete; current status is '{status or 'unknown'}'.",
+            )
+            return
+        payload = task.get("result")
+        error = task.get("error")
+
+    if isinstance(error, dict):
+        send_json_rpc({
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "error": error,
+        })
+        return
+    if not isinstance(payload, dict):
+        _send_json_rpc_error(msg_id, -32603, "Task reached terminal state without a result payload.")
+        return
+    payload_with_meta = dict(payload)
+    result_meta = payload_with_meta.get("_meta")
+    if isinstance(result_meta, dict):
+        merged_meta = dict(result_meta)
+        merged_meta.update(_related_task_meta(task_id))
+        payload_with_meta["_meta"] = merged_meta
+    else:
+        payload_with_meta["_meta"] = _related_task_meta(task_id)
+    send_json_rpc({
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": payload_with_meta,
+    })
+
+
 def handle_cancel_task(msg_id: Any, params: Dict[str, Any]) -> None:
     task_id = _task_id_or_error(msg_id, params, "tasks/cancel")
     if task_id is None:
         return
-    task = _task_registry().get(task_id)
-    if not isinstance(task, dict):
-        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
-        return
-    status = str(task.get("status") or "")
-    if status in _TASK_TERMINAL_STATUSES:
-        _send_json_rpc_error(
-            msg_id,
-            -32001,
-            f"Task '{task_id}' is already terminal with status '{status}'.",
+    with _TASKS_CONDITION:
+        task = _lookup_task_locked(task_id)
+        if not isinstance(task, dict):
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
+            return
+        status = str(task.get("status") or "")
+        if status in _TASK_TERMINAL_STATUSES:
+            _send_json_rpc_error(
+                msg_id,
+                -32602,
+                "Invalid params: task is already in a terminal state.",
+            )
+            return
+        _set_task_state_locked(
+            task,
+            status="cancelled",
+            status_message="Task cancelled by client request.",
+            error={"code": -32800, "message": "Task was cancelled by client request."},
         )
-        return
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    task["status"] = "cancelled"
-    task["lastUpdatedAt"] = now
-    if not isinstance(task.get("statusMessage"), str) or not str(task.get("statusMessage")).strip():
-        task["statusMessage"] = "Cancelled by client request."
+        task["_cancelRequested"] = True
+        response_task = _public_task(task)
+        _TASKS_CONDITION.notify_all()
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
-        "result": task,
+        "result": response_task,
     })
+    _emit_task_status_notification(response_task)
+
+
+def handle_call_tool_with_task(
+    msg_id: Any,
+    name: str,
+    arguments: Dict[str, Any],
+    task_request: Dict[str, Any],
+) -> None:
+    try:
+        ttl_ms = _sanitize_task_ttl_ms(task_request.get("ttl"))
+    except ValueError as exc:
+        _send_json_rpc_error(msg_id, -32602, f"Invalid params: {exc}")
+        return
+
+    now_iso = _utc_now_iso()
+    now_epoch = _task_now_epoch()
+    task_id = str(uuid4())
+    task: Dict[str, Any] = {
+        "taskId": task_id,
+        "status": "working",
+        "statusMessage": f"Tool '{name}' is running.",
+        "createdAt": now_iso,
+        "lastUpdatedAt": now_iso,
+        "ttl": ttl_ms,
+        "_expiresAtEpoch": now_epoch + (ttl_ms / 1000.0),
+        "_cancelRequested": False,
+    }
+    with _TASKS_CONDITION:
+        _task_registry()[task_id] = task
+        _purge_and_retain_tasks_locked(now_epoch)
+        response_task = _public_task(task)
+        _TASKS_CONDITION.notify_all()
+
+    send_json_rpc({
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": {
+            "task": response_task,
+            "_meta": {
+                "io.modelcontextprotocol/model-immediate-response": (
+                    f"Task accepted for tool '{name}'. Monitor with tasks/get or tasks/result."
+                )
+            },
+        },
+    })
+    _emit_task_status_notification(response_task)
+
+    worker = threading.Thread(
+        target=_run_tool_call_task_worker,
+        args=(task_id, name, arguments),
+        daemon=True,
+    )
+    worker.start()
+
+
+def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any]) -> None:
+    captured: List[Dict[str, Any]] = []
+
+    def _capture_rpc(message: Dict[str, Any]) -> None:
+        captured.append(message)
+
+    setattr(_thread_local, "rpc_emitter", _capture_rpc)
+    try:
+        handle_call_tool(task_id, {"name": name, "arguments": arguments})
+    except Exception:
+        logger.exception("Unhandled exception while executing task-backed tool call")
+        captured.append({
+            "jsonrpc": "2.0",
+            "id": task_id,
+            "error": {"code": -32603, "message": "Internal error during task execution."},
+        })
+    finally:
+        setattr(_thread_local, "rpc_emitter", None)
+
+    message = captured[-1] if captured else {
+        "jsonrpc": "2.0",
+        "id": task_id,
+        "error": {"code": -32603, "message": "Task execution finished without a response payload."},
+    }
+
+    status = "failed"
+    status_message = f"Tool '{name}' failed."
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[Dict[str, Any]] = None
+
+    if isinstance(message.get("error"), dict):
+        error = message["error"]
+    else:
+        payload = message.get("result")
+        if isinstance(payload, dict):
+            result = payload
+            if payload.get("isError") is True:
+                status = "failed"
+                status_message = f"Tool '{name}' returned an error result."
+            else:
+                status = "completed"
+                status_message = f"Tool '{name}' completed."
+        else:
+            error = {"code": -32603, "message": "Task execution produced an invalid result payload."}
+
+    with _TASKS_CONDITION:
+        task = _lookup_task_locked(task_id)
+        if not isinstance(task, dict):
+            return
+        if task.get("status") == "cancelled":
+            _TASKS_CONDITION.notify_all()
+            return
+        _set_task_state_locked(task, status=status, status_message=status_message, result=result, error=error)
+        response_task = _public_task(task)
+        _TASKS_CONDITION.notify_all()
+    _emit_task_status_notification(response_task)
 
 
 def handle_list_tools(msg_id: Any):
@@ -1209,7 +1489,7 @@ def handle_list_tools(msg_id: Any):
         })
         tool["annotations"] = annotations
         execution = dict(tool.get("execution") or {})
-        execution.setdefault("taskSupport", "forbidden")
+        execution.setdefault("taskSupport", "optional")
         tool["execution"] = execution
 
     send_json_rpc({
