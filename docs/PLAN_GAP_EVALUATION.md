@@ -130,7 +130,7 @@ Evaluator: Codex
   - `11 passed` (`tests/test_ollama_local_benchmark.py`)
 - Phase 4N policy-approval manifest tranche now passes targeted checks:
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
-  - `15 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `16 passed` (`tests/test_ollama_local_benchmark.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
