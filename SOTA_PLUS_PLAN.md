@@ -185,6 +185,10 @@
 50. Phase 4P apply-checkpoint provenance enforcement baseline implemented:
     - `apply-checkpoint` now supports enforcement flags for required provenance fields (`change_context`, `pr_number`, `commit_sha`, `branch_name`),
     - provenance validation now gates apply path before policy mutation.
+51. Phase 4Q git-ancestry enforcement baseline implemented:
+    - `apply-checkpoint` now supports `--require-commit-reachable-from <ref>` to enforce commit lineage checks,
+    - policy mutation path now validates ref resolvability + commit ancestry via git before apply,
+    - ancestry verifier hardened against dash-prefixed ref option injection by using `rev-parse --verify -- <ref>` and resolved ref SHA ancestry checks.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -217,6 +221,7 @@
 - Phase 4N policy-approval manifest verification: `16 passed` (`tests/test_ollama_local_benchmark.py`).
 - Phase 4O approval provenance-context verification: `18 passed` (`tests/test_ollama_local_benchmark.py`).
 - Phase 4P apply-checkpoint provenance enforcement verification: `23 passed` (`tests/test_ollama_local_benchmark.py`).
+- Phase 4Q git-ancestry enforcement verification: `29 passed` (`tests/test_ollama_local_benchmark.py`) + `64 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -244,6 +249,8 @@
 23. **Policy-governance ROI**: approval manifests + hash-bound checkpoint apply close evidence-to-mutation audit gaps and reduce accidental/unauthorized policy drift.
 24. **Review-to-runtime traceability ROI**: PR/commit/branch provenance in approval/apply artifacts enables deterministic incident forensics and future policy enforcement on reviewed changes only.
 25. **Policy-guardrail ROI**: apply-time provenance enforcement prevents review-unlinked checkpoint mutations in stricter operating modes.
+26. **Lineage-governance ROI**: git ancestry checks prevent checkpoint applies tied to commits outside the intended branch lineage.
+27. **Mutation-guard security ROI**: ref option-separator + resolved-SHA verification closes dash-prefixed git argument ambiguity before policy mutation.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
