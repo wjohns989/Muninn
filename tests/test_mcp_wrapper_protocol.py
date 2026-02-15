@@ -553,6 +553,52 @@ def test_make_request_with_retry_fast_fails_when_circuit_is_open(monkeypatch):
     assert calls["request"] == 0
 
 
+def test_make_request_with_retry_clamps_timeout_to_remaining_deadline(monkeypatch):
+    observed = {}
+
+    class _Resp:
+        status_code = 200
+
+    def _fake_request(_method, _url, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr(mcp_wrapper.requests, "request", _fake_request)
+
+    deadline_epoch = time.monotonic() + 0.05
+    mcp_wrapper.make_request_with_retry(
+        "GET",
+        "http://localhost:42069/health",
+        timeout=10.0,
+        deadline_epoch=deadline_epoch,
+    )
+
+    timeout_value = observed["timeout"]
+    assert isinstance(timeout_value, float)
+    assert 0 < timeout_value <= 0.06
+
+
+def test_make_request_with_retry_fails_before_request_when_deadline_exhausted(monkeypatch):
+    calls = {"request": 0}
+
+    def _never_called(_method, _url, **_kwargs):
+        calls["request"] += 1
+        raise AssertionError("requests.request should not be called after deadline exhaustion")
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr(mcp_wrapper.requests, "request", _never_called)
+
+    with pytest.raises(mcp_wrapper._RequestDeadlineExceededError):
+        mcp_wrapper.make_request_with_retry(
+            "GET",
+            "http://localhost:42069/health",
+            timeout=1.0,
+            deadline_epoch=time.monotonic() - 1.0,
+        )
+    assert calls["request"] == 0
+
+
 def test_initialized_notification_requires_prior_initialize(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -1330,3 +1376,38 @@ def test_ingest_legacy_sources_tool_call_payload(monkeypatch):
     assert captured["json"]["chronological_order"] == "oldest_first"
     assert sent
     assert sent[0]["id"] == "req-legacy-import"
+
+
+def test_delete_memory_tool_call_url_encodes_memory_id_and_sets_deadline(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "30")
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "DELETE_COMPLETED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["deadline_epoch"] = kwargs.get("deadline_epoch")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-delete",
+        {
+            "name": "delete_memory",
+            "arguments": {"memory_id": "folder/item?x=1"},
+        },
+    )
+
+    assert captured["method"] == "DELETE"
+    assert captured["url"].endswith("/delete/folder%2Fitem%3Fx%3D1")
+    assert isinstance(captured["deadline_epoch"], float)
+    assert sent
+    assert sent[0]["id"] == "req-delete"

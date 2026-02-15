@@ -8,6 +8,7 @@ Auto-starts the server if it's not running.
 
 import sys
 import os
+import math
 import time
 import json
 import base64
@@ -15,6 +16,7 @@ import logging
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote
 from uuid import uuid4
 import requests
 from datetime import datetime, timezone
@@ -77,6 +79,10 @@ _BACKEND_CIRCUIT_STATE = {
 class _BackendCircuitOpenError(requests.ConnectionError):
     """Raised when backend requests are short-circuited during cooldown."""
 
+
+class _RequestDeadlineExceededError(requests.Timeout):
+    """Raised when a request-specific deadline budget is exhausted."""
+
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
     info = {"project": "global", "branch": "none"}
@@ -122,6 +128,34 @@ def _env_flag(name: str, default: bool = True) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _get_tool_call_deadline_seconds() -> Optional[float]:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "110")
+    try:
+        seconds = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_CALL_DEADLINE_SEC=%r; using default of 110 seconds.",
+            raw_value,
+        )
+        return 110.0
+    if not math.isfinite(seconds):
+        logger.warning(
+            "Non-finite MUNINN_MCP_TOOL_CALL_DEADLINE_SEC=%r; using default of 110 seconds.",
+            raw_value,
+        )
+        return 110.0
+    if seconds <= 0:
+        return None
+    return seconds
+
+
+def _get_tool_call_deadline_epoch() -> Optional[float]:
+    seconds = _get_tool_call_deadline_seconds()
+    if seconds is None:
+        return None
+    return time.monotonic() + seconds
 
 
 def _read_operator_model_profile(env_var: str) -> Optional[str]:
@@ -200,25 +234,80 @@ def _consume_framing_headers(stream: BinaryIO) -> bool:
         if header_line in (b"\r\n", b"\n"):
             return True
 
+
+def _remaining_deadline_seconds(deadline_epoch: Optional[float]) -> Optional[float]:
+    if deadline_epoch is None:
+        return None
+    return deadline_epoch - time.monotonic()
+
+
+def _clamp_timeout_to_budget(timeout_value: Any, budget_seconds: float) -> Any:
+    """Clamp requests timeout values to a remaining deadline budget."""
+    min_timeout = 0.001
+    budget = max(min_timeout, float(budget_seconds))
+    if timeout_value is None:
+        return budget
+    if isinstance(timeout_value, tuple):
+        clamped_parts = []
+        for part in timeout_value:
+            if part is None:
+                clamped_parts.append(budget)
+                continue
+            try:
+                numeric = float(part)
+            except (TypeError, ValueError):
+                clamped_parts.append(part)
+            else:
+                clamped_parts.append(max(min_timeout, min(numeric, budget)))
+        return tuple(clamped_parts)
+    try:
+        numeric = float(timeout_value)
+    except (TypeError, ValueError):
+        return timeout_value
+    return max(min_timeout, min(numeric, budget))
+
+
 def make_request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
     """Make HTTP request with exponential backoff retry and server auto-restart."""
     max_retries = 3
     base_delay = 0.5
-    
+    deadline_epoch = kwargs.pop("deadline_epoch", None)
+    if deadline_epoch is not None:
+        try:
+            deadline_epoch = float(deadline_epoch)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("deadline_epoch must be a finite float") from exc
+        if not math.isfinite(deadline_epoch):
+            raise ValueError("deadline_epoch must be a finite float")
+
     last_error = None
     for attempt in range(max_retries):
         try:
+            remaining = _remaining_deadline_seconds(deadline_epoch)
+            if remaining is not None and remaining <= 0:
+                raise _RequestDeadlineExceededError(
+                    "Request deadline budget exhausted before backend call."
+                )
             if _backend_circuit_open():
                 raise _BackendCircuitOpenError(
                     "Muninn backend temporarily unavailable (circuit open during cooldown)."
                 )
-            response = requests.request(method, url, **kwargs)
+            request_kwargs = dict(kwargs)
+            if remaining is not None:
+                request_kwargs["timeout"] = _clamp_timeout_to_budget(
+                    request_kwargs.get("timeout"),
+                    remaining,
+                )
+            response = requests.request(method, url, **request_kwargs)
             _mark_backend_success()
             return response
         except (requests.ConnectionError, requests.Timeout) as e:
             last_error = e
             if isinstance(e, _BackendCircuitOpenError):
                 logger.warning("Fast-fail request while backend circuit is open: %s", e)
+                break
+            if isinstance(e, _RequestDeadlineExceededError):
+                logger.warning("Aborting request due to deadline budget exhaustion: %s", e)
                 break
             _mark_backend_failure(e)
             logger.warning(f"Connection failed (attempt {attempt+1}/{max_retries}): {e}")
@@ -227,7 +316,17 @@ def make_request_with_retry(method: str, url: str, **kwargs) -> requests.Respons
             if attempt < max_retries - 1:
                 if not _backend_circuit_open():
                     ensure_server_running()
-                time.sleep(base_delay * (2 ** attempt))
+                delay = base_delay * (2 ** attempt)
+                remaining = _remaining_deadline_seconds(deadline_epoch)
+                if remaining is not None:
+                    if remaining <= 0:
+                        last_error = _RequestDeadlineExceededError(
+                            "Request deadline budget exhausted during retry backoff."
+                        )
+                        break
+                    delay = min(delay, remaining)
+                if delay > 0:
+                    time.sleep(delay)
             
     if last_error:
         raise last_error
@@ -1620,6 +1719,12 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
     """Handle tool execution requests."""
     name = params.get("name")
     arguments = params.get("arguments", {})
+    tool_call_deadline_epoch = _get_tool_call_deadline_epoch()
+
+    def _request(method: str, url: str, **kwargs) -> requests.Response:
+        if tool_call_deadline_epoch is not None:
+            kwargs.setdefault("deadline_epoch", tool_call_deadline_epoch)
+        return make_request_with_retry(method, url, **kwargs)
 
     try:
         # Avoid costly preflight start probes when backend is already in cooldown
@@ -1642,7 +1747,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "metadata": metadata,
                 "user_id": "global_user"
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/add", json=payload, timeout=10)
+            resp = _request("POST", f"{SERVER_URL}/add", json=payload, timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1671,7 +1776,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "filters": filters,
                 "explain": explain,
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/search", json=payload, timeout=10)
+            resp = _request("POST", f"{SERVER_URL}/search", json=payload, timeout=10)
             result = resp.json()
 
             formatted_results = []
@@ -1711,7 +1816,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             
         elif name == "get_all_memories":
             limit = arguments.get("limit", 100)
-            resp = make_request_with_retry("GET", f"{SERVER_URL}/get_all", params={"user_id": "global_user", "limit": limit}, timeout=10)
+            resp = _request("GET", f"{SERVER_URL}/get_all", params={"user_id": "global_user", "limit": limit}, timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1730,7 +1835,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "memory_id": arguments.get("memory_id"),
                 "data": arguments.get("content")
             }
-            resp = make_request_with_retry("PUT", f"{SERVER_URL}/update", json=payload, timeout=10)
+            resp = _request("PUT", f"{SERVER_URL}/update", json=payload, timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1746,7 +1851,8 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
         
         elif name == "delete_memory":
             memory_id = arguments.get("memory_id")
-            resp = make_request_with_retry("DELETE", f"{SERVER_URL}/delete/{memory_id}", timeout=10)
+            encoded_memory_id = quote(str(memory_id), safe="")
+            resp = _request("DELETE", f"{SERVER_URL}/delete/{encoded_memory_id}", timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1774,7 +1880,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 return
 
             # Muninn v3 uses POST /delete_all with JSON body
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/delete_all", json={"user_id": "global_user"}, timeout=10)
+            resp = _request("POST", f"{SERVER_URL}/delete_all", json={"user_id": "global_user"}, timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1796,7 +1902,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "goal_statement": arguments.get("goal_statement"),
                 "constraints": arguments.get("constraints", []),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/goal/set", json=payload, timeout=15)
+            resp = _request("POST", f"{SERVER_URL}/goal/set", json=payload, timeout=15)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1815,7 +1921,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "namespace": arguments.get("namespace", "global"),
                 "project": arguments.get("project", git_info["project"]),
             }
-            resp = make_request_with_retry("GET", f"{SERVER_URL}/goal/get", params=params, timeout=10)
+            resp = _request("GET", f"{SERVER_URL}/goal/get", params=params, timeout=10)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1828,7 +1934,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 }
             })
         elif name == "get_model_profiles":
-            resp = make_request_with_retry("GET", f"{SERVER_URL}/profiles/model", timeout=10)
+            resp = _request("GET", f"{SERVER_URL}/profiles/model", timeout=10)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1854,7 +1960,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             if not payload:
                 raise ValueError("set_model_profiles requires at least one profile field")
             payload["source"] = arguments.get("source", "mcp_tool")
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/profiles/model", json=payload, timeout=10)
+            resp = _request("POST", f"{SERVER_URL}/profiles/model", json=payload, timeout=10)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1870,7 +1976,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             params = {
                 "limit": arguments.get("limit", 25),
             }
-            resp = make_request_with_retry(
+            resp = _request(
                 "GET",
                 f"{SERVER_URL}/profiles/model/events",
                 params=params,
@@ -1895,7 +2001,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "project": arguments.get("project", git_info["project"]),
                 "limit": arguments.get("limit", 25),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/handoff/export", json=payload, timeout=30)
+            resp = _request("POST", f"{SERVER_URL}/handoff/export", json=payload, timeout=30)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1916,7 +2022,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "project": arguments.get("project", git_info["project"]),
                 "source": arguments.get("source", "mcp_import"),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/handoff/import", json=payload, timeout=30)
+            resp = _request("POST", f"{SERVER_URL}/handoff/import", json=payload, timeout=30)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1942,7 +2048,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "project": arguments.get("project", git_info["project"]),
                 "source": arguments.get("source", "mcp_feedback"),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/feedback/retrieval", json=payload, timeout=15)
+            resp = _request("POST", f"{SERVER_URL}/feedback/retrieval", json=payload, timeout=15)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1969,7 +2075,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
                 "min_chunk_chars": arguments.get("min_chunk_chars"),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest", json=payload, timeout=60)
+            resp = _request("POST", f"{SERVER_URL}/ingest", json=payload, timeout=60)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1988,7 +2094,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "include_unsupported": arguments.get("include_unsupported", False),
                 "max_results_per_provider": arguments.get("max_results_per_provider", 100),
             }
-            resp = make_request_with_retry(
+            resp = _request(
                 "POST",
                 f"{SERVER_URL}/ingest/legacy/discover",
                 json=payload,
@@ -2025,7 +2131,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
                 "min_chunk_chars": arguments.get("min_chunk_chars"),
             }
-            resp = make_request_with_retry(
+            resp = _request(
                 "POST",
                 f"{SERVER_URL}/ingest/legacy/import",
                 json=payload,
