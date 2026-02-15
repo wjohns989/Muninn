@@ -29,6 +29,7 @@ Evaluator: Codex
 - **Phase 4E helper-first profile scheduling baseline is now implemented**: runtime/add/update defaults now stay on low-latency profile while ingestion/legacy-ingestion can use independently configured profiles (`MUNINN_RUNTIME_MODEL_PROFILE`, `MUNINN_INGESTION_MODEL_PROFILE`, `MUNINN_LEGACY_INGESTION_MODEL_PROFILE`) plus operation-specific MCP env overrides.
 - **Phase 4F runtime profile-control tranche is now implemented**: profile policy can now be read/updated at runtime through memory core + REST (`/profiles/model`) + MCP tools (`get_model_profiles`, `set_model_profiles`) + SDK sync/async parity.
 - **Phase 4G profile-policy audit visibility baseline is now implemented**: runtime profile mutations are now persisted as audit events and exposed through memory core + REST (`/profiles/model/events`) + MCP (`get_model_profile_events`) + SDK sync/async.
+- **Phase 4H local model-matrix benchmarking baseline is now implemented**: versioned Ollama model matrix + prompt pack + sync/benchmark CLI are now shipped for reproducible local model selection under 16GB-class helper-first workflows.
 
 ## Status vs Plan
 
@@ -76,7 +77,7 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, and mutation audit events are now implemented, but profile-level eval/telemetry promotion gates and alerting thresholds still need completion before default-policy promotion.
+8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, and local model-matrix benchmarking harness are now implemented, but profile-level eval/telemetry promotion gates and alerting thresholds still need completion before default-policy promotion.
 
 ## Validation Snapshot
 
@@ -99,6 +100,10 @@ Evaluator: Codex
   - `69 passed` (`config`, `memory_ingestion`, `memory_update_path`, `mcp_wrapper_protocol`, `extraction_pipeline`)
   - `45 passed` (`memory_profiles`, `mcp_wrapper_protocol`, `sdk_client`)
   - `49 passed` (`memory_profiles`, `sqlite_profile_policy_events`, `mcp_wrapper_protocol`, `sdk_client`)
+- Local model benchmark tooling smoke checks now pass:
+  - `python -m eval.ollama_local_benchmark list`
+  - `python -m eval.ollama_local_benchmark sync --dry-run`
+- Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
 ## Newly Resolved Inaccuracies
@@ -168,6 +173,7 @@ To align with the product intent (not enterprise-heavy), the highest-ROI additio
 Research notes and implementation guidance are documented in:
 - `docs/WEB_RESEARCH_VIBECODER_SOTA.md`
 - `docs/plans/2026-02-14-browser-ui-model-policy-design.md`
+- `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
 
 ## Model-Caliber Research Update (2026-02-14)
 
@@ -177,6 +183,11 @@ Research-backed recommendation for SOTA+ operator profiles is to keep **caliber-
 3. `high_reasoning`: `qwen3:14b` default for 16GB-class workflows; reserve `qwen3:30b/32b` (or `deepseek-r1:32b`) for explicit high-VRAM opt-in sessions.
 4. Keep xLAM as optional specialist endpoint for structured extraction/tool-calling workloads, not as mandatory global default.
 5. For active coding sessions, pin runtime extraction to low-latency by default and split ingestion/legacy import into separate configurable profiles so background memory continuity does not consume planning-grade VRAM.
+6. Local reproducibility is now codified with a versioned model matrix and benchmark harness:
+   - `eval/ollama_model_matrix.json`
+   - `eval/ollama_benchmark_prompts.jsonl`
+   - `eval/ollama_local_benchmark.py`
+   - `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
 
 Primary references for this recommendation:
 - Ollama model availability/size envelopes (`qwen3`, `llama3.2`, `deepseek-r1`) and OpenAI-compatible API surface.
