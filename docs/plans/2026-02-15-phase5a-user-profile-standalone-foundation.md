@@ -90,6 +90,17 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - `MUNINN_MCP_AUTO_TASK_REQUIRE_CLIENT_CAP` (default `0`)
 - Detailed tranche note: `docs/plans/2026-02-15-phase5a1-mcp-long-tool-auto-task-deferral.md`.
 
+### 6) Transport Closure Campaign Automation (Phase 5A.2)
+
+- Added deterministic closure utility: `python -m eval.mcp_transport_closure`.
+- Utility now orchestrates repeated soak runs and emits one closure verdict artifact with per-criterion booleans.
+- Criteria mapped into machine-evaluable outputs:
+  - streak target,
+  - no-regression observation window,
+  - p95 compliance ratio,
+  - unresolved regression/defect/failure classification inputs.
+- Detailed tranche note: `docs/plans/2026-02-15-phase5a2-mcp-transport-closure-campaign-automation.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -117,6 +128,10 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - `82 passed` in:
     - `tests/test_mcp_wrapper_protocol.py`
     - `tests/test_mcp_transport_soak.py`
+  - transport-closure automation verification:
+    - `python -m py_compile eval/mcp_transport_closure.py`
+    - `86 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`)
+    - `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

@@ -49,6 +49,7 @@ Implemented to reduce external host-side 120s transport timeout risk while block
 3. MCP public error messages now redact connection/timeout/internal details while preserving actionable validation errors.
 4. Browser dashboard rendering now avoids dynamic `innerHTML` injection paths for operator-visible result/table payloads.
 5. Long-running MCP tools now support automatic task-mode deferral (`tools/call` auto-task) so heavy ingest calls can return immediate task handles instead of consuming the host synchronous timeout window.
+6. Transport closure campaign automation now exists via `python -m eval.mcp_transport_closure`, producing deterministic closure-evidence artifacts with explicit criterion booleans.
 
 Current assessment:
 
@@ -202,3 +203,4 @@ The transport intermittency blocker is closed only when:
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
 6. Add host-runtime transport diagnostics bundle capture for timeout regressions (wrapper log snapshot + response-size distribution + per-tool p95 wall time).
+7. Wire closure-campaign artifact summary into scheduled CI and release checks.
