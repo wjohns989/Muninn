@@ -99,6 +99,11 @@ Completed since last update:
    - REST endpoint shipped: `GET /profiles/model/events`,
    - MCP tool shipped: `get_model_profile_events`,
    - SDK parity shipped for sync/async clients (`get_model_profile_events`).
+34. Phase 4H local model-matrix benchmarking baseline implemented:
+   - versioned model matrix shipped (`eval/ollama_model_matrix.json`) for helper/balanced/reasoning calibration candidates,
+   - curated benchmark prompt pack shipped (`eval/ollama_benchmark_prompts.jsonl`) for repeatable local comparisons,
+   - local sync/benchmark CLI shipped (`python -m eval.ollama_local_benchmark ...`),
+   - phase design and acceptance criteria documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -112,6 +117,8 @@ Verification:
   - `69 passed` across runtime-vs-ingestion profile scheduling surfaces (`config`, `memory_ingestion`, `memory_update_path`, `mcp_wrapper_protocol`, `extraction_pipeline`).
   - `45 passed` across runtime profile-control surfaces (`memory_profiles`, `mcp_wrapper_protocol`, `sdk_client`).
   - `49 passed` across runtime profile-control + audit surfaces (`memory_profiles`, `sqlite_profile_policy_events`, `mcp_wrapper_protocol`, `sdk_client`).
+  - local benchmark tooling smoke checks pass (`python -m eval.ollama_local_benchmark list`, `python -m eval.ollama_local_benchmark sync --dry-run`).
+  - initial 5-model quick-pass latency/throughput snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
@@ -507,7 +514,8 @@ This is core for vibecoders, not optional polish.
 1. Maintain one-PR-at-a-time policy: verify no open PR comments/issues at each phase boundary, then open exactly one new PR.
 2. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
 3. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
-4. Implement Phase 4 profile-promotion tranche: add profile-aware eval gates + telemetry thresholds for default-policy promotion.
-5. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
+4. Execute and archive local model-matrix benchmark runs (`eval/ollama_local_benchmark.py`) for runtime vs ingestion profile candidates on 16GB-class hardware.
+5. Implement Phase 4 profile-promotion tranche: add profile-aware eval gates + telemetry thresholds for default-policy promotion.
+6. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
 
 Completing these next actions keeps roadmap progression logically consistent while preserving merge hygiene, SOTA evidence quality, and operational ROI.

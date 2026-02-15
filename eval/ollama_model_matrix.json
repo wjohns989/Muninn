@@ -1,0 +1,60 @@
+{
+  "version": "2026-02-14",
+  "default_pull_set": [
+    "xlam:latest",
+    "qwen3:8b",
+    "deepseek-r1:8b",
+    "qwen2.5-coder:7b",
+    "llama3.1:8b"
+  ],
+  "models": [
+    {
+      "tag": "xlam:latest",
+      "caliber": "low_latency",
+      "default_enabled": true,
+      "vram_min_gb": 2,
+      "primary_use": "structured extraction, tool and schema-heavy assistant tasks",
+      "notes": "Keep as helper-grade default during active coding sessions."
+    },
+    {
+      "tag": "qwen3:8b",
+      "caliber": "balanced",
+      "default_enabled": true,
+      "vram_min_gb": 6,
+      "primary_use": "general memory extraction and balanced reasoning",
+      "notes": "Current default balanced profile for 16GB class systems."
+    },
+    {
+      "tag": "deepseek-r1:8b",
+      "caliber": "reasoning",
+      "default_enabled": true,
+      "vram_min_gb": 6,
+      "primary_use": "reasoning-heavy passes and reflection prompts",
+      "notes": "Use for targeted reasoning benchmarks and slower high-think passes."
+    },
+    {
+      "tag": "qwen2.5-coder:7b",
+      "caliber": "coder",
+      "default_enabled": true,
+      "vram_min_gb": 6,
+      "primary_use": "code-centric memory shaping and implementation support",
+      "notes": "Useful when implementation-quality signal matters more than broad chat quality."
+    },
+    {
+      "tag": "llama3.1:8b",
+      "caliber": "general",
+      "default_enabled": true,
+      "vram_min_gb": 6,
+      "primary_use": "stability baseline and compatibility fallback",
+      "notes": "Use as control model in comparative local benchmarks."
+    },
+    {
+      "tag": "qwen3:14b",
+      "caliber": "high_reasoning",
+      "default_enabled": false,
+      "vram_min_gb": 12,
+      "primary_use": "planning and higher-caliber offline ingestion",
+      "notes": "Optional pull for sessions with enough free VRAM and no heavy co-running workloads."
+    }
+  ]
+}
