@@ -271,9 +271,24 @@
     - `dev-cycle` now supports deferred mode (`--defer-benchmarks`) to reuse existing live/legacy benchmark reports during active improvement tranches,
     - deferred mode supports explicit reused-report freshness gating (`--max-reused-report-age-hours`) to prevent stale evidence from driving policy decisions,
     - strategic cadence decision is now codified: continue improvement/enhancement phases with fast deterministic gates, reserve full benchmark matrix replay for release-readiness closure.
+71. Phase 5A editable user-profile/global-context baseline implemented:
+    - new persistent user profile store (`user_profiles`) added with scoped get/set semantics for skills, paths, environments, hardware, and workflow preferences,
+    - memory core + REST + MCP + SDK now expose profile read/write operations (`/profile/user/get`, `/profile/user/set`, `get_user_profile`, `set_user_profile`),
+    - browser control center now supports profile load/save (merge or replace) and keeps operator-editable context as a first-class runtime surface.
+72. Phase 5A legacy chronology/hierarchy contextualization enrichment implemented:
+    - legacy discovery now includes path hierarchy and chronology context (`parent_path`, `path_depth`, `relative_path_hint`, `modified_at_epoch`, `modified_at_iso`),
+    - legacy import now propagates chronology/hierarchy metadata into ingested chunk context for downstream retrieval/routing (`legacy_contextualization_mode=chronological_hierarchy`),
+    - browser legacy table now exposes modified timestamp and relative path context; auto mode can discover + import parser-supported sources in chronological-first posture.
+73. Standalone executable foundation implemented:
+    - new standalone launcher entrypoint (`muninn_standalone.py`) enables browser-first operation without assistant mediation,
+    - packaging helper added (`scripts/build_standalone.py`) for deterministic PyInstaller builds with bundled dashboard assets,
+    - test coverage added for launcher behavior and packaging command construction.
+74. Open PR closure sweep completed for current branch queue:
+    - unresolved review thread(s) remediated and resolved,
+    - open PR queue reduced to zero and merged baseline synced before Phase 5A implementation start.
 
 ### Verification evidence
-- Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
+- Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
 - Targeted tests for this tranche now pass:
   - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
@@ -321,6 +336,7 @@
 - Phase 4AF unified SOTA+ verdict verification: compile checks (`python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`) + `32 passed` (`tests/test_ollama_local_benchmark.py`) + `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Phase 4AG deferred-benchmark cadence verification: compile checks (`python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`) + deferred-mode tests for report reuse + stale-report rejection (`tests/test_ollama_local_benchmark.py`) + combined targeted suite pass (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Restart hygiene + doc/packaging tranche verification: no unresolved conflict markers repo-wide and no staged restart leftovers (`git diff --cached --name-only` empty), plus hygiene check pass (`7 passed`: `tests/test_phase_hygiene.py`).
+- Phase 5A user-profile + chronology/hierarchy + standalone foundation verification: `116 passed` (`tests/test_ingestion_discovery.py`, `tests/test_memory_ingestion.py`, `tests/test_memory_user_profile.py`, `tests/test_sqlite_goal_handoff.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`) + compile checks on touched modules.
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -369,6 +385,10 @@
 44. **Brand-surface compliance ROI**: README and repo metadata neutralization reduces avoidable branding/legal friction while improving trust for wider adoption.
 45. **Unified release-verdict ROI**: one deterministic SOTA+ artifact removes manual interpretation drift and makes release promotion decisions reproducible across operators and CI runs.
 46. **Enhancement-throughput ROI**: deferred dev-cycle mode avoids rerunning expensive live/legacy benchmark generation on every tranche while preserving governance checks via fresh gate evaluation on bounded-age reports.
+47. **User-context persistence ROI**: first-class editable profile context reduces repeated preference re-teaching and improves retrieval prioritization for environment-/workflow-specific facts.
+48. **Chronology-plus-hierarchy ROI**: propagating file modification and path-structure context into legacy-ingested chunks improves phase-aware recall and disambiguation of similarly worded artifacts across project epochs.
+49. **Standalone adoption ROI**: dedicated launcher and packaging path reduce assistant dependency for ingestion/search workflows and improve operability for non-IDE users.
+50. **Operator-throughput ROI**: auto discover-and-import flow for parser-supported legacy artifacts reduces manual multi-click migration overhead while preserving deterministic selection controls.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
@@ -380,6 +400,9 @@
 7. Add a continuous-interaction memory benchmark adapter (EMemBench-style) to quantify long-session memory retention and action consistency under realistic user trajectories.
 8. Add MCP Streamable HTTP transport compliance checks (`MCP-Session-Id`, Origin validation, auth on both POST/GET stream paths) for any HTTP-mode deployment surface.
 9. Add CI workflow split with fast tranche checks on PR and full benchmark matrix on schedule/release-candidate trigger, wired to `sota-verdict`.
+10. Add a "Huginn" recommendation/planning layer that consumes Muninn profile + retrieval context and emits deterministic next-action suggestions independent of assistant vendor.
+11. Add a skill-to-system-prompt compiler for local assistant backends so selected profile/skill Markdown can be transformed into structured runtime instructions for Ollama-backed sessions.
+12. Add packaging CI for standalone builds (`onedir` + optional `onefile`) with reproducible artifact metadata and dashboard-asset inclusion checks.
 
 ## Executive Summary
 
