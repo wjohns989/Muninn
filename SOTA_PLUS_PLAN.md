@@ -160,6 +160,10 @@
     - report output added at `eval/reports/hygiene/phase_hygiene_<timestamp>.json`,
     - test budget checks now include skipped/warning thresholds in addition to PR/review/check constraints,
     - command execution hardening applied (`shell=False` tokenized execution + JUnit-first pytest summary parsing).
+44. Phase 4L development-cycle benchmark orchestration baseline implemented:
+    - `dev-cycle` command added to local benchmark utility (`python -m eval.ollama_local_benchmark dev-cycle`),
+    - command now executes `benchmark` + `legacy-benchmark` + `profile-gate` in one operator-triggered run,
+    - summary artifact now maps profile recommendations to practical workload roles.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -185,7 +189,7 @@
 - Phase 4H local benchmark tooling smoke checks: `python -m eval.ollama_local_benchmark list` and `python -m eval.ollama_local_benchmark sync --dry-run`.
 - Phase 4H initial five-model quick-pass benchmark snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
 - Phase 4I/4J benchmark helper verification: `8 passed` (`tests/test_ollama_local_benchmark.py`).
-- Phase 4K hygiene helper verification: `5 passed` (`tests/test_phase_hygiene.py`) and `13 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
+- Phase 4K/4L benchmark+hygiene helper verification: `14 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.

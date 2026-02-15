@@ -152,6 +152,11 @@ python -m eval.ollama_local_benchmark legacy-benchmark \
 python -m eval.ollama_local_benchmark profile-gate \
   --live-report eval/reports/ollama/report_<live>.json \
   --legacy-report eval/reports/ollama/legacy_report_<legacy>.json
+
+# Run full development-cycle benchmark flow (live + legacy + profile gate)
+python -m eval.ollama_local_benchmark dev-cycle \
+  --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
+  --repeats 1
 ```
 
 Versioned inputs:
@@ -170,6 +175,8 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 `legacy-benchmark` generates deterministic ingestion-like extraction cases from local project files and reports the same ability/resource metrics per model.
 
 `profile-gate` consumes benchmark reports and emits per-profile pass/fail + recommendation decisions for `low_latency`, `balanced`, and `high_reasoning` promotion policies.
+
+`dev-cycle` runs `benchmark`, `legacy-benchmark`, and `profile-gate` sequentially in one operator-triggered command and emits a summary that maps recommended models to profile usage roles.
 
 ## Phase Hygiene Gate
 

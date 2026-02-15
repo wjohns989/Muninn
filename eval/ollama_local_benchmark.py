@@ -19,6 +19,11 @@ DEFAULT_PROMPTS_PATH = ROOT / "eval" / "ollama_benchmark_prompts.jsonl"
 DEFAULT_PROMOTION_POLICY_PATH = ROOT / "eval" / "ollama_profile_promotion_policy.json"
 DEFAULT_OUTPUT_DIR = ROOT / "eval" / "reports" / "ollama"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+PROFILE_USAGE_GUIDANCE = {
+    "low_latency": "Runtime helper during active coding and tool-heavy IDE workflows.",
+    "balanced": "Default implementation assistant for day-to-day coding tasks.",
+    "high_reasoning": "Planning/architecture/refactor analysis when deeper reasoning is required.",
+}
 LEGACY_TEXT_EXTENSIONS = {
     ".py",
     ".pyi",
@@ -1049,6 +1054,161 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _recommendation_summary(
+    *,
+    profile_name: str,
+    recommendation: dict[str, Any] | None,
+    live_report: dict[str, Any],
+    legacy_report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    usage = PROFILE_USAGE_GUIDANCE.get(profile_name, "Profile-specific model guidance.")
+    if not recommendation:
+        return {
+            "profile": profile_name,
+            "usage": usage,
+            "model": None,
+            "status": "no_passing_candidate",
+            "composite_score": None,
+            "evidence": None,
+        }
+
+    model = str(recommendation.get("model", "")).strip()
+    live_summary = _suite_model_summary(live_report, model) if model else None
+    legacy_summary = _suite_model_summary(legacy_report or {}, model) if model else None
+
+    evidence = {
+        "live_avg_ability_score": _to_float((live_summary or {}).get("avg_ability_score")),
+        "live_p95_wall_seconds": _to_float((live_summary or {}).get("p95_wall_seconds")),
+        "live_ability_per_vram_gb": _to_float(
+            ((live_summary or {}).get("resource_efficiency") or {}).get("ability_per_vram_gb")
+        ),
+        "legacy_avg_ability_score": _to_float((legacy_summary or {}).get("avg_ability_score")),
+        "legacy_p95_wall_seconds": _to_float((legacy_summary or {}).get("p95_wall_seconds")),
+    }
+
+    return {
+        "profile": profile_name,
+        "usage": usage,
+        "model": model,
+        "status": "recommended",
+        "composite_score": _to_float(recommendation.get("composite_score")),
+        "evidence": evidence,
+    }
+
+
+def cmd_dev_cycle(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_started = datetime.now(timezone.utc)
+    run_id = run_started.strftime("%Y%m%dT%H%M%SZ")
+
+    live_output = Path(args.live_output).resolve() if args.live_output else output_dir / f"cycle_live_{run_id}.json"
+    legacy_output = (
+        Path(args.legacy_output).resolve()
+        if args.legacy_output
+        else output_dir / f"cycle_legacy_{run_id}.json"
+    )
+    gate_output = Path(args.gate_output).resolve() if args.gate_output else output_dir / f"cycle_gate_{run_id}.json"
+    summary_output = (
+        Path(args.output).resolve()
+        if args.output
+        else output_dir / f"dev_cycle_summary_{run_id}.json"
+    )
+
+    benchmark_args = argparse.Namespace(
+        matrix=args.matrix,
+        prompts=args.prompts,
+        output_dir=str(output_dir),
+        output=str(live_output),
+        models=args.models,
+        include_optional=bool(args.include_optional),
+        repeats=int(args.repeats),
+        ollama_url=args.ollama_url,
+        timeout_seconds=int(args.timeout_seconds),
+        num_predict=int(args.num_predict),
+        ability_pass_threshold=float(args.ability_pass_threshold),
+    )
+    bench_rc = cmd_benchmark(benchmark_args)
+    if bench_rc != 0:
+        return bench_rc
+
+    legacy_args = argparse.Namespace(
+        matrix=args.matrix,
+        legacy_roots=args.legacy_roots,
+        output_dir=str(output_dir),
+        output=str(legacy_output),
+        models=args.models,
+        include_optional=bool(args.include_optional),
+        repeats=int(args.repeats),
+        max_cases_per_root=int(args.max_cases_per_root),
+        snippet_chars=int(args.snippet_chars),
+        ollama_url=args.ollama_url,
+        timeout_seconds=int(args.timeout_seconds),
+        num_predict=int(args.num_predict),
+        ability_pass_threshold=float(args.ability_pass_threshold),
+        dump_cases=args.dump_cases,
+    )
+    legacy_rc = cmd_legacy_benchmark(legacy_args)
+    if legacy_rc != 0:
+        return legacy_rc
+
+    gate_args = argparse.Namespace(
+        matrix=args.matrix,
+        policy=args.policy,
+        live_report=str(live_output),
+        legacy_report=str(legacy_output),
+        output_dir=str(output_dir),
+        output=str(gate_output),
+        allow_failures=bool(args.allow_gate_failures),
+    )
+    gate_rc = cmd_profile_gate(gate_args)
+
+    live_report = _load_json(live_output)
+    legacy_report = _load_json(legacy_output)
+    gate_report = _load_json(gate_output)
+    profiles = gate_report.get("profiles", {})
+    recommendations: dict[str, Any] = {}
+    for profile_name, payload in profiles.items():
+        recommendation = payload.get("recommendation") if isinstance(payload, dict) else None
+        recommendations[profile_name] = _recommendation_summary(
+            profile_name=profile_name,
+            recommendation=recommendation if isinstance(recommendation, dict) else None,
+            live_report=live_report,
+            legacy_report=legacy_report,
+        )
+
+    cycle_summary = {
+        "run_id": run_id,
+        "event": "DEV_CYCLE_MODEL_BENCHMARK_COMPLETED",
+        "started_at_utc": run_started.isoformat(),
+        "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "paths": {
+            "live_report": str(live_output),
+            "legacy_report": str(legacy_output),
+            "gate_report": str(gate_output),
+        },
+        "passed": bool(gate_report.get("passed", False)),
+        "recommendations": recommendations,
+    }
+
+    with summary_output.open("w", encoding="utf-8") as f:
+        json.dump(cycle_summary, f, indent=2)
+        f.write("\n")
+
+    print(f"Dev-cycle benchmark summary written to: {summary_output}")
+    for profile_name, item in recommendations.items():
+        model = item.get("model")
+        usage = item.get("usage")
+        if model:
+            print(f"[dev-cycle] {profile_name}: {model} -> {usage}")
+        else:
+            print(f"[dev-cycle] {profile_name}: no recommendation -> {usage}")
+
+    if gate_rc != 0 and not bool(args.allow_gate_failures):
+        return gate_rc
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Local Ollama model sync and benchmark utility for Muninn profile testing."
@@ -1243,6 +1403,83 @@ def build_parser() -> argparse.ArgumentParser:
         help="Return success exit code even when one or more profile gates fail.",
     )
     gate_parser.set_defaults(func=cmd_profile_gate)
+
+    cycle_parser = subparsers.add_parser(
+        "dev-cycle",
+        help="Run live+legacy benchmarking and profile-gate in one operator-triggered development cycle.",
+    )
+    cycle_parser.add_argument(
+        "--prompts",
+        default=str(DEFAULT_PROMPTS_PATH),
+        help="Path to benchmark prompts JSONL.",
+    )
+    cycle_parser.add_argument(
+        "--policy",
+        default=str(DEFAULT_PROMOTION_POLICY_PATH),
+        help="Path to profile-promotion gate policy JSON.",
+    )
+    cycle_parser.add_argument(
+        "--legacy-roots",
+        required=True,
+        help="Comma-separated legacy project roots for ingestion-like benchmark cases.",
+    )
+    cycle_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for generated reports.",
+    )
+    cycle_parser.add_argument("--output", help="Optional summary output path.")
+    cycle_parser.add_argument("--live-output", help="Optional live benchmark report output path.")
+    cycle_parser.add_argument("--legacy-output", help="Optional legacy benchmark report output path.")
+    cycle_parser.add_argument("--gate-output", help="Optional profile-gate report output path.")
+    cycle_parser.add_argument("--models", help="Comma-separated explicit model tags to benchmark.")
+    cycle_parser.add_argument(
+        "--include-optional",
+        action="store_true",
+        help="Include optional matrix models when --models is not provided.",
+    )
+    cycle_parser.add_argument("--repeats", default=1, type=int, help="Repeated runs per case.")
+    cycle_parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL, help="Local Ollama base URL.")
+    cycle_parser.add_argument(
+        "--timeout-seconds",
+        default=300,
+        type=int,
+        help="HTTP timeout for each generation request.",
+    )
+    cycle_parser.add_argument(
+        "--num-predict",
+        default=192,
+        type=int,
+        help="Maximum generated tokens per request.",
+    )
+    cycle_parser.add_argument(
+        "--ability-pass-threshold",
+        default=0.75,
+        type=float,
+        help="Ability score threshold used for pass-rate summaries.",
+    )
+    cycle_parser.add_argument(
+        "--max-cases-per-root",
+        default=12,
+        type=int,
+        help="Maximum generated legacy benchmark cases per root directory.",
+    )
+    cycle_parser.add_argument(
+        "--snippet-chars",
+        default=1800,
+        type=int,
+        help="Maximum chars read from each source file when generating legacy cases.",
+    )
+    cycle_parser.add_argument(
+        "--dump-cases",
+        help="Optional JSONL output path for generated legacy benchmark cases.",
+    )
+    cycle_parser.add_argument(
+        "--allow-gate-failures",
+        action="store_true",
+        help="Return success even if profile gate fails one or more profiles.",
+    )
+    cycle_parser.set_defaults(func=cmd_dev_cycle)
 
     return parser
 
