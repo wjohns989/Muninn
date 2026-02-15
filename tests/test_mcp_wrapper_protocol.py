@@ -463,7 +463,9 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert by_name["delete_memory"]["annotations"]["destructiveHint"] is True
     assert by_name["delete_all_memories"]["annotations"]["destructiveHint"] is True
     assert by_name["search_memory"]["annotations"]["idempotentHint"] is True
-    assert by_name["set_model_profiles"]["annotations"]["idempotentHint"] is False
+    assert by_name["set_model_profiles"]["annotations"]["idempotentHint"] is True
+    assert by_name["update_memory"]["annotations"]["idempotentHint"] is True
+    assert by_name["import_handoff"]["annotations"]["idempotentHint"] is True
     feedback_props = by_name["record_retrieval_feedback"]["inputSchema"]["properties"]
     assert "rank" in feedback_props
     assert "sampling_prob" in feedback_props

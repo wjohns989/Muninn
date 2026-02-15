@@ -113,5 +113,7 @@ MCP-compatibility follow-on is now implemented in `docs/plans/2026-02-15-phase4r
    - lifecycle + params validation added for `tasks/list`, with deterministic empty task result until async lifecycle is enabled.
 4. Tool metadata hardening:
    - each tool now returns `execution.taskSupport` plus richer annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`).
-5. Validation increment:
+5. Review follow-up correctness fix:
+   - `idempotentHint` classification now reflects true idempotent tool semantics instead of read-only-only proxying.
+6. Validation increment:
    - protocol tests now at `36 passed` (`tests/test_mcp_wrapper_protocol.py`).
