@@ -31,6 +31,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 3. Operations:
 - Background consolidation daemon
 - Runtime profile policy controls and audit events
+- Editable user profile/global context for skills, paths, environment, and hardware hints
 - Transport hardening for framed/line JSON-RPC and timeout-window guardrails
 - Browser control center for ingestion/search/admin flows
 
@@ -48,10 +49,22 @@ Run the backend service:
 python server.py
 ```
 
+Run the standalone browser-first launcher:
+
+```bash
+python muninn_standalone.py
+```
+
 Run the MCP wrapper (stdio bridge):
 
 ```bash
 python mcp_wrapper.py
+```
+
+Build a standalone executable package (PyInstaller):
+
+```bash
+python scripts/build_standalone.py --name MuninnControlCenter --windowed
 ```
 
 ## Minimal MCP Client Configuration
@@ -96,6 +109,8 @@ Primary endpoints:
 - `GET /profiles/model`
 - `POST /profiles/model`
 - `GET /profiles/model/events`
+- `GET /profile/user/get`
+- `POST /profile/user/set`
 
 ## Evaluation and SOTA+ Readiness
 
@@ -125,6 +140,7 @@ Reference plans:
 - Code license: Apache License 2.0 (`LICENSE`)
 - Third-party dependency licenses remain with their respective owners
 - No trademark endorsement is claimed by this project
+- Third-party names are used only for factual interoperability references
 
 ## Documentation Index
 
