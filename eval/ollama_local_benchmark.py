@@ -972,7 +972,8 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
     live_report = _load_json(live_report_path)
     legacy_report = _load_json(legacy_report_path) if legacy_report_path else {}
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    start_time = datetime.now(timezone.utc)
+    run_id = start_time.strftime("%Y%m%dT%H%M%SZ")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = (
         Path(args.output).resolve() if args.output else output_dir / f"profile_gate_{run_id}.json"
@@ -1019,7 +1020,7 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
     output_payload = {
         "run_id": run_id,
         "event": "PROFILE_PROMOTION_GATE_EVALUATED",
-        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "started_at_utc": start_time.isoformat(),
         "matrix_path": str(matrix_path),
         "policy_path": str(policy_path),
         "live_report_path": str(live_report_path),
