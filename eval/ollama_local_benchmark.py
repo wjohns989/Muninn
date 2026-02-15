@@ -663,12 +663,19 @@ def _git_output(args: list[str]) -> str | None:
 
 
 def _git_commit_reachable_from(commit_sha: str, ref: str) -> tuple[bool, str | None]:
+    try:
+        normalized_commit_sha = _normalize_commit_sha(commit_sha)
+    except ValueError as exc:
+        return False, str(exc)
+    if not normalized_commit_sha:
+        return False, "Empty commit SHA provided for ancestry verification."
+
     normalized_ref = str(ref or "").strip()
     if not normalized_ref:
         return False, "Empty ref provided for commit ancestry verification."
     try:
         ref_check = subprocess.run(
-            ["git", "rev-parse", "--verify", normalized_ref],
+            ["git", "rev-parse", "--verify", "--", normalized_ref],
             capture_output=True,
             text=True,
             check=False,
@@ -681,8 +688,21 @@ def _git_commit_reachable_from(commit_sha: str, ref: str) -> tuple[bool, str | N
         return False, f"Ref '{normalized_ref}' is not resolvable. {stderr}".strip()
 
     try:
+        resolved_ref_sha = _normalize_commit_sha(ref_check.stdout)
+    except ValueError:
+        return (
+            False,
+            f"Ref '{normalized_ref}' did not resolve to a valid commit SHA.",
+        )
+    if not resolved_ref_sha:
+        return (
+            False,
+            f"Ref '{normalized_ref}' did not resolve to a valid commit SHA.",
+        )
+
+    try:
         ancestor_check = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", commit_sha, normalized_ref],
+            ["git", "merge-base", "--is-ancestor", normalized_commit_sha, resolved_ref_sha],
             capture_output=True,
             text=True,
             check=False,
