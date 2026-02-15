@@ -54,9 +54,13 @@ Outputs explicit per-criterion booleans plus final `closure_ready`.
 ## Verification
 
 1. `python -m pytest -q tests/test_mcp_transport_closure.py tests/test_mcp_transport_soak.py tests/test_mcp_wrapper_protocol.py`  
-   Result: pass.
+   Result: `86 passed`.
 2. `python -m py_compile eval/mcp_transport_closure.py`  
    Result: pass.
+3. Campaign smoke evidence (multi-run):
+   - `python -m eval.mcp_transport_closure --streak-target 5 --max-campaign-runs 5 --transports framed,line --soak-iterations 10 --soak-warmup-requests 2 --soak-timeout-sec 15 --soak-max-p95-ms 5000 --soak-server-url http://127.0.0.1:1`
+   - Result: `closure_ready=true`, `current_consecutive_pass_streak=5`, `window_p95_compliance_ratio=1.0`
+   - Artifact: `eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`
 
 ## ROI / Blocker Impact
 
