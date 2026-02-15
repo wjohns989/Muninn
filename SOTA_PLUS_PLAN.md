@@ -158,7 +158,8 @@
 43. Phase 4K phase-boundary hygiene gate baseline implemented:
     - new gate utility added (`python -m eval.phase_hygiene`) for deterministic phase/PR hygiene checks,
     - report output added at `eval/reports/hygiene/phase_hygiene_<timestamp>.json`,
-    - test budget checks now include skipped/warning thresholds in addition to PR/review/check constraints.
+    - test budget checks now include skipped/warning thresholds in addition to PR/review/check constraints,
+    - command execution hardening applied (`shell=False` tokenized execution + JUnit-first pytest summary parsing).
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -184,7 +185,7 @@
 - Phase 4H local benchmark tooling smoke checks: `python -m eval.ollama_local_benchmark list` and `python -m eval.ollama_local_benchmark sync --dry-run`.
 - Phase 4H initial five-model quick-pass benchmark snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
 - Phase 4I/4J benchmark helper verification: `8 passed` (`tests/test_ollama_local_benchmark.py`).
-- Phase 4K hygiene helper verification: `3 passed` (`tests/test_phase_hygiene.py`) and `11 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
+- Phase 4K hygiene helper verification: `5 passed` (`tests/test_phase_hygiene.py`) and `13 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -229,7 +230,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 **Still open gaps:**
 1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
 2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
-3. Profile auto-promotion operationalization still needs implementation (CI/nightly orchestration, controlled policy-apply pipeline, rollback checkpoints, and alerting)
+3. Profile auto-promotion operationalization still needs implementation (operator-triggered orchestration, controlled policy-apply pipeline, rollback checkpoints, and alerting)
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
