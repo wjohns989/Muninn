@@ -1232,3 +1232,40 @@ def test_cmd_apply_checkpoint_accepts_reachable_commit(
     assert rc == 0
     report = json.loads(apply_output.read_text(encoding="utf-8"))
     assert report["result"]["applied"] is False
+
+
+def test_git_commit_reachable_from_uses_option_separator_and_resolved_ref_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved_ref_sha = "a" * 40
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, capture_output, text, check):
+        calls.append(cmd)
+        if cmd[:3] == ["git", "rev-parse", "--verify"]:
+            assert cmd == ["git", "rev-parse", "--verify", "--", "--quiet"]
+            return SimpleNamespace(returncode=0, stdout=f"{resolved_ref_sha}\n", stderr="")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            assert cmd == ["git", "merge-base", "--is-ancestor", "18d21cf", resolved_ref_sha]
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"Unexpected git invocation: {cmd}")
+
+    monkeypatch.setattr(bench.subprocess, "run", _fake_run)
+    reachable, error = bench._git_commit_reachable_from("18d21cf", "--quiet")
+    assert reachable is True
+    assert error is None
+    assert len(calls) == 2
+
+
+def test_git_commit_reachable_from_rejects_non_commit_ref_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_run(cmd, capture_output, text, check):
+        if cmd[:3] == ["git", "rev-parse", "--verify"]:
+            return SimpleNamespace(returncode=0, stdout="refs/heads/main\n", stderr="")
+        raise AssertionError(f"Unexpected git invocation: {cmd}")
+
+    monkeypatch.setattr(bench.subprocess, "run", _fake_run)
+    reachable, error = bench._git_commit_reachable_from("18d21cf", "main")
+    assert reachable is False
+    assert "did not resolve to a valid commit SHA" in str(error)
