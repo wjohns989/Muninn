@@ -1,0 +1,42 @@
+# Phase 4L.1 - MCP Transport Closed Recovery + Framing Compatibility
+
+Date: 2026-02-15  
+Branch: `feat/phase4k-roadmap-closure`
+
+## Objective
+
+Resolve intermittent `tools/call failed: Transport closed` failures for the Muninn MCP server by:
+1. hardening stdio transport parsing for cross-client framing differences, and
+2. documenting deterministic recovery steps when a session already holds a dead transport.
+
+## Implemented
+
+1. `mcp_wrapper.py` now accepts both inbound transport styles:
+   - newline-delimited JSON-RPC (`{"jsonrpc":"2.0", ...}\n`)
+   - `Content-Length` framed JSON-RPC payloads
+2. Added targeted protocol tests in `tests/test_mcp_wrapper_protocol.py`:
+   - JSON-line parsing
+   - `Content-Length` parsing
+   - invalid header handling
+
+## Validation
+
+1. `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+2. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_mcp_wrapper_protocol.py`
+3. Result: `28 passed`
+
+## Operational Recovery Runbook (for already broken sessions)
+
+If a current assistant/IDE session still returns `Transport closed`, apply:
+
+1. Verify MCP registration:
+   - `codex mcp get muninn`
+2. Verify wrapper process launch path manually:
+   - `python mcp_wrapper.py` (stdin smoke test, or use existing test command)
+3. Verify backend services:
+   - `curl http://localhost:42069/health`
+   - `curl http://localhost:11434/api/version`
+4. Restart the assistant/IDE MCP session (required if the transport object is already closed).
+5. Re-test with a read-only tool call (`search_memory`/`get_project_goal`).
+
+Note: Parser hardening fixes future session initialization compatibility; it does not resurrect an already closed transport object in a running client process.

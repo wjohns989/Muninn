@@ -1,4 +1,5 @@
 import copy
+import io
 
 import pytest
 
@@ -31,6 +32,33 @@ def test_negotiate_protocol_unsupported():
 
 def test_negotiate_protocol_default():
     assert mcp_wrapper._negotiate_protocol_version(None) == mcp_wrapper.SUPPORTED_PROTOCOL_VERSIONS[0]
+
+
+def test_read_rpc_message_supports_json_line():
+    stream = io.BytesIO(b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n')
+    msg = mcp_wrapper._read_rpc_message(stream)
+    assert msg is not None
+    assert msg["method"] == "ping"
+
+
+def test_read_rpc_message_supports_content_length_framing():
+    payload = b'{"jsonrpc":"2.0","id":2,"method":"ping"}'
+    framed = (
+        b"Content-Length: "
+        + str(len(payload)).encode("ascii")
+        + b"\r\nContent-Type: application/json\r\n\r\n"
+        + payload
+    )
+    stream = io.BytesIO(framed)
+    msg = mcp_wrapper._read_rpc_message(stream)
+    assert msg is not None
+    assert msg["method"] == "ping"
+    assert msg["id"] == 2
+
+
+def test_read_rpc_message_invalid_content_length_returns_none():
+    stream = io.BytesIO(b"Content-Length: nope\r\n\r\n{}")
+    assert mcp_wrapper._read_rpc_message(stream) is None
 
 
 def test_initialize_rejects_unsupported_protocol(monkeypatch):
