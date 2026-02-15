@@ -16,6 +16,16 @@ Define a deterministic, evidence-grade quantitative comparison protocol that dec
   - deterministic gate-family outcomes for quality/reliability/statistical/reproducibility/profile-policy.
 - Implementation details are captured in `docs/plans/2026-02-15-phase4af-unified-sota-verdict-command.md`.
 
+## Cadence Decision (2026-02-15)
+
+For active implementation/enhancement phases, use deferred benchmark cadence:
+
+1. Run fast deterministic tranche checks continuously (unit/protocol/hygiene + targeted soak checks).
+2. Reuse bounded-age benchmark reports for interim policy evaluation when needed (`dev-cycle --defer-benchmarks`).
+3. Run full benchmark matrix replay at release-readiness boundaries and scheduled CI windows.
+
+This keeps implementation throughput high without weakening final SOTA+ evidence requirements.
+
 ## Decision Rule
 
 A release is "SOTA+" only if all four gates pass:
@@ -128,11 +138,12 @@ Must satisfy all:
 
 ## Execution Workflow
 
-1. Generate benchmark artifacts for RC and baselines.
-2. Run eval gates and statistical tests.
-3. Run transport soak matrix.
-4. Build promotion manifest with all evidence.
-5. Apply go/no-go decision.
+1. During enhancement phases: run deferred cadence with freshness-bounded reused reports.
+2. At release-readiness: generate full benchmark artifacts for RC and baselines.
+3. Run eval gates and statistical tests.
+4. Run transport soak matrix.
+5. Build promotion manifest with all evidence.
+6. Apply go/no-go decision.
 
 ## Required Artifacts
 
