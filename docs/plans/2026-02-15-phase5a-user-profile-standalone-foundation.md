@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility controls applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding applied)
 
 ## Objective
 
@@ -138,6 +138,19 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - non-boolean `params.wait` returns `-32602`.
 - Detailed tranche note: `docs/plans/2026-02-15-phase5a5-mcp-task-result-compatibility-mode.md`.
 
+### 10) Closure Telemetry + Huginn Browser Branding (Phase 5A.6)
+
+- Closure telemetry enrichment shipped in eval pipeline:
+  - soak now captures compatibility policy config (`task_result_mode`, `task_result_auto_retry_clients`),
+  - closure now emits error-code totals and compatibility mode/profile distributions.
+- Standalone/browser UX branding updated for practicality:
+  - browser control center presented as **Huginn** (standalone mode),
+  - explicit mode chip added in dashboard header,
+  - README/launcher/build helper wording now distinguishes:
+    - Huginn = browser-first standalone surface,
+    - Muninn = MCP-attached assistant surface.
+- Detailed tranche note: `docs/plans/2026-02-15-phase5a6-closure-telemetry-huginn-branding.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -187,6 +200,11 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`)
     - soak regression check pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_221650.json`
     - closure mini-campaign pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
+  - closure telemetry + Huginn branding verification:
+    - `python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py mcp_wrapper.py muninn_standalone.py scripts/build_standalone.py server.py`
+    - `111 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`, `tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`)
+    - soak regression check pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_224206.json`
+    - closure mini-campaign pass with telemetry: `eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

@@ -269,7 +269,7 @@ def _load_dashboard_html() -> str:
     except Exception as exc:
         logger.error("Failed to load dashboard HTML: %s", exc)
         return (
-            "<html><body><h1>Muninn UI unavailable</h1>"
+            "<html><body><h1>Huginn UI unavailable</h1>"
             "<p>dashboard.html could not be loaded.</p></body></html>"
         )
 
