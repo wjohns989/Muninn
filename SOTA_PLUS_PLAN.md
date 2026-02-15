@@ -243,6 +243,10 @@
     - wrapper deadline budget now derives from host timeout minus safety margin when explicit deadline is not set (`MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC` - `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`),
     - explicit deadline override remains supported (`MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`) including disable semantics (`<=0`),
     - derived budget now clamps to a safe minimum (`1s`) when margin exceeds configured host timeout, preventing invalid deadline windows.
+64. Phase 4AD explicit-deadline overrun guardrail baseline implemented:
+    - explicit deadline settings now default-clamp to host-safe budget (host timeout minus margin) to prevent misconfiguration-driven timeout overruns,
+    - opt-out overrun control added for expert sessions (`MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN=1`),
+    - live post-restart MCP sanity check confirms in-session tool responsiveness (`get_model_profiles`, `add_memory` succeeded without transport closure).
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -288,6 +292,7 @@
 - Phase 4AA tools/call deadline-budget hardening verification: `62 passed` (`tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
 - Phase 4AB startup-recovery budget gating verification: `64 passed` (`tests/test_mcp_wrapper_protocol.py`) + `71 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
 - Phase 4AC host-timeout-derived deadline-budget verification: `68 passed` (`tests/test_mcp_wrapper_protocol.py`) + `75 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
+- Phase 4AD explicit-deadline overrun guardrail verification: `70 passed` (`tests/test_mcp_wrapper_protocol.py`) + `77 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -328,6 +333,7 @@
 36. **Host-timeout avoidance ROI**: wrapper-level tool-call deadline budgeting plus per-attempt timeout clamping reduces intermittent host-side `120s` transport closures by failing deterministically before channel teardown windows.
 37. **Timeout-window integrity ROI**: startup-recovery budget gating prevents low-remaining-budget preflight work from consuming terminal wall time, reducing deadline overshoot risk in intermittent outage/retry windows.
 38. **Cross-host adaptation ROI**: deriving deadline budgets from host timeout and safety margin reduces manual tuning overhead across different MCP client timeout policies while preserving deterministic safety margins.
+39. **Misconfiguration-resilience ROI**: explicit deadline overrun guardrail defaults to host-safe clamping, preventing operator-configured over-budget values from silently reintroducing transport-closure risk.
 36. **Governance alert ROI**: policy-level recommendation confidence alerts plus governance-gated apply prevent low-confidence profile promotions from being applied during noisy benchmark windows.
 37. **Packaging reliability ROI**: explicit optional dependency groups for conflict detection and SDK surfaces reduce installation ambiguity and improve reproducibility across operator environments.
 

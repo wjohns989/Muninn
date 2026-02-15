@@ -131,6 +131,7 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 def _get_tool_call_deadline_seconds() -> Optional[float]:
+    host_safe_budget = _get_host_safe_tool_call_budget_seconds()
     explicit_raw = os.environ.get("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC")
     if explicit_raw is not None:
         try:
@@ -149,8 +150,19 @@ def _get_tool_call_deadline_seconds() -> Optional[float]:
             elif seconds <= 0:
                 return None
             else:
+                if (not _env_flag("MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN", False)) and seconds > host_safe_budget:
+                    logger.warning(
+                        "Configured explicit tool-call deadline %.3fs exceeds host-safe budget %.3fs; clamping."
+                        " Set MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN=1 to bypass.",
+                        seconds,
+                        host_safe_budget,
+                    )
+                    return host_safe_budget
                 return seconds
+    return host_safe_budget
 
+
+def _get_host_safe_tool_call_budget_seconds() -> float:
     host_timeout = 120.0
     host_timeout_raw = os.environ.get("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
     try:
