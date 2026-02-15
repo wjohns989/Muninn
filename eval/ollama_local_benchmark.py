@@ -471,8 +471,12 @@ def _evaluate_candidate(
             violations.append("live_p95_above_threshold")
 
     max_legacy_p95 = _to_float(gate.get("max_legacy_p95_seconds"))
-    if max_legacy_p95 is not None and legacy_p95 is not None and legacy_p95 > max_legacy_p95:
-        violations.append("legacy_p95_above_threshold")
+    if max_legacy_p95 is not None:
+        if legacy_p95 is None:
+            if require_legacy:
+                violations.append("missing_legacy_p95")
+        elif legacy_p95 > max_legacy_p95:
+            violations.append("legacy_p95_above_threshold")
 
     min_ability_per_vram = _to_float(gate.get("min_live_ability_per_vram_gb"))
     if min_ability_per_vram is not None:

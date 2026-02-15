@@ -179,7 +179,7 @@
 - Phase 4G profile-policy audit visibility verification: `49 passed` (`tests/test_memory_profiles.py`, `tests/test_sqlite_profile_policy_events.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 - Phase 4H local benchmark tooling smoke checks: `python -m eval.ollama_local_benchmark list` and `python -m eval.ollama_local_benchmark sync --dry-run`.
 - Phase 4H initial five-model quick-pass benchmark snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
-- Phase 4I/4J benchmark helper verification: `7 passed` (`tests/test_ollama_local_benchmark.py`).
+- Phase 4I/4J benchmark helper verification: `8 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.

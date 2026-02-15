@@ -35,7 +35,7 @@ Phase 4I closes that gap.
 3. Updated prompt pack with rubric metadata:
    - `eval/ollama_benchmark_prompts.jsonl`.
 4. Added benchmark helper tests:
-   - `tests/test_ollama_local_benchmark.py` (`5 passed`).
+   - `tests/test_ollama_local_benchmark.py` (expanded to `8 passed` by Phase 4J).
 5. Updated docs:
    - `eval/README.md`,
    - `docs/PLAN_GAP_EVALUATION.md`,

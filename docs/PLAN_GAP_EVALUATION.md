@@ -108,7 +108,7 @@ Evaluator: Codex
   - `python -m eval.ollama_local_benchmark sync --dry-run`
 - Phase 4I benchmark extensions now pass targeted checks:
   - `python -m py_compile eval/ollama_local_benchmark.py`
-  - `7 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `8 passed` (`tests/test_ollama_local_benchmark.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
