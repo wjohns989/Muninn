@@ -121,3 +121,30 @@ python -m eval.artifacts verify --all
 ```
 
 This command validates checksums, dataset contract invariants, and baseline report reproducibility against current eval code.
+
+## Local Ollama Model Matrix + Benchmark
+
+Use this for local model-cache sync and side-by-side throughput/latency benchmarking.
+
+```bash
+# Show matrix install status
+python -m eval.ollama_local_benchmark list
+
+# Pull default benchmark set (xlam, qwen3:8b, deepseek-r1:8b, qwen2.5-coder:7b, llama3.1:8b)
+python -m eval.ollama_local_benchmark sync
+
+# Pull all matrix models including optional entries like qwen3:14b
+python -m eval.ollama_local_benchmark sync --include-optional
+
+# Benchmark installed default models against the curated prompt pack
+python -m eval.ollama_local_benchmark benchmark --repeats 2 --num-predict 192
+
+# Benchmark explicit model subset
+python -m eval.ollama_local_benchmark benchmark --models xlam:latest,qwen3:8b
+```
+
+Versioned inputs:
+- Model matrix: `eval/ollama_model_matrix.json`
+- Prompt pack: `eval/ollama_benchmark_prompts.jsonl`
+
+Generated reports are written to `eval/reports/ollama/` (gitignored).

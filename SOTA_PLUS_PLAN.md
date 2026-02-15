@@ -141,6 +141,11 @@
 39. Phase 4G profile-policy audit visibility baseline implemented:
     - runtime profile mutations are now persisted in metadata audit events,
     - profile mutation history is now queryable via memory core + REST + MCP + SDK.
+40. Phase 4H local model-matrix benchmarking baseline implemented:
+    - versioned local model matrix shipped (`eval/ollama_model_matrix.json`),
+    - benchmark prompt pack shipped (`eval/ollama_benchmark_prompts.jsonl`),
+    - local sync/benchmark CLI shipped (`python -m eval.ollama_local_benchmark ...`),
+    - phase plan documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -163,6 +168,8 @@
 - Phase 4E runtime-vs-ingestion profile scheduling verification: `69 passed` (`tests/test_config.py`, `tests/test_memory_ingestion.py`, `tests/test_memory_update_path.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_extraction_pipeline.py`).
 - Phase 4F runtime profile-control verification: `45 passed` (`tests/test_memory_profiles.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
 - Phase 4G profile-policy audit visibility verification: `49 passed` (`tests/test_memory_profiles.py`, `tests/test_sqlite_profile_policy_events.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`).
+- Phase 4H local benchmark tooling smoke checks: `python -m eval.ollama_local_benchmark list` and `python -m eval.ollama_local_benchmark sync --dry-run`.
+- Phase 4H initial five-model quick-pass benchmark snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -186,6 +193,7 @@
 19. **Helper-first VRAM budget control ROI**: decoupling runtime extraction profile from ingestion profiles preserves low-latency memory assist during active coding while still allowing higher-caliber offline ingest/import passes.
 20. **Live policy adaptation ROI**: runtime profile control API removes restart overhead and enables assistant/IDE orchestration to adjust helper vs ingest compute posture in-session.
 21. **Operational traceability ROI**: profile-policy mutation events make dynamic runtime tuning auditable across sessions and assistants, reducing silent drift risk.
+22. **Local model-selection evidence ROI**: versioned model matrix plus prompt-stable benchmark harness enables repeatable 16GB-class profiling decisions instead of ad-hoc model swaps.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).
