@@ -48,6 +48,7 @@ models/
 .ollama/
 ollama-local-cache/
 eval/reports/ollama/
+eval/reports/hygiene/
 eval/reports/model_benchmarks/
 
 # Loki / session state

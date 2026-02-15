@@ -155,6 +155,25 @@
     - policy file added (`eval/ollama_profile_promotion_policy.json`),
     - `profile-gate` command added to evaluate live/legacy benchmark reports against profile thresholds,
     - deterministic recommendation output added for `low_latency`, `balanced`, and `high_reasoning` promotion decisions.
+43. Phase 4K phase-boundary hygiene gate baseline implemented:
+    - new gate utility added (`python -m eval.phase_hygiene`) for deterministic phase/PR hygiene checks,
+    - report output added at `eval/reports/hygiene/phase_hygiene_<timestamp>.json`,
+    - test budget checks now include skipped/warning thresholds in addition to PR/review/check constraints,
+    - command execution hardening applied (`shell=False` tokenized execution + JUnit-first pytest summary parsing).
+44. Phase 4L development-cycle benchmark orchestration baseline implemented:
+    - `dev-cycle` command added to local benchmark utility (`python -m eval.ollama_local_benchmark dev-cycle`),
+    - command now executes `benchmark` + `legacy-benchmark` + `profile-gate` in one operator-triggered run,
+    - summary artifact now maps profile recommendations to practical workload roles.
+45. MCP transport framing compatibility hardening implemented:
+    - `mcp_wrapper` stdio reader now supports both newline-delimited JSON and `Content-Length` framed JSON-RPC payloads,
+    - transport parser tests added to prevent regressions in cross-client MCP compatibility.
+46. MCP startup + tray operations hardening implemented:
+    - MCP wrapper now triggers launch-time dependency bootstrap (including Ollama when enabled),
+    - Windows tray now provides direct Browser UI entry, MCP health probe, Ollama start action, and wrapper-log access.
+47. Phase 4M benchmark-policy apply/rollback baseline implemented:
+    - `dev-cycle` now supports controlled `--apply-policy` updates to running profile defaults,
+    - policy apply now writes pre-mutation checkpoint artifacts with prior active policy,
+    - `rollback-policy` command now restores profile defaults from checkpoint with deterministic report output.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -180,6 +199,10 @@
 - Phase 4H local benchmark tooling smoke checks: `python -m eval.ollama_local_benchmark list` and `python -m eval.ollama_local_benchmark sync --dry-run`.
 - Phase 4H initial five-model quick-pass benchmark snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
 - Phase 4I/4J benchmark helper verification: `8 passed` (`tests/test_ollama_local_benchmark.py`).
+- Phase 4K/4L benchmark+hygiene helper verification: `14 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
+- MCP transport framing verification: `28 passed` (`tests/test_mcp_wrapper_protocol.py`).
+- MCP startup/bootstrap verification: `30 passed` (`tests/test_mcp_wrapper_protocol.py`) + wrapper initialize smoke check via stdio.
+- Phase 4M benchmark-policy apply/rollback verification: `11 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -224,7 +247,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 **Still open gaps:**
 1. Ingestion hardening follow-ups (parser sandbox/process isolation for optional binary backends and broader enterprise corpus adapters)
 2. Benchmark breadth expansion for additional adversarial/noise slices and domain diversity
-3. Profile-level promotion gates still need implementation (routing, audit history, and benchmark plumbing exist; profile-specific gate thresholds + telemetry promotion policy remain open)
+3. Profile auto-promotion operationalization still needs implementation (operator-triggered orchestration, controlled policy-apply pipeline, rollback checkpoints, and alerting)
 
 **Advancements implemented to date:**
 5. Explainable recall traces (UNIQUE — no competitor has this)
