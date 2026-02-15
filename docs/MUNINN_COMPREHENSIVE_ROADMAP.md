@@ -136,6 +136,29 @@ Completed since last update:
    - apply flow now validates gate/recommendation evidence and writes checkpoint artifact before mutation,
    - new `rollback-policy` command restores prior profile defaults from checkpoint artifacts,
    - implementation plan documented (`docs/plans/2026-02-15-phase4m-dev-cycle-policy-apply-rollback.md`).
+42. Restart artifact cleanup and repository hygiene completed:
+   - stale staged restart artifacts were cleared and obsolete backup files removed,
+   - unresolved conflict-marker state was purged from active planning/research docs,
+   - repository metadata (description/homepage/topics) was normalized for current scope.
+43. Public-facing documentation and packaging-license hygiene completed:
+   - README was rewritten to a production-grade, vendor-neutral surface,
+   - Apache distribution attribution hygiene is now explicit via `NOTICE`,
+   - packaging now includes `LICENSE` and `NOTICE` via setuptools `license-files`.
+44. Quantitative SOTA+ comparison framework documented:
+   - a release decision protocol with explicit gate families (quality, reliability/latency, statistical validity, reproducibility/integrity) is now defined,
+   - quantitative closure criteria for the MCP transport intermittency blocker are now explicit,
+   - implementation plan documented (`docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`).
+45. Web-research expansion added for next-phase benchmarking:
+   - benchmark matrix now includes LongMemEval, StructMemEval, and Mem2Act-style memory-conditioned action coverage targets,
+   - roadmap now requires a final unified SOTA+ verdict artifact bound to commit SHA and benchmark hashes.
+46. Phase 4AF unified SOTA+ verdict command baseline implemented:
+   - `eval.ollama_local_benchmark sota-verdict` now emits a deterministic final go/no-go artifact,
+   - verdict pipeline now normalizes eval/profile-gate/transport/aux benchmark evidence into one schema,
+   - gate output now contains quality, reliability, statistical, reproducibility, and profile-policy pass/fail outcomes.
+47. Phase 4AG enhancement-first benchmark cadence baseline implemented:
+   - `dev-cycle` now supports deferred mode (`--defer-benchmarks`) so active development can reuse existing live/legacy reports instead of regenerating benchmarks every tranche,
+   - deferred mode now supports bounded freshness checks (`--max-reused-report-age-hours`) for reused evidence,
+   - roadmap sequencing is now explicit: continue improvement/enhancement implementation with fast deterministic gates, reserve full benchmark matrix replay for release-readiness closure.
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -157,6 +180,8 @@ Verification:
   - `30 passed` across MCP startup/bootstrap protocol tests (`tests/test_mcp_wrapper_protocol.py`) plus initialize smoke probe.
   - `11 passed` across benchmark helper apply/rollback flows (`tests/test_ollama_local_benchmark.py`).
 - Compile checks passed for all touched modules/tests.
+  - unified verdict command checks now pass: compile check + `32 passed` (`tests/test_ollama_local_benchmark.py`) + `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
+  - deferred dev-cycle checks now pass: compile check + deferred report reuse/staleness tests in `tests/test_ollama_local_benchmark.py`.
 
 ### What already exists (partially or fully)
 - Platform abstraction, feature flags, recall trace primitives, conflict detection, semantic dedup, adaptive weight adapter, Docker assets.
@@ -182,6 +207,8 @@ Still open and blocking SOTA claims:
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
 3. Profile-level promotion criteria are partially open: routing, audit visibility, ability/resource benchmark plumbing, and controlled apply/rollback paths are now implemented; telemetry-backed automatic default-policy alerting and governance thresholds are still pending.
 4. Browser UI preference depth remains partially open: persistence is implemented, but advanced user-adaptive controls (profile presets, safety mode templates, benchmark launch UX) still need phased rollout.
+5. Unified SOTA+ verdict automation is partially closed: one-command promotion verdict emission + normalization hooks are now implemented; remaining work is external benchmark adapters, scheduled CI replay, and signed promotion-manifest issuance.
+6. Enhancement-vs-benchmark cadence is now codified: full matrix replay should run at release-readiness boundaries (or scheduled CI), not on every implementation tranche.
 
 ---
 

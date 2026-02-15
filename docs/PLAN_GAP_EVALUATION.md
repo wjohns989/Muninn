@@ -45,6 +45,20 @@ Evaluator: Codex
 - **Phase 4S MCP task lifecycle baseline is now implemented**: wrapper now handles `tasks/get`, `tasks/result`, and `tasks/cancel` with schema-aligned `taskId` validation and deterministic lifecycle error behavior.
 - **Phase 4T task-augmented tools/call baseline is now implemented**: wrapper now supports task-backed `tools/call` execution with status notifications plus TTL/retention/pagination governance for task state.
 - **Phase 4U blocking-result dispatch compliance baseline is now implemented**: `tasks/result` now remains lifecycle-blocking while wrapper dispatch routes blocking methods to background workers with stdout write-locking for concurrent transport safety.
+- **Phase 4V task metadata/cursor compliance baseline is now implemented**: related-task metadata now uses `taskId`, task records now include `pollInterval`, and `tasks/list` now emits opaque cursor tokens.
+- **Phase 4W MCP transport resilience baseline is now implemented**: malformed framed payloads are now recoverable, backend outages now use circuit-breaker fast-fail cooldown, dispatch queue saturation now returns explicit `-32001`, and broken-pipe writes are now transport-guarded.
+- **Phase 4X transport soak + dispatch-policy baseline is now implemented**: deterministic MCP soak harness reports are now generated, `tools/call` background dispatch is now opt-in for transport determinism, and outage preflight start probes are now skipped when autostart is disabled or circuit is open.
+- **Phase 4Y profile-governance telemetry + guardrail baseline is now implemented**: profile-gate now emits governance alerts with policy thresholds, governance enforcement is now available in gate/cycle commands, and policy apply can now require governance-clean gate output.
+- **Packaging dependency mismatch is now corrected**: `pyproject.toml` now ships explicit optional extras for `conflict` and `sdk`, and `all` now includes those surfaces for reproducible installs.
+- **Phase 4AA MCP tool-call timeout hardening baseline is now implemented**: wrapper tool calls now run under a bounded deadline budget (default `110s`), retry attempts now clamp request timeouts to remaining budget and abort deterministically on budget exhaustion, and `delete_memory` path segments are now URL-encoded in wrapper transport.
+- **Phase 4AB startup-recovery budget gating baseline is now implemented**: preflight/retry startup recovery now checks remaining deadline budget and skips recovery when budget is below threshold (`MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, default `28s`) to avoid timeout-window overruns.
+- **Phase 4AC host-timeout-derived deadline budgeting baseline is now implemented**: when explicit deadline is not set, wrapper now derives tool-call budget from host timeout minus safety margin (`MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC` - `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`) with safe minimum clamping, improving cross-client timeout compatibility.
+- **Phase 4AD explicit-deadline overrun guardrail baseline is now implemented**: explicit deadline values now default-clamp to host-safe budgets unless operator opt-out is set (`MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN=1`), preventing misconfiguration-driven timeout-window overruns.
+- **Phase 4AE guarded-dispatch fail-fast response baseline is now implemented**: guarded RPC dispatch now emits deterministic `-32603` replies for request IDs when unexpected dispatch exceptions occur, preventing silent hangs on background-dispatched request paths.
+- **Restart artifact hygiene is now complete**: stale staged restart artifacts are cleared, obsolete `.bak` backup artifact removed, and unresolved conflict markers are no longer present in working docs.
+- **SOTA+ quantitative decision framework is now documented**: final release verdict gates and benchmark normalization requirements are captured in `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`.
+- **Phase 4AF unified SOTA+ verdict baseline is now implemented**: `sota-verdict` now emits one deterministic release gate artifact with normalized eval/profile-gate/transport evidence and per-gate pass/fail outcomes.
+- **Phase 4AG enhancement-first benchmark cadence baseline is now implemented**: `dev-cycle` now supports deferred benchmark mode (`--defer-benchmarks`) with reusable report freshness checks (`--max-reused-report-age-hours`) to keep active implementation tranches fast while preserving gate integrity.
 
 ## Status vs Plan
 
@@ -89,11 +103,13 @@ Evaluator: Codex
 2. **User-scope enforcement risk in retrieval (fixed):** hybrid retrieval now enforces user/namespace constraints in final record filtering.
 3. **Legacy ingestion path traversal / arbitrary file-read surface (fixed):** user-provided roots and selected paths now validate against ingestion allow-list roots before discovery/import.
 4. **Ingestion DoS vector through unconstrained chunk params (fixed):** runtime chunk/file limits now enforce bounded values and relation constraints (`overlap < chunk_size`, `min_chunk <= chunk_size`).
-5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
+5. **Plan/dependency mismatch (fixed):** `pyproject.toml` now defines optional dependency groups for `conflict` and `sdk` and includes both in `all` install surface.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, and git ancestry enforcement are now implemented, but profile-level telemetry/alert thresholds and auto-governance promotion controls still need completion before default-policy automation.
-9. **MCP Muninn transport reliability intermittency (operationally mitigated):** framing mismatch is fixed and startup bootstrap is in place; stale closed handles still require session restart by design, now covered by explicit recovery runbook and tray health-probe tooling.
+8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
+9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls + startup-recovery budget gating + host-timeout-derived budgeting + explicit-overrun guardrails + guarded-dispatch fail-fast replies are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`, `MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC`, `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`, `MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, and `MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN` as needed). Post-restart in-session signal: `get_model_profiles` and `add_memory` MCP calls succeeded, and latest framed transport soak run passed (`run_id=20260215_170548`), but continued runtime observation is still required before closing blocker status.
+10. **Unified SOTA+ verdict automation (partially open):** one authoritative go/no-go verdict artifact is now wired (`sota-verdict`) with normalization hooks; remaining work is benchmark breadth adapters (LongMemEval/StructMemEval/Mem2Act + continuous-interaction slices), CI replay wiring, and signed promotion-manifest emission.
+11. **CI cadence split (open):** deferred benchmark mode is now available for enhancement tranches, but CI still needs explicit fast-on-PR vs full-on-schedule/release workflow wiring.
 
 ## Validation Snapshot
 
@@ -171,6 +187,62 @@ Evaluator: Codex
   - `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - blocking lifecycle semantics now run on background dispatch paths (`tasks/result`, `tools/call`) so wrapper channel remains responsive under concurrent requests.
   - review follow-up now bounds background dispatch with a thread pool and removes reflected exception text from guarded-dispatch logs.
+- Phase 4V metadata/cursor compliance tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `52 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - related-task metadata now emits schema-aligned `taskId` key and `tasks/list` now uses opaque cursor tokens with backward-compatible numeric decode handling.
+- Phase 4W MCP transport resilience tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `56 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `92 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command ""` -> PASS (`eval/reports/hygiene/phase_hygiene_20260215_064545.json`)
+  - protocol tests now cover malformed framed payload recovery, circuit-open fast-fail behavior, dispatch queue saturation, and broken-pipe transport guarding.
+- Phase 4X transport soak + dispatch-policy tranche now passes targeted checks:
+  - `python -m py_compile eval/mcp_transport_soak.py tests/test_mcp_transport_soak.py mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `98 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`)
+  - `python -m eval.mcp_transport_soak --iterations 6 --warmup-requests 1 --timeout-sec 12 --transport framed --server-url http://127.0.0.1:1 --failure-threshold 1 --cooldown-sec 30 --max-p95-ms 2500 --inject-malformed-frame` -> PASS (`eval/reports/mcp_transport/mcp_transport_soak_20260215_074136.json`)
+  - `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command ""` -> PASS (`eval/reports/hygiene/phase_hygiene_20260215_074404.json`)
+  - `tools/call` background dispatch is now opt-in (`MUNINN_MCP_BACKGROUND_TOOLS_CALL=1`) while `tasks/result` remains background-dispatched by default.
+- Phase 4Y profile-governance telemetry + guardrail tranche now passes targeted checks:
+  - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
+  - `30 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `profile-gate` now emits deterministic governance alerts and supports `--enforce-governance`.
+  - `dev-cycle` now supports `--enforce-governance` and `--require-governance-clean` for apply gating.
+- Phase 4AA tools/call timeout-hardening tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `62 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - wrapper now enforces tool-call deadline budgets before host-side 120s channel limits and clamps retry timeouts to remaining budget.
+- Phase 4AB startup-recovery budget-gating tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `64 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `71 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - wrapper now skips startup recovery preflight/retry work when remaining deadline budget is below configured threshold, reducing deadline overshoot risk near timeout windows.
+- Phase 4AC host-timeout-derived deadline-budget tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `68 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `75 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - wrapper now derives default tool-call deadline budgets from host timeout minus margin with explicit override/disable semantics and safe minimum clamping.
+- Phase 4AD explicit-deadline overrun-guardrail tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `70 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `77 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - explicit over-budget deadline values now clamp to host-safe budget by default unless overrun opt-out is explicitly enabled.
+- Phase 4AE guarded-dispatch fail-fast response tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `71 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `78 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - `python -m eval.mcp_transport_soak --iterations 10 --warmup-requests 2 --timeout-sec 15 --transport framed --max-p95-ms 5000` -> PASS (`run_id=20260215_170548`)
+  - guarded-dispatch path now returns deterministic `-32603` replies for request IDs when unexpected dispatcher exceptions occur.
+- Phase 4AF unified SOTA+ verdict tranche now passes targeted checks:
+  - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
+  - `32 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`)
+  - command now emits deterministic gate-family outcomes across quality/reliability/statistical/reproducibility/profile-policy dimensions.
+- Phase 4AG deferred benchmark cadence tranche now passes targeted checks:
+  - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
+  - deferred-mode tests now validate benchmark-skip + report-reuse behavior and stale-report rejection (`tests/test_ollama_local_benchmark.py`)
+  - combined targeted suite passes (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -202,7 +274,7 @@ Evaluator: Codex
    - Periodic abstraction of dense episodic clusters into semantic memories with reversible provenance links.
    - Helps scale and keeps retrieval focused.
 6. **MCP 2025-11 conformance tranche (follow-up now narrower)**
-   - Baseline tasks/list/get/result/cancel + task-augmented `tools/call` + status notifications + retention/pagination governance + blocking-result responsive dispatch are now implemented; remaining high-ROI work is advanced `input_required` task flows and optional persistent task-store backing.
+   - Baseline tasks/list/get/result/cancel + task-augmented `tools/call` + status notifications + retention/pagination governance + blocking-result responsive dispatch + metadata/cursor compliance are now implemented; remaining high-ROI work is advanced `input_required` task flows and optional persistent task-store backing.
 7. **OpenTelemetry GenAI semantic instrumentation**
    - Standardized retrieval/add trace telemetry is implemented; next maturity step is dashboard/alert packs for regression triage.
 
@@ -255,6 +327,14 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4r-mcp-2025-11-25-compatibility.md`
 - `docs/plans/2026-02-15-phase4s-mcp-task-lifecycle-baseline.md`
 - `docs/plans/2026-02-15-mcp-transport-closed-recovery.md`
+- `docs/plans/2026-02-15-phase4aa-mcp-tool-call-timeout-hardening.md`
+- `docs/plans/2026-02-15-phase4ab-mcp-startup-recovery-budget-gating.md`
+- `docs/plans/2026-02-15-phase4ac-mcp-host-timeout-derived-deadline-budget.md`
+- `docs/plans/2026-02-15-phase4ad-mcp-explicit-deadline-overrun-guardrail.md`
+- `docs/plans/2026-02-15-phase4ae-mcp-guarded-dispatch-fail-fast-response.md`
+- `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`
+- `docs/plans/2026-02-15-phase4af-unified-sota-verdict-command.md`
+- `docs/plans/2026-02-15-phase4ag-enhancement-first-benchmark-cadence.md`
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
 ## Model-Caliber Research Update (2026-02-14)

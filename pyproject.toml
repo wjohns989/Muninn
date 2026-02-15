@@ -2,6 +2,9 @@
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+license-files = ["LICENSE", "NOTICE"]
+
 [project]
 name = "muninn-mcp"
 version = "3.1.1"
@@ -62,12 +65,20 @@ dev = [
 observability = [
     "opentelemetry-api>=1.27.0",
 ]
+conflict = [
+    "transformers>=4.41.0",
+    "torch>=2.2.0",
+]
 ingestion = [
     "pypdf>=4.0.0",
     "python-docx>=1.1.0",
 ]
+sdk = [
+    "requests>=2.31.0",
+    "httpx>=0.24.0",
+]
 all = [
-    "muninn-mcp[instructor,tray,dev,observability,ingestion]",
+    "muninn-mcp[instructor,tray,dev,observability,conflict,ingestion,sdk]",
 ]
 
 [project.scripts]
