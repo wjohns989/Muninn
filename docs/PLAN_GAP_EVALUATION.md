@@ -149,6 +149,7 @@ Evaluator: Codex
   - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
   - `36 passed` (`tests/test_mcp_wrapper_protocol.py`)
   - `70 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - review follow-up corrected `idempotentHint` semantics for non-read-only idempotent tools.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 

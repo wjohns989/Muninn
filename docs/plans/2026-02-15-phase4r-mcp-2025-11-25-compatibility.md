@@ -2,7 +2,7 @@
 
 Date: 2026-02-15  
 Owner: Codex  
-Status: Implemented baseline in branch `feat/phase4r-mcp-2025-11-25-compat`
+Status: Implemented baseline + review-fix follow-up in branch `feat/phase4r-mcp-2025-11-25-compat`
 
 ## Objective
 
@@ -22,7 +22,10 @@ Advance wrapper interoperability with the MCP 2025-11-25 protocol by adding task
 4. Tool metadata compatibility hardening:
    - each tool now explicitly returns `execution.taskSupport` (default `forbidden`),
    - annotations expanded with `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`.
-5. Protocol test coverage additions:
+5. Review-driven metadata correctness fix:
+   - `idempotentHint` now uses explicit idempotent-tool classification (instead of `readOnly` proxy),
+   - non-read-only but idempotent tools (for example `set_model_profiles`, `update_memory`, `import_handoff`) now expose accurate retry semantics.
+6. Protocol test coverage additions:
    - initialize capability payload checks for `tasks.list`,
    - elicitation default + mode parsing checks,
    - `tasks/list` lifecycle/params/result checks,
