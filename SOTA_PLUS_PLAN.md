@@ -286,6 +286,11 @@
 74. Open PR closure sweep completed for current branch queue:
     - unresolved review thread(s) remediated and resolved,
     - open PR queue reduced to zero and merged baseline synced before Phase 5A implementation start.
+75. Phase 5A continuation hardening for transport + UI security implemented:
+    - MCP wrapper tool responses now enforce bounded output size (`MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS`) with deterministic truncation markers to reduce large-payload timeout pressure,
+    - MCP wrapper public error responses now sanitize timeout/connection/internal failures while preserving actionable validation errors,
+    - browser dashboard removed dynamic `innerHTML` rendering for result payloads and legacy source rows (DOM-safe node creation with `textContent`),
+    - browser API error handling now summarizes/redacts sensitive backend detail strings before display.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -337,6 +342,7 @@
 - Phase 4AG deferred-benchmark cadence verification: compile checks (`python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`) + deferred-mode tests for report reuse + stale-report rejection (`tests/test_ollama_local_benchmark.py`) + combined targeted suite pass (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Restart hygiene + doc/packaging tranche verification: no unresolved conflict markers repo-wide and no staged restart leftovers (`git diff --cached --name-only` empty), plus hygiene check pass (`7 passed`: `tests/test_phase_hygiene.py`).
 - Phase 5A user-profile + chronology/hierarchy + standalone foundation verification: `116 passed` (`tests/test_ingestion_discovery.py`, `tests/test_memory_ingestion.py`, `tests/test_memory_user_profile.py`, `tests/test_sqlite_goal_handoff.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`) + compile checks on touched modules.
+- Phase 5A continuation hardening verification: `79 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
