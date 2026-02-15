@@ -195,6 +195,10 @@
     - `tasks/list` request handling now enforces lifecycle + params shape with deterministic empty-task response,
     - tools now declare explicit `execution.taskSupport` and expanded annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`),
     - review-driven correction ensures `idempotentHint` reflects true idempotent tool behavior for safe retry semantics.
+53. Phase 4S MCP task lifecycle baseline implemented:
+    - wrapper now handles `tasks/get`, `tasks/result`, and `tasks/cancel` with schema-aligned `taskId` validation,
+    - initialize now advertises `capabilities.tasks.cancel` alongside list support,
+    - deterministic task lifecycle error semantics now cover invalid IDs and terminal/non-terminal misuse.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -229,6 +233,7 @@
 - Phase 4P apply-checkpoint provenance enforcement verification: `23 passed` (`tests/test_ollama_local_benchmark.py`).
 - Phase 4Q git-ancestry enforcement verification: `29 passed` (`tests/test_ollama_local_benchmark.py`) + `64 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
 - Phase 4R MCP 2025-11-25 compatibility verification: `36 passed` (`tests/test_mcp_wrapper_protocol.py`) + `70 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
+- Phase 4S MCP task lifecycle verification: `43 passed` (`tests/test_mcp_wrapper_protocol.py`) + `77 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -259,9 +264,10 @@
 26. **Lineage-governance ROI**: git ancestry checks prevent checkpoint applies tied to commits outside the intended branch lineage.
 27. **Mutation-guard security ROI**: ref option-separator + resolved-SHA verification closes dash-prefixed git argument ambiguity before policy mutation.
 28. **Protocol-interoperability ROI**: explicit tasks capability + elicitation-default parsing + task metadata reduce MCP client mismatch risk and stabilize tool execution contracts.
+29. **Lifecycle-polling ROI**: schema-aligned `tasks/get|result|cancel` support eliminates client fallback ambiguity and reduces integration error handling overhead.
 
 ### High-ROI SOTA additions from web research now required in roadmap
-1. MCP 2025-11-25 compatibility tranche follow-up (full task lifecycle: `tasks/get`/`tasks/result`/`tasks/cancel`; optional per-tool async `taskSupport` enablement).
+1. MCP 2025-11-25 compatibility tranche follow-up (task-augmented `tools/call` execution, status notifications, retention/pagination policy for task registry).
 2. Memory-specific benchmark gate using MemoryAgentBench competencies (accurate retrieval, test-time learning, long-range understanding, selective forgetting).
 3. GenAI observability tranche using OpenTelemetry GenAI semantic conventions (opt-in content capture + privacy-aware controls).
 4. Adaptive model-caliber routing: keep xLAM as optional provider, maintain profile-based fallback chains (low-latency/balanced/high-reasoning), and expose assistant-session profile selection independent of think-level toggles.
