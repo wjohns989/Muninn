@@ -50,6 +50,7 @@ Evaluator: Codex
 - **Phase 4X transport soak + dispatch-policy baseline is now implemented**: deterministic MCP soak harness reports are now generated, `tools/call` background dispatch is now opt-in for transport determinism, and outage preflight start probes are now skipped when autostart is disabled or circuit is open.
 - **Phase 4Y profile-governance telemetry + guardrail baseline is now implemented**: profile-gate now emits governance alerts with policy thresholds, governance enforcement is now available in gate/cycle commands, and policy apply can now require governance-clean gate output.
 - **Packaging dependency mismatch is now corrected**: `pyproject.toml` now ships explicit optional extras for `conflict` and `sdk`, and `all` now includes those surfaces for reproducible installs.
+- **Phase 4AA MCP tool-call timeout hardening baseline is now implemented**: wrapper tool calls now run under a bounded deadline budget (default `110s`), retry attempts now clamp request timeouts to remaining budget and abort deterministically on budget exhaustion, and `delete_memory` path segments are now URL-encoded in wrapper transport.
 
 ## Status vs Plan
 
@@ -98,7 +99,7 @@ Evaluator: Codex
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
-9. **MCP Muninn transport reliability intermittency (still partially open):** framing + parser resilience + queue/backoff + soak harness validations are now in-code, but external `muninn/search_memory` calls from this assistant session still hit 120s host-side deadlines; host MCP process restart/diagnostics remain required.
+9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC` if needed).
 
 ## Validation Snapshot
 
@@ -198,6 +199,10 @@ Evaluator: Codex
   - `30 passed` (`tests/test_ollama_local_benchmark.py`)
   - `profile-gate` now emits deterministic governance alerts and supports `--enforce-governance`.
   - `dev-cycle` now supports `--enforce-governance` and `--require-governance-clean` for apply gating.
+- Phase 4AA tools/call timeout-hardening tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `62 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - wrapper now enforces tool-call deadline budgets before host-side 120s channel limits and clamps retry timeouts to remaining budget.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -282,6 +287,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4r-mcp-2025-11-25-compatibility.md`
 - `docs/plans/2026-02-15-phase4s-mcp-task-lifecycle-baseline.md`
 - `docs/plans/2026-02-15-mcp-transport-closed-recovery.md`
+- `docs/plans/2026-02-15-phase4aa-mcp-tool-call-timeout-hardening.md`
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
 ## Model-Caliber Research Update (2026-02-14)
