@@ -36,6 +36,7 @@ def reset_session_state():
         "initialized": False,
         "protocol_version": mcp_wrapper.SUPPORTED_PROTOCOL_VERSIONS[0],
         "client_capabilities": {},
+        "client_info": {},
         "client_elicitation_modes": tuple(),
         "tasks": {},
     })
@@ -214,6 +215,23 @@ def test_initialize_advertises_tasks_capability(monkeypatch):
     assert capabilities["tasks"]["cancel"] == {}
     assert capabilities["tasks"]["requests"]["tools/call"] == {}
     assert capabilities["tasks"]["notifications"]["status"] == {}
+
+
+def test_initialize_stores_client_info(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "_collect_startup_warnings", lambda: [])
+
+    mcp_wrapper.handle_initialize(
+        "req-client-info",
+        {
+            "protocolVersion": "2025-11-25",
+            "clientInfo": {"name": "Claude Desktop", "version": "1.0.0"},
+        },
+    )
+
+    assert len(sent) == 1
+    assert mcp_wrapper._SESSION_STATE["client_info"]["name"] == "Claude Desktop"
 
 
 def test_initialize_elicitation_empty_object_defaults_to_form_mode(monkeypatch):
@@ -761,6 +779,16 @@ def test_get_task_result_max_wait_seconds_invalid_value_falls_back(monkeypatch):
     assert mcp_wrapper._get_task_result_max_wait_seconds() == 70.0
 
 
+def test_get_task_result_mode_defaults_to_auto(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TASK_RESULT_MODE", raising=False)
+    assert mcp_wrapper._get_task_result_mode() == "auto"
+
+
+def test_get_task_result_mode_invalid_value_falls_back(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MODE", "invalid-mode")
+    assert mcp_wrapper._get_task_result_mode() == "auto"
+
+
 def test_format_tool_result_text_truncates_large_payload(monkeypatch):
     monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "512")
     text = mcp_wrapper._format_tool_result_text(
@@ -1092,6 +1120,29 @@ def test_tasks_result_requires_terminal_status(monkeypatch):
     assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == "task-1"
 
 
+def test_tasks_result_auto_mode_uses_client_profile_for_immediate_retry(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.delenv("MUNINN_MCP_TASK_RESULT_MODE", raising=False)
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["client_info"] = {"name": "Claude Desktop"}
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-auto-retry",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32002
+    assert "Task result is not ready" in sent[0]["error"]["message"]
+
+
 def test_tasks_result_returns_retryable_error_when_wait_budget_exhausted(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -1113,6 +1164,91 @@ def test_tasks_result_returns_retryable_error_when_wait_budget_exhausted(monkeyp
     assert sent[0]["id"] == "req-tasks-result-timeout"
     assert sent[0]["error"]["code"] == -32002
     assert "not ready within the host-safe wait budget" in sent[0]["error"]["message"]
+
+
+def test_tasks_result_wait_override_can_force_blocking(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MODE", "immediate_retry")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+    done = threading.Event()
+
+    def _invoke_result():
+        mcp_wrapper._dispatch_rpc_message({
+            "jsonrpc": "2.0",
+            "id": "req-tasks-result-wait-true",
+            "method": "tasks/result",
+            "params": {"taskId": "task-1", "wait": True},
+        })
+        done.set()
+
+    thread = threading.Thread(target=_invoke_result, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    assert done.is_set() is False
+    assert sent == []
+
+    with mcp_wrapper._TASKS_CONDITION:
+        task = mcp_wrapper._SESSION_STATE["tasks"]["task-1"]
+        mcp_wrapper._set_task_state_locked(
+            task,
+            status="completed",
+            status_message="done",
+            result={"content": [{"type": "text", "text": "ok"}]},
+        )
+        mcp_wrapper._TASKS_CONDITION.notify_all()
+
+    thread.join(timeout=1.0)
+    assert done.is_set() is True
+    assert len(sent) == 1
+    assert sent[0]["result"]["content"][0]["text"] == "ok"
+
+
+def test_tasks_result_wait_override_can_force_immediate_retry(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MODE", "blocking")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-wait-false",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1", "wait": False},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32002
+    assert "Task result is not ready" in sent[0]["error"]["message"]
+
+
+def test_tasks_result_wait_override_rejects_non_boolean(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-wait-invalid",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1", "wait": "yes"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32602
+    assert "wait must be a boolean" in sent[0]["error"]["message"]
 
 
 def test_tasks_result_returns_payload_for_completed_task(monkeypatch):

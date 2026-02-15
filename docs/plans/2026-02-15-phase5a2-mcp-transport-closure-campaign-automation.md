@@ -69,6 +69,10 @@ Outputs explicit per-criterion booleans plus final `closure_ready`.
    - `python -m eval.mcp_transport_closure --streak-target 5 --max-campaign-runs 5 --transports framed,line --soak-iterations 10 --soak-warmup-requests 2 --soak-timeout-sec 15 --soak-max-p95-ms 5000 --soak-server-url http://127.0.0.1:1`
    - Result: `closure_ready=true`, `current_consecutive_pass_streak=5`, `window_p95_compliance_ratio=1.0`
    - Artifact: `eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json`
+6. Post-compatibility-mode regression mini-campaign evidence:
+   - `python -m eval.mcp_transport_closure --streak-target 5 --max-campaign-runs 5 --transports framed,line --soak-iterations 10 --soak-warmup-requests 2 --soak-timeout-sec 15 --soak-max-p95-ms 5000 --soak-server-url http://127.0.0.1:1`
+   - Result: `closure_ready=true`, `current_consecutive_pass_streak=5`, `window_p95_compliance_ratio=1.0`
+   - Artifact: `eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json`
 
 ## ROI / Blocker Impact
 

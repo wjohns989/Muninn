@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening/diagnostics/host-safe task-result gating applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility controls applied)
 
 ## Objective
 
@@ -124,6 +124,20 @@ Deliver the first production slice of Phase 5 improvements focused on:
 - This prevents indefinite blocking inside `tasks/result` from overrunning host-side timeout windows and triggering transport teardown.
 - Detailed tranche note: `docs/plans/2026-02-15-phase5a4-mcp-task-result-host-safe-wait-budget.md`.
 
+### 9) `tasks/result` Compatibility Mode (Phase 5A.5)
+
+- Added explicit compatibility policy control:
+  - `MUNINN_MCP_TASK_RESULT_MODE` = `auto|blocking|immediate_retry` (default `auto`).
+- Added auto-mode client profile control:
+  - `MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS` (comma-delimited match list).
+  - In `auto`, matching client profiles use immediate-retry semantics for non-terminal task states.
+- Added per-request override in `tasks/result`:
+  - `params.wait=true` forces blocking (bounded by Phase 5A.4 wait budget),
+  - `params.wait=false` forces immediate-retry.
+- Added strict params validation:
+  - non-boolean `params.wait` returns `-32602`.
+- Detailed tranche note: `docs/plans/2026-02-15-phase5a5-mcp-task-result-compatibility-mode.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -167,6 +181,12 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`)
     - soak regression check pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`
     - closure mini-campaign pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
+  - `tasks/result` compatibility-mode hardening verification:
+    - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+    - `98 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+    - `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`)
+    - soak regression check pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_221650.json`
+    - closure mini-campaign pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

@@ -313,6 +313,12 @@
     - default wait budget derives from host-safe timeout posture (`host timeout - margin`),
     - non-terminal wait budget exhaustion now returns deterministic retryable error (`-32002`) instead of indefinite blocking,
     - tranche note documented in `docs/plans/2026-02-15-phase5a4-mcp-task-result-host-safe-wait-budget.md`.
+80. Phase 5A.5 `tasks/result` compatibility-mode hardening implemented:
+    - explicit semantics control added (`MUNINN_MCP_TASK_RESULT_MODE=auto|blocking|immediate_retry`),
+    - auto mode now selects immediate-retry semantics for configured client profiles (`MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS`),
+    - per-request override added via `tasks/result` `params.wait` boolean (`true`=blocking, `false`=immediate-retry),
+    - non-boolean `params.wait` now returns deterministic `-32602`,
+    - tranche note documented in `docs/plans/2026-02-15-phase5a5-mcp-task-result-compatibility-mode.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -371,6 +377,7 @@
 - Phase 5A.2 closure campaign evidence: `closure_ready=true` in both smoke and full-window runs: 5-run dual-transport (`eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`) and 30-run closure window (`eval/reports/mcp_transport/mcp_transport_closure_20260215_213858.json`, streak `30`, window `30/30`, p95 ratio `1.0`).
 - Phase 5A.3 tool-call telemetry hardening verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 - Phase 5A.4 `tasks/result` host-safe wait-budget verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `92 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json`).
+- Phase 5A.5 `tasks/result` compatibility-mode verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `98 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_221650.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -427,6 +434,7 @@
 50. **Operator-throughput ROI**: auto discover-and-import flow for parser-supported legacy artifacts reduces manual multi-click migration overhead while preserving deterministic selection controls.
 51. **Timeout forensics ROI**: per-tool-call elapsed/byte/budget telemetry in wrapper logs reduces mean time to isolate external host transport-close regressions and supports objective remediation decisions.
 52. **Blocking-path resilience ROI**: host-safe `tasks/result` wait budgeting converts potential host-timeout transport teardown into deterministic, recoverable retry flow and reduces intermittent session loss.
+53. **Cross-client semantics ROI**: explicit/auto task-result compatibility modes reduce integration ambiguity across MCP host implementations while maintaining deterministic retry behavior under strict timeout envelopes.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
