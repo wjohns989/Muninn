@@ -289,6 +289,17 @@ def test_cmd_dev_cycle_writes_role_recommendations(tmp_path: Path, monkeypatch) 
         snippet_chars=800,
         dump_cases=None,
         allow_gate_failures=False,
+        apply_policy=False,
+        apply_dry_run=False,
+        allow_apply_when_gate_fails=False,
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        apply_source="dev_cycle_cli",
+        checkpoint_output=None,
+        target_model_profile="balanced",
+        target_runtime_model_profile="low_latency",
+        target_ingestion_model_profile="balanced",
+        target_legacy_ingestion_model_profile="balanced",
     )
 
     rc = bench.cmd_dev_cycle(args)
@@ -298,3 +309,191 @@ def test_cmd_dev_cycle_writes_role_recommendations(tmp_path: Path, monkeypatch) 
     assert summary["recommendations"]["low_latency"]["model"] == "xlam:latest"
     assert "Runtime helper" in summary["recommendations"]["low_latency"]["usage"]
     assert summary["recommendations"]["balanced"]["model"] == "qwen3:8b"
+
+
+def test_cmd_dev_cycle_apply_policy_writes_checkpoint(tmp_path: Path, monkeypatch) -> None:
+    live_output = tmp_path / "live_apply.json"
+    legacy_output = tmp_path / "legacy_apply.json"
+    gate_output = tmp_path / "gate_apply.json"
+    summary_output = tmp_path / "summary_apply.json"
+    checkpoint_output = tmp_path / "checkpoint_apply.json"
+
+    def fake_benchmark(args: SimpleNamespace) -> int:
+        payload = {
+            "models": {
+                "xlam:latest": {
+                    "summary": {
+                        "avg_ability_score": 0.72,
+                        "p95_wall_seconds": 6.0,
+                        "resource_efficiency": {"ability_per_vram_gb": 0.6},
+                    }
+                },
+                "qwen3:8b": {
+                    "summary": {
+                        "avg_ability_score": 0.84,
+                        "p95_wall_seconds": 11.0,
+                        "resource_efficiency": {"ability_per_vram_gb": 0.12},
+                    }
+                },
+            }
+        }
+        Path(args.output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    def fake_legacy(args: SimpleNamespace) -> int:
+        payload = {
+            "models": {
+                "xlam:latest": {"summary": {"avg_ability_score": 0.68, "p95_wall_seconds": 8.0}},
+                "qwen3:8b": {"summary": {"avg_ability_score": 0.8, "p95_wall_seconds": 15.0}},
+            }
+        }
+        Path(args.output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    def fake_gate(args: SimpleNamespace) -> int:
+        payload = {
+            "passed": True,
+            "profiles": {
+                "low_latency": {"recommendation": {"model": "xlam:latest", "composite_score": 0.91}},
+                "balanced": {"recommendation": {"model": "qwen3:8b", "composite_score": 0.86}},
+                "high_reasoning": {"recommendation": {"model": "qwen3:8b", "composite_score": 0.88}},
+            },
+        }
+        Path(args.output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def fake_muninn_request(
+        muninn_url: str,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, object] | None = None,
+        timeout_seconds: int = 20,
+    ) -> dict[str, object]:
+        calls.append((method, path, payload))
+        if method == "GET" and path == "/profiles/model":
+            return {
+                "success": True,
+                "data": {
+                    "active": {
+                        "model_profile": "balanced",
+                        "runtime_model_profile": "low_latency",
+                        "ingestion_model_profile": "balanced",
+                        "legacy_ingestion_model_profile": "balanced",
+                    }
+                },
+            }
+        if method == "POST" and path == "/profiles/model":
+            assert payload is not None
+            assert payload["runtime_model_profile"] == "low_latency"
+            assert payload["ingestion_model_profile"] == "balanced"
+            return {
+                "success": True,
+                "data": {"event": "MODEL_PROFILE_POLICY_UPDATED", "audit_event_id": 7},
+            }
+        raise AssertionError(f"Unexpected request {method} {path}")
+
+    monkeypatch.setattr(bench, "cmd_benchmark", fake_benchmark)
+    monkeypatch.setattr(bench, "cmd_legacy_benchmark", fake_legacy)
+    monkeypatch.setattr(bench, "cmd_profile_gate", fake_gate)
+    monkeypatch.setattr(bench, "_muninn_api_request", fake_muninn_request)
+
+    args = SimpleNamespace(
+        matrix=str(tmp_path / "matrix.json"),
+        prompts=str(tmp_path / "prompts.jsonl"),
+        policy=str(tmp_path / "policy.json"),
+        legacy_roots=str(tmp_path),
+        output_dir=str(tmp_path),
+        output=str(summary_output),
+        live_output=str(live_output),
+        legacy_output=str(legacy_output),
+        gate_output=str(gate_output),
+        models="xlam:latest,qwen3:8b",
+        include_optional=False,
+        repeats=1,
+        ollama_url="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        num_predict=64,
+        ability_pass_threshold=0.75,
+        max_cases_per_root=5,
+        snippet_chars=800,
+        dump_cases=None,
+        allow_gate_failures=False,
+        apply_policy=True,
+        apply_dry_run=False,
+        allow_apply_when_gate_fails=False,
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        apply_source="dev_cycle_test",
+        checkpoint_output=str(checkpoint_output),
+        target_model_profile="balanced",
+        target_runtime_model_profile="low_latency",
+        target_ingestion_model_profile="balanced",
+        target_legacy_ingestion_model_profile="balanced",
+    )
+
+    rc = bench.cmd_dev_cycle(args)
+    assert rc == 0
+    summary = json.loads(summary_output.read_text(encoding="utf-8"))
+    assert summary["policy_apply"]["applied"] is True
+    checkpoint = json.loads(checkpoint_output.read_text(encoding="utf-8"))
+    assert checkpoint["target_policy"]["runtime_model_profile"] == "low_latency"
+    assert checkpoint["apply_result"]["applied"] is True
+    assert any(method == "POST" and path == "/profiles/model" for method, path, _ in calls)
+
+
+def test_cmd_rollback_policy_applies_previous_checkpoint(tmp_path: Path, monkeypatch) -> None:
+    checkpoint_path = tmp_path / "policy_checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "previous_policy": {
+                    "active": {
+                        "model_profile": "balanced",
+                        "runtime_model_profile": "low_latency",
+                        "ingestion_model_profile": "balanced",
+                        "legacy_ingestion_model_profile": "balanced",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calls: list[dict[str, object]] = []
+
+    def fake_muninn_request(
+        muninn_url: str,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, object] | None = None,
+        timeout_seconds: int = 20,
+    ) -> dict[str, object]:
+        calls.append({"method": method, "path": path, "payload": payload})
+        assert method == "POST"
+        assert path == "/profiles/model"
+        assert payload is not None
+        assert payload["runtime_model_profile"] == "low_latency"
+        return {"success": True, "data": {"event": "MODEL_PROFILE_POLICY_UPDATED"}}
+
+    monkeypatch.setattr(bench, "_muninn_api_request", fake_muninn_request)
+
+    rollback_output = tmp_path / "rollback_report.json"
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        output_dir=str(tmp_path),
+        output=str(rollback_output),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="rollback_test",
+        dry_run=False,
+    )
+
+    rc = bench.cmd_rollback_policy(args)
+    assert rc == 0
+    report = json.loads(rollback_output.read_text(encoding="utf-8"))
+    assert report["result"]["applied"] is True
+    assert calls[0]["path"] == "/profiles/model"
