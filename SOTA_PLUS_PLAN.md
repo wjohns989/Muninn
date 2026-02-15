@@ -308,6 +308,11 @@
     - near-timeout warning threshold added (`MUNINN_MCP_TOOL_CALL_WARN_MS`, default `90000`),
     - telemetry recording is applied to direct and task-backed tool execution paths,
     - tranche note documented in `docs/plans/2026-02-15-phase5a3-mcp-tool-call-telemetry-hardening.md`.
+79. Phase 5A.4 host-safe `tasks/result` wait-budget hardening implemented:
+    - `tasks/result` blocking path now enforces configurable max wait (`MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC`),
+    - default wait budget derives from host-safe timeout posture (`host timeout - margin`),
+    - non-terminal wait budget exhaustion now returns deterministic retryable error (`-32002`) instead of indefinite blocking,
+    - tranche note documented in `docs/plans/2026-02-15-phase5a4-mcp-task-result-host-safe-wait-budget.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -365,6 +370,7 @@
 - Phase 5A.2 closure campaign automation verification: transport eval utility compile pass (`python -m py_compile eval/mcp_transport_closure.py`) + `86 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 - Phase 5A.2 closure campaign evidence: `closure_ready=true` in both smoke and full-window runs: 5-run dual-transport (`eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`) and 30-run closure window (`eval/reports/mcp_transport/mcp_transport_closure_20260215_213858.json`, streak `30`, window `30/30`, p95 ratio `1.0`).
 - Phase 5A.3 tool-call telemetry hardening verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
+- Phase 5A.4 `tasks/result` host-safe wait-budget verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `92 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -420,6 +426,7 @@
 49. **Standalone adoption ROI**: dedicated launcher and packaging path reduce assistant dependency for ingestion/search workflows and improve operability for non-IDE users.
 50. **Operator-throughput ROI**: auto discover-and-import flow for parser-supported legacy artifacts reduces manual multi-click migration overhead while preserving deterministic selection controls.
 51. **Timeout forensics ROI**: per-tool-call elapsed/byte/budget telemetry in wrapper logs reduces mean time to isolate external host transport-close regressions and supports objective remediation decisions.
+52. **Blocking-path resilience ROI**: host-safe `tasks/result` wait budgeting converts potential host-timeout transport teardown into deterministic, recoverable retry flow and reduces intermittent session loss.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).

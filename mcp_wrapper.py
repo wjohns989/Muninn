@@ -251,6 +251,30 @@ def _get_tool_call_deadline_epoch() -> Optional[float]:
     return time.monotonic() + seconds
 
 
+def _get_task_result_max_wait_seconds() -> Optional[float]:
+    host_safe_budget = _get_host_safe_tool_call_budget_seconds()
+    explicit_raw = os.environ.get("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC")
+    if explicit_raw is not None:
+        try:
+            seconds = float(explicit_raw)
+        except ValueError:
+            logger.warning(
+                "Invalid MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC=%r; falling back to host-safe budget.",
+                explicit_raw,
+            )
+        else:
+            if not math.isfinite(seconds):
+                logger.warning(
+                    "Non-finite MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC=%r; falling back to host-safe budget.",
+                    explicit_raw,
+                )
+            elif seconds <= 0:
+                return None
+            else:
+                return seconds
+    return host_safe_budget
+
+
 def _get_startup_recovery_min_budget_seconds() -> float:
     raw_value = os.environ.get("MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC", "28")
     try:
@@ -1237,6 +1261,8 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
     task_id = _task_id_or_error(msg_id, params, "tasks/result")
     if task_id is None:
         return
+    max_wait_seconds = _get_task_result_max_wait_seconds()
+    wait_started_at = time.monotonic()
     with _TASKS_CONDITION:
         while True:
             task = _lookup_task_locked(task_id)
@@ -1246,7 +1272,24 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
             status = str(task.get("status") or "")
             if status in _TASK_TERMINAL_STATUSES or status == "input_required":
                 break
-            _TASKS_CONDITION.wait(timeout=0.1)
+            wait_timeout = 0.1
+            if max_wait_seconds is not None:
+                elapsed = time.monotonic() - wait_started_at
+                remaining = max_wait_seconds - elapsed
+                if remaining <= 0:
+                    logger.warning(
+                        "tasks/result wait budget exhausted after %.3fs for msg_id=%r (task still non-terminal).",
+                        elapsed,
+                        msg_id,
+                    )
+                    _send_json_rpc_error(
+                        msg_id,
+                        -32002,
+                        "Task result is not ready within the host-safe wait budget; poll tasks/get and retry tasks/result.",
+                    )
+                    return
+                wait_timeout = min(wait_timeout, remaining)
+            _TASKS_CONDITION.wait(timeout=wait_timeout)
         payload = task.get("result")
         error = task.get("error")
 

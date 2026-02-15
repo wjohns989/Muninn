@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure evidence capture applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure evidence/host-safe task-result gating applied)
 
 ## Objective
 
@@ -52,6 +52,8 @@ Implemented to reduce external host-side 120s transport timeout risk while block
 6. Transport closure campaign automation now exists via `python -m eval.mcp_transport_closure`, producing deterministic closure-evidence artifacts with explicit criterion booleans.
 7. MCP wrapper now logs per-tool transport telemetry (`elapsed_ms`, response byte totals/max, budget/remaining budget) with near-timeout warning thresholds to accelerate root-cause diagnosis in host-runtime incidents.
    - Implementation detail: `docs/plans/2026-02-15-phase5a3-mcp-tool-call-telemetry-hardening.md`.
+8. `tasks/result` now has a host-safe max-wait budget (`MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC`) with deterministic retryable error (`-32002`) when non-terminal waits exceed budget, preventing indefinite blocking from overrunning host timeout windows.
+   - Implementation detail: `docs/plans/2026-02-15-phase5a4-mcp-task-result-host-safe-wait-budget.md`.
 
 Current assessment:
 
@@ -60,6 +62,9 @@ Current assessment:
 - Closure campaign automation now has both smoke and full-window deterministic evidence:
   - 5-run smoke: `eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`
   - 30-run closure window: `eval/reports/mcp_transport/mcp_transport_closure_20260215_213858.json` (`closure_ready=true`, streak `30`, p95 ratio `1.0`)
+- Post-hardening regression evidence:
+  - soak pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`
+  - closure mini-campaign pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
 - Remaining operational risk is primarily external host-runtime intermittency; closure evidence for wrapper-controlled transport behavior is now available and machine-verifiable.
 
 ## Decision Rule
@@ -210,3 +215,4 @@ The transport intermittency blocker is closed only when:
 5. Add dashboard/report template for leadership-facing release evidence.
 6. Add host-runtime transport diagnostics bundle capture for timeout regressions (wrapper log snapshot + response-size distribution + per-tool p95 wall time).
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
+8. Add explicit `tasks/result` compatibility mode (strict blocking vs immediate retry semantics) to handle host/spec drift safely with deterministic policy selection.
