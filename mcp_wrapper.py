@@ -519,83 +519,22 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         return
 
     if method == "tasks/list":
-        if not _SESSION_STATE["initialized"]:
-            if msg_id is not None:
-                _send_json_rpc_error(
-                    msg_id,
-                    -32600,
-                    "Server not initialized. Send initialize then notifications/initialized.",
-                )
+        validated = _validate_initialized_rpc_params(msg_id, method, params)
+        if validated is None:
             return
-        if msg_id is None:
-            logger.debug("Ignoring tasks/list notification without id")
-            return
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list params must be an object")
-            return
-        handle_list_tasks(msg_id, params)
+        handle_list_tasks(msg_id, validated)
         return
 
-    if method == "tasks/get":
-        if not _SESSION_STATE["initialized"]:
-            if msg_id is not None:
-                _send_json_rpc_error(
-                    msg_id,
-                    -32600,
-                    "Server not initialized. Send initialize then notifications/initialized.",
-                )
+    if method in ("tasks/get", "tasks/result", "tasks/cancel"):
+        validated = _validate_initialized_rpc_params(msg_id, method, params)
+        if validated is None:
             return
-        if msg_id is None:
-            logger.debug("Ignoring tasks/get notification without id")
-            return
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/get params must be an object")
-            return
-        handle_get_task(msg_id, params)
-        return
-
-    if method == "tasks/result":
-        if not _SESSION_STATE["initialized"]:
-            if msg_id is not None:
-                _send_json_rpc_error(
-                    msg_id,
-                    -32600,
-                    "Server not initialized. Send initialize then notifications/initialized.",
-                )
-            return
-        if msg_id is None:
-            logger.debug("Ignoring tasks/result notification without id")
-            return
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/result params must be an object")
-            return
-        handle_get_task_result(msg_id, params)
-        return
-
-    if method == "tasks/cancel":
-        if not _SESSION_STATE["initialized"]:
-            if msg_id is not None:
-                _send_json_rpc_error(
-                    msg_id,
-                    -32600,
-                    "Server not initialized. Send initialize then notifications/initialized.",
-                )
-            return
-        if msg_id is None:
-            logger.debug("Ignoring tasks/cancel notification without id")
-            return
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/cancel params must be an object")
-            return
-        handle_cancel_task(msg_id, params)
+        if method == "tasks/get":
+            handle_get_task(msg_id, validated)
+        elif method == "tasks/result":
+            handle_get_task_result(msg_id, validated)
+        else:
+            handle_cancel_task(msg_id, validated)
         return
 
     if method == "tools/call":
@@ -634,6 +573,30 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         logger.debug(f"Ignoring unknown notification method: {method}")
 
 
+def _validate_initialized_rpc_params(
+    msg_id: Any,
+    method: str,
+    params: Any,
+) -> Optional[Dict[str, Any]]:
+    """Validate initialized lifecycle and dict params for request methods."""
+    if not _SESSION_STATE["initialized"]:
+        if msg_id is not None:
+            _send_json_rpc_error(
+                msg_id,
+                -32600,
+                "Server not initialized. Send initialize then notifications/initialized.",
+            )
+        return None
+    if msg_id is None:
+        logger.debug(f"Ignoring {method} notification without id")
+        return None
+    validated = {} if params is None else params
+    if not isinstance(validated, dict):
+        _send_json_rpc_error(msg_id, -32602, f"Invalid params: {method} params must be an object")
+        return None
+    return validated
+
+
 def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     """Return active tasks for this server (currently no async task lifecycle)."""
     params = params or {}
@@ -641,10 +604,7 @@ def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     if cursor is not None and not isinstance(cursor, str):
         _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be a string")
         return
-    tasks = _SESSION_STATE.get("tasks")
-    if not isinstance(tasks, dict):
-        tasks = {}
-        _SESSION_STATE["tasks"] = tasks
+    tasks = _task_registry()
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
@@ -677,7 +637,7 @@ def handle_get_task(msg_id: Any, params: Dict[str, Any]) -> None:
         return
     task = _task_registry().get(task_id)
     if not isinstance(task, dict):
-        _send_json_rpc_error(msg_id, -32602, f"Invalid params: unknown taskId '{task_id}'")
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
         return
     send_json_rpc({
         "jsonrpc": "2.0",
@@ -692,7 +652,7 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
         return
     task = _task_registry().get(task_id)
     if not isinstance(task, dict):
-        _send_json_rpc_error(msg_id, -32602, f"Invalid params: unknown taskId '{task_id}'")
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
         return
     status = str(task.get("status") or "")
     if status not in _TASK_TERMINAL_STATUSES:
@@ -704,7 +664,11 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
         return
     payload = task.get("result")
     if not isinstance(payload, dict):
-        payload = {}
+        if status == "completed":
+            _send_json_rpc_error(msg_id, -32001, "Task is completed but result payload is unavailable.")
+        else:
+            _send_json_rpc_error(msg_id, -32001, f"Task result is unavailable for status '{status}'.")
+        return
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
@@ -718,7 +682,7 @@ def handle_cancel_task(msg_id: Any, params: Dict[str, Any]) -> None:
         return
     task = _task_registry().get(task_id)
     if not isinstance(task, dict):
-        _send_json_rpc_error(msg_id, -32602, f"Invalid params: unknown taskId '{task_id}'")
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
         return
     status = str(task.get("status") or "")
     if status in _TASK_TERMINAL_STATUSES:
