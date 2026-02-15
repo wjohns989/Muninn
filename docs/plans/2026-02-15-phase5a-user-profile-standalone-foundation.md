@@ -77,6 +77,19 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - replaced legacy discovery table string-HTML rendering with explicit DOM node creation.
 - Browser API error handling now summarizes/redacts potentially sensitive backend detail strings before display.
 
+### 5) Long-Tool Timeout Mitigation Continuation (Phase 5A.1)
+
+- MCP `tools/call` dispatch now supports automatic task-mode deferral for configured long-running tools when callers omit `params.task`.
+- Default long-tool auto-deferral set:
+  - `ingest_sources`
+  - `ingest_legacy_sources`
+  - `discover_legacy_sources`
+- Runtime controls added:
+  - `MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS` (default `1`)
+  - `MUNINN_MCP_AUTO_TASK_TOOL_NAMES`
+  - `MUNINN_MCP_AUTO_TASK_REQUIRE_CLIENT_CAP` (default `0`)
+- Detailed tranche note: `docs/plans/2026-02-15-phase5a1-mcp-long-tool-auto-task-deferral.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -99,6 +112,9 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - `104 passed` in:
     - `tests/test_memory_user_profile.py`
     - `tests/test_sdk_client.py`
+    - `tests/test_mcp_wrapper_protocol.py`
+    - `tests/test_mcp_transport_soak.py`
+  - `82 passed` in:
     - `tests/test_mcp_wrapper_protocol.py`
     - `tests/test_mcp_transport_soak.py`
 - Full-suite checkpoint:

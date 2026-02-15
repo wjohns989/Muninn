@@ -48,6 +48,7 @@ Implemented to reduce external host-side 120s transport timeout risk while block
 2. Search text responses now use the same bounded transport limiter.
 3. MCP public error messages now redact connection/timeout/internal details while preserving actionable validation errors.
 4. Browser dashboard rendering now avoids dynamic `innerHTML` injection paths for operator-visible result/table payloads.
+5. Long-running MCP tools now support automatic task-mode deferral (`tools/call` auto-task) so heavy ingest calls can return immediate task handles instead of consuming the host synchronous timeout window.
 
 Current assessment:
 

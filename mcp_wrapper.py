@@ -131,6 +131,38 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _get_auto_task_tool_names() -> set[str]:
+    raw_value = os.environ.get(
+        "MUNINN_MCP_AUTO_TASK_TOOL_NAMES",
+        "ingest_sources,ingest_legacy_sources,discover_legacy_sources",
+    )
+    names: set[str] = set()
+    for item in raw_value.split(","):
+        candidate = item.strip()
+        if candidate:
+            names.add(candidate)
+    return names
+
+
+def _client_declared_tasks_capability() -> bool:
+    capabilities = _SESSION_STATE.get("client_capabilities")
+    if not isinstance(capabilities, dict):
+        return False
+    return isinstance(capabilities.get("tasks"), dict)
+
+
+def _should_auto_task_tool_call(name: str, task_request: Optional[Dict[str, Any]]) -> bool:
+    if task_request is not None:
+        return False
+    if not _env_flag("MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS", True):
+        return False
+    if name not in _get_auto_task_tool_names():
+        return False
+    if _env_flag("MUNINN_MCP_AUTO_TASK_REQUIRE_CLIENT_CAP", False):
+        return _client_declared_tasks_capability()
+    return True
+
+
 def _get_tool_call_deadline_seconds() -> Optional[float]:
     host_safe_budget = _get_host_safe_tool_call_budget_seconds()
     explicit_raw = os.environ.get("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC")
@@ -910,6 +942,12 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         name = parsed["name"]
         arguments = parsed["arguments"]
         task_request = parsed.get("task")
+        if _should_auto_task_tool_call(name, task_request):
+            logger.info(
+                "Auto-deferring tools/call '%s' into task mode to avoid host timeout windows.",
+                name,
+            )
+            task_request = {}
         if isinstance(task_request, dict):
             handle_call_tool_with_task(msg_id, name, arguments, task_request)
             return
