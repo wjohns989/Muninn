@@ -171,3 +171,18 @@ Blocking-result compliance follow-on is now implemented in `docs/plans/2026-02-1
 5. Review hardening increment:
    - blocking dispatch now uses a bounded thread pool instead of unbounded per-request thread creation.
    - guarded-dispatch error logging now uses generic text to prevent reflected log-forging via exception strings.
+
+## Continuation Update (Phase 4V)
+
+Task-contract follow-on is now implemented in `docs/plans/2026-02-15-phase4v-task-metadata-cursor-compliance.md`:
+
+1. Metadata schema alignment:
+   - related-task metadata now uses `taskId` key in task-result correlation metadata.
+2. Cursor contract hardening:
+   - `tasks/list` now emits opaque cursor tokens; decode path retains legacy numeric cursor acceptance for backward compatibility.
+3. Polling guidance:
+   - task records now include `pollInterval` for client polling cadence hints.
+4. Validation increment:
+   - protocol tests hold at `52 passed` (`tests/test_mcp_wrapper_protocol.py`),
+   - combined targeted checks hold at `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`),
+   - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_061319.json`.
