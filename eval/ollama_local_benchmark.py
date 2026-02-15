@@ -1917,6 +1917,41 @@ def _recommendation_summary(
     }
 
 
+def _resolve_reused_report_path(
+    *,
+    explicit_path: str | None,
+    default_path: Path,
+    label: str,
+) -> Path:
+    candidate = Path(explicit_path).resolve() if explicit_path else default_path
+    if not candidate.exists():
+        raise ValueError(
+            f"Deferred dev-cycle requires existing {label} report. "
+            f"Missing file: {candidate}. "
+            f"Provide --existing-{label}-report or run full dev-cycle first."
+        )
+    return candidate
+
+
+def _report_age_hours(path: Path) -> float:
+    modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    age_seconds = max(0.0, (datetime.now(timezone.utc) - modified).total_seconds())
+    return age_seconds / 3600.0
+
+
+def _validate_reused_report_age(path: Path, *, max_age_hours: float | None, label: str) -> None:
+    if max_age_hours is None:
+        return
+    if max_age_hours < 0:
+        raise ValueError("--max-reused-report-age-hours must be non-negative.")
+    age_hours = _report_age_hours(path)
+    if age_hours > max_age_hours:
+        raise ValueError(
+            f"Deferred dev-cycle {label} report is too old "
+            f"({age_hours:.2f}h > {max_age_hours:.2f}h): {path}"
+        )
+
+
 def cmd_dev_cycle(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1935,49 +1970,86 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
         if args.output
         else output_dir / f"dev_cycle_summary_{run_id}.json"
     )
-
-    benchmark_args = argparse.Namespace(
-        matrix=args.matrix,
-        prompts=args.prompts,
-        output_dir=str(output_dir),
-        output=str(live_output),
-        models=args.models,
-        include_optional=bool(args.include_optional),
-        repeats=int(args.repeats),
-        ollama_url=args.ollama_url,
-        timeout_seconds=int(args.timeout_seconds),
-        num_predict=int(args.num_predict),
-        ability_pass_threshold=float(args.ability_pass_threshold),
+    defer_benchmarks = bool(getattr(args, "defer_benchmarks", False))
+    max_reused_report_age_hours_raw = getattr(args, "max_reused_report_age_hours", None)
+    max_reused_report_age_hours = (
+        float(max_reused_report_age_hours_raw)
+        if max_reused_report_age_hours_raw is not None
+        else None
     )
-    bench_rc = cmd_benchmark(benchmark_args)
-    if bench_rc != 0:
-        return bench_rc
+    live_input_path = live_output
+    legacy_input_path = legacy_output
+    execution_mode = "deferred" if defer_benchmarks else "full"
+    reused_reports: dict[str, str] | None = None
 
-    legacy_args = argparse.Namespace(
-        matrix=args.matrix,
-        legacy_roots=args.legacy_roots,
-        output_dir=str(output_dir),
-        output=str(legacy_output),
-        models=args.models,
-        include_optional=bool(args.include_optional),
-        repeats=int(args.repeats),
-        max_cases_per_root=int(args.max_cases_per_root),
-        snippet_chars=int(args.snippet_chars),
-        ollama_url=args.ollama_url,
-        timeout_seconds=int(args.timeout_seconds),
-        num_predict=int(args.num_predict),
-        ability_pass_threshold=float(args.ability_pass_threshold),
-        dump_cases=args.dump_cases,
-    )
-    legacy_rc = cmd_legacy_benchmark(legacy_args)
-    if legacy_rc != 0:
-        return legacy_rc
+    if defer_benchmarks:
+        live_input_path = _resolve_reused_report_path(
+            explicit_path=getattr(args, "existing_live_report", None),
+            default_path=live_output,
+            label="live",
+        )
+        legacy_input_path = _resolve_reused_report_path(
+            explicit_path=getattr(args, "existing_legacy_report", None),
+            default_path=legacy_output,
+            label="legacy",
+        )
+        _validate_reused_report_age(
+            live_input_path,
+            max_age_hours=max_reused_report_age_hours,
+            label="live",
+        )
+        _validate_reused_report_age(
+            legacy_input_path,
+            max_age_hours=max_reused_report_age_hours,
+            label="legacy",
+        )
+        reused_reports = {
+            "live_report": str(live_input_path),
+            "legacy_report": str(legacy_input_path),
+        }
+    else:
+        benchmark_args = argparse.Namespace(
+            matrix=args.matrix,
+            prompts=args.prompts,
+            output_dir=str(output_dir),
+            output=str(live_output),
+            models=args.models,
+            include_optional=bool(args.include_optional),
+            repeats=int(args.repeats),
+            ollama_url=args.ollama_url,
+            timeout_seconds=int(args.timeout_seconds),
+            num_predict=int(args.num_predict),
+            ability_pass_threshold=float(args.ability_pass_threshold),
+        )
+        bench_rc = cmd_benchmark(benchmark_args)
+        if bench_rc != 0:
+            return bench_rc
+
+        legacy_args = argparse.Namespace(
+            matrix=args.matrix,
+            legacy_roots=args.legacy_roots,
+            output_dir=str(output_dir),
+            output=str(legacy_output),
+            models=args.models,
+            include_optional=bool(args.include_optional),
+            repeats=int(args.repeats),
+            max_cases_per_root=int(args.max_cases_per_root),
+            snippet_chars=int(args.snippet_chars),
+            ollama_url=args.ollama_url,
+            timeout_seconds=int(args.timeout_seconds),
+            num_predict=int(args.num_predict),
+            ability_pass_threshold=float(args.ability_pass_threshold),
+            dump_cases=args.dump_cases,
+        )
+        legacy_rc = cmd_legacy_benchmark(legacy_args)
+        if legacy_rc != 0:
+            return legacy_rc
 
     gate_args = argparse.Namespace(
         matrix=args.matrix,
         policy=args.policy,
-        live_report=str(live_output),
-        legacy_report=str(legacy_output),
+        live_report=str(live_input_path),
+        legacy_report=str(legacy_input_path),
         output_dir=str(output_dir),
         output=str(gate_output),
         allow_failures=bool(args.allow_gate_failures),
@@ -1985,8 +2057,8 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
     )
     gate_rc = cmd_profile_gate(gate_args)
 
-    live_report = _load_json(live_output)
-    legacy_report = _load_json(legacy_output)
+    live_report = _load_json(live_input_path)
+    legacy_report = _load_json(legacy_input_path)
     gate_report = _load_json(gate_output)
     profiles = gate_report.get("profiles", {})
     recommendations: dict[str, Any] = {}
@@ -2004,9 +2076,12 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
         "event": "DEV_CYCLE_MODEL_BENCHMARK_COMPLETED",
         "started_at_utc": run_started.isoformat(),
         "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "execution_mode": execution_mode,
+        "deferred_benchmarks": defer_benchmarks,
+        "reused_reports": reused_reports,
         "paths": {
-            "live_report": str(live_output),
-            "legacy_report": str(legacy_output),
+            "live_report": str(live_input_path),
+            "legacy_report": str(legacy_input_path),
             "gate_report": str(gate_output),
         },
         "passed": bool(gate_report.get("passed", False)),
@@ -2753,6 +2828,31 @@ def build_parser() -> argparse.ArgumentParser:
     cycle_parser.add_argument("--live-output", help="Optional live benchmark report output path.")
     cycle_parser.add_argument("--legacy-output", help="Optional legacy benchmark report output path.")
     cycle_parser.add_argument("--gate-output", help="Optional profile-gate report output path.")
+    cycle_parser.add_argument(
+        "--defer-benchmarks",
+        action="store_true",
+        help=(
+            "Skip live/legacy benchmark execution and reuse existing reports. "
+            "Use --existing-live-report / --existing-legacy-report or ensure "
+            "--live-output / --legacy-output paths already exist."
+        ),
+    )
+    cycle_parser.add_argument(
+        "--existing-live-report",
+        help="Existing live benchmark report path used when --defer-benchmarks is enabled.",
+    )
+    cycle_parser.add_argument(
+        "--existing-legacy-report",
+        help="Existing legacy benchmark report path used when --defer-benchmarks is enabled.",
+    )
+    cycle_parser.add_argument(
+        "--max-reused-report-age-hours",
+        type=float,
+        help=(
+            "Optional freshness cap for reused reports in deferred mode. "
+            "Fails when reused report age exceeds this value."
+        ),
+    )
     cycle_parser.add_argument("--models", help="Comma-separated explicit model tags to benchmark.")
     cycle_parser.add_argument(
         "--include-optional",

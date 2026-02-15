@@ -158,6 +158,14 @@ python -m eval.ollama_local_benchmark dev-cycle \
   --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
   --repeats 1
 
+# Run deferred dev-cycle during active enhancement phases (reuse existing benchmark reports)
+python -m eval.ollama_local_benchmark dev-cycle \
+  --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
+  --defer-benchmarks \
+  --existing-live-report eval/reports/ollama/cycle_live_<run_id>.json \
+  --existing-legacy-report eval/reports/ollama/cycle_legacy_<run_id>.json \
+  --max-reused-report-age-hours 72
+
 # Run dev-cycle and apply profile defaults to a running Muninn server
 # (writes checkpoint artifact for rollback before applying)
 python -m eval.ollama_local_benchmark dev-cycle \
@@ -218,7 +226,11 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 
 `profile-gate` consumes benchmark reports and emits per-profile pass/fail + recommendation decisions for `low_latency`, `balanced`, and `high_reasoning` promotion policies.
 
-`dev-cycle` runs `benchmark`, `legacy-benchmark`, and `profile-gate` sequentially in one operator-triggered command and emits a summary that maps recommended models to profile usage roles.
+`dev-cycle` supports two execution modes:
+- full mode (default): runs `benchmark`, `legacy-benchmark`, and `profile-gate` sequentially.
+- deferred mode (`--defer-benchmarks`): skips live/legacy generation, reuses existing reports, and re-runs `profile-gate` for fresh policy/governance evaluation.
+
+Deferred mode is designed for active enhancement phases where running full benchmark suites on every tranche is low ROI. Use `--max-reused-report-age-hours` to enforce freshness bounds for reused evidence.
 
 `dev-cycle --apply-policy` additionally:
 - validates gate/recommendation evidence for target profile defaults,

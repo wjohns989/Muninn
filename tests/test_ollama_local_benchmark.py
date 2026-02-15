@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import os
 
 import pytest
 
@@ -516,6 +517,173 @@ def test_cmd_dev_cycle_apply_policy_writes_checkpoint(tmp_path: Path, monkeypatc
     assert checkpoint["target_policy"]["runtime_model_profile"] == "low_latency"
     assert checkpoint["apply_result"]["applied"] is True
     assert any(method == "POST" and path == "/profiles/model" for method, path, _ in calls)
+
+
+def test_cmd_dev_cycle_defer_benchmarks_reuses_reports(tmp_path: Path, monkeypatch) -> None:
+    live_existing = tmp_path / "existing_live.json"
+    legacy_existing = tmp_path / "existing_legacy.json"
+    gate_output = tmp_path / "gate_deferred.json"
+    summary_output = tmp_path / "summary_deferred.json"
+
+    live_existing.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "xlam:latest": {
+                        "summary": {
+                            "avg_ability_score": 0.73,
+                            "p95_wall_seconds": 6.4,
+                            "resource_efficiency": {"ability_per_vram_gb": 0.58},
+                        }
+                    },
+                    "qwen3:8b": {
+                        "summary": {
+                            "avg_ability_score": 0.83,
+                            "p95_wall_seconds": 11.7,
+                            "resource_efficiency": {"ability_per_vram_gb": 0.12},
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    legacy_existing.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "xlam:latest": {"summary": {"avg_ability_score": 0.69, "p95_wall_seconds": 8.4}},
+                    "qwen3:8b": {"summary": {"avg_ability_score": 0.8, "p95_wall_seconds": 15.5}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_benchmark(_: SimpleNamespace) -> int:
+        raise AssertionError("cmd_benchmark should not run in deferred mode")
+
+    def fail_legacy(_: SimpleNamespace) -> int:
+        raise AssertionError("cmd_legacy_benchmark should not run in deferred mode")
+
+    def fake_gate(args: SimpleNamespace) -> int:
+        assert Path(args.live_report).resolve() == live_existing.resolve()
+        assert Path(args.legacy_report).resolve() == legacy_existing.resolve()
+        payload = {
+            "passed": True,
+            "profiles": {
+                "low_latency": {"recommendation": {"model": "xlam:latest", "composite_score": 0.9}},
+                "balanced": {"recommendation": {"model": "qwen3:8b", "composite_score": 0.87}},
+                "high_reasoning": {"recommendation": {"model": "qwen3:8b", "composite_score": 0.89}},
+            },
+        }
+        Path(args.output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(bench, "cmd_benchmark", fail_benchmark)
+    monkeypatch.setattr(bench, "cmd_legacy_benchmark", fail_legacy)
+    monkeypatch.setattr(bench, "cmd_profile_gate", fake_gate)
+
+    args = SimpleNamespace(
+        matrix=str(tmp_path / "matrix.json"),
+        prompts=str(tmp_path / "prompts.jsonl"),
+        policy=str(tmp_path / "policy.json"),
+        legacy_roots=str(tmp_path),
+        output_dir=str(tmp_path),
+        output=str(summary_output),
+        live_output=str(tmp_path / "unused_live_output.json"),
+        legacy_output=str(tmp_path / "unused_legacy_output.json"),
+        gate_output=str(gate_output),
+        models="xlam:latest,qwen3:8b",
+        include_optional=False,
+        repeats=1,
+        ollama_url="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        num_predict=64,
+        ability_pass_threshold=0.75,
+        max_cases_per_root=5,
+        snippet_chars=800,
+        dump_cases=None,
+        allow_gate_failures=False,
+        enforce_governance=False,
+        defer_benchmarks=True,
+        existing_live_report=str(live_existing),
+        existing_legacy_report=str(legacy_existing),
+        max_reused_report_age_hours=24.0,
+        apply_policy=False,
+        apply_dry_run=False,
+        allow_apply_when_gate_fails=False,
+        require_governance_clean=False,
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        apply_source="dev_cycle_deferred",
+        checkpoint_output=None,
+        target_model_profile="balanced",
+        target_runtime_model_profile="low_latency",
+        target_ingestion_model_profile="balanced",
+        target_legacy_ingestion_model_profile="balanced",
+    )
+
+    rc = bench.cmd_dev_cycle(args)
+    assert rc == 0
+    summary = json.loads(summary_output.read_text(encoding="utf-8"))
+    assert summary["execution_mode"] == "deferred"
+    assert summary["deferred_benchmarks"] is True
+    assert summary["reused_reports"]["live_report"] == str(live_existing.resolve())
+    assert summary["paths"]["live_report"] == str(live_existing.resolve())
+    assert summary["recommendations"]["low_latency"]["model"] == "xlam:latest"
+
+
+def test_cmd_dev_cycle_deferred_mode_rejects_stale_reports(tmp_path: Path) -> None:
+    live_existing = tmp_path / "existing_live_stale.json"
+    legacy_existing = tmp_path / "existing_legacy_stale.json"
+    live_existing.write_text(json.dumps({"models": {}}), encoding="utf-8")
+    legacy_existing.write_text(json.dumps({"models": {}}), encoding="utf-8")
+    os.utime(live_existing, (1, 1))
+    os.utime(legacy_existing, (1, 1))
+
+    args = SimpleNamespace(
+        matrix=str(tmp_path / "matrix.json"),
+        prompts=str(tmp_path / "prompts.jsonl"),
+        policy=str(tmp_path / "policy.json"),
+        legacy_roots=str(tmp_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "summary_stale.json"),
+        live_output=str(tmp_path / "unused_live_output.json"),
+        legacy_output=str(tmp_path / "unused_legacy_output.json"),
+        gate_output=str(tmp_path / "gate_stale.json"),
+        models=None,
+        include_optional=False,
+        repeats=1,
+        ollama_url="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        num_predict=64,
+        ability_pass_threshold=0.75,
+        max_cases_per_root=5,
+        snippet_chars=800,
+        dump_cases=None,
+        allow_gate_failures=False,
+        enforce_governance=False,
+        defer_benchmarks=True,
+        existing_live_report=str(live_existing),
+        existing_legacy_report=str(legacy_existing),
+        max_reused_report_age_hours=1.0,
+        apply_policy=False,
+        apply_dry_run=False,
+        allow_apply_when_gate_fails=False,
+        require_governance_clean=False,
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        apply_source="dev_cycle_deferred",
+        checkpoint_output=None,
+        target_model_profile="balanced",
+        target_runtime_model_profile="low_latency",
+        target_ingestion_model_profile="balanced",
+        target_legacy_ingestion_model_profile="balanced",
+    )
+
+    with pytest.raises(ValueError, match="too old"):
+        bench.cmd_dev_cycle(args)
 
 
 def test_cmd_rollback_policy_applies_previous_checkpoint(tmp_path: Path, monkeypatch) -> None:

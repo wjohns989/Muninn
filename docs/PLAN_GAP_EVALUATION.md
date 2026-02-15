@@ -58,6 +58,7 @@ Evaluator: Codex
 - **Restart artifact hygiene is now complete**: stale staged restart artifacts are cleared, obsolete `.bak` backup artifact removed, and unresolved conflict markers are no longer present in working docs.
 - **SOTA+ quantitative decision framework is now documented**: final release verdict gates and benchmark normalization requirements are captured in `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`.
 - **Phase 4AF unified SOTA+ verdict baseline is now implemented**: `sota-verdict` now emits one deterministic release gate artifact with normalized eval/profile-gate/transport evidence and per-gate pass/fail outcomes.
+- **Phase 4AG enhancement-first benchmark cadence baseline is now implemented**: `dev-cycle` now supports deferred benchmark mode (`--defer-benchmarks`) with reusable report freshness checks (`--max-reused-report-age-hours`) to keep active implementation tranches fast while preserving gate integrity.
 
 ## Status vs Plan
 
@@ -108,6 +109,7 @@ Evaluator: Codex
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
 9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls + startup-recovery budget gating + host-timeout-derived budgeting + explicit-overrun guardrails + guarded-dispatch fail-fast replies are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`, `MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC`, `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`, `MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, and `MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN` as needed). Post-restart in-session signal: `get_model_profiles` and `add_memory` MCP calls succeeded, and latest framed transport soak run passed (`run_id=20260215_170548`), but continued runtime observation is still required before closing blocker status.
 10. **Unified SOTA+ verdict automation (partially open):** one authoritative go/no-go verdict artifact is now wired (`sota-verdict`) with normalization hooks; remaining work is benchmark breadth adapters (LongMemEval/StructMemEval/Mem2Act + continuous-interaction slices), CI replay wiring, and signed promotion-manifest emission.
+11. **CI cadence split (open):** deferred benchmark mode is now available for enhancement tranches, but CI still needs explicit fast-on-PR vs full-on-schedule/release workflow wiring.
 
 ## Validation Snapshot
 
@@ -237,6 +239,10 @@ Evaluator: Codex
   - `32 passed` (`tests/test_ollama_local_benchmark.py`)
   - `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`)
   - command now emits deterministic gate-family outcomes across quality/reliability/statistical/reproducibility/profile-policy dimensions.
+- Phase 4AG deferred benchmark cadence tranche now passes targeted checks:
+  - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
+  - deferred-mode tests now validate benchmark-skip + report-reuse behavior and stale-report rejection (`tests/test_ollama_local_benchmark.py`)
+  - combined targeted suite passes (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -328,6 +334,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4ae-mcp-guarded-dispatch-fail-fast-response.md`
 - `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`
 - `docs/plans/2026-02-15-phase4af-unified-sota-verdict-command.md`
+- `docs/plans/2026-02-15-phase4ag-enhancement-first-benchmark-cadence.md`
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
 ## Model-Caliber Research Update (2026-02-14)
