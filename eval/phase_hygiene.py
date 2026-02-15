@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,16 +25,89 @@ def _run_json_command(command: list[str]) -> Any:
     return json.loads(stdout) if stdout else None
 
 
-def _run_text_command(command: str) -> tuple[int, str]:
+def _split_command(command: str) -> list[str]:
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise ValueError(f"invalid command string: {exc}") from exc
+    if not tokens:
+        raise ValueError("empty command string")
+    return tokens
+
+
+def _is_pytest_command(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    executable = Path(tokens[0]).name.lower()
+    if executable in {"pytest", "pytest.exe", "py.test", "py.test.exe"}:
+        return True
+    if len(tokens) >= 3 and executable.startswith("python") and tokens[1] == "-m" and tokens[2] == "pytest":
+        return True
+    return False
+
+
+def _has_option(tokens: list[str], option: str) -> bool:
+    return any(token == option or token.startswith(f"{option}=") for token in tokens)
+
+
+def _parse_junit_summary(path: Path) -> dict[str, int]:
+    tree = ET.parse(path)
+    root = tree.getroot()
+    suites: list[ET.Element]
+    if root.tag == "testsuite":
+        suites = [root]
+    else:
+        suites = list(root.findall(".//testsuite"))
+
+    tests = failures = errors = skipped = 0
+    for suite in suites:
+        tests += int(suite.attrib.get("tests", "0"))
+        failures += int(suite.attrib.get("failures", "0"))
+        errors += int(suite.attrib.get("errors", "0"))
+        skipped += int(suite.attrib.get("skipped", "0"))
+
+    passed = max(tests - failures - errors - skipped, 0)
+    return {
+        "passed": passed,
+        "failed": failures,
+        "errors": errors,
+        "skipped": skipped,
+        "xfailed": 0,
+        "xpassed": 0,
+        "warnings": 0,
+    }
+
+
+def _run_text_command(command: str) -> tuple[int, str, dict[str, int] | None, list[str]]:
+    tokens = _split_command(command)
+    run_tokens = list(tokens)
+    junit_path: Path | None = None
+
+    if _is_pytest_command(tokens) and not _has_option(tokens, "--junitxml"):
+        with tempfile.NamedTemporaryFile(prefix="phase_hygiene_", suffix=".xml", delete=False) as tmp:
+            junit_path = Path(tmp.name)
+        run_tokens.append(f"--junitxml={junit_path}")
+
     completed = subprocess.run(
-        command,
-        shell=True,
+        run_tokens,
+        shell=False,
         capture_output=True,
         text=True,
         check=False,
     )
     output = "\n".join([completed.stdout, completed.stderr]).strip()
-    return completed.returncode, output
+    junit_summary: dict[str, int] | None = None
+    if junit_path is not None and junit_path.exists():
+        try:
+            junit_summary = _parse_junit_summary(junit_path)
+        except (OSError, ET.ParseError):
+            junit_summary = None
+        finally:
+            try:
+                junit_path.unlink()
+            except OSError:
+                pass
+    return completed.returncode, output, junit_summary, run_tokens
 
 
 def _extract_count(pattern: str, summary_text: str) -> int:
@@ -217,9 +293,18 @@ def main(argv: list[str] | None = None) -> int:
     pytest_return_code: int | None = None
     pytest_output = ""
     pytest_summary: dict[str, int] | None = None
+    resolved_test_command: list[str] | None = None
     if args.pytest_command and args.pytest_command.strip():
-        pytest_return_code, pytest_output = _run_text_command(args.pytest_command)
-        pytest_summary = _parse_pytest_summary(pytest_output)
+        pytest_return_code, pytest_output, junit_summary, resolved_test_command = _run_text_command(
+            args.pytest_command
+        )
+        summary_from_output = _parse_pytest_summary(pytest_output)
+        pytest_summary = junit_summary or summary_from_output
+        if junit_summary is not None:
+            # Keep warning/xfail/xpass visibility from terminal summary when available.
+            pytest_summary["warnings"] = summary_from_output.get("warnings", 0)
+            pytest_summary["xfailed"] = summary_from_output.get("xfailed", 0)
+            pytest_summary["xpassed"] = summary_from_output.get("xpassed", 0)
 
     violations = _evaluate_policy(
         open_prs=open_prs,
@@ -248,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         "target_pr": None,
         "pytest": {
             "command": args.pytest_command,
+            "resolved_command": resolved_test_command,
             "return_code": pytest_return_code,
             "summary": pytest_summary,
         },
