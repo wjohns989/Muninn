@@ -189,3 +189,26 @@ def test_cmd_profile_gate_recommends_model(tmp_path: Path) -> None:
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["passed"] is True
     assert payload["profiles"]["low_latency"]["recommendation"]["model"] == "xlam:latest"
+
+
+def test_evaluate_candidate_flags_missing_legacy_p95_when_required() -> None:
+    gate = {
+        "require_live_suite": True,
+        "require_legacy_suite": True,
+        "max_legacy_p95_seconds": 20.0,
+    }
+    live_summary = {
+        "avg_ability_score": 0.8,
+        "p95_wall_seconds": 10.0,
+        "avg_wall_seconds": 7.0,
+        "resource_efficiency": {"ability_per_vram_gb": 0.1},
+    }
+    legacy_summary = {"avg_ability_score": 0.8}
+    result = bench._evaluate_candidate(
+        model="qwen3:8b",
+        gate=gate,
+        live_summary=live_summary,
+        legacy_summary=legacy_summary,
+    )
+    assert result["passed"] is False
+    assert "missing_legacy_p95" in result["violations"]

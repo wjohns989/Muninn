@@ -128,7 +128,7 @@ Verification:
   - `49 passed` across runtime profile-control + audit surfaces (`memory_profiles`, `sqlite_profile_policy_events`, `mcp_wrapper_protocol`, `sdk_client`).
   - local benchmark tooling smoke checks pass (`python -m eval.ollama_local_benchmark list`, `python -m eval.ollama_local_benchmark sync --dry-run`).
   - initial 5-model quick-pass latency/throughput snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
-  - `5 passed` across Phase 4I benchmark helper tests (`tests/test_ollama_local_benchmark.py`).
+  - `8 passed` across Phase 4I/4J benchmark helper tests (`tests/test_ollama_local_benchmark.py`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
