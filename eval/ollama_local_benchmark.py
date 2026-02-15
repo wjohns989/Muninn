@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import time
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -626,6 +627,48 @@ def _http_json_request(
         return parsed
 
 
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _timestamp_context(now: datetime | None = None) -> dict[str, str]:
+    current = now or datetime.now(timezone.utc)
+    return {
+        "created_at_utc": current.isoformat(),
+        "run_id": current.strftime("%Y%m%dT%H%M%SZ"),
+    }
+
+
+def _validated_profile_payload(
+    active: dict[str, Any], *, source: str | None = None
+) -> dict[str, str]:
+    payload = {
+        "model_profile": _validate_profile_name(
+            "model_profile", str(active.get("model_profile", ""))
+        ),
+        "runtime_model_profile": _validate_profile_name(
+            "runtime_model_profile", str(active.get("runtime_model_profile", ""))
+        ),
+        "ingestion_model_profile": _validate_profile_name(
+            "ingestion_model_profile", str(active.get("ingestion_model_profile", ""))
+        ),
+        "legacy_ingestion_model_profile": _validate_profile_name(
+            "legacy_ingestion_model_profile",
+            str(active.get("legacy_ingestion_model_profile", "")),
+        ),
+    }
+    if source is not None:
+        payload["source"] = source
+    return payload
+
+
 def _muninn_api_request(
     muninn_url: str,
     path: str,
@@ -662,6 +705,13 @@ def _validate_profile_name(field_name: str, profile: str) -> str:
             f"Expected one of {SUPPORTED_PROFILE_NAMES}."
         )
     return candidate
+
+
+def _checkpoint_target_policy(checkpoint: dict[str, Any]) -> dict[str, str]:
+    target = checkpoint.get("target_policy")
+    if not isinstance(target, dict):
+        raise ValueError("Checkpoint is missing 'target_policy' object.")
+    return _validated_profile_payload(target)
 
 
 def _gate_recommendation_models(gate_report: dict[str, Any]) -> dict[str, str]:
@@ -817,22 +867,7 @@ def cmd_rollback_policy(args: argparse.Namespace) -> int:
     if not isinstance(active, dict):
         raise ValueError("Checkpoint previous_policy is missing 'active' policy object.")
 
-    restore_payload = {
-        "model_profile": _validate_profile_name(
-            "model_profile", str(active.get("model_profile", ""))
-        ),
-        "runtime_model_profile": _validate_profile_name(
-            "runtime_model_profile", str(active.get("runtime_model_profile", ""))
-        ),
-        "ingestion_model_profile": _validate_profile_name(
-            "ingestion_model_profile", str(active.get("ingestion_model_profile", ""))
-        ),
-        "legacy_ingestion_model_profile": _validate_profile_name(
-            "legacy_ingestion_model_profile",
-            str(active.get("legacy_ingestion_model_profile", "")),
-        ),
-        "source": source,
-    }
+    restore_payload = _validated_profile_payload(active, source=source)
 
     rollback_result: dict[str, Any]
     if dry_run:
@@ -859,17 +894,17 @@ def cmd_rollback_policy(args: argparse.Namespace) -> int:
             "response": response,
         }
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    time_ctx = _timestamp_context()
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = (
         Path(args.output).resolve()
         if args.output
-        else output_dir / f"policy_rollback_{run_id}.json"
+        else output_dir / f"policy_rollback_{time_ctx['run_id']}.json"
     )
     payload = {
-        "run_id": run_id,
+        "run_id": time_ctx["run_id"],
         "event": "MODEL_PROFILE_POLICY_ROLLBACK_COMPLETED",
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": time_ctx["created_at_utc"],
         "checkpoint_path": str(checkpoint_path),
         "muninn_url": muninn_url,
         "result": rollback_result,
@@ -879,6 +914,127 @@ def cmd_rollback_policy(args: argparse.Namespace) -> int:
         f.write("\n")
 
     print(f"Policy rollback report written to: {output_path}")
+    return 0
+
+
+def cmd_approval_manifest(args: argparse.Namespace) -> int:
+    checkpoint_path = Path(args.checkpoint).resolve()
+    checkpoint = _load_json(checkpoint_path)
+    _checkpoint_target_policy(checkpoint)
+
+    decision = str(args.decision).strip().lower()
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("--decision must be either 'approved' or 'rejected'.")
+
+    approved_by = str(args.approved_by).strip()
+    if not approved_by:
+        raise ValueError("--approved-by must be non-empty.")
+
+    time_ctx = _timestamp_context()
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = (
+        Path(args.output).resolve()
+        if args.output
+        else output_dir / f"policy_approval_{time_ctx['run_id']}.json"
+    )
+
+    payload = {
+        "run_id": time_ctx["run_id"],
+        "event": "MODEL_PROFILE_POLICY_APPROVAL_RECORDED",
+        "created_at_utc": time_ctx["created_at_utc"],
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": _sha256_file(checkpoint_path),
+        "decision": decision,
+        "approved_by": approved_by,
+        "notes": str(args.notes or "").strip(),
+        "source": str(args.source).strip() or "policy_approval_cli",
+    }
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+    print(f"Policy approval manifest written to: {output_path}")
+    return 0
+
+
+def cmd_apply_checkpoint(args: argparse.Namespace) -> int:
+    checkpoint_path = Path(args.checkpoint).resolve()
+    manifest_path = Path(args.approval_manifest).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    muninn_url = str(args.muninn_url).strip()
+    timeout_seconds = int(args.muninn_timeout_seconds)
+    source = str(args.source).strip() or "apply_checkpoint_cli"
+    dry_run = bool(args.dry_run)
+
+    checkpoint = _load_json(checkpoint_path)
+    target_policy = _checkpoint_target_policy(checkpoint)
+    manifest = _load_json(manifest_path)
+
+    decision = str(manifest.get("decision", "")).strip().lower()
+    if decision != "approved":
+        raise ValueError(
+            f"Approval manifest decision is '{decision or 'missing'}'; expected 'approved'."
+        )
+
+    recorded_sha = str(manifest.get("checkpoint_sha256", "")).strip().lower()
+    actual_sha = _sha256_file(checkpoint_path)
+    if recorded_sha != actual_sha:
+        raise ValueError("Approval manifest checkpoint_sha256 does not match checkpoint file.")
+
+    recorded_path = str(manifest.get("checkpoint_path", "")).strip()
+    if recorded_path and Path(recorded_path).resolve() != checkpoint_path:
+        raise ValueError("Approval manifest checkpoint_path does not match provided checkpoint.")
+
+    apply_payload = {**target_policy, "source": source}
+    apply_result: dict[str, Any]
+    if dry_run:
+        apply_result = {
+            "event": "MODEL_PROFILE_POLICY_APPLY_CHECKPOINT_DRY_RUN",
+            "applied": False,
+            "payload": apply_payload,
+        }
+    else:
+        response = _unwrap_success_envelope(
+            _muninn_api_request(
+                muninn_url,
+                "/profiles/model",
+                method="POST",
+                payload=apply_payload,
+                timeout_seconds=timeout_seconds,
+            ),
+            endpoint="POST /profiles/model",
+        )
+        apply_result = {
+            "event": "MODEL_PROFILE_POLICY_APPLY_CHECKPOINT_COMPLETED",
+            "applied": True,
+            "payload": apply_payload,
+            "response": response,
+        }
+
+    time_ctx = _timestamp_context()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = (
+        Path(args.output).resolve()
+        if args.output
+        else output_dir / f"policy_apply_checkpoint_{time_ctx['run_id']}.json"
+    )
+    payload = {
+        "run_id": time_ctx["run_id"],
+        "event": "MODEL_PROFILE_POLICY_CHECKPOINT_APPLY_RECORDED",
+        "created_at_utc": time_ctx["created_at_utc"],
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": actual_sha,
+        "approval_manifest_path": str(manifest_path),
+        "approved_by": str(manifest.get("approved_by", "")),
+        "muninn_url": muninn_url,
+        "result": apply_result,
+    }
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+    print(f"Checkpoint apply report written to: {output_path}")
     return 0
 
 
@@ -1882,6 +2038,92 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write rollback report without posting rollback request to server.",
     )
     rollback_parser.set_defaults(func=cmd_rollback_policy)
+
+    approval_parser = subparsers.add_parser(
+        "approval-manifest",
+        help="Create approval/rejection manifest for a profile-policy checkpoint.",
+    )
+    approval_parser.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Path to profile-policy checkpoint artifact.",
+    )
+    approval_parser.add_argument(
+        "--decision",
+        required=True,
+        choices=["approved", "rejected"],
+        help="Approval decision for the checkpoint.",
+    )
+    approval_parser.add_argument(
+        "--approved-by",
+        required=True,
+        help="Reviewer or operator identifier approving/rejecting the checkpoint.",
+    )
+    approval_parser.add_argument(
+        "--notes",
+        help="Optional rationale notes for approval/rejection.",
+    )
+    approval_parser.add_argument(
+        "--source",
+        default="policy_approval_cli",
+        help="Audit source label for the approval decision.",
+    )
+    approval_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for generated approval manifests.",
+    )
+    approval_parser.add_argument(
+        "--output",
+        help="Optional approval manifest output path.",
+    )
+    approval_parser.set_defaults(func=cmd_approval_manifest)
+
+    apply_checkpoint_parser = subparsers.add_parser(
+        "apply-checkpoint",
+        help="Apply profile policy from checkpoint using an approved manifest.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Path to checkpoint written by dev-cycle --apply-policy flow.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--approval-manifest",
+        required=True,
+        help="Path to approval manifest created by approval-manifest command.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for generated apply reports.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--output",
+        help="Optional checkpoint apply report output path.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--muninn-url",
+        default=DEFAULT_MUNINN_URL,
+        help="Muninn server base URL for checkpoint apply request.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--muninn-timeout-seconds",
+        default=20,
+        type=int,
+        help="HTTP timeout for checkpoint apply request.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--source",
+        default="apply_checkpoint_cli",
+        help="Audit source label used when applying checkpoint.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write apply report without posting apply request to server.",
+    )
+    apply_checkpoint_parser.set_defaults(func=cmd_apply_checkpoint)
 
     return parser
 

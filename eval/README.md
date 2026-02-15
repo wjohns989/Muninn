@@ -169,6 +169,19 @@ python -m eval.ollama_local_benchmark dev-cycle \
 # Roll back to previous profile policy using checkpoint
 python -m eval.ollama_local_benchmark rollback-policy \
   --checkpoint eval/reports/ollama/profile_policy_checkpoint_<run_id>.json
+
+# Record explicit approval/rejection decision for a checkpoint
+python -m eval.ollama_local_benchmark approval-manifest \
+  --checkpoint eval/reports/ollama/profile_policy_checkpoint_<run_id>.json \
+  --decision approved \
+  --approved-by "operator@example" \
+  --notes "Gate evidence + reviewer approval"
+
+# Apply a checkpoint only when approved by manifest
+python -m eval.ollama_local_benchmark apply-checkpoint \
+  --checkpoint eval/reports/ollama/profile_policy_checkpoint_<run_id>.json \
+  --approval-manifest eval/reports/ollama/policy_approval_<run_id>.json \
+  --muninn-url http://127.0.0.1:42069
 ```
 
 Versioned inputs:
@@ -197,6 +210,14 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 - applies new profile defaults (unless `--apply-dry-run` is used).
 
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
+
+`approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.
+
+`apply-checkpoint` enforces approval-manifest controls before applying:
+- manifest decision must be `approved`,
+- manifest checkpoint SHA-256 must match the supplied checkpoint file,
+- optional manifest checkpoint path must match the supplied checkpoint path,
+- successful apply writes a deterministic apply report artifact.
 
 ## Phase Hygiene Gate
 
