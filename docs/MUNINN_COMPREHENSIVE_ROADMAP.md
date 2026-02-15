@@ -155,6 +155,10 @@ Completed since last update:
    - `eval.ollama_local_benchmark sota-verdict` now emits a deterministic final go/no-go artifact,
    - verdict pipeline now normalizes eval/profile-gate/transport/aux benchmark evidence into one schema,
    - gate output now contains quality, reliability, statistical, reproducibility, and profile-policy pass/fail outcomes.
+47. Phase 4AG enhancement-first benchmark cadence baseline implemented:
+   - `dev-cycle` now supports deferred mode (`--defer-benchmarks`) so active development can reuse existing live/legacy reports instead of regenerating benchmarks every tranche,
+   - deferred mode now supports bounded freshness checks (`--max-reused-report-age-hours`) for reused evidence,
+   - roadmap sequencing is now explicit: continue improvement/enhancement implementation with fast deterministic gates, reserve full benchmark matrix replay for release-readiness closure.
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -177,6 +181,7 @@ Verification:
   - `11 passed` across benchmark helper apply/rollback flows (`tests/test_ollama_local_benchmark.py`).
 - Compile checks passed for all touched modules/tests.
   - unified verdict command checks now pass: compile check + `32 passed` (`tests/test_ollama_local_benchmark.py`) + `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
+  - deferred dev-cycle checks now pass: compile check + deferred report reuse/staleness tests in `tests/test_ollama_local_benchmark.py`.
 
 ### What already exists (partially or fully)
 - Platform abstraction, feature flags, recall trace primitives, conflict detection, semantic dedup, adaptive weight adapter, Docker assets.
@@ -203,6 +208,7 @@ Still open and blocking SOTA claims:
 3. Profile-level promotion criteria are partially open: routing, audit visibility, ability/resource benchmark plumbing, and controlled apply/rollback paths are now implemented; telemetry-backed automatic default-policy alerting and governance thresholds are still pending.
 4. Browser UI preference depth remains partially open: persistence is implemented, but advanced user-adaptive controls (profile presets, safety mode templates, benchmark launch UX) still need phased rollout.
 5. Unified SOTA+ verdict automation is partially closed: one-command promotion verdict emission + normalization hooks are now implemented; remaining work is external benchmark adapters, scheduled CI replay, and signed promotion-manifest issuance.
+6. Enhancement-vs-benchmark cadence is now codified: full matrix replay should run at release-readiness boundaries (or scheduled CI), not on every implementation tranche.
 
 ---
 

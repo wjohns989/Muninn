@@ -296,6 +296,13 @@ Implementation impact:
    - Source:
      - https://arxiv.org/abs/2507.03724
 
+4. **Benchmark cadence split for implementation throughput**
+   - Use selective fast test execution during active development and run full benchmark suites on scheduled/release windows.
+   - Why: preserves rapid iteration while keeping heavyweight evidence generation aligned to release decisions.
+   - Sources:
+     - https://docs.pytest.org/en/stable/example/markers.html
+     - https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onschedule
+
 **Implemented in current tranche:**
 - Protocol negotiation now accepts supported versions and rejects unsupported protocol versions explicitly.
 - Server now gates `tools/list` and `tools/call` until `notifications/initialized` is received.
