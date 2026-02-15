@@ -1187,6 +1187,8 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert "get_model_profiles" in by_name
     assert "set_model_profiles" in by_name
     assert "get_model_profile_events" in by_name
+    assert "set_user_profile" in by_name
+    assert "get_user_profile" in by_name
     assert "ingest_sources" in by_name
     assert "discover_legacy_sources" in by_name
     assert "ingest_legacy_sources" in by_name
@@ -1204,6 +1206,8 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert by_name["search_memory"]["annotations"]["readOnlyHint"] is True
     assert by_name["get_model_profiles"]["annotations"]["readOnlyHint"] is True
     assert by_name["get_model_profile_events"]["annotations"]["readOnlyHint"] is True
+    assert by_name["get_user_profile"]["annotations"]["readOnlyHint"] is True
+    assert by_name["set_user_profile"]["annotations"]["readOnlyHint"] is False
     assert by_name["set_model_profiles"]["annotations"]["readOnlyHint"] is False
     assert by_name["record_retrieval_feedback"]["annotations"]["readOnlyHint"] is False
     assert by_name["ingest_sources"]["annotations"]["readOnlyHint"] is False
@@ -1212,6 +1216,7 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert by_name["delete_memory"]["annotations"]["destructiveHint"] is True
     assert by_name["delete_all_memories"]["annotations"]["destructiveHint"] is True
     assert by_name["search_memory"]["annotations"]["idempotentHint"] is True
+    assert by_name["set_user_profile"]["annotations"]["idempotentHint"] is True
     assert by_name["set_model_profiles"]["annotations"]["idempotentHint"] is True
     assert by_name["update_memory"]["annotations"]["idempotentHint"] is True
     assert by_name["import_handoff"]["annotations"]["idempotentHint"] is True
@@ -1229,6 +1234,12 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert "runtime_model_profile" in set_profile_props
     assert "legacy_ingestion_model_profile" in set_profile_props
     assert "source" in set_profile_props
+    set_user_profile_props = by_name["set_user_profile"]["inputSchema"]["properties"]
+    assert "profile" in set_user_profile_props
+    assert "merge" in set_user_profile_props
+    assert "source" in set_user_profile_props
+    get_user_profile_props = by_name["get_user_profile"]["inputSchema"]["properties"]
+    assert get_user_profile_props == {}
     profile_event_props = by_name["get_model_profile_events"]["inputSchema"]["properties"]
     assert "limit" in profile_event_props
 
@@ -1325,6 +1336,79 @@ def test_get_model_profiles_tool_call_payload(monkeypatch):
     assert captured["json"] is None
     assert sent
     assert sent[0]["id"] == "req-get-profiles"
+
+
+def test_set_user_profile_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "USER_PROFILE_UPDATED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-set-user-profile",
+        {
+            "name": "set_user_profile",
+            "arguments": {
+                "profile": {"skills": ["python"]},
+                "merge": False,
+            },
+        },
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/profile/user/set")
+    assert captured["json"]["profile"] == {"skills": ["python"]}
+    assert captured["json"]["merge"] is False
+    assert captured["json"]["source"] == "mcp_tool"
+    assert sent
+    assert sent[0]["id"] == "req-set-user-profile"
+
+
+def test_get_user_profile_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "USER_PROFILE_LOADED", "profile": {}}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-get-user-profile",
+        {
+            "name": "get_user_profile",
+            "arguments": {},
+        },
+    )
+
+    assert captured["method"] == "GET"
+    assert captured["url"].endswith("/profile/user/get")
+    assert captured["params"]["user_id"] == "global_user"
+    assert sent
+    assert sent[0]["id"] == "req-get-user-profile"
 
 
 def test_set_model_profiles_tool_call_payload(monkeypatch):

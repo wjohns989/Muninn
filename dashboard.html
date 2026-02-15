@@ -447,6 +447,7 @@
 
         <div class="btn-row">
           <button id="btn-discover-legacy">Discover Sources</button>
+          <button id="btn-auto-discover-import" class="good">Auto Discover + Import Supported</button>
           <button id="btn-select-supported" class="secondary">Select Parser-Supported</button>
           <button id="btn-clear-selection" class="secondary">Clear Selection</button>
           <button id="btn-import-legacy" class="good">Import Selected</button>
@@ -462,11 +463,13 @@
                 <th>Confidence</th>
                 <th>Type</th>
                 <th>Size</th>
+                <th>Modified (UTC)</th>
+                <th>Relative</th>
                 <th>Path</th>
               </tr>
             </thead>
             <tbody id="legacy-table-body">
-              <tr><td colspan="7">No discovery run yet.</td></tr>
+              <tr><td colspan="9">No discovery run yet.</td></tr>
             </tbody>
           </table>
         </div>
@@ -509,6 +512,23 @@
       </div>
 
       <div class="panel col-12">
+        <h2>User Profile and Global Context</h2>
+        <p class="desc">Editable user context that helps Muninn prioritize relevant memories: skills, tool paths, environments, hardware, and workflow preferences.</p>
+        <div class="row">
+          <div class="field-12">
+            <label for="user-profile-json">Profile JSON</label>
+            <textarea id="user-profile-json" placeholder='{"preferences":{"coding_style":"roi-first"},"skills":["python","typescript"],"paths":{"workspace":"C:\\Users\\user\\muninn_mcp"},"hardware":{"gpu_vram_gb":16}}'></textarea>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="btn-load-user-profile" class="secondary">Load Profile</button>
+          <button id="btn-save-user-profile-merge">Save Profile (Merge)</button>
+          <button id="btn-save-user-profile-replace" class="warn">Replace Profile</button>
+        </div>
+        <div class="result" id="user-profile-result">User profile not loaded yet.</div>
+      </div>
+
+      <div class="panel col-12">
         <h2>Activity Log</h2>
         <p class="desc">Live browser action and API result trace.</p>
         <div class="log" id="activity-log"></div>
@@ -545,6 +565,7 @@
       "legacy-namespace": { type: "value", default: "global" },
       "legacy-chronological": { type: "value", default: "none" },
       "legacy-recursive": { type: "checked", default: true },
+      "user-profile-json": { type: "value", default: "" },
     };
 
     function nowStamp() {
@@ -785,7 +806,7 @@
     function renderLegacyTable() {
       const tbody = document.getElementById("legacy-table-body");
       if (!legacyCatalog.length) {
-        tbody.innerHTML = "<tr><td colspan=\"7\">No sources discovered.</td></tr>";
+        tbody.innerHTML = "<tr><td colspan=\"9\">No sources discovered.</td></tr>";
         return;
       }
 
@@ -807,6 +828,8 @@
               <td>${source.confidence}</td>
               <td>${source.source_type}</td>
               <td>${source.size_bytes}</td>
+              <td>${source.modified_at_iso || "-"}</td>
+              <td class="code">${source.relative_path_hint || "-"}</td>
               <td class="code">${safePath}</td>
             </tr>
           `;
@@ -841,9 +864,11 @@
           provider_counts: result.provider_counts,
         });
         logLine(`Legacy discovery completed. Found ${result.total_discovered || 0} sources.`);
+        return result;
       } catch (err) {
         setResult("legacy-result", { error: err.message });
         logLine(`Legacy discovery failed: ${err.message}`, "err");
+        return null;
       }
     }
 
@@ -868,7 +893,7 @@
       const selectedSourceIds = selectedLegacySourceIds();
       if (!selectedSourceIds.length) {
         setResult("legacy-result", { warning: "Select at least one discovered source." });
-        return;
+        return null;
       }
 
       const roots = parseLines(document.getElementById("legacy-roots").value);
@@ -901,9 +926,70 @@
         setResult("legacy-result", result);
         logLine(`Legacy import completed. Added ${result.added_memories || 0} memories.`);
         refreshHealth();
+        return result;
       } catch (err) {
         setResult("legacy-result", { error: err.message });
         logLine(`Legacy import failed: ${err.message}`, "err");
+        return null;
+      }
+    }
+
+    async function autoDiscoverAndImportLegacy() {
+      const priorOrder = document.getElementById("legacy-chronological").value;
+      if (priorOrder === "none") {
+        document.getElementById("legacy-chronological").value = "oldest_first";
+        logLine("Auto mode set legacy chronological order to oldest_first for development-phase continuity.");
+      }
+      const discovery = await discoverLegacySources();
+      if (!discovery) return;
+      selectParserSupported();
+      const selected = selectedLegacySourceIds();
+      if (!selected.length) {
+        setResult("legacy-result", { warning: "No parser-supported discovered sources available for import." });
+        logLine("Auto import skipped because no parser-supported sources were discovered.", "warn");
+        return;
+      }
+      await importSelectedLegacy();
+    }
+
+    async function loadUserProfile() {
+      try {
+        const result = await apiRequest("/profile/user/get", null, "GET");
+        const profile = result.profile || {};
+        document.getElementById("user-profile-json").value = JSON.stringify(profile, null, 2);
+        setResult("user-profile-result", result);
+        logLine(`Loaded user profile (${result.event}).`);
+      } catch (err) {
+        setResult("user-profile-result", { error: err.message });
+        logLine(`Load user profile failed: ${err.message}`, "err");
+      }
+    }
+
+    async function saveUserProfile(merge) {
+      let profile;
+      try {
+        profile = parseJsonOrEmpty(document.getElementById("user-profile-json").value);
+      } catch (err) {
+        setResult("user-profile-result", { error: err.message });
+        logLine(err.message, "err");
+        return;
+      }
+
+      const payload = {
+        user_id: "global_user",
+        profile,
+        merge: Boolean(merge),
+        source: "browser_ui_user_profile",
+      };
+
+      try {
+        const result = await apiRequest("/profile/user/set", payload);
+        document.getElementById("user-profile-json").value = JSON.stringify(result.profile || {}, null, 2);
+        setResult("user-profile-result", result);
+        logLine(`Saved user profile with merge=${Boolean(merge)}.`);
+      } catch (err) {
+        setResult("user-profile-result", { error: err.message });
+        logLine(`Save user profile failed: ${err.message}`, "err");
       }
     }
 
@@ -937,9 +1023,13 @@
     document.getElementById("btn-clear-search").addEventListener("click", clearSearchResult);
     document.getElementById("btn-ingest-project").addEventListener("click", ingestProjectPaths);
     document.getElementById("btn-discover-legacy").addEventListener("click", discoverLegacySources);
+    document.getElementById("btn-auto-discover-import").addEventListener("click", autoDiscoverAndImportLegacy);
     document.getElementById("btn-select-supported").addEventListener("click", selectParserSupported);
     document.getElementById("btn-clear-selection").addEventListener("click", clearLegacySelection);
     document.getElementById("btn-import-legacy").addEventListener("click", importSelectedLegacy);
+    document.getElementById("btn-load-user-profile").addEventListener("click", loadUserProfile);
+    document.getElementById("btn-save-user-profile-merge").addEventListener("click", () => saveUserProfile(true));
+    document.getElementById("btn-save-user-profile-replace").addEventListener("click", () => saveUserProfile(false));
     document.getElementById("btn-save-preferences").addEventListener("click", () => {
       savePreferences(true);
       logLine("Preferences saved.");
@@ -956,6 +1046,7 @@
     loadPreferences();
     bindPreferenceAutoSave();
     refreshHealth();
+    loadUserProfile();
     logLine("Browser control center loaded.");
   </script>
 </body>

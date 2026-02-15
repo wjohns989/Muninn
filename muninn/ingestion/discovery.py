@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -24,6 +25,11 @@ class DiscoveredLegacySource:
     confidence: str
     size_bytes: int
     notes: str = ""
+    parent_path: str = ""
+    path_depth: int = 0
+    modified_at_epoch: Optional[float] = None
+    modified_at_iso: Optional[str] = None
+    relative_path_hint: str = ""
 
 
 def _canonical_source_id(provider: str, category: str, path: str) -> str:
@@ -259,10 +265,30 @@ def discover_legacy_sources(
                     continue
 
                 size_bytes = 0
+                modified_at_epoch: Optional[float] = None
+                modified_at_iso: Optional[str] = None
                 try:
-                    size_bytes = resolved.stat().st_size
+                    stat = resolved.stat()
+                    size_bytes = stat.st_size
+                    modified_at_epoch = float(stat.st_mtime)
+                    modified_at_iso = datetime.fromtimestamp(
+                        modified_at_epoch, tz=timezone.utc
+                    ).isoformat().replace("+00:00", "Z")
                 except OSError:
                     pass
+
+                relative_hint = ""
+                for root in root_paths:
+                    try:
+                        relative_hint = str(resolved.relative_to(root))
+                        break
+                    except ValueError:
+                        continue
+                if not relative_hint:
+                    try:
+                        relative_hint = str(resolved.relative_to(user_home))
+                    except ValueError:
+                        relative_hint = resolved.name
 
                 source_id = _canonical_source_id(provider, category, key)
                 discovered.append(
@@ -276,6 +302,11 @@ def discover_legacy_sources(
                         confidence=confidence,
                         size_bytes=size_bytes,
                         notes=notes,
+                        parent_path=str(resolved.parent),
+                        path_depth=len(resolved.parts),
+                        modified_at_epoch=modified_at_epoch,
+                        modified_at_iso=modified_at_iso,
+                        relative_path_hint=relative_hint,
                     )
                 )
                 seen.add(key)
@@ -293,6 +324,11 @@ def discover_legacy_sources(
             "confidence": item.confidence,
             "size_bytes": item.size_bytes,
             "notes": item.notes,
+            "parent_path": item.parent_path,
+            "path_depth": item.path_depth,
+            "modified_at_epoch": item.modified_at_epoch,
+            "modified_at_iso": item.modified_at_iso,
+            "relative_path_hint": item.relative_path_hint,
         }
         for item in discovered
     ]

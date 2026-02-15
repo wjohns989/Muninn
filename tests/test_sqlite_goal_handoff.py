@@ -35,3 +35,23 @@ def test_handoff_event_ledger_is_idempotent(tmp_path):
     assert inserted_second is False
     assert store.has_handoff_event("evt-123") is True
 
+
+def test_user_profile_roundtrip(tmp_path):
+    store = SQLiteMetadataStore(tmp_path / "profile.db")
+    payload = {
+        "preferences": {"coding_style": "roi-first"},
+        "skills": ["python", "mcp"],
+        "paths": {"workspace": "C:/Users/user/muninn_mcp"},
+    }
+    store.set_user_profile(
+        user_id="global_user",
+        profile=payload,
+        source="unit-test",
+    )
+
+    profile = store.get_user_profile(user_id="global_user")
+    assert profile is not None
+    assert profile["user_id"] == "global_user"
+    assert profile["profile"] == payload
+    assert profile["source"] == "unit-test"
+    assert isinstance(profile["updated_at"], float)
