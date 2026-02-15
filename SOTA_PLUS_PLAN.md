@@ -198,7 +198,9 @@
 53. Phase 4S MCP task lifecycle baseline implemented:
     - wrapper now handles `tasks/get`, `tasks/result`, and `tasks/cancel` with schema-aligned `taskId` validation,
     - initialize now advertises `capabilities.tasks.cancel` alongside list support,
-    - deterministic task lifecycle error semantics now cover invalid IDs and terminal/non-terminal misuse.
+    - deterministic task lifecycle error semantics now cover invalid IDs and terminal/non-terminal misuse,
+    - review-driven hardening prevents synthetic terminal success payloads and avoids reflecting raw task IDs in unknown-task errors,
+    - workflow-gate hardening now makes `eval.phase_hygiene` subprocess decoding robust across UTF-8/CP1252 output on Windows.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -233,7 +235,7 @@
 - Phase 4P apply-checkpoint provenance enforcement verification: `23 passed` (`tests/test_ollama_local_benchmark.py`).
 - Phase 4Q git-ancestry enforcement verification: `29 passed` (`tests/test_ollama_local_benchmark.py`) + `64 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
 - Phase 4R MCP 2025-11-25 compatibility verification: `36 passed` (`tests/test_mcp_wrapper_protocol.py`) + `70 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
-- Phase 4S MCP task lifecycle verification: `43 passed` (`tests/test_mcp_wrapper_protocol.py`) + `77 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
+- Phase 4S MCP task lifecycle verification: `45 passed` (`tests/test_mcp_wrapper_protocol.py`) + `81 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_051620.json`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -265,6 +267,8 @@
 27. **Mutation-guard security ROI**: ref option-separator + resolved-SHA verification closes dash-prefixed git argument ambiguity before policy mutation.
 28. **Protocol-interoperability ROI**: explicit tasks capability + elicitation-default parsing + task metadata reduce MCP client mismatch risk and stabilize tool execution contracts.
 29. **Lifecycle-polling ROI**: schema-aligned `tasks/get|result|cancel` support eliminates client fallback ambiguity and reduces integration error handling overhead.
+30. **Terminal-state correctness ROI**: explicit terminal-no-payload erroring prevents silent false-positive completion interpretation in polling clients.
+31. **Hygiene-gate reliability ROI**: encoding-robust subprocess decoding prevents Windows locale crashes in PR-boundary governance checks.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up (task-augmented `tools/call` execution, status notifications, retention/pagination policy for task registry).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from eval import phase_hygiene as hygiene
 
@@ -88,3 +89,20 @@ def test_parse_junit_summary(tmp_path: Path) -> None:
     assert summary["failed"] == 1
     assert summary["errors"] == 1
     assert summary["skipped"] == 1
+
+
+def test_decode_output_falls_back_to_cp1252() -> None:
+    text = "Résumé"
+    encoded = text.encode("cp1252")
+    assert hygiene._decode_output(encoded) == text
+
+
+def test_run_json_command_decodes_bytes_output(monkeypatch) -> None:
+    payload = '{"name":"R\xe9sum\xe9"}'.encode("cp1252")
+
+    def _fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=payload, stderr=b"")
+
+    monkeypatch.setattr(hygiene.subprocess, "run", _fake_run)
+    result = hygiene._run_json_command(["gh", "api", "dummy"])
+    assert result["name"] == "Résumé"
