@@ -182,6 +182,9 @@
     - `approval-manifest` now accepts optional PR/URL/commit/branch context with validation,
     - manifest provenance now auto-detects git commit/branch when not explicitly provided,
     - `apply-checkpoint` now propagates `change_context` into apply reports and rejects malformed context types.
+50. Phase 4P apply-checkpoint provenance enforcement baseline implemented:
+    - `apply-checkpoint` now supports enforcement flags for required provenance fields (`change_context`, `pr_number`, `commit_sha`, `branch_name`),
+    - provenance validation now gates apply path before policy mutation.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -213,6 +216,7 @@
 - Phase 4M benchmark-policy apply/rollback verification: `11 passed` (`tests/test_ollama_local_benchmark.py`).
 - Phase 4N policy-approval manifest verification: `16 passed` (`tests/test_ollama_local_benchmark.py`).
 - Phase 4O approval provenance-context verification: `18 passed` (`tests/test_ollama_local_benchmark.py`).
+- Phase 4P apply-checkpoint provenance enforcement verification: `21 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -239,6 +243,7 @@
 22. **Local model-selection evidence ROI**: versioned model matrix plus prompt-stable benchmark harness enables repeatable 16GB-class profiling decisions instead of ad-hoc model swaps.
 23. **Policy-governance ROI**: approval manifests + hash-bound checkpoint apply close evidence-to-mutation audit gaps and reduce accidental/unauthorized policy drift.
 24. **Review-to-runtime traceability ROI**: PR/commit/branch provenance in approval/apply artifacts enables deterministic incident forensics and future policy enforcement on reviewed changes only.
+25. **Policy-guardrail ROI**: apply-time provenance enforcement prevents review-unlinked checkpoint mutations in stricter operating modes.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche (tasks, elicitation schema/defaults, JSON Schema 2020-12 assumptions, tool metadata improvements).

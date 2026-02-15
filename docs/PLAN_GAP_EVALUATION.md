@@ -39,6 +39,7 @@ Evaluator: Codex
 - **MCP startup + tray operational hardening is now implemented**: wrapper launch now triggers autostart bootstrap for Ollama/server when enabled, and Windows tray now exposes direct Browser UI + MCP health check + wrapper diagnostics actions.
 - **Phase 4N policy-approval manifest baseline is now implemented**: `approval-manifest` now records explicit checkpoint approval/rejection with SHA-256 binding, and `apply-checkpoint` now enforces approved decision + integrity checks before profile-policy apply.
 - **Phase 4O approval provenance-context baseline is now implemented**: approval manifests now capture optional PR/commit/branch provenance with validation + git fallback, and checkpoint apply reports now propagate the provenance context.
+- **Phase 4P apply-checkpoint provenance enforcement baseline is now implemented**: checkpoint apply now supports required-provenance enforcement flags so policy mutation can be blocked when manifest provenance fields are missing.
 
 ## Status vs Plan
 
@@ -86,7 +87,7 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, and PR/commit/branch provenance capture are now implemented, but profile-level telemetry/alert thresholds and auto-governance promotion controls still need completion before default-policy automation.
+8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, and apply-time provenance enforcement flags are now implemented, but profile-level telemetry/alert thresholds and auto-governance promotion controls still need completion before default-policy automation.
 9. **MCP Muninn transport reliability intermittency (operationally mitigated):** framing mismatch is fixed and startup bootstrap is in place; stale closed handles still require session restart by design, now covered by explicit recovery runbook and tray health-probe tooling.
 
 ## Validation Snapshot
@@ -135,6 +136,9 @@ Evaluator: Codex
 - Phase 4O approval provenance-context tranche now passes targeted checks:
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
   - `18 passed` (`tests/test_ollama_local_benchmark.py`)
+- Phase 4P apply-checkpoint provenance enforcement tranche now passes targeted checks:
+  - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
+  - `21 passed` (`tests/test_ollama_local_benchmark.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -214,6 +218,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4m-dev-cycle-policy-apply-rollback.md`
 - `docs/plans/2026-02-15-phase4n-policy-approval-manifest.md`
 - `docs/plans/2026-02-15-phase4o-approval-provenance-context.md`
+- `docs/plans/2026-02-15-phase4p-apply-checkpoint-provenance-enforcement.md`
 - `docs/plans/2026-02-15-mcp-transport-closed-recovery.md`
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 

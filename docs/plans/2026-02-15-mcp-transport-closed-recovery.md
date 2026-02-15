@@ -76,3 +76,14 @@ Governance-provenance follow-on is now implemented in `docs/plans/2026-02-15-pha
    - checkpoint apply reports now include manifest provenance context for audit linkage.
 3. Validation increment:
    - benchmark/policy command tests now at `18 passed` (`tests/test_ollama_local_benchmark.py`).
+
+## Continuation Update (Phase 4P)
+
+Governance-enforcement follow-on is now implemented in `docs/plans/2026-02-15-phase4p-apply-checkpoint-provenance-enforcement.md`:
+
+1. Apply-time provenance enforcement:
+   - checkpoint apply now supports enforcement flags for required provenance context and fields.
+2. Deterministic provenance validation:
+   - `change_context` shape and required field checks now gate apply before mutation.
+3. Validation increment:
+   - benchmark/policy command tests now at `21 passed` (`tests/test_ollama_local_benchmark.py`).
