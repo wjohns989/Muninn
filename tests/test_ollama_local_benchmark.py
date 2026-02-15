@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import os
 
 import pytest
 
@@ -185,12 +186,80 @@ def test_cmd_profile_gate_recommends_model(tmp_path: Path) -> None:
         output_dir=str(tmp_path),
         output=str(out_path),
         allow_failures=False,
+        enforce_governance=False,
     )
     rc = bench.cmd_profile_gate(args)
     assert rc == 0
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["passed"] is True
     assert payload["profiles"]["low_latency"]["recommendation"]["model"] == "xlam:latest"
+    assert payload["governance"]["blocked"] is False
+
+
+def test_cmd_profile_gate_enforce_governance_blocks_on_critical_alert(tmp_path: Path) -> None:
+    matrix = {"models": [{"tag": "qwen3:8b", "vram_min_gb": 6}]}
+    policy = {
+        "governance": {
+            "alerts": {
+                "blocking_severities": ["critical"],
+            }
+        },
+        "profiles": {
+            "low_latency": {
+                "candidates": ["qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.95,
+            },
+            "balanced": {
+                "candidates": ["qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.95,
+            },
+            "high_reasoning": {
+                "candidates": ["qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.95,
+            },
+        },
+    }
+    live_report = {
+        "models": {
+            "qwen3:8b": {
+                "summary": {
+                    "avg_ability_score": 0.7,
+                    "avg_wall_seconds": 10.0,
+                    "p95_wall_seconds": 15.0,
+                    "resource_efficiency": {"ability_per_vram_gb": 0.11},
+                }
+            }
+        }
+    }
+    matrix_path = tmp_path / "matrix_governance.json"
+    policy_path = tmp_path / "policy_governance.json"
+    live_path = tmp_path / "live_governance.json"
+    out_path = tmp_path / "gate_governance.json"
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    live_path.write_text(json.dumps(live_report), encoding="utf-8")
+
+    args = SimpleNamespace(
+        matrix=str(matrix_path),
+        policy=str(policy_path),
+        live_report=str(live_path),
+        legacy_report=None,
+        output_dir=str(tmp_path),
+        output=str(out_path),
+        allow_failures=True,
+        enforce_governance=True,
+    )
+    rc = bench.cmd_profile_gate(args)
+    assert rc == 1
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["governance"]["blocked"] is True
+    assert payload["governance"]["blocking_alerts_count"] >= 1
 
 
 def test_evaluate_candidate_flags_missing_legacy_p95_when_required() -> None:
@@ -291,9 +360,11 @@ def test_cmd_dev_cycle_writes_role_recommendations(tmp_path: Path, monkeypatch) 
         snippet_chars=800,
         dump_cases=None,
         allow_gate_failures=False,
+        enforce_governance=False,
         apply_policy=False,
         apply_dry_run=False,
         allow_apply_when_gate_fails=False,
+        require_governance_clean=False,
         muninn_url="http://127.0.0.1:42069",
         muninn_timeout_seconds=20,
         apply_source="dev_cycle_cli",
@@ -423,9 +494,11 @@ def test_cmd_dev_cycle_apply_policy_writes_checkpoint(tmp_path: Path, monkeypatc
         snippet_chars=800,
         dump_cases=None,
         allow_gate_failures=False,
+        enforce_governance=False,
         apply_policy=True,
         apply_dry_run=False,
         allow_apply_when_gate_fails=False,
+        require_governance_clean=False,
         muninn_url="http://127.0.0.1:42069",
         muninn_timeout_seconds=20,
         apply_source="dev_cycle_test",
@@ -444,6 +517,173 @@ def test_cmd_dev_cycle_apply_policy_writes_checkpoint(tmp_path: Path, monkeypatc
     assert checkpoint["target_policy"]["runtime_model_profile"] == "low_latency"
     assert checkpoint["apply_result"]["applied"] is True
     assert any(method == "POST" and path == "/profiles/model" for method, path, _ in calls)
+
+
+def test_cmd_dev_cycle_defer_benchmarks_reuses_reports(tmp_path: Path, monkeypatch) -> None:
+    live_existing = tmp_path / "existing_live.json"
+    legacy_existing = tmp_path / "existing_legacy.json"
+    gate_output = tmp_path / "gate_deferred.json"
+    summary_output = tmp_path / "summary_deferred.json"
+
+    live_existing.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "xlam:latest": {
+                        "summary": {
+                            "avg_ability_score": 0.73,
+                            "p95_wall_seconds": 6.4,
+                            "resource_efficiency": {"ability_per_vram_gb": 0.58},
+                        }
+                    },
+                    "qwen3:8b": {
+                        "summary": {
+                            "avg_ability_score": 0.83,
+                            "p95_wall_seconds": 11.7,
+                            "resource_efficiency": {"ability_per_vram_gb": 0.12},
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    legacy_existing.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "xlam:latest": {"summary": {"avg_ability_score": 0.69, "p95_wall_seconds": 8.4}},
+                    "qwen3:8b": {"summary": {"avg_ability_score": 0.8, "p95_wall_seconds": 15.5}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_benchmark(_: SimpleNamespace) -> int:
+        raise AssertionError("cmd_benchmark should not run in deferred mode")
+
+    def fail_legacy(_: SimpleNamespace) -> int:
+        raise AssertionError("cmd_legacy_benchmark should not run in deferred mode")
+
+    def fake_gate(args: SimpleNamespace) -> int:
+        assert Path(args.live_report).resolve() == live_existing.resolve()
+        assert Path(args.legacy_report).resolve() == legacy_existing.resolve()
+        payload = {
+            "passed": True,
+            "profiles": {
+                "low_latency": {"recommendation": {"model": "xlam:latest", "composite_score": 0.9}},
+                "balanced": {"recommendation": {"model": "qwen3:8b", "composite_score": 0.87}},
+                "high_reasoning": {"recommendation": {"model": "qwen3:8b", "composite_score": 0.89}},
+            },
+        }
+        Path(args.output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(bench, "cmd_benchmark", fail_benchmark)
+    monkeypatch.setattr(bench, "cmd_legacy_benchmark", fail_legacy)
+    monkeypatch.setattr(bench, "cmd_profile_gate", fake_gate)
+
+    args = SimpleNamespace(
+        matrix=str(tmp_path / "matrix.json"),
+        prompts=str(tmp_path / "prompts.jsonl"),
+        policy=str(tmp_path / "policy.json"),
+        legacy_roots=str(tmp_path),
+        output_dir=str(tmp_path),
+        output=str(summary_output),
+        live_output=str(tmp_path / "unused_live_output.json"),
+        legacy_output=str(tmp_path / "unused_legacy_output.json"),
+        gate_output=str(gate_output),
+        models="xlam:latest,qwen3:8b",
+        include_optional=False,
+        repeats=1,
+        ollama_url="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        num_predict=64,
+        ability_pass_threshold=0.75,
+        max_cases_per_root=5,
+        snippet_chars=800,
+        dump_cases=None,
+        allow_gate_failures=False,
+        enforce_governance=False,
+        defer_benchmarks=True,
+        existing_live_report=str(live_existing),
+        existing_legacy_report=str(legacy_existing),
+        max_reused_report_age_hours=24.0,
+        apply_policy=False,
+        apply_dry_run=False,
+        allow_apply_when_gate_fails=False,
+        require_governance_clean=False,
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        apply_source="dev_cycle_deferred",
+        checkpoint_output=None,
+        target_model_profile="balanced",
+        target_runtime_model_profile="low_latency",
+        target_ingestion_model_profile="balanced",
+        target_legacy_ingestion_model_profile="balanced",
+    )
+
+    rc = bench.cmd_dev_cycle(args)
+    assert rc == 0
+    summary = json.loads(summary_output.read_text(encoding="utf-8"))
+    assert summary["execution_mode"] == "deferred"
+    assert summary["deferred_benchmarks"] is True
+    assert summary["reused_reports"]["live_report"] == str(live_existing.resolve())
+    assert summary["paths"]["live_report"] == str(live_existing.resolve())
+    assert summary["recommendations"]["low_latency"]["model"] == "xlam:latest"
+
+
+def test_cmd_dev_cycle_deferred_mode_rejects_stale_reports(tmp_path: Path) -> None:
+    live_existing = tmp_path / "existing_live_stale.json"
+    legacy_existing = tmp_path / "existing_legacy_stale.json"
+    live_existing.write_text(json.dumps({"models": {}}), encoding="utf-8")
+    legacy_existing.write_text(json.dumps({"models": {}}), encoding="utf-8")
+    os.utime(live_existing, (1, 1))
+    os.utime(legacy_existing, (1, 1))
+
+    args = SimpleNamespace(
+        matrix=str(tmp_path / "matrix.json"),
+        prompts=str(tmp_path / "prompts.jsonl"),
+        policy=str(tmp_path / "policy.json"),
+        legacy_roots=str(tmp_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "summary_stale.json"),
+        live_output=str(tmp_path / "unused_live_output.json"),
+        legacy_output=str(tmp_path / "unused_legacy_output.json"),
+        gate_output=str(tmp_path / "gate_stale.json"),
+        models=None,
+        include_optional=False,
+        repeats=1,
+        ollama_url="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        num_predict=64,
+        ability_pass_threshold=0.75,
+        max_cases_per_root=5,
+        snippet_chars=800,
+        dump_cases=None,
+        allow_gate_failures=False,
+        enforce_governance=False,
+        defer_benchmarks=True,
+        existing_live_report=str(live_existing),
+        existing_legacy_report=str(legacy_existing),
+        max_reused_report_age_hours=1.0,
+        apply_policy=False,
+        apply_dry_run=False,
+        allow_apply_when_gate_fails=False,
+        require_governance_clean=False,
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        apply_source="dev_cycle_deferred",
+        checkpoint_output=None,
+        target_model_profile="balanced",
+        target_runtime_model_profile="low_latency",
+        target_ingestion_model_profile="balanced",
+        target_legacy_ingestion_model_profile="balanced",
+    )
+
+    with pytest.raises(ValueError, match="too old"):
+        bench.cmd_dev_cycle(args)
 
 
 def test_cmd_rollback_policy_applies_previous_checkpoint(tmp_path: Path, monkeypatch) -> None:
@@ -1269,3 +1509,157 @@ def test_git_commit_reachable_from_rejects_non_commit_ref_resolution(
     reachable, error = bench._git_commit_reachable_from("18d21cf", "main")
     assert reachable is False
     assert "did not resolve to a valid commit SHA" in str(error)
+
+
+def test_cmd_sota_verdict_passes_with_complete_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline_eval = {
+        "cutoffs": {"@5": {"recall": 0.70, "mrr": 0.60, "ndcg": 0.62}},
+        "latency_ms": {"p95": 100.0, "count": 120.0},
+        "tracks": {
+            "accurate_retrieval": {"cutoffs": {"@5": {"recall": 0.72, "mrr": 0.63, "ndcg": 0.65}}},
+            "long_range_understanding": {
+                "cutoffs": {"@5": {"recall": 0.68, "mrr": 0.58, "ndcg": 0.60}}
+            },
+        },
+    }
+    candidate_eval = {
+        "cutoffs": {"@5": {"recall": 0.82, "mrr": 0.71, "ndcg": 0.74}},
+        "latency_ms": {"p95": 105.0, "count": 120.0},
+        "tracks": {
+            "accurate_retrieval": {"cutoffs": {"@5": {"recall": 0.84, "mrr": 0.74, "ndcg": 0.76}}},
+            "long_range_understanding": {
+                "cutoffs": {"@5": {"recall": 0.79, "mrr": 0.68, "ndcg": 0.71}}
+            },
+        },
+        "significance": {
+            "global": {
+                "@5": {
+                    "recall": {
+                        "significant": True,
+                        "significant_regression": False,
+                        "mean_delta": 0.12,
+                        "ci_low": 0.04,
+                        "p_value_adjusted": 0.01,
+                    },
+                    "mrr": {
+                        "significant": False,
+                        "significant_regression": False,
+                        "mean_delta": 0.11,
+                        "ci_low": 0.01,
+                        "p_value_adjusted": 0.08,
+                    },
+                    "ndcg": {
+                        "significant": False,
+                        "significant_regression": False,
+                        "mean_delta": 0.12,
+                        "ci_low": 0.02,
+                        "p_value_adjusted": 0.09,
+                    },
+                }
+            }
+        },
+    }
+    profile_gate = {"passed": True, "governance": {"blocked": False, "blocking_alerts_count": 0}}
+    transport_report = {
+        "outcome": "pass",
+        "results": {"latency": {"count": 200.0, "p95_ms": 120.0}, "error_codes": {}, "failures": []},
+    }
+
+    baseline_path = tmp_path / "baseline_eval.json"
+    candidate_path = tmp_path / "candidate_eval.json"
+    profile_path = tmp_path / "profile_gate.json"
+    transport_path = tmp_path / "transport.json"
+    output_path = tmp_path / "sota_verdict.json"
+
+    baseline_path.write_text(json.dumps(baseline_eval), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate_eval), encoding="utf-8")
+    profile_path.write_text(json.dumps(profile_gate), encoding="utf-8")
+    transport_path.write_text(json.dumps(transport_report), encoding="utf-8")
+
+    monkeypatch.setattr(
+        bench,
+        "_verify_all_artifacts",
+        lambda: {"passed": True, "checked_presets": ["vibecoder_memoryagentbench_v1"]},
+    )
+
+    args = SimpleNamespace(
+        candidate_eval_report=str(candidate_path),
+        baseline_eval_report=str(baseline_path),
+        profile_gate_report=str(profile_path),
+        transport_report=[str(transport_path)],
+        aux_benchmark_report=[],
+        output_dir=str(tmp_path),
+        output=str(output_path),
+        min_primary_improvement_pct=8.0,
+        min_track_nonnegative_ratio=0.7,
+        max_p95_regression_pct=10.0,
+        max_timeout_per_1k=0.25,
+        max_transport_closed_per_1k=0.1,
+        max_transport_p95_ms=5000.0,
+        require_profile_gate=True,
+        require_transport_reports=True,
+        require_stat_significance=True,
+        significance_alpha=0.05,
+        min_positive_significant_metrics=1,
+        verify_artifacts=True,
+        require_artifact_verification=True,
+    )
+
+    rc = bench.cmd_sota_verdict(args)
+    assert rc == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["passed"] is True
+    assert payload["sota_plus_verdict"] == "pass"
+    assert payload["gates"]["quality"]["passed"] is True
+    assert payload["gates"]["reliability"]["passed"] is True
+    assert payload["gates"]["statistical_validity"]["passed"] is True
+    assert payload["gates"]["reproducibility_integrity"]["passed"] is True
+
+
+def test_cmd_sota_verdict_fails_when_required_evidence_missing(tmp_path: Path) -> None:
+    baseline_eval = {
+        "cutoffs": {"@5": {"recall": 0.70, "mrr": 0.60, "ndcg": 0.62}},
+        "latency_ms": {"p95": 100.0, "count": 120.0},
+    }
+    candidate_eval = {
+        "cutoffs": {"@5": {"recall": 0.71, "mrr": 0.61, "ndcg": 0.63}},
+        "latency_ms": {"p95": 140.0, "count": 120.0},
+    }
+    baseline_path = tmp_path / "baseline_eval_fail.json"
+    candidate_path = tmp_path / "candidate_eval_fail.json"
+    output_path = tmp_path / "sota_verdict_fail.json"
+    baseline_path.write_text(json.dumps(baseline_eval), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate_eval), encoding="utf-8")
+
+    args = SimpleNamespace(
+        candidate_eval_report=str(candidate_path),
+        baseline_eval_report=str(baseline_path),
+        profile_gate_report=None,
+        transport_report=[],
+        aux_benchmark_report=[],
+        output_dir=str(tmp_path),
+        output=str(output_path),
+        min_primary_improvement_pct=8.0,
+        min_track_nonnegative_ratio=0.7,
+        max_p95_regression_pct=10.0,
+        max_timeout_per_1k=0.25,
+        max_transport_closed_per_1k=0.1,
+        max_transport_p95_ms=5000.0,
+        require_profile_gate=True,
+        require_transport_reports=True,
+        require_stat_significance=True,
+        significance_alpha=0.05,
+        min_positive_significant_metrics=1,
+        verify_artifacts=False,
+        require_artifact_verification=False,
+    )
+
+    rc = bench.cmd_sota_verdict(args)
+    assert rc == 2
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["passed"] is False
+    assert payload["gates"]["profile_policy"]["passed"] is False
+    assert payload["gates"]["reliability"]["passed"] is False
+    assert payload["gates"]["statistical_validity"]["passed"] is False

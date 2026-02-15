@@ -8,12 +8,16 @@ Auto-starts the server if it's not running.
 
 import sys
 import os
+import math
 import time
 import json
+import base64
+import binascii
 import logging
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote
 from uuid import uuid4
 import requests
 from datetime import datetime, timezone
@@ -45,11 +49,40 @@ _TASKS_DEFAULT_TTL_MS = max(1, int(os.environ.get("MUNINN_MCP_TASK_TTL_MS", "600
 _TASKS_MAX_TTL_MS = max(_TASKS_DEFAULT_TTL_MS, int(os.environ.get("MUNINN_MCP_TASK_MAX_TTL_MS", "86400000")))
 _TASKS_LIST_PAGE_SIZE = max(1, int(os.environ.get("MUNINN_MCP_TASKS_LIST_PAGE_SIZE", "50")))
 _TASKS_MAX_RETAINED = max(_TASKS_LIST_PAGE_SIZE, int(os.environ.get("MUNINN_MCP_TASKS_MAX_RETAINED", "500")))
+_TASK_POLL_INTERVAL_MS = max(1, int(os.environ.get("MUNINN_MCP_TASK_POLL_INTERVAL_MS", "250")))
+_TASK_CURSOR_PREFIX = "tasks:v1:"
 _thread_local = threading.local()
 _RPC_WRITE_LOCK = threading.Lock()
 _DISPATCH_MAX_WORKERS = max(1, int(os.environ.get("MUNINN_MCP_DISPATCH_MAX_WORKERS", "8")))
+_DISPATCH_QUEUE_LIMIT = max(
+    _DISPATCH_MAX_WORKERS,
+    int(os.environ.get("MUNINN_MCP_DISPATCH_QUEUE_LIMIT", str(_DISPATCH_MAX_WORKERS * 8))),
+)
 _DISPATCH_EXECUTOR: Optional[ThreadPoolExecutor] = None
 _DISPATCH_EXECUTOR_LOCK = threading.Lock()
+_DISPATCH_QUEUE_SEMAPHORE = threading.BoundedSemaphore(_DISPATCH_QUEUE_LIMIT)
+_TRANSPORT_CLOSED = threading.Event()
+_BACKEND_CIRCUIT_LOCK = threading.Lock()
+_BACKEND_CIRCUIT_FAILURE_THRESHOLD = max(
+    1,
+    int(os.environ.get("MUNINN_MCP_BACKEND_FAILURE_THRESHOLD", "3")),
+)
+_BACKEND_CIRCUIT_COOLDOWN_SEC = max(
+    1.0,
+    float(os.environ.get("MUNINN_MCP_BACKEND_COOLDOWN_SEC", "30")),
+)
+_BACKEND_CIRCUIT_STATE = {
+    "consecutive_failures": 0,
+    "open_until_epoch": 0.0,
+}
+
+
+class _BackendCircuitOpenError(requests.ConnectionError):
+    """Raised when backend requests are short-circuited during cooldown."""
+
+
+class _RequestDeadlineExceededError(requests.Timeout):
+    """Raised when a request-specific deadline budget is exhausted."""
 
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
@@ -98,6 +131,113 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _get_tool_call_deadline_seconds() -> Optional[float]:
+    host_safe_budget = _get_host_safe_tool_call_budget_seconds()
+    explicit_raw = os.environ.get("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC")
+    if explicit_raw is not None:
+        try:
+            seconds = float(explicit_raw)
+        except ValueError:
+            logger.warning(
+                "Invalid MUNINN_MCP_TOOL_CALL_DEADLINE_SEC=%r; falling back to host-timeout-derived budget.",
+                explicit_raw,
+            )
+        else:
+            if not math.isfinite(seconds):
+                logger.warning(
+                    "Non-finite MUNINN_MCP_TOOL_CALL_DEADLINE_SEC=%r; falling back to host-timeout-derived budget.",
+                    explicit_raw,
+                )
+            elif seconds <= 0:
+                return None
+            else:
+                if (not _env_flag("MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN", False)) and seconds > host_safe_budget:
+                    logger.warning(
+                        "Configured explicit tool-call deadline %.3fs exceeds host-safe budget %.3fs; clamping."
+                        " Set MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN=1 to bypass.",
+                        seconds,
+                        host_safe_budget,
+                    )
+                    return host_safe_budget
+                return seconds
+    return host_safe_budget
+
+
+def _get_host_safe_tool_call_budget_seconds() -> float:
+    host_timeout = 120.0
+    host_timeout_raw = os.environ.get("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    try:
+        parsed_host_timeout = float(host_timeout_raw)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC=%r; using default of 120 seconds.",
+            host_timeout_raw,
+        )
+    else:
+        if math.isfinite(parsed_host_timeout) and parsed_host_timeout > 0:
+            host_timeout = parsed_host_timeout
+        else:
+            logger.warning(
+                "Non-positive/non-finite MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC=%r; using default of 120 seconds.",
+                host_timeout_raw,
+            )
+
+    margin = 10.0
+    margin_raw = os.environ.get("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+    try:
+        parsed_margin = float(margin_raw)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC=%r; using default of 10 seconds.",
+            margin_raw,
+        )
+    else:
+        if math.isfinite(parsed_margin) and parsed_margin >= 0:
+            margin = parsed_margin
+        else:
+            logger.warning(
+                "Negative/non-finite MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC=%r; using default of 10 seconds.",
+                margin_raw,
+            )
+
+    derived = host_timeout - margin
+    if derived <= 0:
+        logger.warning(
+            "Derived deadline budget %.3fs is non-positive (host_timeout=%.3fs margin=%.3fs); clamping to 1s.",
+            derived,
+            host_timeout,
+            margin,
+        )
+        return 1.0
+    return derived
+
+
+def _get_tool_call_deadline_epoch() -> Optional[float]:
+    seconds = _get_tool_call_deadline_seconds()
+    if seconds is None:
+        return None
+    return time.monotonic() + seconds
+
+
+def _get_startup_recovery_min_budget_seconds() -> float:
+    raw_value = os.environ.get("MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC", "28")
+    try:
+        seconds = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC=%r; using default of 28 seconds.",
+            raw_value,
+        )
+        return 28.0
+    if not math.isfinite(seconds):
+        logger.warning(
+            "Non-finite MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC=%r; using default of 28 seconds.",
+            raw_value,
+        )
+        return 28.0
+    return max(0.0, seconds)
+
+
 def _read_operator_model_profile(env_var: str) -> Optional[str]:
     profile = os.environ.get(env_var, "").strip()
     if not profile:
@@ -137,23 +277,149 @@ def _inject_operator_profile_metadata(
         scoped["operator_model_profile"] = session_profile
     return scoped
 
+
+def _backend_circuit_open(now_epoch: Optional[float] = None) -> bool:
+    now = time.time() if now_epoch is None else now_epoch
+    with _BACKEND_CIRCUIT_LOCK:
+        return now < float(_BACKEND_CIRCUIT_STATE["open_until_epoch"])
+
+
+def _mark_backend_success() -> None:
+    with _BACKEND_CIRCUIT_LOCK:
+        _BACKEND_CIRCUIT_STATE["consecutive_failures"] = 0
+        _BACKEND_CIRCUIT_STATE["open_until_epoch"] = 0.0
+
+
+def _mark_backend_failure(error: Exception) -> None:
+    now = time.time()
+    with _BACKEND_CIRCUIT_LOCK:
+        failures = int(_BACKEND_CIRCUIT_STATE["consecutive_failures"]) + 1
+        _BACKEND_CIRCUIT_STATE["consecutive_failures"] = failures
+        if failures >= _BACKEND_CIRCUIT_FAILURE_THRESHOLD:
+            _BACKEND_CIRCUIT_STATE["open_until_epoch"] = now + _BACKEND_CIRCUIT_COOLDOWN_SEC
+            logger.warning(
+                "Backend circuit opened for %.1fs after %d consecutive failures: %s",
+                _BACKEND_CIRCUIT_COOLDOWN_SEC,
+                failures,
+                error,
+            )
+
+
+def _consume_framing_headers(stream: BinaryIO) -> bool:
+    """Consume headers until the framing separator; false when stream ends."""
+    while True:
+        header_line = stream.readline()
+        if not header_line:
+            return False
+        if header_line in (b"\r\n", b"\n"):
+            return True
+
+
+def _remaining_deadline_seconds(deadline_epoch: Optional[float]) -> Optional[float]:
+    if deadline_epoch is None:
+        return None
+    return deadline_epoch - time.monotonic()
+
+
+def _startup_recovery_allowed(deadline_epoch: Optional[float]) -> bool:
+    remaining = _remaining_deadline_seconds(deadline_epoch)
+    if remaining is None:
+        return True
+    min_budget = _get_startup_recovery_min_budget_seconds()
+    return remaining >= min_budget
+
+
+def _clamp_timeout_to_budget(timeout_value: Any, budget_seconds: float) -> Any:
+    """Clamp requests timeout values to a remaining deadline budget."""
+    min_timeout = 0.001
+    budget = max(min_timeout, float(budget_seconds))
+    if timeout_value is None:
+        return budget
+    if isinstance(timeout_value, tuple):
+        clamped_parts = []
+        for part in timeout_value:
+            if part is None:
+                clamped_parts.append(budget)
+                continue
+            try:
+                numeric = float(part)
+            except (TypeError, ValueError):
+                clamped_parts.append(part)
+            else:
+                clamped_parts.append(max(min_timeout, min(numeric, budget)))
+        return tuple(clamped_parts)
+    try:
+        numeric = float(timeout_value)
+    except (TypeError, ValueError):
+        return timeout_value
+    return max(min_timeout, min(numeric, budget))
+
+
 def make_request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
     """Make HTTP request with exponential backoff retry and server auto-restart."""
     max_retries = 3
     base_delay = 0.5
-    
+    deadline_epoch = kwargs.pop("deadline_epoch", None)
+    if deadline_epoch is not None:
+        try:
+            deadline_epoch = float(deadline_epoch)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("deadline_epoch must be a finite float") from exc
+        if not math.isfinite(deadline_epoch):
+            raise ValueError("deadline_epoch must be a finite float")
+
     last_error = None
     for attempt in range(max_retries):
         try:
-            return requests.request(method, url, **kwargs)
+            remaining = _remaining_deadline_seconds(deadline_epoch)
+            if remaining is not None and remaining <= 0:
+                raise _RequestDeadlineExceededError(
+                    "Request deadline budget exhausted before backend call."
+                )
+            if _backend_circuit_open():
+                raise _BackendCircuitOpenError(
+                    "Muninn backend temporarily unavailable (circuit open during cooldown)."
+                )
+            request_kwargs = dict(kwargs)
+            if remaining is not None:
+                request_kwargs["timeout"] = _clamp_timeout_to_budget(
+                    request_kwargs.get("timeout"),
+                    remaining,
+                )
+            response = requests.request(method, url, **request_kwargs)
+            _mark_backend_success()
+            return response
         except (requests.ConnectionError, requests.Timeout) as e:
             last_error = e
+            if isinstance(e, _BackendCircuitOpenError):
+                logger.warning("Fast-fail request while backend circuit is open: %s", e)
+                break
+            if isinstance(e, _RequestDeadlineExceededError):
+                logger.warning("Aborting request due to deadline budget exhaustion: %s", e)
+                break
+            _mark_backend_failure(e)
             logger.warning(f"Connection failed (attempt {attempt+1}/{max_retries}): {e}")
             
             # If server might be down, ensure it's running
             if attempt < max_retries - 1:
-                ensure_server_running()
-                time.sleep(base_delay * (2 ** attempt))
+                if not _backend_circuit_open() and _startup_recovery_allowed(deadline_epoch):
+                    ensure_server_running()
+                elif not _backend_circuit_open() and deadline_epoch is not None:
+                    logger.info(
+                        "Skipping startup recovery due to low remaining deadline budget (%.3fs).",
+                        max(0.0, _remaining_deadline_seconds(deadline_epoch) or 0.0),
+                    )
+                delay = base_delay * (2 ** attempt)
+                remaining = _remaining_deadline_seconds(deadline_epoch)
+                if remaining is not None:
+                    if remaining <= 0:
+                        last_error = _RequestDeadlineExceededError(
+                            "Request deadline budget exhausted during retry backoff."
+                        )
+                        break
+                    delay = min(delay, remaining)
+                if delay > 0:
+                    time.sleep(delay)
             
     if last_error:
         raise last_error
@@ -343,29 +609,37 @@ def _read_rpc_message(stream: BinaryIO) -> Optional[Dict[str, Any]]:
         if lowered.startswith(b"content-length:"):
             try:
                 content_length = int(first_line.split(b":", 1)[1].strip())
+                if content_length <= 0:
+                    raise ValueError("content length must be positive")
             except Exception:
                 logger.warning("Invalid Content-Length header: %r", first_line)
-                return None
+                if not _consume_framing_headers(stream):
+                    return None
+                continue
 
             # Consume remaining headers until blank line.
-            while True:
-                header_line = stream.readline()
-                if not header_line:
-                    return None
-                if header_line in (b"\r\n", b"\n"):
-                    break
+            if not _consume_framing_headers(stream):
+                return None
 
             payload = stream.read(content_length)
             if not payload:
+                return None
+            if len(payload) != content_length:
+                logger.warning(
+                    "Truncated framed JSON payload (%d/%d bytes).",
+                    len(payload),
+                    content_length,
+                )
                 return None
             try:
                 msg = json.loads(payload.decode("utf-8"))
             except json.JSONDecodeError:
                 logger.warning("Invalid framed JSON payload")
-                return None
+                continue
             if isinstance(msg, dict):
                 return msg
-            return None
+            logger.warning("Ignoring framed JSON payload that is not an object")
+            continue
 
         try:
             msg = json.loads(first_line.decode("utf-8"))
@@ -374,18 +648,27 @@ def _read_rpc_message(stream: BinaryIO) -> Optional[Dict[str, Any]]:
             continue
         if isinstance(msg, dict):
             return msg
-        return None
+        logger.debug("Skipping JSON value that is not an object on stdio transport")
+        continue
 
 
 def send_json_rpc(message: Dict[str, Any]):
     """Send JSON-RPC message to stdout."""
+    if _TRANSPORT_CLOSED.is_set():
+        return
     emitter = getattr(_thread_local, "rpc_emitter", None)
     if callable(emitter):
         emitter(message)
         return
     with _RPC_WRITE_LOCK:
-        print(json.dumps(message))
-        sys.stdout.flush()
+        if _TRANSPORT_CLOSED.is_set():
+            return
+        try:
+            print(json.dumps(message))
+            sys.stdout.flush()
+        except (BrokenPipeError, OSError) as exc:
+            _TRANSPORT_CLOSED.set()
+            logger.warning("MCP stdio transport closed while sending JSON-RPC message: %s", exc)
 
 
 def _send_json_rpc_error(msg_id: Any, code: int, message: str):
@@ -657,7 +940,28 @@ def _public_task(task: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _related_task_meta(task_id: str) -> Dict[str, Any]:
-    return {"io.modelcontextprotocol/related-task": {"id": task_id}}
+    return {"io.modelcontextprotocol/related-task": {"taskId": task_id}}
+
+
+def _encode_task_cursor(offset: int) -> str:
+    payload = f"{_TASK_CURSOR_PREFIX}{offset}".encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_task_cursor(cursor: str) -> int:
+    if cursor.isdigit():
+        return int(cursor)
+    padded = cursor + "=" * (-len(cursor) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise ValueError("Invalid params: tasks/list cursor must be an opaque cursor token") from exc
+    if not decoded.startswith(_TASK_CURSOR_PREFIX):
+        raise ValueError("Invalid params: tasks/list cursor must be an opaque cursor token")
+    raw_offset = decoded[len(_TASK_CURSOR_PREFIX):]
+    if not raw_offset.isdigit():
+        raise ValueError("Invalid params: tasks/list cursor must be an opaque cursor token")
+    return int(raw_offset)
 
 
 def _emit_task_status_notification(task: Dict[str, Any]) -> None:
@@ -725,7 +1029,7 @@ def _lookup_task_locked(task_id: str) -> Optional[Dict[str, Any]]:
 
 
 def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
-    """Return retained tasks with deterministic cursor pagination."""
+    """Return retained tasks with deterministic opaque cursor pagination."""
     params = params or {}
     cursor = params.get("cursor")
     if cursor is not None and not isinstance(cursor, str):
@@ -742,9 +1046,9 @@ def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     start = 0
     if isinstance(cursor, str) and cursor:
         try:
-            start = int(cursor)
+            start = _decode_task_cursor(cursor)
         except ValueError:
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be a decimal offset string")
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be an opaque cursor token")
             return
         if start < 0:
             _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be non-negative")
@@ -758,7 +1062,7 @@ def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     next_cursor = start + page_size if start + page_size < len(tasks) else None
     result = {"tasks": page}
     if next_cursor is not None:
-        result["nextCursor"] = str(next_cursor)
+        result["nextCursor"] = _encode_task_cursor(next_cursor)
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
@@ -898,6 +1202,7 @@ def handle_call_tool_with_task(
         "createdAt": now_iso,
         "lastUpdatedAt": now_iso,
         "ttl": ttl_ms,
+        "pollInterval": _TASK_POLL_INTERVAL_MS,
         "_expiresAtEpoch": now_epoch + (ttl_ms / 1000.0),
         "_cancelRequested": False,
     }
@@ -1507,10 +1812,25 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
     """Handle tool execution requests."""
     name = params.get("name")
     arguments = params.get("arguments", {})
-    
-    ensure_server_running()
-    
+    tool_call_deadline_epoch = _get_tool_call_deadline_epoch()
+
+    def _request(method: str, url: str, **kwargs) -> requests.Response:
+        if tool_call_deadline_epoch is not None:
+            kwargs.setdefault("deadline_epoch", tool_call_deadline_epoch)
+        return make_request_with_retry(method, url, **kwargs)
+
     try:
+        # Avoid costly preflight start probes when backend is already in cooldown
+        # or when autostart is explicitly disabled by operator policy.
+        if _env_flag("MUNINN_MCP_AUTOSTART_SERVER", True) and not _backend_circuit_open():
+            if _startup_recovery_allowed(tool_call_deadline_epoch):
+                ensure_server_running()
+            elif tool_call_deadline_epoch is not None:
+                logger.info(
+                    "Skipping preflight startup recovery due to low remaining deadline budget (%.3fs).",
+                    max(0.0, _remaining_deadline_seconds(tool_call_deadline_epoch) or 0.0),
+                )
+
         if name == "add_memory":
             # SOTA: Inject current working directory as 'project' metadata
             # This allows the memory system to automatically anchor memories to the workspace
@@ -1526,7 +1846,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "metadata": metadata,
                 "user_id": "global_user"
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/add", json=payload, timeout=10)
+            resp = _request("POST", f"{SERVER_URL}/add", json=payload, timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1555,7 +1875,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "filters": filters,
                 "explain": explain,
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/search", json=payload, timeout=10)
+            resp = _request("POST", f"{SERVER_URL}/search", json=payload, timeout=10)
             result = resp.json()
 
             formatted_results = []
@@ -1595,7 +1915,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             
         elif name == "get_all_memories":
             limit = arguments.get("limit", 100)
-            resp = make_request_with_retry("GET", f"{SERVER_URL}/get_all", params={"user_id": "global_user", "limit": limit}, timeout=10)
+            resp = _request("GET", f"{SERVER_URL}/get_all", params={"user_id": "global_user", "limit": limit}, timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1614,7 +1934,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "memory_id": arguments.get("memory_id"),
                 "data": arguments.get("content")
             }
-            resp = make_request_with_retry("PUT", f"{SERVER_URL}/update", json=payload, timeout=10)
+            resp = _request("PUT", f"{SERVER_URL}/update", json=payload, timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1630,7 +1950,8 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
         
         elif name == "delete_memory":
             memory_id = arguments.get("memory_id")
-            resp = make_request_with_retry("DELETE", f"{SERVER_URL}/delete/{memory_id}", timeout=10)
+            encoded_memory_id = quote(str(memory_id), safe="")
+            resp = _request("DELETE", f"{SERVER_URL}/delete/{encoded_memory_id}", timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1658,7 +1979,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 return
 
             # Muninn v3 uses POST /delete_all with JSON body
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/delete_all", json={"user_id": "global_user"}, timeout=10)
+            resp = _request("POST", f"{SERVER_URL}/delete_all", json={"user_id": "global_user"}, timeout=10)
             result = resp.json()
             
             send_json_rpc({
@@ -1680,7 +2001,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "goal_statement": arguments.get("goal_statement"),
                 "constraints": arguments.get("constraints", []),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/goal/set", json=payload, timeout=15)
+            resp = _request("POST", f"{SERVER_URL}/goal/set", json=payload, timeout=15)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1699,7 +2020,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "namespace": arguments.get("namespace", "global"),
                 "project": arguments.get("project", git_info["project"]),
             }
-            resp = make_request_with_retry("GET", f"{SERVER_URL}/goal/get", params=params, timeout=10)
+            resp = _request("GET", f"{SERVER_URL}/goal/get", params=params, timeout=10)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1712,7 +2033,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 }
             })
         elif name == "get_model_profiles":
-            resp = make_request_with_retry("GET", f"{SERVER_URL}/profiles/model", timeout=10)
+            resp = _request("GET", f"{SERVER_URL}/profiles/model", timeout=10)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1738,7 +2059,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             if not payload:
                 raise ValueError("set_model_profiles requires at least one profile field")
             payload["source"] = arguments.get("source", "mcp_tool")
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/profiles/model", json=payload, timeout=10)
+            resp = _request("POST", f"{SERVER_URL}/profiles/model", json=payload, timeout=10)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1754,7 +2075,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             params = {
                 "limit": arguments.get("limit", 25),
             }
-            resp = make_request_with_retry(
+            resp = _request(
                 "GET",
                 f"{SERVER_URL}/profiles/model/events",
                 params=params,
@@ -1779,7 +2100,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "project": arguments.get("project", git_info["project"]),
                 "limit": arguments.get("limit", 25),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/handoff/export", json=payload, timeout=30)
+            resp = _request("POST", f"{SERVER_URL}/handoff/export", json=payload, timeout=30)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1800,7 +2121,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "project": arguments.get("project", git_info["project"]),
                 "source": arguments.get("source", "mcp_import"),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/handoff/import", json=payload, timeout=30)
+            resp = _request("POST", f"{SERVER_URL}/handoff/import", json=payload, timeout=30)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1826,7 +2147,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "project": arguments.get("project", git_info["project"]),
                 "source": arguments.get("source", "mcp_feedback"),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/feedback/retrieval", json=payload, timeout=15)
+            resp = _request("POST", f"{SERVER_URL}/feedback/retrieval", json=payload, timeout=15)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1853,7 +2174,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
                 "min_chunk_chars": arguments.get("min_chunk_chars"),
             }
-            resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest", json=payload, timeout=60)
+            resp = _request("POST", f"{SERVER_URL}/ingest", json=payload, timeout=60)
             result = resp.json()
             send_json_rpc({
                 "jsonrpc": "2.0",
@@ -1872,7 +2193,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "include_unsupported": arguments.get("include_unsupported", False),
                 "max_results_per_provider": arguments.get("max_results_per_provider", 100),
             }
-            resp = make_request_with_retry(
+            resp = _request(
                 "POST",
                 f"{SERVER_URL}/ingest/legacy/discover",
                 json=payload,
@@ -1909,7 +2230,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "chunk_overlap_chars": arguments.get("chunk_overlap_chars"),
                 "min_chunk_chars": arguments.get("min_chunk_chars"),
             }
-            resp = make_request_with_retry(
+            resp = _request(
                 "POST",
                 f"{SERVER_URL}/ingest/legacy/import",
                 json=payload,
@@ -1943,10 +2264,13 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
 
 
 def _dispatch_rpc_message_guarded(msg: Dict[str, Any]) -> None:
+    msg_id = msg.get("id")
     try:
         _dispatch_rpc_message(msg)
     except Exception:
         logger.error("An unexpected error occurred during RPC dispatch.")
+        if msg_id is not None and not _TRANSPORT_CLOSED.is_set():
+            _send_json_rpc_error(msg_id, -32603, "Internal error during request dispatch.")
 
 
 def _get_dispatch_executor() -> ThreadPoolExecutor:
@@ -1964,12 +2288,33 @@ def _get_dispatch_executor() -> ThreadPoolExecutor:
 
 
 def _submit_background_dispatch(msg: Dict[str, Any]) -> None:
-    _get_dispatch_executor().submit(_dispatch_rpc_message_guarded, msg)
+    if not _DISPATCH_QUEUE_SEMAPHORE.acquire(blocking=False):
+        msg_id = msg.get("id")
+        if msg_id is not None:
+            _send_json_rpc_error(msg_id, -32001, "Server busy: dispatch queue is saturated.")
+        else:
+            logger.warning("Dropping notification while dispatch queue is saturated: %s", msg.get("method"))
+        return
+
+    try:
+        future = _get_dispatch_executor().submit(_dispatch_rpc_message_guarded, msg)
+    except Exception:
+        _DISPATCH_QUEUE_SEMAPHORE.release()
+        raise
+
+    def _release_slot(_future) -> None:
+        _DISPATCH_QUEUE_SEMAPHORE.release()
+
+    future.add_done_callback(_release_slot)
 
 
 def _should_dispatch_in_background(msg: Dict[str, Any]) -> bool:
     method = msg.get("method")
-    return method in {"tasks/result", "tools/call"}
+    if method == "tasks/result":
+        return True
+    if method == "tools/call":
+        return _env_flag("MUNINN_MCP_BACKGROUND_TOOLS_CALL", False)
+    return False
 
 def main():
     logger.info("Muninn MCP Wrapper started")
@@ -1988,6 +2333,8 @@ def main():
             try:
                 msg = _read_rpc_message(sys.stdin.buffer)
                 if msg is None:
+                    break
+                if _TRANSPORT_CLOSED.is_set():
                     break
                 if _should_dispatch_in_background(msg):
                     _submit_background_dispatch(msg)

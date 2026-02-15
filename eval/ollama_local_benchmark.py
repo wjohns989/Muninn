@@ -19,6 +19,7 @@ DEFAULT_MATRIX_PATH = ROOT / "eval" / "ollama_model_matrix.json"
 DEFAULT_PROMPTS_PATH = ROOT / "eval" / "ollama_benchmark_prompts.jsonl"
 DEFAULT_PROMOTION_POLICY_PATH = ROOT / "eval" / "ollama_profile_promotion_policy.json"
 DEFAULT_OUTPUT_DIR = ROOT / "eval" / "reports" / "ollama"
+DEFAULT_SOTA_OUTPUT_DIR = ROOT / "eval" / "reports" / "sota"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_MUNINN_URL = "http://127.0.0.1:42069"
 SUPPORTED_PROFILE_NAMES = ("low_latency", "balanced", "high_reasoning")
@@ -78,6 +79,7 @@ STOPWORDS = {
     "project",
     "memory",
 }
+PRIMARY_METRICS = ("recall", "mrr", "ndcg")
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -539,6 +541,140 @@ def _pick_recommendation(results: list[dict[str, Any]]) -> dict[str, Any] | None
     return ranked[0]
 
 
+def _governance_alert_config(policy: dict[str, Any]) -> dict[str, Any]:
+    governance = policy.get("governance")
+    alerts = {}
+    if isinstance(governance, dict):
+        maybe_alerts = governance.get("alerts")
+        if isinstance(maybe_alerts, dict):
+            alerts = maybe_alerts
+
+    min_composite_score = _to_float(alerts.get("min_composite_score"))
+    if min_composite_score is None:
+        min_composite_score = 0.7
+
+    min_score_margin = _to_float(alerts.get("min_score_margin"))
+    if min_score_margin is None:
+        min_score_margin = 0.02
+
+    blocking_raw = alerts.get("blocking_severities")
+    blocking_candidates: list[str] = []
+    if isinstance(blocking_raw, list):
+        for item in blocking_raw:
+            level = str(item).strip().lower()
+            if level in {"critical", "warning", "info"}:
+                blocking_candidates.append(level)
+    blocking_severities = sorted(set(blocking_candidates)) or ["critical"]
+
+    return {
+        "min_composite_score": float(min_composite_score),
+        "min_score_margin": float(min_score_margin),
+        "blocking_severities": blocking_severities,
+    }
+
+
+def _build_governance_alerts(
+    *,
+    policy: dict[str, Any],
+    result_profiles: dict[str, Any],
+) -> dict[str, Any]:
+    config = _governance_alert_config(policy)
+    severity_counts = {"critical": 0, "warning": 0, "info": 0}
+    alerts: list[dict[str, Any]] = []
+
+    def _append_alert(
+        *,
+        severity: str,
+        profile: str,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        normalized = severity if severity in severity_counts else "warning"
+        severity_counts[normalized] += 1
+        alert_payload = {
+            "severity": normalized,
+            "profile": profile,
+            "code": code,
+            "message": message,
+        }
+        if details:
+            alert_payload["details"] = details
+        alerts.append(alert_payload)
+
+    for profile_name, profile_payload in result_profiles.items():
+        if not isinstance(profile_payload, dict):
+            continue
+        recommendation = profile_payload.get("recommendation")
+        candidates_raw = profile_payload.get("candidates")
+        candidates = candidates_raw if isinstance(candidates_raw, list) else []
+        passing = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict) and bool(candidate.get("passed"))
+        ]
+
+        if not isinstance(recommendation, dict):
+            _append_alert(
+                severity="critical",
+                profile=profile_name,
+                code="no_passing_candidate",
+                message=f"Profile '{profile_name}' has no passing model candidate.",
+                details={"candidate_count": len(candidates), "passing_count": len(passing)},
+            )
+            continue
+
+        top_score = _to_float(recommendation.get("composite_score")) or 0.0
+        if top_score < float(config["min_composite_score"]):
+            _append_alert(
+                severity="warning",
+                profile=profile_name,
+                code="low_composite_score",
+                message=f"Profile '{profile_name}' recommendation score is below governance floor.",
+                details={
+                    "model": recommendation.get("model"),
+                    "composite_score": top_score,
+                    "min_composite_score": config["min_composite_score"],
+                },
+            )
+
+        if len(passing) >= 2:
+            ranked = sorted(
+                passing,
+                key=lambda item: (
+                    float(_to_float(item.get("composite_score")) or 0.0),
+                    float(_to_float(item.get("combined_ability_score")) or 0.0),
+                ),
+                reverse=True,
+            )
+            top = _to_float(ranked[0].get("composite_score")) or 0.0
+            second = _to_float(ranked[1].get("composite_score")) or 0.0
+            margin = top - second
+            if margin < float(config["min_score_margin"]):
+                _append_alert(
+                    severity="warning",
+                    profile=profile_name,
+                    code="narrow_recommendation_margin",
+                    message=f"Profile '{profile_name}' recommendation margin is below governance threshold.",
+                    details={
+                        "top_model": ranked[0].get("model"),
+                        "runner_up_model": ranked[1].get("model"),
+                        "score_margin": round(margin, 6),
+                        "min_score_margin": config["min_score_margin"],
+                    },
+                )
+
+    blocking_levels = set(config["blocking_severities"])
+    blocking_alerts = [alert for alert in alerts if str(alert.get("severity")) in blocking_levels]
+    return {
+        "policy": config,
+        "alerts": alerts,
+        "severity_counts": severity_counts,
+        "blocking_alerts_count": len(blocking_alerts),
+        "blocked": len(blocking_alerts) > 0,
+    }
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     matrix = _load_json(Path(args.matrix).resolve())
     installed = _installed_models()
@@ -925,11 +1061,19 @@ def _apply_profile_policy_checkpoint(
     checkpoint_output: Path,
     dry_run: bool,
     allow_gate_failures: bool,
+    require_governance_clean: bool,
 ) -> dict[str, Any]:
     if not bool(gate_report.get("passed", False)) and not allow_gate_failures:
         raise ValueError(
             "Refusing to apply profile policy because profile gate did not pass. "
             "Use --allow-apply-when-gate-fails to override."
+        )
+    governance = gate_report.get("governance")
+    governance_blocked = bool(isinstance(governance, dict) and governance.get("blocked"))
+    if require_governance_clean and governance_blocked:
+        raise ValueError(
+            "Refusing to apply profile policy because governance alerts are blocking. "
+            "Use profile-gate output and policy thresholds to resolve alerts first."
         )
 
     target_policy = {
@@ -1013,6 +1157,7 @@ def _apply_profile_policy_checkpoint(
         "source": source,
         "target_policy": target_policy,
         "recommendation_models": recommendation_models,
+        "governance": governance,
         "previous_policy": current_policy,
         "apply_result": apply_result,
     }
@@ -1025,6 +1170,7 @@ def _apply_profile_policy_checkpoint(
         "checkpoint_path": str(checkpoint_output),
         "target_policy": target_policy,
         "recommendation_models": recommendation_models,
+        "governance_blocked": governance_blocked,
         "applied": bool(apply_result.get("applied", False)),
         "apply_result": apply_result,
     }
@@ -1684,6 +1830,11 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
             "candidates": candidate_results,
         }
 
+    governance = _build_governance_alerts(
+        policy=policy,
+        result_profiles=result_profiles,
+    )
+
     output_payload = {
         "run_id": run_id,
         "event": "PROFILE_PROMOTION_GATE_EVALUATED",
@@ -1694,6 +1845,7 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
         "legacy_report_path": str(legacy_report_path) if legacy_report_path else None,
         "passed": not any_failures,
         "profiles": result_profiles,
+        "governance": governance,
     }
 
     with output_path.open("w", encoding="utf-8") as f:
@@ -1709,9 +1861,16 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
             )
         else:
             print(f"[gate] {profile_name}: FAIL (no passing candidate)")
+    if governance["alerts"]:
+        print(
+            f"[gate] governance alerts: {len(governance['alerts'])} "
+            f"(blocking={governance['blocking_alerts_count']})"
+        )
 
     print(f"Profile gate report written to: {output_path}")
     if any_failures and not bool(args.allow_failures):
+        return 1
+    if bool(getattr(args, "enforce_governance", False)) and bool(governance.get("blocked", False)):
         return 1
     return 0
 
@@ -1758,6 +1917,41 @@ def _recommendation_summary(
     }
 
 
+def _resolve_reused_report_path(
+    *,
+    explicit_path: str | None,
+    default_path: Path,
+    label: str,
+) -> Path:
+    candidate = Path(explicit_path).resolve() if explicit_path else default_path
+    if not candidate.exists():
+        raise ValueError(
+            f"Deferred dev-cycle requires existing {label} report. "
+            f"Missing file: {candidate}. "
+            f"Provide --existing-{label}-report or run full dev-cycle first."
+        )
+    return candidate
+
+
+def _report_age_hours(path: Path) -> float:
+    modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    age_seconds = max(0.0, (datetime.now(timezone.utc) - modified).total_seconds())
+    return age_seconds / 3600.0
+
+
+def _validate_reused_report_age(path: Path, *, max_age_hours: float | None, label: str) -> None:
+    if max_age_hours is None:
+        return
+    if max_age_hours < 0:
+        raise ValueError("--max-reused-report-age-hours must be non-negative.")
+    age_hours = _report_age_hours(path)
+    if age_hours > max_age_hours:
+        raise ValueError(
+            f"Deferred dev-cycle {label} report is too old "
+            f"({age_hours:.2f}h > {max_age_hours:.2f}h): {path}"
+        )
+
+
 def cmd_dev_cycle(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1776,57 +1970,95 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
         if args.output
         else output_dir / f"dev_cycle_summary_{run_id}.json"
     )
-
-    benchmark_args = argparse.Namespace(
-        matrix=args.matrix,
-        prompts=args.prompts,
-        output_dir=str(output_dir),
-        output=str(live_output),
-        models=args.models,
-        include_optional=bool(args.include_optional),
-        repeats=int(args.repeats),
-        ollama_url=args.ollama_url,
-        timeout_seconds=int(args.timeout_seconds),
-        num_predict=int(args.num_predict),
-        ability_pass_threshold=float(args.ability_pass_threshold),
+    defer_benchmarks = bool(getattr(args, "defer_benchmarks", False))
+    max_reused_report_age_hours_raw = getattr(args, "max_reused_report_age_hours", None)
+    max_reused_report_age_hours = (
+        float(max_reused_report_age_hours_raw)
+        if max_reused_report_age_hours_raw is not None
+        else None
     )
-    bench_rc = cmd_benchmark(benchmark_args)
-    if bench_rc != 0:
-        return bench_rc
+    live_input_path = live_output
+    legacy_input_path = legacy_output
+    execution_mode = "deferred" if defer_benchmarks else "full"
+    reused_reports: dict[str, str] | None = None
 
-    legacy_args = argparse.Namespace(
-        matrix=args.matrix,
-        legacy_roots=args.legacy_roots,
-        output_dir=str(output_dir),
-        output=str(legacy_output),
-        models=args.models,
-        include_optional=bool(args.include_optional),
-        repeats=int(args.repeats),
-        max_cases_per_root=int(args.max_cases_per_root),
-        snippet_chars=int(args.snippet_chars),
-        ollama_url=args.ollama_url,
-        timeout_seconds=int(args.timeout_seconds),
-        num_predict=int(args.num_predict),
-        ability_pass_threshold=float(args.ability_pass_threshold),
-        dump_cases=args.dump_cases,
-    )
-    legacy_rc = cmd_legacy_benchmark(legacy_args)
-    if legacy_rc != 0:
-        return legacy_rc
+    if defer_benchmarks:
+        live_input_path = _resolve_reused_report_path(
+            explicit_path=getattr(args, "existing_live_report", None),
+            default_path=live_output,
+            label="live",
+        )
+        legacy_input_path = _resolve_reused_report_path(
+            explicit_path=getattr(args, "existing_legacy_report", None),
+            default_path=legacy_output,
+            label="legacy",
+        )
+        _validate_reused_report_age(
+            live_input_path,
+            max_age_hours=max_reused_report_age_hours,
+            label="live",
+        )
+        _validate_reused_report_age(
+            legacy_input_path,
+            max_age_hours=max_reused_report_age_hours,
+            label="legacy",
+        )
+        reused_reports = {
+            "live_report": str(live_input_path),
+            "legacy_report": str(legacy_input_path),
+        }
+    else:
+        benchmark_args = argparse.Namespace(
+            matrix=args.matrix,
+            prompts=args.prompts,
+            output_dir=str(output_dir),
+            output=str(live_output),
+            models=args.models,
+            include_optional=bool(args.include_optional),
+            repeats=int(args.repeats),
+            ollama_url=args.ollama_url,
+            timeout_seconds=int(args.timeout_seconds),
+            num_predict=int(args.num_predict),
+            ability_pass_threshold=float(args.ability_pass_threshold),
+        )
+        bench_rc = cmd_benchmark(benchmark_args)
+        if bench_rc != 0:
+            return bench_rc
+
+        legacy_args = argparse.Namespace(
+            matrix=args.matrix,
+            legacy_roots=args.legacy_roots,
+            output_dir=str(output_dir),
+            output=str(legacy_output),
+            models=args.models,
+            include_optional=bool(args.include_optional),
+            repeats=int(args.repeats),
+            max_cases_per_root=int(args.max_cases_per_root),
+            snippet_chars=int(args.snippet_chars),
+            ollama_url=args.ollama_url,
+            timeout_seconds=int(args.timeout_seconds),
+            num_predict=int(args.num_predict),
+            ability_pass_threshold=float(args.ability_pass_threshold),
+            dump_cases=args.dump_cases,
+        )
+        legacy_rc = cmd_legacy_benchmark(legacy_args)
+        if legacy_rc != 0:
+            return legacy_rc
 
     gate_args = argparse.Namespace(
         matrix=args.matrix,
         policy=args.policy,
-        live_report=str(live_output),
-        legacy_report=str(legacy_output),
+        live_report=str(live_input_path),
+        legacy_report=str(legacy_input_path),
         output_dir=str(output_dir),
         output=str(gate_output),
         allow_failures=bool(args.allow_gate_failures),
+        enforce_governance=bool(args.enforce_governance),
     )
     gate_rc = cmd_profile_gate(gate_args)
 
-    live_report = _load_json(live_output)
-    legacy_report = _load_json(legacy_output)
+    live_report = _load_json(live_input_path)
+    legacy_report = _load_json(legacy_input_path)
     gate_report = _load_json(gate_output)
     profiles = gate_report.get("profiles", {})
     recommendations: dict[str, Any] = {}
@@ -1844,12 +2076,16 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
         "event": "DEV_CYCLE_MODEL_BENCHMARK_COMPLETED",
         "started_at_utc": run_started.isoformat(),
         "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "execution_mode": execution_mode,
+        "deferred_benchmarks": defer_benchmarks,
+        "reused_reports": reused_reports,
         "paths": {
-            "live_report": str(live_output),
-            "legacy_report": str(legacy_output),
+            "live_report": str(live_input_path),
+            "legacy_report": str(legacy_input_path),
             "gate_report": str(gate_output),
         },
         "passed": bool(gate_report.get("passed", False)),
+        "governance": gate_report.get("governance", {}),
         "recommendations": recommendations,
     }
 
@@ -1873,6 +2109,7 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
             checkpoint_output=checkpoint_output,
             dry_run=bool(args.apply_dry_run),
             allow_gate_failures=bool(args.allow_apply_when_gate_fails),
+            require_governance_clean=bool(args.require_governance_clean),
         )
         cycle_summary["policy_apply"] = policy_apply
 
@@ -1892,6 +2129,475 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
     if gate_rc != 0 and not bool(args.allow_gate_failures):
         return gate_rc
     return 0
+
+
+def _metric_bundle_primary_score(metrics: dict[str, float | None]) -> float | None:
+    values = [float(v) for v in metrics.values() if isinstance(v, (int, float))]
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
+def _extract_cutoff_metrics(cutoffs: Any, cutoff: str = "@5") -> dict[str, float | None]:
+    if not isinstance(cutoffs, dict):
+        return {f"{metric}_at5": None for metric in PRIMARY_METRICS}
+    cutoff_payload = cutoffs.get(cutoff)
+    if not isinstance(cutoff_payload, dict):
+        return {f"{metric}_at5": None for metric in PRIMARY_METRICS}
+    return {f"{metric}_at5": _to_float(cutoff_payload.get(metric)) for metric in PRIMARY_METRICS}
+
+
+def _normalize_eval_report_for_sota(report: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    metrics = _extract_cutoff_metrics(report.get("cutoffs"), cutoff="@5")
+    latency = report.get("latency_ms") if isinstance(report.get("latency_ms"), dict) else {}
+    tracks_raw = report.get("tracks") if isinstance(report.get("tracks"), dict) else {}
+    tracks: dict[str, Any] = {}
+    for track_name, payload in tracks_raw.items():
+        if not isinstance(payload, dict):
+            continue
+        track_metrics = _extract_cutoff_metrics(payload.get("cutoffs"), cutoff="@5")
+        tracks[track_name] = {
+            "cases": payload.get("cases"),
+            "metrics": track_metrics,
+            "primary_score": _metric_bundle_primary_score(track_metrics),
+            "latency_ms": payload.get("latency_ms") if isinstance(payload.get("latency_ms"), dict) else {},
+        }
+
+    return {
+        "source_path": str(source_path),
+        "cases": report.get("cases"),
+        "metrics": metrics,
+        "primary_score": _metric_bundle_primary_score(metrics),
+        "latency_ms": {
+            "avg": _to_float(latency.get("avg")),
+            "p50": _to_float(latency.get("p50")),
+            "p95": _to_float(latency.get("p95")),
+            "count": _to_float(latency.get("count")),
+        },
+        "tracks": tracks,
+        "gate_passed": bool((report.get("gates") or {}).get("passed", False))
+        if isinstance(report.get("gates"), dict)
+        else None,
+    }
+
+
+def _normalize_aux_benchmark_report(report: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    # Generic normalization hook for additional benchmark formats.
+    metrics = _extract_cutoff_metrics(report.get("cutoffs"), cutoff="@5")
+    latency_ms = (
+        report.get("latency_ms")
+        if isinstance(report.get("latency_ms"), dict)
+        else ((report.get("results") or {}).get("latency") if isinstance(report.get("results"), dict) else {})
+    )
+    if not isinstance(latency_ms, dict):
+        latency_ms = {}
+    p95 = _to_float(latency_ms.get("p95"))
+    if p95 is None:
+        p95 = _to_float(latency_ms.get("p95_ms"))
+    count = _to_float(latency_ms.get("count"))
+    if count is None:
+        count = _to_float(report.get("cases")) or _to_float(report.get("dataset_size"))
+
+    return {
+        "source_path": str(source_path),
+        "cases": report.get("cases", report.get("dataset_size")),
+        "metrics": metrics,
+        "primary_score": _metric_bundle_primary_score(metrics),
+        "latency_ms": {
+            "p95": p95,
+            "count": count,
+        },
+    }
+
+
+def _percent_delta(current: float | None, baseline: float | None) -> float | None:
+    if current is None or baseline is None:
+        return None
+    if baseline == 0:
+        if current == 0:
+            return 0.0
+        return math.inf
+    return ((current - baseline) / abs(baseline)) * 100.0
+
+
+def _track_nonnegative_ratio(
+    candidate_tracks: dict[str, Any],
+    baseline_tracks: dict[str, Any],
+) -> float | None:
+    common_tracks = sorted(set(candidate_tracks.keys()) & set(baseline_tracks.keys()))
+    if not common_tracks:
+        return None
+    non_negative = 0
+    comparable = 0
+    for track in common_tracks:
+        candidate_score = _to_float((candidate_tracks.get(track) or {}).get("primary_score"))
+        baseline_score = _to_float((baseline_tracks.get(track) or {}).get("primary_score"))
+        if candidate_score is None or baseline_score is None:
+            continue
+        comparable += 1
+        if candidate_score >= baseline_score:
+            non_negative += 1
+    if comparable == 0:
+        return None
+    return non_negative / comparable
+
+
+def _normalize_profile_gate_report(report: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    governance = report.get("governance") if isinstance(report.get("governance"), dict) else {}
+    return {
+        "source_path": str(source_path),
+        "passed": bool(report.get("passed", False)),
+        "governance_blocked": bool(governance.get("blocked", False)),
+        "blocking_alerts_count": int(governance.get("blocking_alerts_count", 0) or 0),
+        "profiles": report.get("profiles") if isinstance(report.get("profiles"), dict) else {},
+    }
+
+
+def _normalize_transport_report(report: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    results = report.get("results") if isinstance(report.get("results"), dict) else {}
+    latency = results.get("latency") if isinstance(results.get("latency"), dict) else {}
+    failures = results.get("failures") if isinstance(results.get("failures"), list) else []
+    error_codes = results.get("error_codes") if isinstance(results.get("error_codes"), dict) else {}
+
+    timeout_failures = 0
+    transport_closed_failures = 0
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        raw = json.dumps(failure, ensure_ascii=False).lower()
+        if "timeout" in raw:
+            timeout_failures += 1
+        if "transport closed" in raw or "broken pipe" in raw or "connection reset" in raw:
+            transport_closed_failures += 1
+
+    total_calls = _to_float(latency.get("count")) or 0.0
+    p95_ms = _to_float(latency.get("p95_ms"))
+
+    return {
+        "source_path": str(source_path),
+        "outcome": str(report.get("outcome", "")).strip().lower(),
+        "total_calls": total_calls,
+        "p95_ms": p95_ms,
+        "timeout_failures": timeout_failures,
+        "transport_closed_failures": transport_closed_failures,
+        "error_codes": error_codes,
+    }
+
+
+def _aggregate_transport_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    total_calls = sum(float(item.get("total_calls") or 0.0) for item in reports)
+    timeout_failures = sum(int(item.get("timeout_failures") or 0) for item in reports)
+    transport_closed_failures = sum(int(item.get("transport_closed_failures") or 0) for item in reports)
+    p95_values = [float(item["p95_ms"]) for item in reports if isinstance(item.get("p95_ms"), (int, float))]
+    non_pass_count = sum(1 for item in reports if str(item.get("outcome", "")).lower() != "pass")
+    timeout_incidence = (timeout_failures / total_calls) * 1000.0 if total_calls > 0 else None
+    transport_closed_incidence = (
+        (transport_closed_failures / total_calls) * 1000.0 if total_calls > 0 else None
+    )
+    return {
+        "reports": len(reports),
+        "total_calls": total_calls,
+        "timeout_failures": timeout_failures,
+        "transport_closed_failures": transport_closed_failures,
+        "timeout_per_1k": timeout_incidence,
+        "transport_closed_per_1k": transport_closed_incidence,
+        "max_p95_ms": max(p95_values) if p95_values else None,
+        "non_pass_reports": non_pass_count,
+    }
+
+
+def _evaluate_statistical_gate(
+    candidate_report: dict[str, Any],
+    *,
+    require_significance: bool,
+    alpha: float,
+    min_positive_significant_metrics: int,
+) -> dict[str, Any]:
+    result = {
+        "passed": True,
+        "violations": [],
+        "positive_significant_metrics": 0,
+        "checked_metrics": [],
+    }
+    if not require_significance:
+        result["status"] = "disabled"
+        return result
+
+    significance = candidate_report.get("significance")
+    if not isinstance(significance, dict):
+        result["passed"] = False
+        result["violations"].append("missing_significance_payload")
+        return result
+
+    global_cutoffs = significance.get("global") if isinstance(significance.get("global"), dict) else {}
+    cutoff_payload = global_cutoffs.get("@5") if isinstance(global_cutoffs.get("@5"), dict) else {}
+    if not cutoff_payload:
+        result["passed"] = False
+        result["violations"].append("missing_global_significance_at5")
+        return result
+
+    positive_significant = 0
+    checked = 0
+    for metric in PRIMARY_METRICS:
+        summary = cutoff_payload.get(metric)
+        if not isinstance(summary, dict):
+            continue
+        checked += 1
+        significant_regression = bool(summary.get("significant_regression", False))
+        significant = bool(summary.get("significant", False))
+        mean_delta = _to_float(summary.get("mean_delta")) or 0.0
+        ci_low = _to_float(summary.get("ci_low")) or 0.0
+        adjusted = _to_float(summary.get("p_value_adjusted"))
+        p_value = _to_float(summary.get("p_value"))
+        if adjusted is not None and adjusted >= alpha and significant:
+            significant = False
+        if adjusted is None and p_value is not None and p_value >= alpha and significant:
+            significant = False
+        if significant_regression:
+            result["violations"].append(f"significant_regression_{metric}")
+        if significant and mean_delta > 0.0 and ci_low > 0.0:
+            positive_significant += 1
+        result["checked_metrics"].append(
+            {
+                "metric": metric,
+                "significant": significant,
+                "significant_regression": significant_regression,
+                "mean_delta": mean_delta,
+                "ci_low": ci_low,
+                "p_value_adjusted": adjusted,
+                "p_value": p_value,
+            }
+        )
+
+    result["positive_significant_metrics"] = positive_significant
+    if checked == 0:
+        result["passed"] = False
+        result["violations"].append("no_primary_significance_metrics_found")
+        return result
+    if positive_significant < max(1, int(min_positive_significant_metrics)):
+        result["passed"] = False
+        result["violations"].append("insufficient_positive_significant_metrics")
+    if result["violations"]:
+        result["passed"] = False
+    return result
+
+
+def _verify_all_artifacts() -> dict[str, Any]:
+    from eval.artifacts import verify_all_preset_artifacts
+
+    return verify_all_preset_artifacts()
+
+
+def cmd_sota_verdict(args: argparse.Namespace) -> int:
+    candidate_eval_path = Path(args.candidate_eval_report).resolve()
+    baseline_eval_path = Path(args.baseline_eval_report).resolve()
+    profile_gate_path = Path(args.profile_gate_report).resolve() if args.profile_gate_report else None
+    aux_paths = [Path(item).resolve() for item in (args.aux_benchmark_report or [])]
+    transport_paths = [Path(item).resolve() for item in (args.transport_report or [])]
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_started = datetime.now(timezone.utc)
+    run_id = run_started.strftime("%Y%m%dT%H%M%SZ")
+    output_path = Path(args.output).resolve() if args.output else output_dir / f"sota_verdict_{run_id}.json"
+
+    candidate_eval_raw = _load_json(candidate_eval_path)
+    baseline_eval_raw = _load_json(baseline_eval_path)
+    candidate_eval = _normalize_eval_report_for_sota(candidate_eval_raw, source_path=candidate_eval_path)
+    baseline_eval = _normalize_eval_report_for_sota(baseline_eval_raw, source_path=baseline_eval_path)
+    profile_gate = (
+        _normalize_profile_gate_report(_load_json(profile_gate_path), source_path=profile_gate_path)
+        if profile_gate_path
+        else None
+    )
+    aux_normalized = [
+        _normalize_aux_benchmark_report(_load_json(path), source_path=path) for path in aux_paths
+    ]
+    transport_normalized = [
+        _normalize_transport_report(_load_json(path), source_path=path) for path in transport_paths
+    ]
+    transport_aggregate = _aggregate_transport_reports(transport_normalized) if transport_normalized else None
+
+    quality_violations: list[str] = []
+    primary_improvement_pct = _percent_delta(
+        _to_float(candidate_eval.get("primary_score")),
+        _to_float(baseline_eval.get("primary_score")),
+    )
+    if primary_improvement_pct is None:
+        quality_violations.append("missing_primary_score_for_comparison")
+    elif primary_improvement_pct < float(args.min_primary_improvement_pct):
+        quality_violations.append(
+            f"primary_improvement_below_threshold ({primary_improvement_pct:.4f}% < {float(args.min_primary_improvement_pct):.4f}%)"
+        )
+
+    track_ratio = _track_nonnegative_ratio(
+        candidate_eval.get("tracks") if isinstance(candidate_eval.get("tracks"), dict) else {},
+        baseline_eval.get("tracks") if isinstance(baseline_eval.get("tracks"), dict) else {},
+    )
+    if track_ratio is None:
+        quality_violations.append("missing_track_overlap_for_ratio")
+    elif track_ratio < float(args.min_track_nonnegative_ratio):
+        quality_violations.append(
+            f"track_nonnegative_ratio_below_threshold ({track_ratio:.4f} < {float(args.min_track_nonnegative_ratio):.4f})"
+        )
+
+    quality_gate = {
+        "passed": not quality_violations,
+        "violations": quality_violations,
+        "primary_improvement_pct": primary_improvement_pct,
+        "track_nonnegative_ratio": track_ratio,
+        "thresholds": {
+            "min_primary_improvement_pct": float(args.min_primary_improvement_pct),
+            "min_track_nonnegative_ratio": float(args.min_track_nonnegative_ratio),
+        },
+    }
+
+    reliability_violations: list[str] = []
+    p95_regression_pct = _percent_delta(
+        _to_float((candidate_eval.get("latency_ms") or {}).get("p95")),
+        _to_float((baseline_eval.get("latency_ms") or {}).get("p95")),
+    )
+    if p95_regression_pct is None:
+        reliability_violations.append("missing_eval_p95_for_regression_check")
+    elif p95_regression_pct > float(args.max_p95_regression_pct):
+        reliability_violations.append(
+            f"p95_regression_above_threshold ({p95_regression_pct:.4f}% > {float(args.max_p95_regression_pct):.4f}%)"
+        )
+
+    if bool(args.require_transport_reports) and not transport_normalized:
+        reliability_violations.append("transport_reports_required_but_missing")
+    if transport_aggregate:
+        timeout_per_1k = _to_float(transport_aggregate.get("timeout_per_1k"))
+        closed_per_1k = _to_float(transport_aggregate.get("transport_closed_per_1k"))
+        max_p95_ms = _to_float(transport_aggregate.get("max_p95_ms"))
+        non_pass_reports = int(transport_aggregate.get("non_pass_reports") or 0)
+        if timeout_per_1k is not None and timeout_per_1k > float(args.max_timeout_per_1k):
+            reliability_violations.append(
+                f"timeout_incidence_above_threshold ({timeout_per_1k:.6f} > {float(args.max_timeout_per_1k):.6f})"
+            )
+        if closed_per_1k is not None and closed_per_1k > float(args.max_transport_closed_per_1k):
+            reliability_violations.append(
+                f"transport_closed_incidence_above_threshold ({closed_per_1k:.6f} > {float(args.max_transport_closed_per_1k):.6f})"
+            )
+        if max_p95_ms is not None and max_p95_ms > float(args.max_transport_p95_ms):
+            reliability_violations.append(
+                f"transport_p95_above_threshold ({max_p95_ms:.4f}ms > {float(args.max_transport_p95_ms):.4f}ms)"
+            )
+        if bool(args.require_transport_reports) and non_pass_reports > 0:
+            reliability_violations.append(f"transport_non_pass_reports={non_pass_reports}")
+
+    reliability_gate = {
+        "passed": not reliability_violations,
+        "violations": reliability_violations,
+        "p95_regression_pct": p95_regression_pct,
+        "transport": transport_aggregate,
+        "thresholds": {
+            "max_p95_regression_pct": float(args.max_p95_regression_pct),
+            "max_timeout_per_1k": float(args.max_timeout_per_1k),
+            "max_transport_closed_per_1k": float(args.max_transport_closed_per_1k),
+            "max_transport_p95_ms": float(args.max_transport_p95_ms),
+        },
+    }
+
+    statistical_gate = _evaluate_statistical_gate(
+        candidate_eval_raw,
+        require_significance=bool(args.require_stat_significance),
+        alpha=float(args.significance_alpha),
+        min_positive_significant_metrics=int(args.min_positive_significant_metrics),
+    )
+
+    reproducibility_violations: list[str] = []
+    artifact_verification: dict[str, Any] | None = None
+    if bool(args.verify_artifacts):
+        artifact_verification = _verify_all_artifacts()
+        if not bool(artifact_verification.get("passed", False)):
+            reproducibility_violations.append("artifact_verification_failed")
+    if bool(args.require_artifact_verification) and artifact_verification is None:
+        reproducibility_violations.append("artifact_verification_required_but_not_run")
+    reproducibility_gate = {
+        "passed": not reproducibility_violations,
+        "violations": reproducibility_violations,
+        "artifact_verification": artifact_verification,
+    }
+
+    profile_violations: list[str] = []
+    if bool(args.require_profile_gate):
+        if profile_gate is None:
+            profile_violations.append("profile_gate_report_required_but_missing")
+        else:
+            if not bool(profile_gate.get("passed", False)):
+                profile_violations.append("profile_gate_failed")
+            if bool(profile_gate.get("governance_blocked", False)):
+                profile_violations.append("profile_gate_governance_blocked")
+    profile_gate_evaluation = {
+        "passed": not profile_violations,
+        "violations": profile_violations,
+        "profile_gate": profile_gate,
+    }
+
+    overall_passed = all(
+        [
+            quality_gate["passed"],
+            reliability_gate["passed"],
+            bool(statistical_gate.get("passed", False)),
+            reproducibility_gate["passed"],
+            profile_gate_evaluation["passed"],
+        ]
+    )
+
+    payload = {
+        "run_id": run_id,
+        "event": "SOTA_PLUS_VERDICT_EVALUATED",
+        "started_at_utc": run_started.isoformat(),
+        "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "passed": overall_passed,
+        "sota_plus_verdict": "pass" if overall_passed else "fail",
+        "inputs": {
+            "candidate_eval_report": str(candidate_eval_path),
+            "baseline_eval_report": str(baseline_eval_path),
+            "profile_gate_report": str(profile_gate_path) if profile_gate_path else None,
+            "transport_reports": [str(path) for path in transport_paths],
+            "aux_benchmark_reports": [str(path) for path in aux_paths],
+        },
+        "normalized": {
+            "candidate_eval": candidate_eval,
+            "baseline_eval": baseline_eval,
+            "aux_benchmarks": aux_normalized,
+            "transport_reports": transport_normalized,
+        },
+        "gates": {
+            "quality": quality_gate,
+            "reliability": reliability_gate,
+            "statistical_validity": statistical_gate,
+            "reproducibility_integrity": reproducibility_gate,
+            "profile_policy": profile_gate_evaluation,
+        },
+        "config": {
+            "min_primary_improvement_pct": float(args.min_primary_improvement_pct),
+            "min_track_nonnegative_ratio": float(args.min_track_nonnegative_ratio),
+            "max_p95_regression_pct": float(args.max_p95_regression_pct),
+            "max_timeout_per_1k": float(args.max_timeout_per_1k),
+            "max_transport_closed_per_1k": float(args.max_transport_closed_per_1k),
+            "max_transport_p95_ms": float(args.max_transport_p95_ms),
+            "require_profile_gate": bool(args.require_profile_gate),
+            "require_transport_reports": bool(args.require_transport_reports),
+            "require_stat_significance": bool(args.require_stat_significance),
+            "significance_alpha": float(args.significance_alpha),
+            "min_positive_significant_metrics": int(args.min_positive_significant_metrics),
+            "require_artifact_verification": bool(args.require_artifact_verification),
+            "verify_artifacts": bool(args.verify_artifacts),
+        },
+    }
+
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+    print(f"SOTA+ verdict report written to: {output_path}")
+    if overall_passed:
+        print("[sota-verdict] PASS")
+        return 0
+    print("[sota-verdict] FAIL")
+    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2087,6 +2793,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return success exit code even when one or more profile gates fail.",
     )
+    gate_parser.add_argument(
+        "--enforce-governance",
+        action="store_true",
+        help="Return failure exit code when governance policy marks alerts as blocking.",
+    )
     gate_parser.set_defaults(func=cmd_profile_gate)
 
     cycle_parser = subparsers.add_parser(
@@ -2117,6 +2828,31 @@ def build_parser() -> argparse.ArgumentParser:
     cycle_parser.add_argument("--live-output", help="Optional live benchmark report output path.")
     cycle_parser.add_argument("--legacy-output", help="Optional legacy benchmark report output path.")
     cycle_parser.add_argument("--gate-output", help="Optional profile-gate report output path.")
+    cycle_parser.add_argument(
+        "--defer-benchmarks",
+        action="store_true",
+        help=(
+            "Skip live/legacy benchmark execution and reuse existing reports. "
+            "Use --existing-live-report / --existing-legacy-report or ensure "
+            "--live-output / --legacy-output paths already exist."
+        ),
+    )
+    cycle_parser.add_argument(
+        "--existing-live-report",
+        help="Existing live benchmark report path used when --defer-benchmarks is enabled.",
+    )
+    cycle_parser.add_argument(
+        "--existing-legacy-report",
+        help="Existing legacy benchmark report path used when --defer-benchmarks is enabled.",
+    )
+    cycle_parser.add_argument(
+        "--max-reused-report-age-hours",
+        type=float,
+        help=(
+            "Optional freshness cap for reused reports in deferred mode. "
+            "Fails when reused report age exceeds this value."
+        ),
+    )
     cycle_parser.add_argument("--models", help="Comma-separated explicit model tags to benchmark.")
     cycle_parser.add_argument(
         "--include-optional",
@@ -2165,6 +2901,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Return success even if profile gate fails one or more profiles.",
     )
     cycle_parser.add_argument(
+        "--enforce-governance",
+        action="store_true",
+        help="Fail cycle when profile-gate governance policy marks alerts as blocking.",
+    )
+    cycle_parser.add_argument(
         "--apply-policy",
         action="store_true",
         help="Apply profile defaults to running Muninn server when gate evidence is acceptable.",
@@ -2178,6 +2919,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-apply-when-gate-fails",
         action="store_true",
         help="Allow policy apply even when profile gate report failed.",
+    )
+    cycle_parser.add_argument(
+        "--require-governance-clean",
+        action="store_true",
+        help="Refuse policy apply when profile-gate governance alerts are blocking.",
     )
     cycle_parser.add_argument(
         "--muninn-url",
@@ -2388,6 +3134,125 @@ def build_parser() -> argparse.ArgumentParser:
         help="Require manifest commit SHA to be reachable from this git ref/branch.",
     )
     apply_checkpoint_parser.set_defaults(func=cmd_apply_checkpoint)
+
+    verdict_parser = subparsers.add_parser(
+        "sota-verdict",
+        help="Evaluate unified SOTA+ go/no-go verdict from benchmark and reliability evidence.",
+    )
+    verdict_parser.add_argument(
+        "--candidate-eval-report",
+        required=True,
+        help="Path to candidate retrieval eval report (eval.run output JSON).",
+    )
+    verdict_parser.add_argument(
+        "--baseline-eval-report",
+        required=True,
+        help="Path to baseline retrieval eval report for comparison.",
+    )
+    verdict_parser.add_argument(
+        "--profile-gate-report",
+        help="Optional profile-gate report path (required by default unless --no-require-profile-gate).",
+    )
+    verdict_parser.add_argument(
+        "--transport-report",
+        action="append",
+        default=[],
+        help="Transport soak report path. Repeat flag to include multiple runs.",
+    )
+    verdict_parser.add_argument(
+        "--aux-benchmark-report",
+        action="append",
+        default=[],
+        help="Optional additional benchmark report path(s) for normalization output.",
+    )
+    verdict_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_SOTA_OUTPUT_DIR),
+        help="Directory for generated SOTA+ verdict reports.",
+    )
+    verdict_parser.add_argument(
+        "--output",
+        help="Explicit verdict output path; defaults to output-dir/sota_verdict_<timestamp>.json.",
+    )
+    verdict_parser.add_argument(
+        "--min-primary-improvement-pct",
+        default=8.0,
+        type=float,
+        help="Minimum primary metric improvement percentage required vs baseline.",
+    )
+    verdict_parser.add_argument(
+        "--min-track-nonnegative-ratio",
+        default=0.7,
+        type=float,
+        help="Minimum ratio of non-negative per-track deltas required.",
+    )
+    verdict_parser.add_argument(
+        "--max-p95-regression-pct",
+        default=10.0,
+        type=float,
+        help="Maximum allowed candidate p95 latency regression percentage vs baseline.",
+    )
+    verdict_parser.add_argument(
+        "--max-timeout-per-1k",
+        default=0.25,
+        type=float,
+        help="Maximum allowed timeout incidence per 1k transport calls.",
+    )
+    verdict_parser.add_argument(
+        "--max-transport-closed-per-1k",
+        default=0.1,
+        type=float,
+        help="Maximum allowed transport-closed incidence per 1k transport calls.",
+    )
+    verdict_parser.add_argument(
+        "--max-transport-p95-ms",
+        default=5000.0,
+        type=float,
+        help="Maximum allowed transport soak p95 latency (ms).",
+    )
+    verdict_parser.add_argument(
+        "--require-profile-gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require profile-gate report to pass as part of verdict.",
+    )
+    verdict_parser.add_argument(
+        "--require-transport-reports",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require one or more transport soak reports.",
+    )
+    verdict_parser.add_argument(
+        "--require-stat-significance",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require significance payload and positive significant deltas in candidate eval report.",
+    )
+    verdict_parser.add_argument(
+        "--significance-alpha",
+        default=0.05,
+        type=float,
+        help="Alpha threshold used for significance checks when enabled.",
+    )
+    verdict_parser.add_argument(
+        "--min-positive-significant-metrics",
+        default=1,
+        type=int,
+        help="Minimum number of primary metrics requiring positive significant improvement.",
+    )
+    verdict_parser.add_argument(
+        "--verify-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run eval artifact integrity verification and include it in reproducibility gate.",
+    )
+    verdict_parser.add_argument(
+        "--require-artifact-verification",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require artifact verification to run and pass.",
+    )
+    verdict_parser.set_defaults(func=cmd_sota_verdict)
 
     return parser
 
