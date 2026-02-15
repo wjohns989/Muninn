@@ -51,6 +51,11 @@ python -m eval.ollama_local_benchmark profile-gate \
 2. Bind successful gate outputs to controlled profile-policy updates (with audit-event trail).
 3. Add browser UI panel for gate report visualization and one-click recommended profile staging.
 
+## Blockers and operational notes observed during execution
+
+1. MCP Muninn tool transport remained unavailable in this session (`Transport closed`), so memory retrieval calls required local-repo fallback.
+2. Automated external code-review bot posted a usage-limit comment on PR creation; reviewer soak still proceeds, but auto-review capacity should be treated as quota-bound infrastructure.
+
 ## Workflow rule update
 
 For PR hygiene, preserve reviewer soak window:
