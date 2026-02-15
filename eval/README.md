@@ -191,6 +191,14 @@ python -m eval.ollama_local_benchmark apply-checkpoint \
   --require-branch-name \
   --require-commit-reachable-from main \
   --muninn-url http://127.0.0.1:42069
+
+# Unified SOTA+ go/no-go verdict (quality + reliability + stats + reproducibility)
+python -m eval.ollama_local_benchmark sota-verdict \
+  --candidate-eval-report eval/reports/current_eval.json \
+  --baseline-eval-report eval/artifacts/vibecoder_memoryagentbench_v1/baseline_report.json \
+  --profile-gate-report eval/reports/ollama/cycle_gate_<run_id>.json \
+  --transport-report eval/reports/mcp_transport/mcp_transport_soak_<run_id_1>.json \
+  --transport-report eval/reports/mcp_transport/mcp_transport_soak_<run_id_2>.json
 ```
 
 Versioned inputs:
@@ -217,6 +225,13 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 - fetches current `/profiles/model` policy from server,
 - writes checkpoint artifact with previous policy + apply payload,
 - applies new profile defaults (unless `--apply-dry-run` is used).
+
+`sota-verdict` normalizes retrieval-eval and transport reports into one deterministic decision artifact:
+- quality gate (primary improvement + track non-negative ratio),
+- reliability gate (p95 regression + transport timeout/closure incidence),
+- statistical validity gate (significance payload checks),
+- reproducibility/integrity gate (artifact verification),
+- profile-policy gate (profile-gate pass + governance block state).
 
 ## MCP Transport Soak
 

@@ -1341,3 +1341,157 @@ def test_git_commit_reachable_from_rejects_non_commit_ref_resolution(
     reachable, error = bench._git_commit_reachable_from("18d21cf", "main")
     assert reachable is False
     assert "did not resolve to a valid commit SHA" in str(error)
+
+
+def test_cmd_sota_verdict_passes_with_complete_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline_eval = {
+        "cutoffs": {"@5": {"recall": 0.70, "mrr": 0.60, "ndcg": 0.62}},
+        "latency_ms": {"p95": 100.0, "count": 120.0},
+        "tracks": {
+            "accurate_retrieval": {"cutoffs": {"@5": {"recall": 0.72, "mrr": 0.63, "ndcg": 0.65}}},
+            "long_range_understanding": {
+                "cutoffs": {"@5": {"recall": 0.68, "mrr": 0.58, "ndcg": 0.60}}
+            },
+        },
+    }
+    candidate_eval = {
+        "cutoffs": {"@5": {"recall": 0.82, "mrr": 0.71, "ndcg": 0.74}},
+        "latency_ms": {"p95": 105.0, "count": 120.0},
+        "tracks": {
+            "accurate_retrieval": {"cutoffs": {"@5": {"recall": 0.84, "mrr": 0.74, "ndcg": 0.76}}},
+            "long_range_understanding": {
+                "cutoffs": {"@5": {"recall": 0.79, "mrr": 0.68, "ndcg": 0.71}}
+            },
+        },
+        "significance": {
+            "global": {
+                "@5": {
+                    "recall": {
+                        "significant": True,
+                        "significant_regression": False,
+                        "mean_delta": 0.12,
+                        "ci_low": 0.04,
+                        "p_value_adjusted": 0.01,
+                    },
+                    "mrr": {
+                        "significant": False,
+                        "significant_regression": False,
+                        "mean_delta": 0.11,
+                        "ci_low": 0.01,
+                        "p_value_adjusted": 0.08,
+                    },
+                    "ndcg": {
+                        "significant": False,
+                        "significant_regression": False,
+                        "mean_delta": 0.12,
+                        "ci_low": 0.02,
+                        "p_value_adjusted": 0.09,
+                    },
+                }
+            }
+        },
+    }
+    profile_gate = {"passed": True, "governance": {"blocked": False, "blocking_alerts_count": 0}}
+    transport_report = {
+        "outcome": "pass",
+        "results": {"latency": {"count": 200.0, "p95_ms": 120.0}, "error_codes": {}, "failures": []},
+    }
+
+    baseline_path = tmp_path / "baseline_eval.json"
+    candidate_path = tmp_path / "candidate_eval.json"
+    profile_path = tmp_path / "profile_gate.json"
+    transport_path = tmp_path / "transport.json"
+    output_path = tmp_path / "sota_verdict.json"
+
+    baseline_path.write_text(json.dumps(baseline_eval), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate_eval), encoding="utf-8")
+    profile_path.write_text(json.dumps(profile_gate), encoding="utf-8")
+    transport_path.write_text(json.dumps(transport_report), encoding="utf-8")
+
+    monkeypatch.setattr(
+        bench,
+        "_verify_all_artifacts",
+        lambda: {"passed": True, "checked_presets": ["vibecoder_memoryagentbench_v1"]},
+    )
+
+    args = SimpleNamespace(
+        candidate_eval_report=str(candidate_path),
+        baseline_eval_report=str(baseline_path),
+        profile_gate_report=str(profile_path),
+        transport_report=[str(transport_path)],
+        aux_benchmark_report=[],
+        output_dir=str(tmp_path),
+        output=str(output_path),
+        min_primary_improvement_pct=8.0,
+        min_track_nonnegative_ratio=0.7,
+        max_p95_regression_pct=10.0,
+        max_timeout_per_1k=0.25,
+        max_transport_closed_per_1k=0.1,
+        max_transport_p95_ms=5000.0,
+        require_profile_gate=True,
+        require_transport_reports=True,
+        require_stat_significance=True,
+        significance_alpha=0.05,
+        min_positive_significant_metrics=1,
+        verify_artifacts=True,
+        require_artifact_verification=True,
+    )
+
+    rc = bench.cmd_sota_verdict(args)
+    assert rc == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["passed"] is True
+    assert payload["sota_plus_verdict"] == "pass"
+    assert payload["gates"]["quality"]["passed"] is True
+    assert payload["gates"]["reliability"]["passed"] is True
+    assert payload["gates"]["statistical_validity"]["passed"] is True
+    assert payload["gates"]["reproducibility_integrity"]["passed"] is True
+
+
+def test_cmd_sota_verdict_fails_when_required_evidence_missing(tmp_path: Path) -> None:
+    baseline_eval = {
+        "cutoffs": {"@5": {"recall": 0.70, "mrr": 0.60, "ndcg": 0.62}},
+        "latency_ms": {"p95": 100.0, "count": 120.0},
+    }
+    candidate_eval = {
+        "cutoffs": {"@5": {"recall": 0.71, "mrr": 0.61, "ndcg": 0.63}},
+        "latency_ms": {"p95": 140.0, "count": 120.0},
+    }
+    baseline_path = tmp_path / "baseline_eval_fail.json"
+    candidate_path = tmp_path / "candidate_eval_fail.json"
+    output_path = tmp_path / "sota_verdict_fail.json"
+    baseline_path.write_text(json.dumps(baseline_eval), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate_eval), encoding="utf-8")
+
+    args = SimpleNamespace(
+        candidate_eval_report=str(candidate_path),
+        baseline_eval_report=str(baseline_path),
+        profile_gate_report=None,
+        transport_report=[],
+        aux_benchmark_report=[],
+        output_dir=str(tmp_path),
+        output=str(output_path),
+        min_primary_improvement_pct=8.0,
+        min_track_nonnegative_ratio=0.7,
+        max_p95_regression_pct=10.0,
+        max_timeout_per_1k=0.25,
+        max_transport_closed_per_1k=0.1,
+        max_transport_p95_ms=5000.0,
+        require_profile_gate=True,
+        require_transport_reports=True,
+        require_stat_significance=True,
+        significance_alpha=0.05,
+        min_positive_significant_metrics=1,
+        verify_artifacts=False,
+        require_artifact_verification=False,
+    )
+
+    rc = bench.cmd_sota_verdict(args)
+    assert rc == 2
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["passed"] is False
+    assert payload["gates"]["profile_policy"]["passed"] is False
+    assert payload["gates"]["reliability"]["passed"] is False
+    assert payload["gates"]["statistical_validity"]["passed"] is False
