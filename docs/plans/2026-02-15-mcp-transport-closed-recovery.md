@@ -136,3 +136,20 @@ Task-lifecycle follow-on is now implemented in `docs/plans/2026-02-15-phase4s-mc
    - `eval.phase_hygiene` subprocess decoding now handles UTF-8/CP1252 fallback to avoid Windows `UnicodeDecodeError` crashes while parsing `gh` output.
 6. Validation increment:
    - protocol tests now at `45 passed` (`tests/test_mcp_wrapper_protocol.py`).
+
+## Continuation Update (Phase 4T)
+
+Task-augmented tools follow-on is now implemented in `docs/plans/2026-02-15-phase4t-tools-call-task-support.md`:
+
+1. Tasked `tools/call` execution:
+   - wrapper now supports `tools/call` with `params.task` and immediate task-creation responses.
+2. Task transition notifications:
+   - wrapper now emits `notifications/tasks/status` on task status updates.
+3. Task governance:
+   - task TTL purge + retention cap + cursor pagination are now enforced for `tasks/list/get/result/cancel`.
+4. Session blocker note:
+   - Muninn MCP tool transport in this assistant session still intermittently reports `Transport closed`; development proceeded with local CLI/test validation and existing recovery runbook guidance.
+5. Validation increment:
+   - protocol tests now at `49 passed` (`tests/test_mcp_wrapper_protocol.py`),
+   - combined targeted checks at `85 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`),
+   - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_052920.json`.

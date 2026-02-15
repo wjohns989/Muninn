@@ -201,6 +201,11 @@
     - deterministic task lifecycle error semantics now cover invalid IDs and terminal/non-terminal misuse,
     - review-driven hardening prevents synthetic terminal success payloads and avoids reflecting raw task IDs in unknown-task errors,
     - workflow-gate hardening now makes `eval.phase_hygiene` subprocess decoding robust across UTF-8/CP1252 output on Windows.
+54. Phase 4T task-augmented tools/call + task governance baseline implemented:
+    - wrapper now supports `tools/call` with `params.task` and immediate task-creation responses,
+    - wrapper now emits `notifications/tasks/status` updates for task lifecycle transitions,
+    - task registry now enforces TTL purge + retention caps + deterministic cursor pagination in `tasks/list`,
+    - `tasks/result` now blocks until terminal state and returns related-task metadata for result correlation.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -236,6 +241,7 @@
 - Phase 4Q git-ancestry enforcement verification: `29 passed` (`tests/test_ollama_local_benchmark.py`) + `64 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
 - Phase 4R MCP 2025-11-25 compatibility verification: `36 passed` (`tests/test_mcp_wrapper_protocol.py`) + `70 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`).
 - Phase 4S MCP task lifecycle verification: `45 passed` (`tests/test_mcp_wrapper_protocol.py`) + `81 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_051620.json`).
+- Phase 4T task-augmented tools/call verification: `49 passed` (`tests/test_mcp_wrapper_protocol.py`) + `85 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_052920.json`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -269,9 +275,10 @@
 29. **Lifecycle-polling ROI**: schema-aligned `tasks/get|result|cancel` support eliminates client fallback ambiguity and reduces integration error handling overhead.
 30. **Terminal-state correctness ROI**: explicit terminal-no-payload erroring prevents silent false-positive completion interpretation in polling clients.
 31. **Hygiene-gate reliability ROI**: encoding-robust subprocess decoding prevents Windows locale crashes in PR-boundary governance checks.
+32. **Task-orchestration reliability ROI**: task-augmented `tools/call` + status notifications + retention governance reduce client polling complexity and prevent unbounded task-state memory growth in long-lived sessions.
 
 ### High-ROI SOTA additions from web research now required in roadmap
-1. MCP 2025-11-25 compatibility tranche follow-up (task-augmented `tools/call` execution, status notifications, retention/pagination policy for task registry).
+1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
 2. Memory-specific benchmark gate using MemoryAgentBench competencies (accurate retrieval, test-time learning, long-range understanding, selective forgetting).
 3. GenAI observability tranche using OpenTelemetry GenAI semantic conventions (opt-in content capture + privacy-aware controls).
 4. Adaptive model-caliber routing: keep xLAM as optional provider, maintain profile-based fallback chains (low-latency/balanced/high-reasoning), and expose assistant-session profile selection independent of think-level toggles.
