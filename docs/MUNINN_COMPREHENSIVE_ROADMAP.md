@@ -109,6 +109,10 @@ Completed since last update:
    - model summaries now report ability-per-resource efficiency (`ability_per_second`, `ability_per_vram_gb`),
    - new legacy benchmark mode can auto-generate deterministic ingestion-like cases from old project roots (`legacy-benchmark`),
    - targeted benchmark helper tests shipped (`tests/test_ollama_local_benchmark.py`).
+36. Phase 4J profile-promotion gate baseline implemented in-branch:
+   - policy file added (`eval/ollama_profile_promotion_policy.json`) for deterministic threshold governance,
+   - `profile-gate` command added to convert live/legacy benchmark reports into pass/fail + recommendation outputs per profile tier,
+   - gate logic now evaluates ability, latency, and resource efficiency before profile promotion.
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -533,11 +537,12 @@ This is core for vibecoders, not optional polish.
 ## 10) Immediate Next Actions (Execution Checklist)
 
 1. Maintain one-PR-at-a-time policy: verify no open PR comments/issues at each phase boundary, then open exactly one new PR.
-2. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
-3. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
-4. Execute and archive local model-matrix benchmark runs (`eval/ollama_local_benchmark.py`) for runtime vs ingestion profile candidates on 16GB-class hardware.
-5. Promote Phase 4I benchmark suite to CI/nightly: run `benchmark` + `legacy-benchmark` on calibrated roots and archive reports.
-6. Implement Phase 4 profile-promotion tranche: add profile-aware eval gates + telemetry thresholds for default-policy promotion.
-7. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
+2. Preserve reviewer soak window: do not merge a newly created PR in the same execution response; check comments/reviews/checks on a subsequent interaction before merge.
+3. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
+4. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
+5. Execute and archive local model-matrix benchmark runs (`eval/ollama_local_benchmark.py`) for runtime vs ingestion profile candidates on 16GB-class hardware.
+6. Promote Phase 4I benchmark suite to CI/nightly: run `benchmark` + `legacy-benchmark` on calibrated roots and archive reports.
+7. Merge and operationalize Phase 4J `profile-gate` command, then bind promotion outputs to default-profile policy updates.
+8. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
 
 Completing these next actions keeps roadmap progression logically consistent while preserving merge hygiene, SOTA evidence quality, and operational ROI.

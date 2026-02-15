@@ -1,0 +1,68 @@
+{
+  "version": "2026-02-15",
+  "description": "Profile promotion gates for 16GB helper-first workflows. Requires evidence from live and legacy benchmark suites before default policy changes.",
+  "profiles": {
+    "low_latency": {
+      "candidates": [
+        "xlam:latest",
+        "qwen2.5-coder:7b",
+        "llama3.1:8b"
+      ],
+      "require_live_suite": true,
+      "require_legacy_suite": false,
+      "min_live_ability": 0.65,
+      "max_live_p95_seconds": 16.0,
+      "min_live_ability_per_vram_gb": 0.08,
+      "live_weight": 0.8,
+      "legacy_weight": 0.2,
+      "objective": {
+        "ability_weight": 1.0,
+        "resource_weight": 0.35,
+        "latency_penalty": 0.03
+      }
+    },
+    "balanced": {
+      "candidates": [
+        "qwen3:8b",
+        "deepseek-r1:8b",
+        "qwen2.5-coder:7b",
+        "llama3.1:8b"
+      ],
+      "require_live_suite": true,
+      "require_legacy_suite": true,
+      "min_live_ability": 0.72,
+      "min_legacy_ability": 0.68,
+      "max_live_p95_seconds": 24.0,
+      "max_legacy_p95_seconds": 36.0,
+      "min_live_ability_per_vram_gb": 0.06,
+      "live_weight": 0.55,
+      "legacy_weight": 0.45,
+      "objective": {
+        "ability_weight": 1.1,
+        "resource_weight": 0.25,
+        "latency_penalty": 0.02
+      }
+    },
+    "high_reasoning": {
+      "candidates": [
+        "qwen3:14b",
+        "deepseek-r1:8b",
+        "qwen3:8b"
+      ],
+      "require_live_suite": true,
+      "require_legacy_suite": true,
+      "min_live_ability": 0.75,
+      "min_legacy_ability": 0.72,
+      "max_live_p95_seconds": 40.0,
+      "max_legacy_p95_seconds": 55.0,
+      "min_live_ability_per_vram_gb": 0.03,
+      "live_weight": 0.5,
+      "legacy_weight": 0.5,
+      "objective": {
+        "ability_weight": 1.25,
+        "resource_weight": 0.1,
+        "latency_penalty": 0.01
+      }
+    }
+  }
+}
