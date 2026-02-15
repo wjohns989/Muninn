@@ -117,3 +117,22 @@ MCP-compatibility follow-on is now implemented in `docs/plans/2026-02-15-phase4r
    - `idempotentHint` classification now reflects true idempotent tool semantics instead of read-only-only proxying.
 6. Validation increment:
    - protocol tests now at `36 passed` (`tests/test_mcp_wrapper_protocol.py`).
+
+## Continuation Update (Phase 4S)
+
+Task-lifecycle follow-on is now implemented in `docs/plans/2026-02-15-phase4s-mcp-task-lifecycle-baseline.md`:
+
+1. MCP task lifecycle request baseline:
+   - wrapper now handles `tasks/get`, `tasks/result`, and `tasks/cancel` with schema-aligned `taskId` validation.
+2. Capability signaling alignment:
+   - initialize now advertises `tasks.cancel` alongside `tasks.list`.
+3. Deterministic lifecycle behavior:
+   - unknown/invalid task IDs and non-terminal/terminal-state misuse now return explicit deterministic errors.
+4. Review follow-up hardening:
+   - terminal tasks without result payload now return explicit errors instead of synthetic success payloads.
+   - unknown-task errors now avoid reflecting raw client-provided task IDs.
+   - task request dispatch validation logic is deduplicated through a shared validator helper.
+5. Workflow-gate reliability hardening:
+   - `eval.phase_hygiene` subprocess decoding now handles UTF-8/CP1252 fallback to avoid Windows `UnicodeDecodeError` crashes while parsing `gh` output.
+6. Validation increment:
+   - protocol tests now at `45 passed` (`tests/test_mcp_wrapper_protocol.py`).
