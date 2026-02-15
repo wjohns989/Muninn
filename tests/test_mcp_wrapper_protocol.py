@@ -659,6 +659,24 @@ def test_get_tool_call_deadline_seconds_clamps_to_minimum_when_margin_exceeds_ho
     assert mcp_wrapper._get_tool_call_deadline_seconds() == 1.0
 
 
+def test_get_tool_call_deadline_seconds_clamps_explicit_value_above_host_safe_budget(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "119")
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+    monkeypatch.delenv("MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN", raising=False)
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 110.0
+
+
+def test_get_tool_call_deadline_seconds_allows_explicit_overrun_when_enabled(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "119")
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN", "1")
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 119.0
+
+
 def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low(monkeypatch):
     calls = {"ensure": 0}
 
