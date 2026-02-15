@@ -81,6 +81,12 @@ Reasoning:
 2. Larger models can outperform on deep reasoning, but consume more VRAM and can cannibalize active development workloads.
 3. The right control plane is model caliber selection by workload phase (runtime helper vs ingestion/planning), not one permanent global model.
 
+### Practical resource envelope (current matrix baseline)
+
+1. `xlam:latest` is sub-1GB in local pull footprint and remains the lowest-cost helper path.
+2. `qwen2.5-coder:7b`, `qwen3:8b`, `deepseek-r1:8b`, and `llama3.1:8b` are 4.7GB–5.2GB class pulls and fit the 16GB helper+IDE target when not over-parallelized.
+3. `qwen3:14b` is the explicit high-reasoning optional tier and should be reserved for offline planning/ingestion windows on 16GB systems.
+
 ## External research pointers used in this phase
 
 1. Ollama model library landing and model pages (`qwen3`, `deepseek-r1`, `llama3.2`, `devstral`): https://ollama.com/library
