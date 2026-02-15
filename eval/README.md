@@ -152,6 +152,23 @@ python -m eval.ollama_local_benchmark legacy-benchmark \
 python -m eval.ollama_local_benchmark profile-gate \
   --live-report eval/reports/ollama/report_<live>.json \
   --legacy-report eval/reports/ollama/legacy_report_<legacy>.json
+
+# Run full development-cycle benchmark flow (live + legacy + profile gate)
+python -m eval.ollama_local_benchmark dev-cycle \
+  --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
+  --repeats 1
+
+# Run dev-cycle and apply profile defaults to a running Muninn server
+# (writes checkpoint artifact for rollback before applying)
+python -m eval.ollama_local_benchmark dev-cycle \
+  --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
+  --repeats 1 \
+  --apply-policy \
+  --muninn-url http://127.0.0.1:42069
+
+# Roll back to previous profile policy using checkpoint
+python -m eval.ollama_local_benchmark rollback-policy \
+  --checkpoint eval/reports/ollama/profile_policy_checkpoint_<run_id>.json
 ```
 
 Versioned inputs:
@@ -170,3 +187,39 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 `legacy-benchmark` generates deterministic ingestion-like extraction cases from local project files and reports the same ability/resource metrics per model.
 
 `profile-gate` consumes benchmark reports and emits per-profile pass/fail + recommendation decisions for `low_latency`, `balanced`, and `high_reasoning` promotion policies.
+
+`dev-cycle` runs `benchmark`, `legacy-benchmark`, and `profile-gate` sequentially in one operator-triggered command and emits a summary that maps recommended models to profile usage roles.
+
+`dev-cycle --apply-policy` additionally:
+- validates gate/recommendation evidence for target profile defaults,
+- fetches current `/profiles/model` policy from server,
+- writes checkpoint artifact with previous policy + apply payload,
+- applies new profile defaults (unless `--apply-dry-run` is used).
+
+`rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
+
+## Phase Hygiene Gate
+
+Use this utility at each phase boundary (and before merge) to enforce one-open-PR policy and catch test-quality drift.
+
+```bash
+# Full gate (PR status + review/check signals + pytest summary budgets)
+python -m eval.phase_hygiene \
+  --max-open-prs 1 \
+  --require-open-pr \
+  --pytest-command "python -m pytest -q"
+
+# PR-only check (skip test command)
+python -m eval.phase_hygiene \
+  --max-open-prs 1 \
+  --pytest-command ""
+```
+
+The report is written to `eval/reports/hygiene/phase_hygiene_<timestamp>.json` and includes:
+- open PR inventory,
+- selected PR review/check summary,
+- parsed pytest summary (passed/failed/skipped/warnings) using JUnit XML when pytest is detected,
+- deterministic pass/fail + violations list.
+
+Implementation note:
+- test command execution is tokenized (`shell=False`) to avoid shell-injection surface.

@@ -43,11 +43,11 @@ python -m eval.ollama_local_benchmark profile-gate \
 
 1. Prevents silent quality regressions when switching default models.
 2. Makes 16GB helper-first tradeoffs explicit and reviewable.
-3. Provides machine-readable gate artifacts suitable for CI/nightly promotion pipelines.
+3. Provides machine-readable gate artifacts suitable for operator-triggered promotion pipelines.
 
 ## Open follow-ups
 
-1. Add CI/nightly automation that runs `benchmark`, `legacy-benchmark`, and `profile-gate`.
+1. Add operator-triggered workflow that runs `benchmark`, `legacy-benchmark`, and `profile-gate`.
 2. Bind successful gate outputs to controlled profile-policy updates (with audit-event trail).
 3. Add browser UI panel for gate report visualization and one-click recommended profile staging.
 

@@ -12,9 +12,10 @@ import time
 import json
 import logging
 import subprocess
+import threading
 import requests
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, BinaryIO
 from muninn.version import __version__
 
 # Configure logging to file since stdout is used for MCP protocol
@@ -260,6 +261,33 @@ def _collect_startup_warnings(
     return warnings
 
 
+def _bootstrap_dependencies_on_launch() -> None:
+    """
+    Best-effort dependency bootstrap when the MCP wrapper process starts.
+
+    This runs independently from initialize-time checks so users who enable
+    autostart do not have to wait for first MCP tool usage to trigger startup.
+    """
+    if not _env_flag("MUNINN_MCP_AUTOSTART_ON_LAUNCH", True):
+        logger.info("Launch-time dependency bootstrap disabled by MUNINN_MCP_AUTOSTART_ON_LAUNCH.")
+        return
+
+    autostart_server_enabled = _env_flag("MUNINN_MCP_AUTOSTART_SERVER", True)
+    autostart_ollama_enabled = _env_flag("MUNINN_MCP_AUTOSTART_OLLAMA", True)
+
+    if autostart_server_enabled:
+        if ensure_server_running():
+            logger.info("Launch-time bootstrap: Muninn server is ready.")
+        else:
+            logger.warning("Launch-time bootstrap: Muninn server is not reachable.")
+
+    if autostart_ollama_enabled:
+        if check_and_start_ollama():
+            logger.info("Launch-time bootstrap: Ollama is ready.")
+        else:
+            logger.warning("Launch-time bootstrap: Ollama is not reachable.")
+
+
 def _build_initialize_instructions(startup_warnings: Optional[List[str]] = None) -> str:
     base_instructions = (
         "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
@@ -277,6 +305,59 @@ def _build_initialize_instructions(startup_warnings: Optional[List[str]] = None)
     return f"{base_instructions}\n\nStartup checks:\n{bullet_list}"
 
 # --- MCP Protocol Implementation ---
+
+def _read_rpc_message(stream: BinaryIO) -> Optional[Dict[str, Any]]:
+    """
+    Read one inbound JSON-RPC message from stdin.
+
+    Supports both:
+    - newline-delimited JSON (legacy/simple stdio clients)
+    - Content-Length framed JSON-RPC (LSP/MCP-style clients)
+    """
+    while True:
+        first_line = stream.readline()
+        if not first_line:
+            return None
+        if not first_line.strip():
+            continue
+
+        lowered = first_line.lower()
+        if lowered.startswith(b"content-length:"):
+            try:
+                content_length = int(first_line.split(b":", 1)[1].strip())
+            except Exception:
+                logger.warning("Invalid Content-Length header: %r", first_line)
+                return None
+
+            # Consume remaining headers until blank line.
+            while True:
+                header_line = stream.readline()
+                if not header_line:
+                    return None
+                if header_line in (b"\r\n", b"\n"):
+                    break
+
+            payload = stream.read(content_length)
+            if not payload:
+                return None
+            try:
+                msg = json.loads(payload.decode("utf-8"))
+            except json.JSONDecodeError:
+                logger.warning("Invalid framed JSON payload")
+                return None
+            if isinstance(msg, dict):
+                return msg
+            return None
+
+        try:
+            msg = json.loads(first_line.decode("utf-8"))
+        except json.JSONDecodeError:
+            logger.debug("Skipping non-JSON line on stdio transport")
+            continue
+        if isinstance(msg, dict):
+            return msg
+        return None
+
 
 def send_json_rpc(message: Dict[str, Any]):
     """Send JSON-RPC message to stdout."""
@@ -1376,21 +1457,23 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
 
 def main():
     logger.info("Muninn MCP Wrapper started")
+
+    # Trigger dependency startup immediately (best effort) so MCP sessions
+    # can attach to warm backends when user has autostart enabled.
+    threading.Thread(
+        target=_bootstrap_dependencies_on_launch,
+        name="muninn-mcp-bootstrap",
+        daemon=True,
+    ).start()
     
     # Standard input loop
     while True:
         try:
-            line = sys.stdin.readline()
-            if not line:
+            msg = _read_rpc_message(sys.stdin.buffer)
+            if msg is None:
                 break
-            
-            msg = json.loads(line)
-            if not isinstance(msg, dict):
-                continue
             _dispatch_rpc_message(msg)
                 
-        except json.JSONDecodeError:
-            continue
         except Exception as e:
             logger.error(f"Loop error: {e}")
 

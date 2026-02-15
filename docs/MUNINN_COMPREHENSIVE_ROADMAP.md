@@ -113,6 +113,29 @@ Completed since last update:
    - policy file added (`eval/ollama_profile_promotion_policy.json`) for deterministic threshold governance,
    - `profile-gate` command added to convert live/legacy benchmark reports into pass/fail + recommendation outputs per profile tier,
    - gate logic now evaluates ability, latency, and resource efficiency before profile promotion.
+37. Phase 4K hygiene-gate + roadmap refresh baseline implemented:
+   - new phase-boundary gate utility shipped (`python -m eval.phase_hygiene`),
+   - deterministic checks added for open-PR limits, review/check health, and pytest skipped/warning budgets,
+   - security hardening applied from PR review: tokenized subprocess execution (`shell=False`) and JUnit-first pytest summary parsing,
+   - JSON hygiene reports now emitted under `eval/reports/hygiene/`,
+   - implementation plan + remaining-roadmap refresh documented (`docs/plans/2026-02-15-phase4k-hygiene-gate-and-roadmap-refresh.md`).
+38. Phase 4L development-cycle benchmark orchestration baseline implemented:
+   - `dev-cycle` command shipped in local benchmark utility (`python -m eval.ollama_local_benchmark dev-cycle`),
+   - command now runs live benchmark + legacy benchmark + profile gate in one operator-triggered flow,
+   - role-based profile recommendations are emitted in summary artifact (`dev_cycle_summary_<timestamp>.json`),
+   - implementation plan documented (`docs/plans/2026-02-15-phase4l-dev-cycle-benchmark-orchestration.md`).
+39. MCP transport framing compatibility hardening implemented:
+   - `mcp_wrapper` stdin parsing now supports both newline JSON and `Content-Length` framed JSON-RPC,
+   - this closes a cross-client transport mismatch class that can surface as immediate `Transport closed`.
+40. MCP startup + Windows tray operational hardening implemented:
+   - `mcp_wrapper` now performs launch-time dependency bootstrap (best effort) and triggers Ollama/server startup when enabled,
+   - Windows tray now acts as an operational MCP entrypoint with Browser UI open, MCP health probe, explicit Ollama start action, and wrapper-log shortcut,
+   - implementation plan documented (`docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`).
+41. Phase 4M dev-cycle policy apply + rollback checkpoint baseline implemented:
+   - `eval.ollama_local_benchmark dev-cycle` now supports controlled `--apply-policy` mutation path for runtime profile defaults,
+   - apply flow now validates gate/recommendation evidence and writes checkpoint artifact before mutation,
+   - new `rollback-policy` command restores prior profile defaults from checkpoint artifacts,
+   - implementation plan documented (`docs/plans/2026-02-15-phase4m-dev-cycle-policy-apply-rollback.md`).
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -129,6 +152,10 @@ Verification:
   - local benchmark tooling smoke checks pass (`python -m eval.ollama_local_benchmark list`, `python -m eval.ollama_local_benchmark sync --dry-run`).
   - initial 5-model quick-pass latency/throughput snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
   - `8 passed` across Phase 4I/4J benchmark helper tests (`tests/test_ollama_local_benchmark.py`).
+  - `14 passed` across benchmark+hygiene helper tests (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
+  - `28 passed` across MCP transport protocol tests (`tests/test_mcp_wrapper_protocol.py`).
+  - `30 passed` across MCP startup/bootstrap protocol tests (`tests/test_mcp_wrapper_protocol.py`) plus initialize smoke probe.
+  - `11 passed` across benchmark helper apply/rollback flows (`tests/test_ollama_local_benchmark.py`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
@@ -153,7 +180,7 @@ Fixed in current implementation slice:
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
-3. Profile-level promotion criteria remain open: routing, audit visibility, and ability/resource benchmark plumbing are implemented, but per-profile gate thresholds and telemetry-backed auto-default policy are still pending.
+3. Profile-level promotion criteria are partially open: routing, audit visibility, ability/resource benchmark plumbing, and controlled apply/rollback paths are now implemented; telemetry-backed automatic default-policy alerting and governance thresholds are still pending.
 4. Browser UI preference depth remains partially open: persistence is implemented, but advanced user-adaptive controls (profile presets, safety mode templates, benchmark launch UX) still need phased rollout.
 
 ---
@@ -538,13 +565,12 @@ This is core for vibecoders, not optional polish.
 
 ## 10) Immediate Next Actions (Execution Checklist)
 
-1. Maintain one-PR-at-a-time policy: verify no open PR comments/issues at each phase boundary, then open exactly one new PR.
+1. Run `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command "python -m pytest -q"` at each phase boundary before opening/merging a PR.
 2. Preserve reviewer soak window: do not merge a newly created PR in the same execution response; check comments/reviews/checks on a subsequent interaction before merge.
 3. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
 4. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
-5. Execute and archive local model-matrix benchmark runs (`eval/ollama_local_benchmark.py`) for runtime vs ingestion profile candidates on 16GB-class hardware.
-6. Promote Phase 4I benchmark suite to CI/nightly: run `benchmark` + `legacy-benchmark` on calibrated roots and archive reports.
-7. Merge and operationalize Phase 4J `profile-gate` command, then bind promotion outputs to default-profile policy updates.
-8. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
+5. Add policy-approval manifest workflow so `dev-cycle --apply-policy` checkpoints are explicitly accepted/rejected before long-lived default policy adoption.
+6. Extend browser control center with profile-policy controls and benchmark/gate report visualization.
+7. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
 
 Completing these next actions keeps roadmap progression logically consistent while preserving merge hygiene, SOTA evidence quality, and operational ROI.

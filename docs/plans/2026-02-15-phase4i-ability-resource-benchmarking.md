@@ -95,6 +95,6 @@ Reasoning:
 
 ## Open items for Phase 4J
 
-1. Promote ability/resource thresholds into CI/nightly gate policy.
+1. Promote ability/resource thresholds into operator-triggered gate policy.
 2. Add profile-level promotion rules driven by benchmark deltas + telemetry.
 3. Add benchmark run controls to browser UI with strict safe defaults.

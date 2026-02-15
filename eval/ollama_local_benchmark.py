@@ -19,6 +19,13 @@ DEFAULT_PROMPTS_PATH = ROOT / "eval" / "ollama_benchmark_prompts.jsonl"
 DEFAULT_PROMOTION_POLICY_PATH = ROOT / "eval" / "ollama_profile_promotion_policy.json"
 DEFAULT_OUTPUT_DIR = ROOT / "eval" / "reports" / "ollama"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+DEFAULT_MUNINN_URL = "http://127.0.0.1:42069"
+SUPPORTED_PROFILE_NAMES = ("low_latency", "balanced", "high_reasoning")
+PROFILE_USAGE_GUIDANCE = {
+    "low_latency": "Runtime helper during active coding and tool-heavy IDE workflows.",
+    "balanced": "Default implementation assistant for day-to-day coding tasks.",
+    "high_reasoning": "Planning/architecture/refactor analysis when deeper reasoning is required.",
+}
 LEGACY_TEXT_EXTENSIONS = {
     ".py",
     ".pyi",
@@ -594,6 +601,287 @@ def _post_version(url: str, timeout_seconds: int) -> str:
         return str(payload.get("version", "unknown"))
 
 
+def _http_json_request(
+    *,
+    method: str,
+    url: str,
+    payload: dict[str, Any] | None = None,
+    timeout_seconds: int = 20,
+) -> dict[str, Any]:
+    encoded = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if payload is not None else {}
+    req = request.Request(
+        url,
+        data=encoded,
+        headers=headers,
+        method=method.upper(),
+    )
+    with request.urlopen(req, timeout=timeout_seconds) as response:
+        raw = response.read().decode("utf-8")
+        if not raw.strip():
+            return {}
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Expected JSON object response from {url}")
+        return parsed
+
+
+def _muninn_api_request(
+    muninn_url: str,
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout_seconds: int = 20,
+) -> dict[str, Any]:
+    url = f"{muninn_url.rstrip('/')}{path}"
+    return _http_json_request(
+        method=method,
+        url=url,
+        payload=payload,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _unwrap_success_envelope(payload: dict[str, Any], *, endpoint: str) -> dict[str, Any]:
+    if "success" in payload and "data" in payload:
+        if payload.get("success") is not True:
+            raise ValueError(f"{endpoint} returned success=false payload")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError(f"{endpoint} expected object 'data' envelope")
+        return data
+    return payload
+
+
+def _validate_profile_name(field_name: str, profile: str) -> str:
+    candidate = str(profile or "").strip()
+    if candidate not in SUPPORTED_PROFILE_NAMES:
+        raise ValueError(
+            f"Unsupported {field_name} '{profile}'. "
+            f"Expected one of {SUPPORTED_PROFILE_NAMES}."
+        )
+    return candidate
+
+
+def _gate_recommendation_models(gate_report: dict[str, Any]) -> dict[str, str]:
+    models: dict[str, str] = {}
+    profiles = gate_report.get("profiles")
+    if not isinstance(profiles, dict):
+        return models
+    for profile_name, payload in profiles.items():
+        if not isinstance(payload, dict):
+            continue
+        recommendation = payload.get("recommendation")
+        if not isinstance(recommendation, dict):
+            continue
+        model = str(recommendation.get("model", "")).strip()
+        if model:
+            models[profile_name] = model
+    return models
+
+
+def _apply_profile_policy_checkpoint(
+    *,
+    run_id: str,
+    gate_report: dict[str, Any],
+    gate_report_path: str,
+    muninn_url: str,
+    timeout_seconds: int,
+    source: str,
+    model_profile: str,
+    runtime_model_profile: str,
+    ingestion_model_profile: str,
+    legacy_ingestion_model_profile: str,
+    checkpoint_output: Path,
+    dry_run: bool,
+    allow_gate_failures: bool,
+) -> dict[str, Any]:
+    if not bool(gate_report.get("passed", False)) and not allow_gate_failures:
+        raise ValueError(
+            "Refusing to apply profile policy because profile gate did not pass. "
+            "Use --allow-apply-when-gate-fails to override."
+        )
+
+    target_policy = {
+        "model_profile": _validate_profile_name("model_profile", model_profile),
+        "runtime_model_profile": _validate_profile_name(
+            "runtime_model_profile", runtime_model_profile
+        ),
+        "ingestion_model_profile": _validate_profile_name(
+            "ingestion_model_profile", ingestion_model_profile
+        ),
+        "legacy_ingestion_model_profile": _validate_profile_name(
+            "legacy_ingestion_model_profile", legacy_ingestion_model_profile
+        ),
+    }
+
+    recommendation_models = _gate_recommendation_models(gate_report)
+    required_profiles = {
+        target_policy["model_profile"],
+        target_policy["runtime_model_profile"],
+        target_policy["ingestion_model_profile"],
+        target_policy["legacy_ingestion_model_profile"],
+    }
+    missing_recommendations = sorted(
+        profile
+        for profile in required_profiles
+        if profile not in recommendation_models
+    )
+    if missing_recommendations:
+        raise ValueError(
+            "Refusing to apply profile policy because gate report has no passing recommendation for: "
+            + ", ".join(missing_recommendations)
+        )
+
+    current_policy = _unwrap_success_envelope(
+        _muninn_api_request(
+            muninn_url,
+            "/profiles/model",
+            method="GET",
+            timeout_seconds=timeout_seconds,
+        ),
+        endpoint="GET /profiles/model",
+    )
+    current_active = current_policy.get("active")
+    if not isinstance(current_active, dict):
+        raise ValueError("GET /profiles/model response missing 'active' policy object.")
+
+    apply_payload = {**target_policy, "source": source}
+    apply_result: dict[str, Any]
+    if dry_run:
+        apply_result = {
+            "event": "MODEL_PROFILE_POLICY_APPLY_DRY_RUN",
+            "applied": False,
+            "payload": apply_payload,
+        }
+    else:
+        response = _unwrap_success_envelope(
+            _muninn_api_request(
+                muninn_url,
+                "/profiles/model",
+                method="POST",
+                payload=apply_payload,
+                timeout_seconds=timeout_seconds,
+            ),
+            endpoint="POST /profiles/model",
+        )
+        apply_result = {
+            "event": "MODEL_PROFILE_POLICY_APPLIED",
+            "applied": True,
+            "payload": apply_payload,
+            "response": response,
+        }
+
+    checkpoint_output.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_payload = {
+        "run_id": run_id,
+        "event": "MODEL_PROFILE_POLICY_CHECKPOINT",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "gate_report_passed": bool(gate_report.get("passed", False)),
+        "gate_report_path": gate_report_path,
+        "muninn_url": muninn_url,
+        "source": source,
+        "target_policy": target_policy,
+        "recommendation_models": recommendation_models,
+        "previous_policy": current_policy,
+        "apply_result": apply_result,
+    }
+    with checkpoint_output.open("w", encoding="utf-8") as f:
+        json.dump(checkpoint_payload, f, indent=2)
+        f.write("\n")
+
+    return {
+        "event": "MODEL_PROFILE_POLICY_CHECKPOINT_WRITTEN",
+        "checkpoint_path": str(checkpoint_output),
+        "target_policy": target_policy,
+        "recommendation_models": recommendation_models,
+        "applied": bool(apply_result.get("applied", False)),
+        "apply_result": apply_result,
+    }
+
+
+def cmd_rollback_policy(args: argparse.Namespace) -> int:
+    checkpoint_path = Path(args.checkpoint).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    muninn_url = str(args.muninn_url).strip()
+    timeout_seconds = int(args.muninn_timeout_seconds)
+    source = str(args.source).strip() or "rollback_policy_cli"
+    dry_run = bool(args.dry_run)
+
+    checkpoint = _load_json(checkpoint_path)
+    previous_policy = checkpoint.get("previous_policy")
+    if not isinstance(previous_policy, dict):
+        raise ValueError("Checkpoint is missing 'previous_policy' object.")
+    active = previous_policy.get("active")
+    if not isinstance(active, dict):
+        raise ValueError("Checkpoint previous_policy is missing 'active' policy object.")
+
+    restore_payload = {
+        "model_profile": _validate_profile_name(
+            "model_profile", str(active.get("model_profile", ""))
+        ),
+        "runtime_model_profile": _validate_profile_name(
+            "runtime_model_profile", str(active.get("runtime_model_profile", ""))
+        ),
+        "ingestion_model_profile": _validate_profile_name(
+            "ingestion_model_profile", str(active.get("ingestion_model_profile", ""))
+        ),
+        "legacy_ingestion_model_profile": _validate_profile_name(
+            "legacy_ingestion_model_profile",
+            str(active.get("legacy_ingestion_model_profile", "")),
+        ),
+        "source": source,
+    }
+
+    rollback_result: dict[str, Any]
+    if dry_run:
+        rollback_result = {
+            "event": "MODEL_PROFILE_POLICY_ROLLBACK_DRY_RUN",
+            "applied": False,
+            "payload": restore_payload,
+        }
+    else:
+        response = _unwrap_success_envelope(
+            _muninn_api_request(
+                muninn_url,
+                "/profiles/model",
+                method="POST",
+                payload=restore_payload,
+                timeout_seconds=timeout_seconds,
+            ),
+            endpoint="POST /profiles/model",
+        )
+        rollback_result = {
+            "event": "MODEL_PROFILE_POLICY_ROLLBACK_APPLIED",
+            "applied": True,
+            "payload": restore_payload,
+            "response": response,
+        }
+
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = (
+        Path(args.output).resolve()
+        if args.output
+        else output_dir / f"policy_rollback_{run_id}.json"
+    )
+    payload = {
+        "run_id": run_id,
+        "event": "MODEL_PROFILE_POLICY_ROLLBACK_COMPLETED",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "checkpoint_path": str(checkpoint_path),
+        "muninn_url": muninn_url,
+        "result": rollback_result,
+    }
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+    print(f"Policy rollback report written to: {output_path}")
+    return 0
+
+
 def _percentile(values: list[float], p: float) -> float:
     if not values:
         return 0.0
@@ -1049,6 +1337,184 @@ def cmd_profile_gate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _recommendation_summary(
+    *,
+    profile_name: str,
+    recommendation: dict[str, Any] | None,
+    live_report: dict[str, Any],
+    legacy_report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    usage = PROFILE_USAGE_GUIDANCE.get(profile_name, "Profile-specific model guidance.")
+    if not recommendation:
+        return {
+            "profile": profile_name,
+            "usage": usage,
+            "model": None,
+            "status": "no_passing_candidate",
+            "composite_score": None,
+            "evidence": None,
+        }
+
+    model = str(recommendation.get("model", "")).strip()
+    live_summary = _suite_model_summary(live_report, model) if model else None
+    legacy_summary = _suite_model_summary(legacy_report or {}, model) if model else None
+
+    evidence = {
+        "live_avg_ability_score": _to_float((live_summary or {}).get("avg_ability_score")),
+        "live_p95_wall_seconds": _to_float((live_summary or {}).get("p95_wall_seconds")),
+        "live_ability_per_vram_gb": _to_float(
+            ((live_summary or {}).get("resource_efficiency") or {}).get("ability_per_vram_gb")
+        ),
+        "legacy_avg_ability_score": _to_float((legacy_summary or {}).get("avg_ability_score")),
+        "legacy_p95_wall_seconds": _to_float((legacy_summary or {}).get("p95_wall_seconds")),
+    }
+
+    return {
+        "profile": profile_name,
+        "usage": usage,
+        "model": model,
+        "status": "recommended",
+        "composite_score": _to_float(recommendation.get("composite_score")),
+        "evidence": evidence,
+    }
+
+
+def cmd_dev_cycle(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_started = datetime.now(timezone.utc)
+    run_id = run_started.strftime("%Y%m%dT%H%M%SZ")
+
+    live_output = Path(args.live_output).resolve() if args.live_output else output_dir / f"cycle_live_{run_id}.json"
+    legacy_output = (
+        Path(args.legacy_output).resolve()
+        if args.legacy_output
+        else output_dir / f"cycle_legacy_{run_id}.json"
+    )
+    gate_output = Path(args.gate_output).resolve() if args.gate_output else output_dir / f"cycle_gate_{run_id}.json"
+    summary_output = (
+        Path(args.output).resolve()
+        if args.output
+        else output_dir / f"dev_cycle_summary_{run_id}.json"
+    )
+
+    benchmark_args = argparse.Namespace(
+        matrix=args.matrix,
+        prompts=args.prompts,
+        output_dir=str(output_dir),
+        output=str(live_output),
+        models=args.models,
+        include_optional=bool(args.include_optional),
+        repeats=int(args.repeats),
+        ollama_url=args.ollama_url,
+        timeout_seconds=int(args.timeout_seconds),
+        num_predict=int(args.num_predict),
+        ability_pass_threshold=float(args.ability_pass_threshold),
+    )
+    bench_rc = cmd_benchmark(benchmark_args)
+    if bench_rc != 0:
+        return bench_rc
+
+    legacy_args = argparse.Namespace(
+        matrix=args.matrix,
+        legacy_roots=args.legacy_roots,
+        output_dir=str(output_dir),
+        output=str(legacy_output),
+        models=args.models,
+        include_optional=bool(args.include_optional),
+        repeats=int(args.repeats),
+        max_cases_per_root=int(args.max_cases_per_root),
+        snippet_chars=int(args.snippet_chars),
+        ollama_url=args.ollama_url,
+        timeout_seconds=int(args.timeout_seconds),
+        num_predict=int(args.num_predict),
+        ability_pass_threshold=float(args.ability_pass_threshold),
+        dump_cases=args.dump_cases,
+    )
+    legacy_rc = cmd_legacy_benchmark(legacy_args)
+    if legacy_rc != 0:
+        return legacy_rc
+
+    gate_args = argparse.Namespace(
+        matrix=args.matrix,
+        policy=args.policy,
+        live_report=str(live_output),
+        legacy_report=str(legacy_output),
+        output_dir=str(output_dir),
+        output=str(gate_output),
+        allow_failures=bool(args.allow_gate_failures),
+    )
+    gate_rc = cmd_profile_gate(gate_args)
+
+    live_report = _load_json(live_output)
+    legacy_report = _load_json(legacy_output)
+    gate_report = _load_json(gate_output)
+    profiles = gate_report.get("profiles", {})
+    recommendations: dict[str, Any] = {}
+    for profile_name, payload in profiles.items():
+        recommendation = payload.get("recommendation") if isinstance(payload, dict) else None
+        recommendations[profile_name] = _recommendation_summary(
+            profile_name=profile_name,
+            recommendation=recommendation if isinstance(recommendation, dict) else None,
+            live_report=live_report,
+            legacy_report=legacy_report,
+        )
+
+    cycle_summary = {
+        "run_id": run_id,
+        "event": "DEV_CYCLE_MODEL_BENCHMARK_COMPLETED",
+        "started_at_utc": run_started.isoformat(),
+        "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "paths": {
+            "live_report": str(live_output),
+            "legacy_report": str(legacy_output),
+            "gate_report": str(gate_output),
+        },
+        "passed": bool(gate_report.get("passed", False)),
+        "recommendations": recommendations,
+    }
+
+    if bool(args.apply_policy):
+        checkpoint_output = (
+            Path(args.checkpoint_output).resolve()
+            if args.checkpoint_output
+            else output_dir / f"profile_policy_checkpoint_{run_id}.json"
+        )
+        policy_apply = _apply_profile_policy_checkpoint(
+            run_id=run_id,
+            gate_report=gate_report,
+            gate_report_path=str(gate_output),
+            muninn_url=str(args.muninn_url).strip(),
+            timeout_seconds=int(args.muninn_timeout_seconds),
+            source=str(args.apply_source).strip() or f"dev_cycle_{run_id}",
+            model_profile=str(args.target_model_profile),
+            runtime_model_profile=str(args.target_runtime_model_profile),
+            ingestion_model_profile=str(args.target_ingestion_model_profile),
+            legacy_ingestion_model_profile=str(args.target_legacy_ingestion_model_profile),
+            checkpoint_output=checkpoint_output,
+            dry_run=bool(args.apply_dry_run),
+            allow_gate_failures=bool(args.allow_apply_when_gate_fails),
+        )
+        cycle_summary["policy_apply"] = policy_apply
+
+    with summary_output.open("w", encoding="utf-8") as f:
+        json.dump(cycle_summary, f, indent=2)
+        f.write("\n")
+
+    print(f"Dev-cycle benchmark summary written to: {summary_output}")
+    for profile_name, item in recommendations.items():
+        model = item.get("model")
+        usage = item.get("usage")
+        if model:
+            print(f"[dev-cycle] {profile_name}: {model} -> {usage}")
+        else:
+            print(f"[dev-cycle] {profile_name}: no recommendation -> {usage}")
+
+    if gate_rc != 0 and not bool(args.allow_gate_failures):
+        return gate_rc
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Local Ollama model sync and benchmark utility for Muninn profile testing."
@@ -1243,6 +1709,179 @@ def build_parser() -> argparse.ArgumentParser:
         help="Return success exit code even when one or more profile gates fail.",
     )
     gate_parser.set_defaults(func=cmd_profile_gate)
+
+    cycle_parser = subparsers.add_parser(
+        "dev-cycle",
+        help="Run live+legacy benchmarking and profile-gate in one operator-triggered development cycle.",
+    )
+    cycle_parser.add_argument(
+        "--prompts",
+        default=str(DEFAULT_PROMPTS_PATH),
+        help="Path to benchmark prompts JSONL.",
+    )
+    cycle_parser.add_argument(
+        "--policy",
+        default=str(DEFAULT_PROMOTION_POLICY_PATH),
+        help="Path to profile-promotion gate policy JSON.",
+    )
+    cycle_parser.add_argument(
+        "--legacy-roots",
+        required=True,
+        help="Comma-separated legacy project roots for ingestion-like benchmark cases.",
+    )
+    cycle_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for generated reports.",
+    )
+    cycle_parser.add_argument("--output", help="Optional summary output path.")
+    cycle_parser.add_argument("--live-output", help="Optional live benchmark report output path.")
+    cycle_parser.add_argument("--legacy-output", help="Optional legacy benchmark report output path.")
+    cycle_parser.add_argument("--gate-output", help="Optional profile-gate report output path.")
+    cycle_parser.add_argument("--models", help="Comma-separated explicit model tags to benchmark.")
+    cycle_parser.add_argument(
+        "--include-optional",
+        action="store_true",
+        help="Include optional matrix models when --models is not provided.",
+    )
+    cycle_parser.add_argument("--repeats", default=1, type=int, help="Repeated runs per case.")
+    cycle_parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL, help="Local Ollama base URL.")
+    cycle_parser.add_argument(
+        "--timeout-seconds",
+        default=300,
+        type=int,
+        help="HTTP timeout for each generation request.",
+    )
+    cycle_parser.add_argument(
+        "--num-predict",
+        default=192,
+        type=int,
+        help="Maximum generated tokens per request.",
+    )
+    cycle_parser.add_argument(
+        "--ability-pass-threshold",
+        default=0.75,
+        type=float,
+        help="Ability score threshold used for pass-rate summaries.",
+    )
+    cycle_parser.add_argument(
+        "--max-cases-per-root",
+        default=12,
+        type=int,
+        help="Maximum generated legacy benchmark cases per root directory.",
+    )
+    cycle_parser.add_argument(
+        "--snippet-chars",
+        default=1800,
+        type=int,
+        help="Maximum chars read from each source file when generating legacy cases.",
+    )
+    cycle_parser.add_argument(
+        "--dump-cases",
+        help="Optional JSONL output path for generated legacy benchmark cases.",
+    )
+    cycle_parser.add_argument(
+        "--allow-gate-failures",
+        action="store_true",
+        help="Return success even if profile gate fails one or more profiles.",
+    )
+    cycle_parser.add_argument(
+        "--apply-policy",
+        action="store_true",
+        help="Apply profile defaults to running Muninn server when gate evidence is acceptable.",
+    )
+    cycle_parser.add_argument(
+        "--apply-dry-run",
+        action="store_true",
+        help="Write checkpoint payload without posting profile update to server.",
+    )
+    cycle_parser.add_argument(
+        "--allow-apply-when-gate-fails",
+        action="store_true",
+        help="Allow policy apply even when profile gate report failed.",
+    )
+    cycle_parser.add_argument(
+        "--muninn-url",
+        default=DEFAULT_MUNINN_URL,
+        help="Muninn server base URL for profile policy apply actions.",
+    )
+    cycle_parser.add_argument(
+        "--muninn-timeout-seconds",
+        default=20,
+        type=int,
+        help="HTTP timeout for profile policy apply requests.",
+    )
+    cycle_parser.add_argument(
+        "--apply-source",
+        default="dev_cycle_cli",
+        help="Audit source label used when applying profile policy.",
+    )
+    cycle_parser.add_argument(
+        "--checkpoint-output",
+        help="Optional explicit output path for policy-apply checkpoint artifact.",
+    )
+    cycle_parser.add_argument(
+        "--target-model-profile",
+        default="balanced",
+        help="Target default extraction profile to apply when --apply-policy is used.",
+    )
+    cycle_parser.add_argument(
+        "--target-runtime-model-profile",
+        default="low_latency",
+        help="Target runtime profile to apply when --apply-policy is used.",
+    )
+    cycle_parser.add_argument(
+        "--target-ingestion-model-profile",
+        default="balanced",
+        help="Target ingestion profile to apply when --apply-policy is used.",
+    )
+    cycle_parser.add_argument(
+        "--target-legacy-ingestion-model-profile",
+        default="balanced",
+        help="Target legacy-ingestion profile to apply when --apply-policy is used.",
+    )
+    cycle_parser.set_defaults(func=cmd_dev_cycle)
+
+    rollback_parser = subparsers.add_parser(
+        "rollback-policy",
+        help="Rollback profile policy from a previously written apply checkpoint artifact.",
+    )
+    rollback_parser.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Path to checkpoint written by dev-cycle --apply-policy flow.",
+    )
+    rollback_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for generated rollback reports.",
+    )
+    rollback_parser.add_argument(
+        "--output",
+        help="Optional rollback report output path.",
+    )
+    rollback_parser.add_argument(
+        "--muninn-url",
+        default=DEFAULT_MUNINN_URL,
+        help="Muninn server base URL for rollback request.",
+    )
+    rollback_parser.add_argument(
+        "--muninn-timeout-seconds",
+        default=20,
+        type=int,
+        help="HTTP timeout for rollback request.",
+    )
+    rollback_parser.add_argument(
+        "--source",
+        default="rollback_policy_cli",
+        help="Audit source label used when rolling back profile policy.",
+    )
+    rollback_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write rollback report without posting rollback request to server.",
+    )
+    rollback_parser.set_defaults(func=cmd_rollback_policy)
 
     return parser
 
