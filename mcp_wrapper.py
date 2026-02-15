@@ -10,6 +10,7 @@ import sys
 import os
 import time
 import json
+import base64
 import logging
 import subprocess
 import threading
@@ -45,6 +46,8 @@ _TASKS_DEFAULT_TTL_MS = max(1, int(os.environ.get("MUNINN_MCP_TASK_TTL_MS", "600
 _TASKS_MAX_TTL_MS = max(_TASKS_DEFAULT_TTL_MS, int(os.environ.get("MUNINN_MCP_TASK_MAX_TTL_MS", "86400000")))
 _TASKS_LIST_PAGE_SIZE = max(1, int(os.environ.get("MUNINN_MCP_TASKS_LIST_PAGE_SIZE", "50")))
 _TASKS_MAX_RETAINED = max(_TASKS_LIST_PAGE_SIZE, int(os.environ.get("MUNINN_MCP_TASKS_MAX_RETAINED", "500")))
+_TASK_POLL_INTERVAL_MS = max(1, int(os.environ.get("MUNINN_MCP_TASK_POLL_INTERVAL_MS", "250")))
+_TASK_CURSOR_PREFIX = "tasks:v1:"
 _thread_local = threading.local()
 _RPC_WRITE_LOCK = threading.Lock()
 _DISPATCH_MAX_WORKERS = max(1, int(os.environ.get("MUNINN_MCP_DISPATCH_MAX_WORKERS", "8")))
@@ -657,7 +660,28 @@ def _public_task(task: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _related_task_meta(task_id: str) -> Dict[str, Any]:
-    return {"io.modelcontextprotocol/related-task": {"id": task_id}}
+    return {"io.modelcontextprotocol/related-task": {"taskId": task_id}}
+
+
+def _encode_task_cursor(offset: int) -> str:
+    payload = f"{_TASK_CURSOR_PREFIX}{offset}".encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_task_cursor(cursor: str) -> int:
+    if cursor.isdigit():
+        return int(cursor)
+    padded = cursor + "=" * (-len(cursor) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except Exception as exc:
+        raise ValueError("Invalid params: tasks/list cursor must be an opaque cursor token") from exc
+    if not decoded.startswith(_TASK_CURSOR_PREFIX):
+        raise ValueError("Invalid params: tasks/list cursor must be an opaque cursor token")
+    raw_offset = decoded[len(_TASK_CURSOR_PREFIX):]
+    if not raw_offset.isdigit():
+        raise ValueError("Invalid params: tasks/list cursor must be an opaque cursor token")
+    return int(raw_offset)
 
 
 def _emit_task_status_notification(task: Dict[str, Any]) -> None:
@@ -725,7 +749,7 @@ def _lookup_task_locked(task_id: str) -> Optional[Dict[str, Any]]:
 
 
 def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
-    """Return retained tasks with deterministic cursor pagination."""
+    """Return retained tasks with deterministic opaque cursor pagination."""
     params = params or {}
     cursor = params.get("cursor")
     if cursor is not None and not isinstance(cursor, str):
@@ -742,9 +766,9 @@ def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     start = 0
     if isinstance(cursor, str) and cursor:
         try:
-            start = int(cursor)
+            start = _decode_task_cursor(cursor)
         except ValueError:
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be a decimal offset string")
+            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be an opaque cursor token")
             return
         if start < 0:
             _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be non-negative")
@@ -758,7 +782,7 @@ def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     next_cursor = start + page_size if start + page_size < len(tasks) else None
     result = {"tasks": page}
     if next_cursor is not None:
-        result["nextCursor"] = str(next_cursor)
+        result["nextCursor"] = _encode_task_cursor(next_cursor)
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
@@ -898,6 +922,7 @@ def handle_call_tool_with_task(
         "createdAt": now_iso,
         "lastUpdatedAt": now_iso,
         "ttl": ttl_ms,
+        "pollInterval": _TASK_POLL_INTERVAL_MS,
         "_expiresAtEpoch": now_epoch + (ttl_ms / 1000.0),
         "_cancelRequested": False,
     }

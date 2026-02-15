@@ -454,7 +454,7 @@ def test_tasks_list_returns_empty_collection(monkeypatch):
         "jsonrpc": "2.0",
         "id": "req-tasks-list-ok",
         "method": "tasks/list",
-        "params": {"cursor": "0"},
+        "params": {},
     })
 
     assert len(sent) == 1
@@ -477,7 +477,7 @@ def test_tasks_list_invalid_cursor_rejected(monkeypatch):
 
     assert len(sent) == 1
     assert sent[0]["error"]["code"] == -32602
-    assert "decimal offset string" in sent[0]["error"]["message"]
+    assert "opaque cursor token" in sent[0]["error"]["message"]
 
 
 def test_tasks_list_supports_cursor_pagination(monkeypatch):
@@ -505,14 +505,15 @@ def test_tasks_list_supports_cursor_pagination(monkeypatch):
     assert len(page1["tasks"]) == 2
     assert page1["tasks"][0]["taskId"] == "task-3"
     assert page1["tasks"][1]["taskId"] == "task-2"
-    assert page1["nextCursor"] == "2"
+    assert page1["nextCursor"] != "2"
+    assert mcp_wrapper._decode_task_cursor(page1["nextCursor"]) == 2
 
     sent.clear()
     mcp_wrapper._dispatch_rpc_message({
         "jsonrpc": "2.0",
         "id": "req-tasks-list-page-2",
         "method": "tasks/list",
-        "params": {"cursor": "2", "limit": 2},
+        "params": {"cursor": page1["nextCursor"], "limit": 2},
     })
     assert len(sent) == 1
     page2 = sent[0]["result"]
@@ -637,7 +638,7 @@ def test_tasks_result_requires_terminal_status(monkeypatch):
     assert len(sent) == 1
     assert sent[0]["id"] == "req-tasks-result-blocking"
     assert sent[0]["result"]["content"][0]["text"] == "ok"
-    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["id"] == "task-1"
+    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == "task-1"
 
 
 def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
@@ -663,7 +664,7 @@ def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
     assert len(sent) == 1
     assert sent[0]["id"] == "req-tasks-result-ok"
     assert sent[0]["result"]["content"][0]["text"] == "ok"
-    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["id"] == "task-1"
+    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == "task-1"
 
 
 def test_tasks_result_rejects_terminal_task_without_payload(monkeypatch):
@@ -813,6 +814,7 @@ def test_tools_call_with_task_returns_create_task_and_completes(monkeypatch):
     create_response = next(msg for msg in sent if msg.get("id") == "req-tools-call-task")
     assert create_response["result"]["task"]["status"] == "working"
     assert create_response["result"]["task"]["ttl"] == 1234
+    assert create_response["result"]["task"]["pollInterval"] == mcp_wrapper._TASK_POLL_INTERVAL_MS
     assert "io.modelcontextprotocol/model-immediate-response" in create_response["result"]["_meta"]
 
     notifications = [msg for msg in sent if msg.get("method") == "notifications/tasks/status"]
@@ -829,7 +831,7 @@ def test_tools_call_with_task_returns_create_task_and_completes(monkeypatch):
     })
     assert len(sent) == 1
     assert sent[0]["result"]["content"][0]["text"] == "ok"
-    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["id"] == task_id
+    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == task_id
 
 
 def test_list_tools_adds_json_schema_and_annotations(monkeypatch):

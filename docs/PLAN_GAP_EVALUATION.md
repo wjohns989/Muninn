@@ -45,6 +45,7 @@ Evaluator: Codex
 - **Phase 4S MCP task lifecycle baseline is now implemented**: wrapper now handles `tasks/get`, `tasks/result`, and `tasks/cancel` with schema-aligned `taskId` validation and deterministic lifecycle error behavior.
 - **Phase 4T task-augmented tools/call baseline is now implemented**: wrapper now supports task-backed `tools/call` execution with status notifications plus TTL/retention/pagination governance for task state.
 - **Phase 4U blocking-result dispatch compliance baseline is now implemented**: `tasks/result` now remains lifecycle-blocking while wrapper dispatch routes blocking methods to background workers with stdout write-locking for concurrent transport safety.
+- **Phase 4V task metadata/cursor compliance baseline is now implemented**: related-task metadata now uses `taskId`, task records now include `pollInterval`, and `tasks/list` now emits opaque cursor tokens.
 
 ## Status vs Plan
 
@@ -171,6 +172,11 @@ Evaluator: Codex
   - `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - blocking lifecycle semantics now run on background dispatch paths (`tasks/result`, `tools/call`) so wrapper channel remains responsive under concurrent requests.
   - review follow-up now bounds background dispatch with a thread pool and removes reflected exception text from guarded-dispatch logs.
+- Phase 4V metadata/cursor compliance tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `52 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - related-task metadata now emits schema-aligned `taskId` key and `tasks/list` now uses opaque cursor tokens with backward-compatible numeric decode handling.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -202,7 +208,7 @@ Evaluator: Codex
    - Periodic abstraction of dense episodic clusters into semantic memories with reversible provenance links.
    - Helps scale and keeps retrieval focused.
 6. **MCP 2025-11 conformance tranche (follow-up now narrower)**
-   - Baseline tasks/list/get/result/cancel + task-augmented `tools/call` + status notifications + retention/pagination governance + blocking-result responsive dispatch are now implemented; remaining high-ROI work is advanced `input_required` task flows and optional persistent task-store backing.
+   - Baseline tasks/list/get/result/cancel + task-augmented `tools/call` + status notifications + retention/pagination governance + blocking-result responsive dispatch + metadata/cursor compliance are now implemented; remaining high-ROI work is advanced `input_required` task flows and optional persistent task-store backing.
 7. **OpenTelemetry GenAI semantic instrumentation**
    - Standardized retrieval/add trace telemetry is implemented; next maturity step is dashboard/alert packs for regression triage.
 
