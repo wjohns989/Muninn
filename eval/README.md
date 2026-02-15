@@ -264,6 +264,29 @@ python -m eval.mcp_transport_soak \
 
 Reports are written to `eval/reports/mcp_transport/`.
 
+### Transport Blocker Closure Campaign
+
+Use this to run deterministic multi-run closure checks against the transport intermittency criteria.
+
+```bash
+python -m eval.mcp_transport_closure \
+  --streak-target 30 \
+  --max-campaign-runs 60 \
+  --transports framed,line \
+  --min-p95-compliance-ratio 0.95 \
+  --soak-iterations 25 \
+  --soak-warmup-requests 2 \
+  --soak-timeout-sec 15 \
+  --soak-max-p95-ms 5000 \
+  --soak-server-url http://127.0.0.1:1
+```
+
+This emits `eval/reports/mcp_transport/mcp_transport_closure_<run_id>.json` with:
+- closure-ready verdict,
+- consecutive-pass streak state,
+- p95 compliance ratio in observation window,
+- explicit criteria flags (including unresolved regression/defect inputs).
+
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
 `approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.

@@ -297,6 +297,11 @@
     - configurable long-tool allowlist added (`MUNINN_MCP_AUTO_TASK_TOOL_NAMES`),
     - optional client-capability gate added (`MUNINN_MCP_AUTO_TASK_REQUIRE_CLIENT_CAP`),
     - mitigation note documented in `docs/plans/2026-02-15-phase5a1-mcp-long-tool-auto-task-deferral.md`.
+77. Phase 5A.2 transport closure campaign automation implemented:
+    - new deterministic closure runner added (`python -m eval.mcp_transport_closure`),
+    - campaign now orchestrates repeated soak runs across `framed`/`line` transports and emits one closure verdict artifact,
+    - closure criteria are now machine-evaluable (streak target, window regressions, p95 ratio, unresolved regression/defect/failure inputs),
+    - tranche note documented in `docs/plans/2026-02-15-phase5a2-mcp-transport-closure-campaign-automation.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -351,6 +356,7 @@
 - Phase 5A continuation hardening verification: `79 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 - Phase 5A continuation security follow-up verification: `104 passed` (`tests/test_memory_user_profile.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`).
 - Phase 5A.1 long-tool auto-task mitigation verification: `82 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
+- Phase 5A.2 closure campaign automation verification: transport eval utility compile pass (`python -m py_compile eval/mcp_transport_closure.py`) + `86 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -390,6 +396,7 @@
 35. **Contract-evolution ROI**: opaque cursor tokens + schema-aligned related-task `taskId` remove brittle client coupling to internal offsets/field aliases and enable non-breaking pagination/task contract evolution.
 36. **Host-timeout avoidance ROI**: wrapper-level tool-call deadline budgeting plus per-attempt timeout clamping reduces intermittent host-side `120s` transport closures by failing deterministically before channel teardown windows.
 37. **Long-call timeout-mitigation ROI**: auto-deferring configured ingest-heavy `tools/call` operations into task mode removes long synchronous wait pressure from host timeout windows while preserving completion retrieval via task lifecycle APIs.
+38. **Closure-governance ROI**: automated transport-closure campaign artifacts prevent subjective blocker-status calls and provide auditable, criteria-bound evidence for release gating.
 37. **Timeout-window integrity ROI**: startup-recovery budget gating prevents low-remaining-budget preflight work from consuming terminal wall time, reducing deadline overshoot risk in intermittent outage/retry windows.
 38. **Cross-host adaptation ROI**: deriving deadline budgets from host timeout and safety margin reduces manual tuning overhead across different MCP client timeout policies while preserving deterministic safety margins.
 39. **Misconfiguration-resilience ROI**: explicit deadline overrun guardrail defaults to host-safe clamping, preventing operator-configured over-budget values from silently reintroducing transport-closure risk.
