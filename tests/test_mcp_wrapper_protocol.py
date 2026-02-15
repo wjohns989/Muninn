@@ -740,6 +740,27 @@ def test_get_tool_call_deadline_seconds_allows_explicit_overrun_when_enabled(mon
     assert mcp_wrapper._get_tool_call_deadline_seconds() == 119.0
 
 
+def test_get_task_result_max_wait_seconds_defaults_to_host_safe_budget(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC", raising=False)
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+
+    assert mcp_wrapper._get_task_result_max_wait_seconds() == 110.0
+
+
+def test_get_task_result_max_wait_seconds_can_disable_budget(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC", "0")
+    assert mcp_wrapper._get_task_result_max_wait_seconds() is None
+
+
+def test_get_task_result_max_wait_seconds_invalid_value_falls_back(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC", "invalid")
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "90")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "20")
+
+    assert mcp_wrapper._get_task_result_max_wait_seconds() == 70.0
+
+
 def test_format_tool_result_text_truncates_large_payload(monkeypatch):
     monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "512")
     text = mcp_wrapper._format_tool_result_text(
@@ -1069,6 +1090,29 @@ def test_tasks_result_requires_terminal_status(monkeypatch):
     assert sent[0]["id"] == "req-tasks-result-blocking"
     assert sent[0]["result"]["content"][0]["text"] == "ok"
     assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == "task-1"
+
+
+def test_tasks_result_returns_retryable_error_when_wait_budget_exhausted(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC", "0.01")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-timeout",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == "req-tasks-result-timeout"
+    assert sent[0]["error"]["code"] == -32002
+    assert "not ready within the host-safe wait budget" in sent[0]["error"]["message"]
 
 
 def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
