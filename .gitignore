@@ -45,6 +45,10 @@ monitor.log
 # Models (large binary files — download separately)
 models/
 *.gguf
+.ollama/
+ollama-local-cache/
+eval/reports/ollama/
+eval/reports/model_benchmarks/
 
 # Loki / session state
 .loki/
