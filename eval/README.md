@@ -185,6 +185,10 @@ python -m eval.ollama_local_benchmark approval-manifest \
 python -m eval.ollama_local_benchmark apply-checkpoint \
   --checkpoint eval/reports/ollama/profile_policy_checkpoint_<run_id>.json \
   --approval-manifest eval/reports/ollama/policy_approval_<run_id>.json \
+  --require-change-context \
+  --require-pr-number \
+  --require-commit-sha \
+  --require-branch-name \
   --muninn-url http://127.0.0.1:42069
 ```
 
@@ -224,6 +228,11 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 - manifest checkpoint SHA-256 must match the supplied checkpoint file,
 - optional manifest checkpoint path must match the supplied checkpoint path,
 - optional manifest `change_context` must be a JSON object when present,
+- optional enforcement flags can require provenance fields before apply:
+  - `--require-change-context`
+  - `--require-pr-number`
+  - `--require-commit-sha`
+  - `--require-branch-name`
 - successful apply writes a deterministic apply report artifact.
 
 ## Phase Hygiene Gate
