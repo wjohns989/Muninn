@@ -344,6 +344,7 @@
 - Restart hygiene + doc/packaging tranche verification: no unresolved conflict markers repo-wide and no staged restart leftovers (`git diff --cached --name-only` empty), plus hygiene check pass (`7 passed`: `tests/test_phase_hygiene.py`).
 - Phase 5A user-profile + chronology/hierarchy + standalone foundation verification: `116 passed` (`tests/test_ingestion_discovery.py`, `tests/test_memory_ingestion.py`, `tests/test_memory_user_profile.py`, `tests/test_sqlite_goal_handoff.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`) + compile checks on touched modules.
 - Phase 5A continuation hardening verification: `79 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
+- Phase 5A continuation security follow-up verification: `104 passed` (`tests/test_memory_user_profile.py`, `tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
