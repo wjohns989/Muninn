@@ -2263,10 +2263,13 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
 
 
 def _dispatch_rpc_message_guarded(msg: Dict[str, Any]) -> None:
+    msg_id = msg.get("id")
     try:
         _dispatch_rpc_message(msg)
     except Exception:
         logger.error("An unexpected error occurred during RPC dispatch.")
+        if msg_id is not None and not _TRANSPORT_CLOSED.is_set():
+            _send_json_rpc_error(msg_id, -32603, "Internal error during request dispatch.")
 
 
 def _get_dispatch_executor() -> ThreadPoolExecutor:

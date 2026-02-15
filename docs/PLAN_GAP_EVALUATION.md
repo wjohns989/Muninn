@@ -59,6 +59,7 @@ Evaluator: Codex
 - **Phase 4AB startup-recovery budget gating baseline is now implemented**: preflight/retry startup recovery now checks remaining deadline budget and skips recovery when budget is below threshold (`MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, default `28s`) to avoid timeout-window overruns.
 - **Phase 4AC host-timeout-derived deadline budgeting baseline is now implemented**: when explicit deadline is not set, wrapper now derives tool-call budget from host timeout minus safety margin (`MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC` - `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`) with safe minimum clamping, improving cross-client timeout compatibility.
 - **Phase 4AD explicit-deadline overrun guardrail baseline is now implemented**: explicit deadline values now default-clamp to host-safe budgets unless operator opt-out is set (`MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN=1`), preventing misconfiguration-driven timeout-window overruns.
+- **Phase 4AE guarded-dispatch fail-fast response baseline is now implemented**: guarded RPC dispatch now emits deterministic `-32603` replies for request IDs when unexpected dispatch exceptions occur, preventing silent hangs on background-dispatched request paths.
 =======
 - **Phase 1 is mostly present, but with important correctness/integration gaps** (Instructor wiring, Docker path detection behavior, and recall trace fidelity).
 - **Phase 2 is partially present** (conflict/dedup/weight-adapter modules exist) but not fully aligned with the plan’s dependency, data, and quality assumptions.
@@ -124,7 +125,7 @@ Evaluator: Codex
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
-9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls + startup-recovery budget gating + host-timeout-derived budgeting + explicit-overrun guardrails are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`, `MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC`, `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`, `MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, and `MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN` as needed). Post-restart in-session signal: `get_model_profiles` and `add_memory` MCP calls succeeded, but continued runtime observation is still required before closing blocker status.
+9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls + startup-recovery budget gating + host-timeout-derived budgeting + explicit-overrun guardrails + guarded-dispatch fail-fast replies are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`, `MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC`, `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`, `MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, and `MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN` as needed). Post-restart in-session signal: `get_model_profiles` and `add_memory` MCP calls succeeded, and latest framed transport soak run passed (`run_id=20260215_170548`), but continued runtime observation is still required before closing blocker status.
 
 ## Validation Snapshot
 
@@ -243,6 +244,12 @@ Evaluator: Codex
   - `70 passed` (`tests/test_mcp_wrapper_protocol.py`)
   - `77 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - explicit over-budget deadline values now clamp to host-safe budget by default unless overrun opt-out is explicitly enabled.
+- Phase 4AE guarded-dispatch fail-fast response tranche now passes targeted checks:
+  - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `71 passed` (`tests/test_mcp_wrapper_protocol.py`)
+  - `78 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
+  - `python -m eval.mcp_transport_soak --iterations 10 --warmup-requests 2 --timeout-sec 15 --transport framed --max-p95-ms 5000` -> PASS (`run_id=20260215_170548`)
+  - guarded-dispatch path now returns deterministic `-32603` replies for request IDs when unexpected dispatcher exceptions occur.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -367,6 +374,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4ab-mcp-startup-recovery-budget-gating.md`
 - `docs/plans/2026-02-15-phase4ac-mcp-host-timeout-derived-deadline-budget.md`
 - `docs/plans/2026-02-15-phase4ad-mcp-explicit-deadline-overrun-guardrail.md`
+- `docs/plans/2026-02-15-phase4ae-mcp-guarded-dispatch-fail-fast-response.md`
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
 ## Model-Caliber Research Update (2026-02-14)
