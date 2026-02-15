@@ -136,6 +136,21 @@ Completed since last update:
    - apply flow now validates gate/recommendation evidence and writes checkpoint artifact before mutation,
    - new `rollback-policy` command restores prior profile defaults from checkpoint artifacts,
    - implementation plan documented (`docs/plans/2026-02-15-phase4m-dev-cycle-policy-apply-rollback.md`).
+42. Restart artifact cleanup and repository hygiene completed:
+   - stale staged restart artifacts were cleared and obsolete backup files removed,
+   - unresolved conflict-marker state was purged from active planning/research docs,
+   - repository metadata (description/homepage/topics) was normalized for current scope.
+43. Public-facing documentation and packaging-license hygiene completed:
+   - README was rewritten to a production-grade, vendor-neutral surface,
+   - Apache distribution attribution hygiene is now explicit via `NOTICE`,
+   - packaging now includes `LICENSE` and `NOTICE` via setuptools `license-files`.
+44. Quantitative SOTA+ comparison framework documented:
+   - a release decision protocol with explicit gate families (quality, reliability/latency, statistical validity, reproducibility/integrity) is now defined,
+   - quantitative closure criteria for the MCP transport intermittency blocker are now explicit,
+   - implementation plan documented (`docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`).
+45. Web-research expansion added for next-phase benchmarking:
+   - benchmark matrix now includes LongMemEval, StructMemEval, and Mem2Act-style memory-conditioned action coverage targets,
+   - roadmap now requires a final unified SOTA+ verdict artifact bound to commit SHA and benchmark hashes.
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -182,6 +197,7 @@ Still open and blocking SOTA claims:
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
 3. Profile-level promotion criteria are partially open: routing, audit visibility, ability/resource benchmark plumbing, and controlled apply/rollback paths are now implemented; telemetry-backed automatic default-policy alerting and governance thresholds are still pending.
 4. Browser UI preference depth remains partially open: persistence is implemented, but advanced user-adaptive controls (profile presets, safety mode templates, benchmark launch UX) still need phased rollout.
+5. Unified SOTA+ verdict automation remains open: benchmark breadth, cross-benchmark normalization, and one-command promotion verdict emission are not yet complete.
 
 ---
 
