@@ -132,6 +132,15 @@ CREATE TABLE IF NOT EXISTS profile_policy_events (
 );
 """
 
+USER_PROFILES = """
+CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id TEXT PRIMARY KEY,
+    profile_json TEXT NOT NULL DEFAULT '{}',
+    source TEXT NOT NULL DEFAULT 'unknown',
+    updated_at REAL NOT NULL
+);
+"""
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -168,6 +177,7 @@ class SQLiteMetadataStore:
         conn.execute(HANDOFF_EVENT_LEDGER)
         conn.execute(RETRIEVAL_FEEDBACK)
         conn.execute(PROFILE_POLICY_EVENTS)
+        conn.execute(USER_PROFILES)
         self._ensure_column_exists(conn, "retrieval_feedback", "rank", "INTEGER")
         self._ensure_column_exists(conn, "retrieval_feedback", "sampling_prob", "REAL")
         conn.execute(
@@ -175,6 +185,9 @@ class SQLiteMetadataStore:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_profile_policy_events_created ON profile_policy_events(created_at DESC);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_profiles_updated_at ON user_profiles(updated_at DESC);"
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)",
@@ -394,6 +407,65 @@ class SQLiteMetadataStore:
             "constraints": constraints,
             "goal_embedding": embedding,
             "updated_at": row["updated_at"],
+        }
+
+    def set_user_profile(
+        self,
+        *,
+        user_id: str,
+        profile: Dict[str, Any],
+        source: str = "unknown",
+    ) -> None:
+        """Persist or update an editable scoped user profile/context object."""
+        conn = self._get_conn()
+        payload = profile if isinstance(profile, dict) else {}
+        conn.execute(
+            """
+            INSERT INTO user_profiles (user_id, profile_json, source, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                profile_json = excluded.profile_json,
+                source = excluded.source,
+                updated_at = excluded.updated_at
+            """,
+            (
+                user_id,
+                json.dumps(payload),
+                source or "unknown",
+                time.time(),
+            ),
+        )
+        conn.commit()
+
+    def get_user_profile(self, *, user_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch editable scoped user profile/context object if present."""
+        conn = self._get_conn()
+        row = conn.execute(
+            """
+            SELECT user_id, profile_json, source, updated_at
+            FROM user_profiles
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        profile: Dict[str, Any] = {}
+        raw_profile = row["profile_json"]
+        if raw_profile:
+            try:
+                parsed = json.loads(raw_profile)
+                if isinstance(parsed, dict):
+                    profile = parsed
+            except json.JSONDecodeError:
+                profile = {}
+
+        return {
+            "user_id": row["user_id"],
+            "profile": profile,
+            "source": row["source"],
+            "updated_at": float(row["updated_at"]),
         }
 
     def has_handoff_event(self, event_id: str) -> bool:

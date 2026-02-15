@@ -109,6 +109,13 @@ class SetProjectGoalRequest(BaseModel):
     constraints: List[str] = Field(default_factory=list)
 
 
+class SetUserProfileRequest(BaseModel):
+    user_id: str = "global_user"
+    profile: Dict[str, Any] = Field(default_factory=dict)
+    merge: bool = True
+    source: str = "api"
+
+
 class ExportHandoffRequest(BaseModel):
     user_id: str = "global_user"
     namespace: str = "global"
@@ -422,6 +429,48 @@ async def set_project_goal_endpoint(req: SetProjectGoalRequest):
             return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error setting project goal: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/profile/user/set")
+async def set_user_profile_endpoint(req: SetUserProfileRequest):
+    """Set/update editable user profile and global context."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        if GLOBAL_LOCK is None:
+            raise HTTPException(status_code=503, detail="Server not initialized")
+        async with GLOBAL_LOCK:
+            result = await memory.set_user_profile(
+                user_id=req.user_id or "global_user",
+                profile=req.profile,
+                merge=req.merge,
+                source=req.source,
+            )
+            return {"success": True, "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Error setting user profile: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/profile/user/get")
+async def get_user_profile_endpoint(
+    user_id: str = "global_user",
+):
+    """Fetch editable user profile and global context."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        result = await memory.get_user_profile(
+            user_id=user_id or "global_user",
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error getting user profile: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
