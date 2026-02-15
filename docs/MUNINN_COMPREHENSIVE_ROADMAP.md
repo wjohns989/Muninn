@@ -127,6 +127,10 @@ Completed since last update:
 39. MCP transport framing compatibility hardening implemented:
    - `mcp_wrapper` stdin parsing now supports both newline JSON and `Content-Length` framed JSON-RPC,
    - this closes a cross-client transport mismatch class that can surface as immediate `Transport closed`.
+40. MCP startup + Windows tray operational hardening implemented:
+   - `mcp_wrapper` now performs launch-time dependency bootstrap (best effort) and triggers Ollama/server startup when enabled,
+   - Windows tray now acts as an operational MCP entrypoint with Browser UI open, MCP health probe, explicit Ollama start action, and wrapper-log shortcut,
+   - implementation plan documented (`docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`).
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -145,6 +149,7 @@ Verification:
   - `8 passed` across Phase 4I/4J benchmark helper tests (`tests/test_ollama_local_benchmark.py`).
   - `14 passed` across benchmark+hygiene helper tests (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
   - `28 passed` across MCP transport protocol tests (`tests/test_mcp_wrapper_protocol.py`).
+  - `30 passed` across MCP startup/bootstrap protocol tests (`tests/test_mcp_wrapper_protocol.py`) plus initialize smoke probe.
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)

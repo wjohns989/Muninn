@@ -12,6 +12,7 @@ import time
 import json
 import logging
 import subprocess
+import threading
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, List, BinaryIO
@@ -258,6 +259,33 @@ def _collect_startup_warnings(
         )
 
     return warnings
+
+
+def _bootstrap_dependencies_on_launch() -> None:
+    """
+    Best-effort dependency bootstrap when the MCP wrapper process starts.
+
+    This runs independently from initialize-time checks so users who enable
+    autostart do not have to wait for first MCP tool usage to trigger startup.
+    """
+    if not _env_flag("MUNINN_MCP_AUTOSTART_ON_LAUNCH", True):
+        logger.info("Launch-time dependency bootstrap disabled by MUNINN_MCP_AUTOSTART_ON_LAUNCH.")
+        return
+
+    autostart_server_enabled = _env_flag("MUNINN_MCP_AUTOSTART_SERVER", True)
+    autostart_ollama_enabled = _env_flag("MUNINN_MCP_AUTOSTART_OLLAMA", True)
+
+    if autostart_server_enabled:
+        if ensure_server_running():
+            logger.info("Launch-time bootstrap: Muninn server is ready.")
+        else:
+            logger.warning("Launch-time bootstrap: Muninn server is not reachable.")
+
+    if autostart_ollama_enabled:
+        if check_and_start_ollama():
+            logger.info("Launch-time bootstrap: Ollama is ready.")
+        else:
+            logger.warning("Launch-time bootstrap: Ollama is not reachable.")
 
 
 def _build_initialize_instructions(startup_warnings: Optional[List[str]] = None) -> str:
@@ -1429,6 +1457,14 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
 
 def main():
     logger.info("Muninn MCP Wrapper started")
+
+    # Trigger dependency startup immediately (best effort) so MCP sessions
+    # can attach to warm backends when user has autostart enabled.
+    threading.Thread(
+        target=_bootstrap_dependencies_on_launch,
+        name="muninn-mcp-bootstrap",
+        daemon=True,
+    ).start()
     
     # Standard input loop
     while True:
