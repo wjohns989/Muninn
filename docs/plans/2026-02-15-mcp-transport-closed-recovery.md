@@ -65,3 +65,14 @@ Operational governance follow-on is now implemented in `docs/plans/2026-02-15-ph
    - apply from checkpoint now requires approved manifest and integrity match checks.
 3. Validation increment:
    - benchmark/policy command tests now include approval/apply flows (`16 passed`, `tests/test_ollama_local_benchmark.py`).
+
+## Continuation Update (Phase 4O)
+
+Governance-provenance follow-on is now implemented in `docs/plans/2026-02-15-phase4o-approval-provenance-context.md`:
+
+1. Approval manifest provenance:
+   - approval artifacts now support PR/commit/branch provenance context with validation and git fallback discovery.
+2. Apply-report propagation:
+   - checkpoint apply reports now include manifest provenance context for audit linkage.
+3. Validation increment:
+   - benchmark/policy command tests now at `18 passed` (`tests/test_ollama_local_benchmark.py`).
