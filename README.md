@@ -230,6 +230,10 @@ args = ["/path/to/muninn-mcp/mcp_wrapper.py"]
 | `MUNINN_RERANKER_ENABLED` | `true` | Enable cross-encoder reranking |
 | `MUNINN_CONSOLIDATION_ENABLED` | `true` | Enable background consolidation |
 | `MUNINN_SERVER_URL` | `http://localhost:42069` | Server URL for MCP wrapper |
+| `MUNINN_MCP_AUTOSTART_ON_LAUNCH` | `true` | Trigger server/Ollama startup checks when MCP wrapper process starts |
+| `MUNINN_MCP_AUTOSTART_SERVER` | `true` | Auto-start Muninn server when unavailable |
+| `MUNINN_MCP_AUTOSTART_OLLAMA` | `true` | Auto-start Ollama when unavailable |
+| `MUNINN_TRAY_AUTOSTART_OLLAMA` | `true` | Allow tray app to auto-start Ollama during server launch |
 
 ---
 
@@ -317,6 +321,15 @@ Visit `http://localhost:42069` when the server is running to access the browser 
 - Legacy source discovery and checkbox-based reingestion of assistant/MCP memory artifacts.
 - Project-folder ingestion with chronological ordering (`none`, `oldest_first`, `newest_first`).
 - Search and system operations in one UI.
+
+## Windows Tray Operations
+
+`tray_app.py` provides a Windows system-tray wrapper for daily operation. It now supports:
+
+- `Open Browser UI` as the primary entrypoint (auto-starts server when needed).
+- `MCP Health Check` (server + Ollama + wrapper handshake probe).
+- `Start Ollama` when Ollama is unavailable.
+- `View MCP Wrapper Log` for transport diagnostics.
 
 ---
 
