@@ -210,6 +210,10 @@
     - `tasks/result` blocking semantics are retained for lifecycle compliance,
     - wrapper main loop now dispatches blocking methods (`tasks/result`, `tools/call`) on background workers to prevent channel starvation,
     - stdout JSON-RPC writes are now guarded by a process-wide lock to prevent message interleaving under concurrent responses/notifications.
+56. Phase 4V task metadata + cursor compliance baseline implemented:
+    - related-task metadata now uses schema-aligned `taskId` key for result correlation,
+    - `tasks/list` now returns opaque cursor tokens (with backward-compatible numeric decode path),
+    - task records now include explicit `pollInterval` guidance for client polling cadence.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -248,6 +252,7 @@
 - Phase 4T task-augmented tools/call verification: `50 passed` (`tests/test_mcp_wrapper_protocol.py`) + `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_055320.json`).
 - Phase 4U blocking-result dispatch verification: `50 passed` (`tests/test_mcp_wrapper_protocol.py`) + `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_055320.json`).
 - Phase 4U review-hardening verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_060835.json`).
+- Phase 4V metadata/cursor compliance verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_061319.json`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -284,6 +289,7 @@
 32. **Task-orchestration reliability ROI**: task-augmented `tools/call` + status notifications + retention governance reduce client polling complexity and prevent unbounded task-state memory growth in long-lived sessions.
 33. **Protocol-correctness without throughput regression ROI**: background dispatch for blocking lifecycle methods keeps `tasks/result` spec-aligned while preserving responsiveness for concurrent health/poll/tool traffic.
 34. **Concurrency guardrail ROI**: bounded dispatch executor + generic guarded logging reduce thread-exhaustion and log-forging risk under adversarial or malformed request bursts.
+35. **Contract-evolution ROI**: opaque cursor tokens + schema-aligned related-task `taskId` remove brittle client coupling to internal offsets/field aliases and enable non-breaking pagination/task contract evolution.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
