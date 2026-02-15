@@ -16,12 +16,21 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _decode_output(data: bytes | None) -> str:
+    if not data:
+        return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("cp1252", errors="replace")
+
+
 def _run_json_command(command: list[str]) -> Any:
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    completed = subprocess.run(command, capture_output=True, text=False, check=False)
+    stderr = _decode_output(completed.stderr).strip()
     if completed.returncode != 0:
-        stderr = completed.stderr.strip()
         raise RuntimeError(f"command failed: {' '.join(command)}\n{stderr}")
-    stdout = completed.stdout.strip()
+    stdout = _decode_output(completed.stdout).strip()
     return json.loads(stdout) if stdout else None
 
 
@@ -92,10 +101,15 @@ def _run_text_command(command: str) -> tuple[int, str, dict[str, int] | None, li
         run_tokens,
         shell=False,
         capture_output=True,
-        text=True,
+        text=False,
         check=False,
     )
-    output = "\n".join([completed.stdout, completed.stderr]).strip()
+    output = "\n".join(
+        [
+            _decode_output(completed.stdout),
+            _decode_output(completed.stderr),
+        ]
+    ).strip()
     junit_summary: dict[str, int] | None = None
     if junit_path is not None and junit_path.exists():
         try:

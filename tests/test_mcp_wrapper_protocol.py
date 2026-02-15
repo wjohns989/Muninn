@@ -6,6 +6,24 @@ import pytest
 import mcp_wrapper
 
 
+def _sample_task(
+    *,
+    task_id: str,
+    status: str,
+    result: dict | None = None,
+) -> dict:
+    payload = {
+        "taskId": task_id,
+        "status": status,
+        "createdAt": "2026-02-15T04:00:00Z",
+        "lastUpdatedAt": "2026-02-15T04:00:00Z",
+        "ttl": 60000,
+    }
+    if result is not None:
+        payload["result"] = result
+    return payload
+
+
 @pytest.fixture(autouse=True)
 def reset_session_state():
     previous = copy.deepcopy(mcp_wrapper._SESSION_STATE)
@@ -16,6 +34,7 @@ def reset_session_state():
         "protocol_version": mcp_wrapper.SUPPORTED_PROTOCOL_VERSIONS[0],
         "client_capabilities": {},
         "client_elicitation_modes": tuple(),
+        "tasks": {},
     })
     yield
     mcp_wrapper._SESSION_STATE.clear()
@@ -150,6 +169,7 @@ def test_initialize_advertises_tasks_capability(monkeypatch):
     capabilities = sent[0]["result"]["capabilities"]
     assert capabilities["tools"]["listChanged"] is False
     assert capabilities["tasks"]["list"] == {}
+    assert capabilities["tasks"]["cancel"] == {}
 
 
 def test_initialize_elicitation_empty_object_defaults_to_form_mode(monkeypatch):
@@ -402,6 +422,193 @@ def test_tasks_list_returns_empty_collection(monkeypatch):
     assert len(sent) == 1
     assert sent[0]["id"] == "req-tasks-list-ok"
     assert sent[0]["result"]["tasks"] == []
+
+
+def test_tasks_get_invalid_params_rejected(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-get-invalid",
+        "method": "tasks/get",
+        "params": [],
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32602
+    assert "tasks/get params must be an object" in sent[0]["error"]["message"]
+
+
+def test_tasks_get_unknown_task_rejected(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-get-unknown",
+        "method": "tasks/get",
+        "params": {"taskId": "task-unknown"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32602
+    assert "unknown taskId" in sent[0]["error"]["message"]
+
+
+def test_tasks_get_unknown_task_does_not_reflect_raw_task_id(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-get-unknown-safe",
+        "method": "tasks/get",
+        "params": {"taskId": "<script>alert(1)</script>"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32602
+    assert "<script>" not in sent[0]["error"]["message"]
+    assert "unknown taskId" in sent[0]["error"]["message"]
+
+
+def test_tasks_get_returns_task(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-get-ok",
+        "method": "tasks/get",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == "req-tasks-get-ok"
+    assert sent[0]["result"]["taskId"] == "task-1"
+    assert sent[0]["result"]["status"] == "working"
+
+
+def test_tasks_result_requires_terminal_status(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-not-done",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32001
+    assert "not complete" in sent[0]["error"]["message"]
+
+
+def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(
+            task_id="task-1",
+            status="completed",
+            result={"content": [{"type": "text", "text": "ok"}]},
+        ),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-ok",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == "req-tasks-result-ok"
+    assert sent[0]["result"]["content"][0]["text"] == "ok"
+
+
+def test_tasks_result_rejects_terminal_task_without_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="cancelled"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-cancelled-missing",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32001
+    assert "result is unavailable for status 'cancelled'" in sent[0]["error"]["message"]
+
+
+def test_tasks_cancel_rejects_terminal_task(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="completed"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-cancel-terminal",
+        "method": "tasks/cancel",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32001
+    assert "already terminal" in sent[0]["error"]["message"]
+
+
+def test_tasks_cancel_updates_task_state(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-cancel-ok",
+        "method": "tasks/cancel",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == "req-tasks-cancel-ok"
+    assert sent[0]["result"]["status"] == "cancelled"
+    assert "Cancelled by client request." in sent[0]["result"]["statusMessage"]
 
 
 def test_tools_call_invalid_params_rejected(monkeypatch):
