@@ -212,3 +212,89 @@ def test_evaluate_candidate_flags_missing_legacy_p95_when_required() -> None:
     )
     assert result["passed"] is False
     assert "missing_legacy_p95" in result["violations"]
+
+
+def test_cmd_dev_cycle_writes_role_recommendations(tmp_path: Path, monkeypatch) -> None:
+    live_output = tmp_path / "live.json"
+    legacy_output = tmp_path / "legacy.json"
+    gate_output = tmp_path / "gate.json"
+    summary_output = tmp_path / "summary.json"
+
+    def fake_benchmark(args: SimpleNamespace) -> int:
+        payload = {
+            "models": {
+                "xlam:latest": {
+                    "summary": {
+                        "avg_ability_score": 0.7,
+                        "p95_wall_seconds": 6.2,
+                        "resource_efficiency": {"ability_per_vram_gb": 0.6},
+                    }
+                },
+                "qwen3:8b": {
+                    "summary": {
+                        "avg_ability_score": 0.82,
+                        "p95_wall_seconds": 12.0,
+                        "resource_efficiency": {"ability_per_vram_gb": 0.12},
+                    }
+                },
+            }
+        }
+        Path(args.output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    def fake_legacy(args: SimpleNamespace) -> int:
+        payload = {
+            "models": {
+                "xlam:latest": {"summary": {"avg_ability_score": 0.68, "p95_wall_seconds": 8.5}},
+                "qwen3:8b": {"summary": {"avg_ability_score": 0.8, "p95_wall_seconds": 16.0}},
+            }
+        }
+        Path(args.output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    def fake_gate(args: SimpleNamespace) -> int:
+        payload = {
+            "passed": True,
+            "profiles": {
+                "low_latency": {"recommendation": {"model": "xlam:latest", "composite_score": 0.9}},
+                "balanced": {"recommendation": {"model": "qwen3:8b", "composite_score": 0.86}},
+                "high_reasoning": {"recommendation": {"model": "qwen3:8b", "composite_score": 0.88}},
+            },
+        }
+        Path(args.output).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(bench, "cmd_benchmark", fake_benchmark)
+    monkeypatch.setattr(bench, "cmd_legacy_benchmark", fake_legacy)
+    monkeypatch.setattr(bench, "cmd_profile_gate", fake_gate)
+
+    args = SimpleNamespace(
+        matrix=str(tmp_path / "matrix.json"),
+        prompts=str(tmp_path / "prompts.jsonl"),
+        policy=str(tmp_path / "policy.json"),
+        legacy_roots=str(tmp_path),
+        output_dir=str(tmp_path),
+        output=str(summary_output),
+        live_output=str(live_output),
+        legacy_output=str(legacy_output),
+        gate_output=str(gate_output),
+        models="xlam:latest,qwen3:8b",
+        include_optional=False,
+        repeats=1,
+        ollama_url="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        num_predict=64,
+        ability_pass_threshold=0.75,
+        max_cases_per_root=5,
+        snippet_chars=800,
+        dump_cases=None,
+        allow_gate_failures=False,
+    )
+
+    rc = bench.cmd_dev_cycle(args)
+    assert rc == 0
+    summary = json.loads(summary_output.read_text(encoding="utf-8"))
+    assert summary["passed"] is True
+    assert summary["recommendations"]["low_latency"]["model"] == "xlam:latest"
+    assert "Runtime helper" in summary["recommendations"]["low_latency"]["usage"]
+    assert summary["recommendations"]["balanced"]["model"] == "qwen3:8b"
