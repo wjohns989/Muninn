@@ -186,3 +186,22 @@ Task-contract follow-on is now implemented in `docs/plans/2026-02-15-phase4v-tas
    - protocol tests hold at `52 passed` (`tests/test_mcp_wrapper_protocol.py`),
    - combined targeted checks hold at `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`),
    - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_061319.json`.
+
+## Continuation Update (Phase 4W)
+
+Transport-resilience follow-on is now implemented in `docs/plans/2026-02-15-phase4w-mcp-transport-resilience.md`:
+
+1. Parser recovery hardening:
+   - malformed framed payloads now recover instead of terminating the transport loop.
+2. Backend outage fast-fail:
+   - request retries now include bounded circuit-breaker cooldown to prevent repeated long-hang windows.
+3. Dispatch-pressure control:
+   - background dispatch queue now enforces bounded backpressure with explicit `-32001` response on saturation.
+4. Broken-pipe containment:
+   - JSON-RPC emitter now marks transport-closed and suppresses repeated write failures.
+5. Validation increment:
+   - protocol tests now at `56 passed` (`tests/test_mcp_wrapper_protocol.py`),
+   - combined targeted checks now at `92 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`),
+   - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_064545.json`.
+6. Operational blocker note:
+   - external Muninn MCP tool calls from this session still show 120-second deadline timeouts; wrapper restart + live soak verification remains the next operator step.
