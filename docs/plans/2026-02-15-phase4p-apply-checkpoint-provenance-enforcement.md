@@ -31,7 +31,7 @@ Move provenance from passive audit metadata to active policy controls by allowin
 
 1. `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
 2. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_ollama_local_benchmark.py`
-3. Result: `21 passed`
+3. Result: `23 passed`
 4. CLI sanity:
    - `python -m eval.ollama_local_benchmark apply-checkpoint --help`
 
