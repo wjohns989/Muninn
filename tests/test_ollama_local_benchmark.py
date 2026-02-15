@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+import json
 
 from eval import ollama_local_benchmark as bench
 
@@ -76,3 +78,137 @@ def test_resource_efficiency_uses_vram_and_latency() -> None:
     efficiency = bench._resource_efficiency(summary, matrix_entry)
     assert efficiency["ability_per_second"] == 0.3
     assert efficiency["ability_per_vram_gb"] == 0.15
+
+
+def test_evaluate_candidate_passes_thresholds() -> None:
+    gate = {
+        "require_live_suite": True,
+        "require_legacy_suite": True,
+        "min_live_ability": 0.7,
+        "min_legacy_ability": 0.65,
+        "max_live_p95_seconds": 20.0,
+        "max_legacy_p95_seconds": 30.0,
+        "min_live_ability_per_vram_gb": 0.05,
+    }
+    live_summary = {
+        "avg_ability_score": 0.78,
+        "p95_wall_seconds": 12.0,
+        "avg_wall_seconds": 8.0,
+        "resource_efficiency": {"ability_per_vram_gb": 0.11},
+    }
+    legacy_summary = {
+        "avg_ability_score": 0.72,
+        "p95_wall_seconds": 18.0,
+    }
+    result = bench._evaluate_candidate(
+        model="qwen3:8b",
+        gate=gate,
+        live_summary=live_summary,
+        legacy_summary=legacy_summary,
+    )
+    assert result["passed"] is True
+    assert result["violations"] == []
+    assert result["combined_ability_score"] is not None
+
+
+def test_cmd_profile_gate_recommends_model(tmp_path: Path) -> None:
+    matrix = {
+        "models": [
+            {"tag": "xlam:latest", "vram_min_gb": 1},
+            {"tag": "qwen3:8b", "vram_min_gb": 6},
+        ]
+    }
+    policy = {
+        "profiles": {
+            "low_latency": {
+                "candidates": ["xlam:latest", "qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.6,
+                "max_live_p95_seconds": 25.0,
+                "min_live_ability_per_vram_gb": 0.01,
+            },
+            "balanced": {
+                "candidates": ["qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.7,
+                "max_live_p95_seconds": 25.0,
+                "min_live_ability_per_vram_gb": 0.01,
+            },
+            "high_reasoning": {
+                "candidates": ["qwen3:8b"],
+                "require_live_suite": True,
+                "require_legacy_suite": False,
+                "min_live_ability": 0.7,
+                "max_live_p95_seconds": 30.0,
+                "min_live_ability_per_vram_gb": 0.01,
+            },
+        }
+    }
+    live_report = {
+        "models": {
+            "xlam:latest": {
+                "summary": {
+                    "avg_ability_score": 0.66,
+                    "avg_wall_seconds": 4.0,
+                    "p95_wall_seconds": 6.5,
+                    "resource_efficiency": {"ability_per_vram_gb": 0.66},
+                }
+            },
+            "qwen3:8b": {
+                "summary": {
+                    "avg_ability_score": 0.8,
+                    "avg_wall_seconds": 12.0,
+                    "p95_wall_seconds": 17.0,
+                    "resource_efficiency": {"ability_per_vram_gb": 0.12},
+                }
+            },
+        }
+    }
+
+    matrix_path = tmp_path / "matrix.json"
+    policy_path = tmp_path / "policy.json"
+    live_path = tmp_path / "live.json"
+    out_path = tmp_path / "gate.json"
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    live_path.write_text(json.dumps(live_report), encoding="utf-8")
+
+    args = SimpleNamespace(
+        matrix=str(matrix_path),
+        policy=str(policy_path),
+        live_report=str(live_path),
+        legacy_report=None,
+        output_dir=str(tmp_path),
+        output=str(out_path),
+        allow_failures=False,
+    )
+    rc = bench.cmd_profile_gate(args)
+    assert rc == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["passed"] is True
+    assert payload["profiles"]["low_latency"]["recommendation"]["model"] == "xlam:latest"
+
+
+def test_evaluate_candidate_flags_missing_legacy_p95_when_required() -> None:
+    gate = {
+        "require_live_suite": True,
+        "require_legacy_suite": True,
+        "max_legacy_p95_seconds": 20.0,
+    }
+    live_summary = {
+        "avg_ability_score": 0.8,
+        "p95_wall_seconds": 10.0,
+        "avg_wall_seconds": 7.0,
+        "resource_efficiency": {"ability_per_vram_gb": 0.1},
+    }
+    legacy_summary = {"avg_ability_score": 0.8}
+    result = bench._evaluate_candidate(
+        model="qwen3:8b",
+        gate=gate,
+        live_summary=live_summary,
+        legacy_summary=legacy_summary,
+    )
+    assert result["passed"] is False
+    assert "missing_legacy_p95" in result["violations"]
