@@ -104,6 +104,11 @@ Completed since last update:
    - curated benchmark prompt pack shipped (`eval/ollama_benchmark_prompts.jsonl`) for repeatable local comparisons,
    - local sync/benchmark CLI shipped (`python -m eval.ollama_local_benchmark ...`),
    - phase design and acceptance criteria documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
+35. Phase 4I model ability/resource benchmarking baseline implemented:
+   - live benchmark now includes rubric-driven ability scoring per prompt case,
+   - model summaries now report ability-per-resource efficiency (`ability_per_second`, `ability_per_vram_gb`),
+   - new legacy benchmark mode can auto-generate deterministic ingestion-like cases from old project roots (`legacy-benchmark`),
+   - targeted benchmark helper tests shipped (`tests/test_ollama_local_benchmark.py`).
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -119,6 +124,7 @@ Verification:
   - `49 passed` across runtime profile-control + audit surfaces (`memory_profiles`, `sqlite_profile_policy_events`, `mcp_wrapper_protocol`, `sdk_client`).
   - local benchmark tooling smoke checks pass (`python -m eval.ollama_local_benchmark list`, `python -m eval.ollama_local_benchmark sync --dry-run`).
   - initial 5-model quick-pass latency/throughput snapshot captured and documented (`docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`).
+  - `5 passed` across Phase 4I benchmark helper tests (`tests/test_ollama_local_benchmark.py`).
 - Compile checks passed for all touched modules/tests.
 
 ### What already exists (partially or fully)
@@ -143,8 +149,8 @@ Fixed in current implementation slice:
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
 2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
-3. Profile-level promotion criteria remain open: routing is implemented, but per-profile eval gates and telemetry-backed auto-default policy are still pending.
-4. Profile-level promotion criteria remain open: runtime profile control API and audit visibility are now implemented, but profile-aware eval thresholds + telemetry-backed default-promotion policy are still pending.
+3. Profile-level promotion criteria remain open: routing, audit visibility, and ability/resource benchmark plumbing are implemented, but per-profile gate thresholds and telemetry-backed auto-default policy are still pending.
+4. Browser UI preference depth remains partially open: persistence is implemented, but advanced user-adaptive controls (profile presets, safety mode templates, benchmark launch UX) still need phased rollout.
 
 ---
 
@@ -433,10 +439,25 @@ This is core for vibecoders, not optional polish.
 - Enforce license-awareness in docs and startup diagnostics for non-commercial model constraints.
 - Status update: MCP initialize startup readiness checks are now implemented with dependency autostart and actionable startup prompts.
 
+### 4D Ability + Resource Benchmark Gates
+- Extend local model benchmarks beyond latency/throughput with rubric-based ability scoring.
+- Add resource-efficiency reporting for profile decisions:
+  - `ability_per_second`,
+  - `ability_per_vram_gb`.
+- Add legacy-ingestion benchmark mode that generates deterministic cases from old project roots and scores extraction quality.
+- Status update: implemented in `eval/ollama_local_benchmark.py` with new `legacy-benchmark` command and covered by `tests/test_ollama_local_benchmark.py`.
+
+### 4E Browser UX Brainstorm Backlog (ROI-ranked)
+- Add benchmark launch panel with saved root presets and run-history links.
+- Add one-click profile templates (`coding_light`, `balanced_default`, `offline_planning`) with explicit VRAM/tooltips.
+- Add safe-mode presets for high-risk ingestion actions (already partially implemented, extend to benchmark and profile mutation screens).
+- Add “why this profile” panel (latest latency/ability/resource deltas) to prevent silent overengineering of model policy.
+
 ### Phase 4 exit criteria
 1. Users can choose and persist UI preferences without manual JSON edits.
 2. Model profile selection works end-to-end with deterministic fallback behavior.
 3. Eval reports include profile-level latency/quality deltas for promotion decisions.
+4. Live and legacy benchmark suites report ability/resource deltas per model before any default-profile promotion.
 
 ---
 
@@ -515,7 +536,8 @@ This is core for vibecoders, not optional polish.
 2. Implement parser sandbox/process-isolation plan for optional binary backends (`pdf/docx`) with measurable blast-radius reduction.
 3. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
 4. Execute and archive local model-matrix benchmark runs (`eval/ollama_local_benchmark.py`) for runtime vs ingestion profile candidates on 16GB-class hardware.
-5. Implement Phase 4 profile-promotion tranche: add profile-aware eval gates + telemetry thresholds for default-policy promotion.
-6. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
+5. Promote Phase 4I benchmark suite to CI/nightly: run `benchmark` + `legacy-benchmark` on calibrated roots and archive reports.
+6. Implement Phase 4 profile-promotion tranche: add profile-aware eval gates + telemetry thresholds for default-policy promotion.
+7. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
 
 Completing these next actions keeps roadmap progression logically consistent while preserving merge hygiene, SOTA evidence quality, and operational ROI.
