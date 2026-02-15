@@ -189,6 +189,7 @@ python -m eval.ollama_local_benchmark apply-checkpoint \
   --require-pr-number \
   --require-commit-sha \
   --require-branch-name \
+  --require-commit-reachable-from main \
   --muninn-url http://127.0.0.1:42069
 ```
 
@@ -233,6 +234,8 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
   - `--require-pr-number`
   - `--require-commit-sha`
   - `--require-branch-name`
+- optional git ancestry enforcement:
+  - `--require-commit-reachable-from <ref>` validates manifest commit SHA reachability from the specified git ref/branch before apply.
 - successful apply writes a deterministic apply report artifact.
 
 ## Phase Hygiene Gate
