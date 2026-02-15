@@ -170,3 +170,26 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 `legacy-benchmark` generates deterministic ingestion-like extraction cases from local project files and reports the same ability/resource metrics per model.
 
 `profile-gate` consumes benchmark reports and emits per-profile pass/fail + recommendation decisions for `low_latency`, `balanced`, and `high_reasoning` promotion policies.
+
+## Phase Hygiene Gate
+
+Use this utility at each phase boundary (and before merge) to enforce one-open-PR policy and catch test-quality drift.
+
+```bash
+# Full gate (PR status + review/check signals + pytest summary budgets)
+python -m eval.phase_hygiene \
+  --max-open-prs 1 \
+  --require-open-pr \
+  --pytest-command "python -m pytest -q"
+
+# PR-only check (skip test command)
+python -m eval.phase_hygiene \
+  --max-open-prs 1 \
+  --pytest-command ""
+```
+
+The report is written to `eval/reports/hygiene/phase_hygiene_<timestamp>.json` and includes:
+- open PR inventory,
+- selected PR review/check summary,
+- parsed pytest summary (passed/failed/skipped/warnings),
+- deterministic pass/fail + violations list.
