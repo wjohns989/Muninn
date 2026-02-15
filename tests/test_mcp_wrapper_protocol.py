@@ -696,6 +696,55 @@ def test_get_tool_call_deadline_seconds_allows_explicit_overrun_when_enabled(mon
     assert mcp_wrapper._get_tool_call_deadline_seconds() == 119.0
 
 
+def test_format_tool_result_text_truncates_large_payload(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "512")
+    text = mcp_wrapper._format_tool_result_text(
+        {"success": True, "data": {"blob": "x" * 1000}},
+        "discover_legacy_sources",
+    )
+
+    assert len(text) <= 512
+    assert "truncated" in text
+
+
+def test_public_tool_error_message_redacts_connection_details():
+    msg = mcp_wrapper._public_tool_error_message(
+        mcp_wrapper.requests.ConnectionError("socket timeout to 10.0.0.7")
+    )
+    assert "10.0.0.7" not in msg
+    assert "Unable to reach backend service" in msg
+
+
+def test_handle_call_tool_truncates_large_json_response(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "512")
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"blob": "z" * 2000}}
+
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "make_request_with_retry",
+        lambda *_a, **_k: _Resp(),
+    )
+
+    mcp_wrapper.handle_call_tool(
+        "req-truncate",
+        {
+            "name": "discover_legacy_sources",
+            "arguments": {},
+        },
+    )
+
+    assert sent
+    text = sent[0]["result"]["content"][0]["text"]
+    assert len(text) <= 512
+    assert "truncated" in text
+
+
 def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low(monkeypatch):
     calls = {"ensure": 0}
 

@@ -600,26 +600,59 @@
       }
     }
 
+    function summarizeServerDetail(detail, statusCode = null) {
+      const fallback = statusCode
+        ? `Request failed (HTTP ${statusCode}). Check server logs for details.`
+        : "Request failed. Check server logs for details.";
+      if (detail === null || detail === undefined) return fallback;
+
+      const raw = typeof detail === "string" ? detail : JSON.stringify(detail);
+      if (!raw || raw === "{}") return fallback;
+
+      const lowered = raw.toLowerCase();
+      const sensitiveMarkers = [
+        "traceback",
+        "exception",
+        "stack",
+        "sql",
+        "http://",
+        "https://",
+        "file \"",
+      ];
+      if (sensitiveMarkers.some((marker) => lowered.includes(marker))) {
+        return fallback;
+      }
+      return raw.length > 220 ? `${raw.slice(0, 220)}...` : raw;
+    }
+
     async function apiRequest(path, payload = null, method = "POST") {
       const opts = { method, headers: { "Content-Type": "application/json" } };
       if (payload !== null) {
         opts.body = JSON.stringify(payload);
       }
       const response = await fetch(`${API_BASE}${path}`, opts);
-      const data = await response.json();
+      let data = {};
+      try {
+        data = await response.json();
+      } catch (_err) {
+        data = {};
+      }
       if (!response.ok) {
-        const detail = data?.detail || JSON.stringify(data);
-        throw new Error(detail);
+        throw new Error(summarizeServerDetail(data?.detail ?? data, response.status));
       }
       if (data.success === false) {
-        throw new Error(data.detail || JSON.stringify(data));
+        throw new Error(summarizeServerDetail(data?.detail ?? data, response.status));
       }
       return data.data ?? data;
     }
 
     function setResult(elId, payload) {
       const el = document.getElementById(elId);
-      el.innerHTML = `<pre>${JSON.stringify(payload, null, 2)}</pre>`;
+      if (!el) return;
+      el.replaceChildren();
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(payload, null, 2);
+      el.appendChild(pre);
     }
 
     function getModelProfile() {
@@ -805,36 +838,68 @@
 
     function renderLegacyTable() {
       const tbody = document.getElementById("legacy-table-body");
+      tbody.replaceChildren();
       if (!legacyCatalog.length) {
-        tbody.innerHTML = "<tr><td colspan=\"9\">No sources discovered.</td></tr>";
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 9;
+        cell.textContent = "No sources discovered.";
+        row.appendChild(cell);
+        tbody.appendChild(row);
         return;
       }
 
-      tbody.innerHTML = legacyCatalog
-        .map((source) => {
-          const safePath = source.path
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;");
-          const checked = source.parser_supported ? "checked" : "";
-          const supportBadge = source.parser_supported
-            ? "<span class=\"badge\">supported</span>"
-            : "<span class=\"badge off\">unsupported</span>";
-          return `
-            <tr>
-              <td><input type="checkbox" data-source-id="${source.source_id}" ${checked}></td>
-              <td class="code">${source.provider}</td>
-              <td>${supportBadge}</td>
-              <td>${source.confidence}</td>
-              <td>${source.source_type}</td>
-              <td>${source.size_bytes}</td>
-              <td>${source.modified_at_iso || "-"}</td>
-              <td class="code">${source.relative_path_hint || "-"}</td>
-              <td class="code">${safePath}</td>
-            </tr>
-          `;
-        })
-        .join("");
+      legacyCatalog.forEach((source) => {
+        const row = document.createElement("tr");
+
+        const selectionCell = document.createElement("td");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.dataset.sourceId = String(source.source_id || "");
+        checkbox.checked = Boolean(source.parser_supported);
+        selectionCell.appendChild(checkbox);
+        row.appendChild(selectionCell);
+
+        const providerCell = document.createElement("td");
+        providerCell.className = "code";
+        providerCell.textContent = String(source.provider || "-");
+        row.appendChild(providerCell);
+
+        const supportCell = document.createElement("td");
+        const supportBadge = document.createElement("span");
+        supportBadge.className = source.parser_supported ? "badge" : "badge off";
+        supportBadge.textContent = source.parser_supported ? "supported" : "unsupported";
+        supportCell.appendChild(supportBadge);
+        row.appendChild(supportCell);
+
+        const confidenceCell = document.createElement("td");
+        confidenceCell.textContent = String(source.confidence ?? "-");
+        row.appendChild(confidenceCell);
+
+        const typeCell = document.createElement("td");
+        typeCell.textContent = String(source.source_type || "-");
+        row.appendChild(typeCell);
+
+        const sizeCell = document.createElement("td");
+        sizeCell.textContent = String(source.size_bytes ?? "-");
+        row.appendChild(sizeCell);
+
+        const modifiedCell = document.createElement("td");
+        modifiedCell.textContent = String(source.modified_at_iso || "-");
+        row.appendChild(modifiedCell);
+
+        const relativePathCell = document.createElement("td");
+        relativePathCell.className = "code";
+        relativePathCell.textContent = String(source.relative_path_hint || "-");
+        row.appendChild(relativePathCell);
+
+        const fullPathCell = document.createElement("td");
+        fullPathCell.className = "code";
+        fullPathCell.textContent = String(source.path || "-");
+        row.appendChild(fullPathCell);
+
+        tbody.appendChild(row);
+      });
     }
 
     async function discoverLegacySources() {

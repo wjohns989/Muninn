@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete)
+Status: Implemented (baseline complete + continuation hardening applied)
 
 ## Objective
 
@@ -62,6 +62,20 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - dashboard asset bundling via `--add-data`,
   - optional `--onefile` and `--windowed`.
 
+### 4) Transport + UI Surface Hardening Continuation
+
+- `mcp_wrapper.py` now enforces bounded MCP tool-response payload size via:
+  - `MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS` (default `12000`, floor `256`),
+  - deterministic truncation trailer metadata in text payloads.
+- Search text payloads now use the same bounded response limiter path.
+- Public MCP error responses are now sanitized by error class:
+  - retain actionable validation errors (`ValueError`),
+  - redact connection/timeout/internal details to stable operator-safe messages.
+- `dashboard.html` XSS surface reduced:
+  - replaced dynamic `innerHTML` JSON rendering with DOM-safe `textContent` rendering,
+  - replaced legacy discovery table string-HTML rendering with explicit DOM node creation.
+- Browser API error handling now summarizes/redacts potentially sensitive backend detail strings before display.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -74,6 +88,13 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `tests/test_mcp_wrapper_protocol.py`
     - `tests/test_standalone_entrypoint.py`
     - `tests/test_build_standalone.py`
+- Continuation hardening verification:
+  - `79 passed` in:
+    - `tests/test_mcp_wrapper_protocol.py`
+    - `tests/test_mcp_transport_soak.py`
+  - `5 passed` in:
+    - `tests/test_memory_user_profile.py`
+    - `tests/test_ingestion_discovery.py`
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 
@@ -117,6 +138,7 @@ Assessment:
 3. Add Huginn v1 recommendation endpoint + MCP tool (`recommend_next_actions`).
 4. Add skill-markdown compiler + Ollama runtime prompt adapter.
 5. Add standalone packaging CI artifacts and integrity manifest checks.
+6. Add oversized-result artifact mode for MCP tools (task pointer + fetch path) to avoid large stdio payload dependence on host transport.
 
 ## Sources
 
