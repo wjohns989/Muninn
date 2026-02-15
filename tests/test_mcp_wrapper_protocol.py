@@ -408,6 +408,37 @@ def test_handle_call_tool_skips_preflight_when_backend_circuit_open(monkeypatch)
     assert sent[0]["id"] == "req-search-circuit-open"
 
 
+def test_handle_call_tool_skips_preflight_when_deadline_budget_low(monkeypatch):
+    sent = []
+    calls = {"ensure": 0}
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER", "1")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "1")
+    monkeypatch.setenv("MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC", "2")
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    def _ensure():
+        calls["ensure"] += 1
+        return True
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
+    monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda now_epoch=None: False)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", lambda *a, **k: _Resp())
+
+    mcp_wrapper.handle_call_tool(
+        "req-search-low-budget",
+        {"name": "search_memory", "arguments": {"query": "hello", "limit": 1}},
+    )
+
+    assert calls["ensure"] == 0
+    assert sent
+    assert sent[0]["id"] == "req-search-low-budget"
+
+
 def test_operation_specific_profile_overrides_generic_profile(monkeypatch):
     monkeypatch.setenv("MUNINN_OPERATOR_MODEL_PROFILE", "balanced")
     monkeypatch.setenv("MUNINN_OPERATOR_INGESTION_MODEL_PROFILE", "high_reasoning")
@@ -597,6 +628,30 @@ def test_make_request_with_retry_fails_before_request_when_deadline_exhausted(mo
             deadline_epoch=time.monotonic() - 1.0,
         )
     assert calls["request"] == 0
+
+
+def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low(monkeypatch):
+    calls = {"ensure": 0}
+
+    def _ensure():
+        calls["ensure"] += 1
+        return True
+
+    def _always_fail(_method, _url, **_kwargs):
+        raise mcp_wrapper.requests.ConnectionError("boom")
+
+    monkeypatch.setenv("MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC", "1")
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
+    monkeypatch.setattr(mcp_wrapper.requests, "request", _always_fail)
+
+    with pytest.raises((mcp_wrapper.requests.ConnectionError, mcp_wrapper._RequestDeadlineExceededError)):
+        mcp_wrapper.make_request_with_retry(
+            "GET",
+            "http://localhost:42069/health",
+            timeout=0.2,
+            deadline_epoch=time.monotonic() + 0.05,
+        )
+    assert calls["ensure"] == 0
 
 
 def test_initialized_notification_requires_prior_initialize(monkeypatch):
