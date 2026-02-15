@@ -153,3 +153,18 @@ Task-augmented tools follow-on is now implemented in `docs/plans/2026-02-15-phas
    - protocol tests now at `49 passed` (`tests/test_mcp_wrapper_protocol.py`),
    - combined targeted checks at `85 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`),
    - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_052920.json`.
+
+## Continuation Update (Phase 4U)
+
+Blocking-result compliance follow-on is now implemented in `docs/plans/2026-02-15-phase4u-blocking-result-dispatch.md`:
+
+1. Lifecycle correctness retained:
+   - `tasks/result` now preserves blocking-until-terminal semantics.
+2. Transport responsiveness hardening:
+   - wrapper main loop now dispatches blocking methods (`tasks/result`, `tools/call`) in background threads.
+3. Concurrent write safety:
+   - stdout JSON-RPC writes now use a process-wide lock to prevent interleaved payload corruption.
+4. Validation increment:
+   - protocol tests now at `50 passed` (`tests/test_mcp_wrapper_protocol.py`),
+   - combined targeted checks at `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`),
+   - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_055320.json`.

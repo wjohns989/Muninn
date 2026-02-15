@@ -45,6 +45,7 @@ _TASKS_MAX_TTL_MS = max(_TASKS_DEFAULT_TTL_MS, int(os.environ.get("MUNINN_MCP_TA
 _TASKS_LIST_PAGE_SIZE = max(1, int(os.environ.get("MUNINN_MCP_TASKS_LIST_PAGE_SIZE", "50")))
 _TASKS_MAX_RETAINED = max(_TASKS_LIST_PAGE_SIZE, int(os.environ.get("MUNINN_MCP_TASKS_MAX_RETAINED", "500")))
 _thread_local = threading.local()
+_RPC_WRITE_LOCK = threading.Lock()
 
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
@@ -378,8 +379,9 @@ def send_json_rpc(message: Dict[str, Any]):
     if callable(emitter):
         emitter(message)
         return
-    print(json.dumps(message))
-    sys.stdout.flush()
+    with _RPC_WRITE_LOCK:
+        print(json.dumps(message))
+        sys.stdout.flush()
 
 
 def _send_json_rpc_error(msg_id: Any, code: int, message: str):
@@ -799,18 +801,15 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
     if task_id is None:
         return
     with _TASKS_CONDITION:
-        task = _lookup_task_locked(task_id)
-        if not isinstance(task, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
-            return
-        status = str(task.get("status") or "")
-        if status not in _TASK_TERMINAL_STATUSES and status != "input_required":
-            _send_json_rpc_error(
-                msg_id,
-                -32001,
-                f"Task '{task_id}' is not complete; current status is '{status or 'unknown'}'.",
-            )
-            return
+        while True:
+            task = _lookup_task_locked(task_id)
+            if not isinstance(task, dict):
+                _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
+                return
+            status = str(task.get("status") or "")
+            if status in _TASK_TERMINAL_STATUSES or status == "input_required":
+                break
+            _TASKS_CONDITION.wait(timeout=0.1)
         payload = task.get("result")
         error = task.get("error")
 
@@ -1938,6 +1937,18 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             }
         })
 
+
+def _dispatch_rpc_message_guarded(msg: Dict[str, Any]) -> None:
+    try:
+        _dispatch_rpc_message(msg)
+    except Exception as exc:
+        logger.error(f"Dispatch error: {exc}")
+
+
+def _should_dispatch_in_background(msg: Dict[str, Any]) -> bool:
+    method = msg.get("method")
+    return method in {"tasks/result", "tools/call"}
+
 def main():
     logger.info("Muninn MCP Wrapper started")
 
@@ -1955,7 +1966,15 @@ def main():
             msg = _read_rpc_message(sys.stdin.buffer)
             if msg is None:
                 break
-            _dispatch_rpc_message(msg)
+            if _should_dispatch_in_background(msg):
+                threading.Thread(
+                    target=_dispatch_rpc_message_guarded,
+                    args=(msg,),
+                    daemon=True,
+                    name="muninn-mcp-rpc-bg",
+                ).start()
+            else:
+                _dispatch_rpc_message(msg)
                 
         except Exception as e:
             logger.error(f"Loop error: {e}")
