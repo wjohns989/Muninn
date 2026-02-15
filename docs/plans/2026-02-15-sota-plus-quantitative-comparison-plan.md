@@ -55,6 +55,7 @@ Current assessment:
 
 - Risk is reduced for large-response and reflected-error classes.
 - Blocker remains open until closure criteria are met across rolling soak windows in host runtime.
+- Closure campaign automation is now available and has passed a 5-run dual-transport smoke window (`mcp_transport_closure_20260215_212349.json`), but 30-run closure evidence is still pending.
 
 ## Decision Rule
 
