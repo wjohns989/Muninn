@@ -892,7 +892,17 @@ def test_cmd_apply_checkpoint_requires_change_context_when_flag_set(tmp_path: Pa
         bench.cmd_apply_checkpoint(args)
 
 
-def test_cmd_apply_checkpoint_requires_pr_commit_branch_fields(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("flag_to_set", "error_match"),
+    [
+        ("require_pr_number", "pr_number is required"),
+        ("require_commit_sha", "commit_sha is required"),
+        ("require_branch_name", "branch_name is required"),
+    ],
+)
+def test_cmd_apply_checkpoint_requires_pr_commit_branch_fields(
+    tmp_path: Path, flag_to_set: str, error_match: str
+) -> None:
     checkpoint_path = tmp_path / "checkpoint.json"
     checkpoint_path.write_text(
         json.dumps(
@@ -933,33 +943,15 @@ def test_cmd_apply_checkpoint_requires_pr_commit_branch_fields(tmp_path: Path) -
         require_change_context=False,
     )
 
-    with pytest.raises(ValueError, match="pr_number is required"):
-        bench.cmd_apply_checkpoint(
-            SimpleNamespace(
-                **base_args,
-                require_pr_number=True,
-                require_commit_sha=False,
-                require_branch_name=False,
-            )
-        )
-    with pytest.raises(ValueError, match="commit_sha is required"):
-        bench.cmd_apply_checkpoint(
-            SimpleNamespace(
-                **base_args,
-                require_pr_number=False,
-                require_commit_sha=True,
-                require_branch_name=False,
-            )
-        )
-    with pytest.raises(ValueError, match="branch_name is required"):
-        bench.cmd_apply_checkpoint(
-            SimpleNamespace(
-                **base_args,
-                require_pr_number=False,
-                require_commit_sha=False,
-                require_branch_name=True,
-            )
-        )
+    args_dict = {
+        **base_args,
+        "require_pr_number": False,
+        "require_commit_sha": False,
+        "require_branch_name": False,
+        flag_to_set: True,
+    }
+    with pytest.raises(ValueError, match=error_match):
+        bench.cmd_apply_checkpoint(SimpleNamespace(**args_dict))
 
 
 def test_cmd_apply_checkpoint_accepts_required_change_context_fields(

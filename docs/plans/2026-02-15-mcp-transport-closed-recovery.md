@@ -86,4 +86,4 @@ Governance-enforcement follow-on is now implemented in `docs/plans/2026-02-15-ph
 2. Deterministic provenance validation:
    - `change_context` shape and required field checks now gate apply before mutation.
 3. Validation increment:
-   - benchmark/policy command tests now at `21 passed` (`tests/test_ollama_local_benchmark.py`).
+   - benchmark/policy command tests now at `23 passed` (`tests/test_ollama_local_benchmark.py`).

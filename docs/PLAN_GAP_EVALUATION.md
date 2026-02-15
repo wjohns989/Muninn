@@ -138,7 +138,7 @@ Evaluator: Codex
   - `18 passed` (`tests/test_ollama_local_benchmark.py`)
 - Phase 4P apply-checkpoint provenance enforcement tranche now passes targeted checks:
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
-  - `21 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `23 passed` (`tests/test_ollama_local_benchmark.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
