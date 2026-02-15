@@ -158,6 +158,14 @@ python -m eval.ollama_local_benchmark dev-cycle \
   --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
   --repeats 1
 
+# Run deferred dev-cycle during active enhancement phases (reuse existing benchmark reports)
+python -m eval.ollama_local_benchmark dev-cycle \
+  --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
+  --defer-benchmarks \
+  --existing-live-report eval/reports/ollama/cycle_live_<run_id>.json \
+  --existing-legacy-report eval/reports/ollama/cycle_legacy_<run_id>.json \
+  --max-reused-report-age-hours 72
+
 # Run dev-cycle and apply profile defaults to a running Muninn server
 # (writes checkpoint artifact for rollback before applying)
 python -m eval.ollama_local_benchmark dev-cycle \
@@ -191,6 +199,14 @@ python -m eval.ollama_local_benchmark apply-checkpoint \
   --require-branch-name \
   --require-commit-reachable-from main \
   --muninn-url http://127.0.0.1:42069
+
+# Unified SOTA+ go/no-go verdict (quality + reliability + stats + reproducibility)
+python -m eval.ollama_local_benchmark sota-verdict \
+  --candidate-eval-report eval/reports/current_eval.json \
+  --baseline-eval-report eval/artifacts/vibecoder_memoryagentbench_v1/baseline_report.json \
+  --profile-gate-report eval/reports/ollama/cycle_gate_<run_id>.json \
+  --transport-report eval/reports/mcp_transport/mcp_transport_soak_<run_id_1>.json \
+  --transport-report eval/reports/mcp_transport/mcp_transport_soak_<run_id_2>.json
 ```
 
 Versioned inputs:
@@ -210,13 +226,43 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 
 `profile-gate` consumes benchmark reports and emits per-profile pass/fail + recommendation decisions for `low_latency`, `balanced`, and `high_reasoning` promotion policies.
 
-`dev-cycle` runs `benchmark`, `legacy-benchmark`, and `profile-gate` sequentially in one operator-triggered command and emits a summary that maps recommended models to profile usage roles.
+`dev-cycle` supports two execution modes:
+- full mode (default): runs `benchmark`, `legacy-benchmark`, and `profile-gate` sequentially.
+- deferred mode (`--defer-benchmarks`): skips live/legacy generation, reuses existing reports, and re-runs `profile-gate` for fresh policy/governance evaluation.
+
+Deferred mode is designed for active enhancement phases where running full benchmark suites on every tranche is low ROI. Use `--max-reused-report-age-hours` to enforce freshness bounds for reused evidence.
 
 `dev-cycle --apply-policy` additionally:
 - validates gate/recommendation evidence for target profile defaults,
 - fetches current `/profiles/model` policy from server,
 - writes checkpoint artifact with previous policy + apply payload,
 - applies new profile defaults (unless `--apply-dry-run` is used).
+
+`sota-verdict` normalizes retrieval-eval and transport reports into one deterministic decision artifact:
+- quality gate (primary improvement + track non-negative ratio),
+- reliability gate (p95 regression + transport timeout/closure incidence),
+- statistical validity gate (significance payload checks),
+- reproducibility/integrity gate (artifact verification),
+- profile-policy gate (profile-gate pass + governance block state).
+
+## MCP Transport Soak
+
+Use this to stress MCP transport behavior under controlled backend outage conditions.
+
+```bash
+python -m eval.mcp_transport_soak \
+  --iterations 6 \
+  --warmup-requests 1 \
+  --timeout-sec 12 \
+  --transport framed \
+  --server-url http://127.0.0.1:1 \
+  --failure-threshold 1 \
+  --cooldown-sec 30 \
+  --max-p95-ms 2500 \
+  --inject-malformed-frame
+```
+
+Reports are written to `eval/reports/mcp_transport/`.
 
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 

@@ -122,6 +122,23 @@ This implies prioritizing: **goal continuity, handoff portability, retrieval qua
    - https://huggingface.co/deepseek-ai/DeepSeek-OCR-2
 52. Ollama context-length guidance:
    - https://docs.ollama.com/context-length
+53. MemoryAgentBench primary paper (agent-memory competency benchmark):
+   - https://arxiv.org/abs/2507.05257
+54. LongMemEval benchmark (long-context and long-horizon memory stress):
+   - https://arxiv.org/abs/2410.10813
+55. StructMemEval benchmark (structured memory retrieval and relation fidelity):
+   - https://arxiv.org/abs/2602.11243
+56. Mem2Act benchmark (memory-grounded action quality under retrieval pressure):
+   - https://arxiv.org/abs/2505.08200
+57. OpenTelemetry GenAI semantic conventions (stable status + attribute/event contract):
+   - https://opentelemetry.io/docs/specs/semconv/gen-ai/
+58. MCP base protocol and revisions index (compatibility baselining):
+   - https://modelcontextprotocol.io/specification/2025-11-25/basic
+   - https://modelcontextprotocol.io/specification/2025-11-05
+59. MCP transport details (stdio + Streamable HTTP session/resume/origin/security):
+   - https://modelcontextprotocol.io/specification/draft/basic/transports
+60. Memory OS research direction for lifecycle-managed agent memory:
+   - https://arxiv.org/abs/2507.03724
 
 ## Legacy Chat/Memory Storage Research (2026-02-14)
 
@@ -217,6 +234,74 @@ Implementation impact:
 - Add compatibility review against 2025-11 key changes (tasks, elicitation enum/default behavior, JSON Schema 2020-12 assumptions).
 - Update wrapper schema metadata and validation behavior where required.
 - Add conformance tests for tool error semantics and schema correctness.
+
+## 2026-02-15 Incremental SOTA Additions (Research-Backed)
+
+### F) Multi-Benchmark Memory Competency Expansion
+
+**Gap:** current benchmarking is strong but still too narrow for robust SOTA+ claims across long-horizon and structured-memory workloads.
+
+**Addition:**
+- Extend benchmark matrix to include:
+  - MemoryAgentBench (agent-memory competency),
+  - LongMemEval (long-horizon memory retention/retrieval),
+  - StructMemEval (structured relation memory),
+  - Mem2Act (memory-conditioned action quality).
+- Normalize outputs into a single schema (`task`, `track`, `metric`, `latency`, `seed`, `artifact_hash`) for deterministic comparison.
+
+### G) Quantitative SOTA+ Decision Gate
+
+**Gap:** roadmap has strong eval components but no single final go/no-go gate definition for SOTA+ declaration.
+
+**Addition:**
+- Introduce a formal promotion gate requiring:
+  - quality superiority on primary tracks,
+  - non-inferiority on safety/latency tracks,
+  - significance + multiple-testing correction,
+  - reproducibility checks and artifact integrity.
+- Store gate decisions as immutable promotion manifests bound to benchmark artifact checksums.
+
+**Status update (2026-02-15):**
+- Baseline implemented: `eval.ollama_local_benchmark sota-verdict` now emits one deterministic SOTA+ verdict artifact with normalized multi-source evidence and per-gate pass/fail outcomes.
+- Remaining work: external benchmark adapters + CI replay + signed promotion-manifest emission.
+
+### H) Reliability Closure Criterion for Transport Stability
+
+**Gap:** transport reliability is improving, but blocker closure criteria are not yet quantitatively explicit.
+
+**Addition:**
+- Define blocker closure criterion based on rolling soak windows:
+  - minimum successful run count,
+  - p95 latency ceiling,
+  - zero unresolved timeout/transport-closed regressions over window,
+  - failure taxonomy with explicit ownership buckets (wrapper vs host environment).
+
+### I) Additional High-ROI Additions from New Research Scan
+
+1. **Continuous-interaction memory benchmark adapter**
+   - Add an adapter for incremental multi-turn memory-interaction benchmarks to complement LongMemEval/StructMemEval/Mem2Act.
+   - Why: reduces blind spots where static prompt sets miss longitudinal memory drift.
+   - Source:
+     - https://arxiv.org/abs/2507.05257
+
+2. **MCP Streamable HTTP hardening profile (for HTTP deployment mode)**
+   - Add conformance checks for session management, resumability, Origin validation, and authenticated POST/GET stream paths.
+   - Why: lowers transport fragility and security drift when runtime moves beyond stdio-only process wiring.
+   - Source:
+     - https://modelcontextprotocol.io/specification/draft/basic/transports
+
+3. **Memory lifecycle architecture track**
+   - Add roadmap checkpoint for explicit memory lifecycle controls (promotion, consolidation, retirement) inspired by memory-OS patterns.
+   - Why: improves long-horizon memory quality under growth without only relying on ad-hoc compaction.
+   - Source:
+     - https://arxiv.org/abs/2507.03724
+
+4. **Benchmark cadence split for implementation throughput**
+   - Use selective fast test execution during active development and run full benchmark suites on scheduled/release windows.
+   - Why: preserves rapid iteration while keeping heavyweight evidence generation aligned to release decisions.
+   - Sources:
+     - https://docs.pytest.org/en/stable/example/markers.html
+     - https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#onschedule
 
 **Implemented in current tranche:**
 - Protocol negotiation now accepts supported versions and rejects unsupported protocol versions explicitly.

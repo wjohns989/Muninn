@@ -43,6 +43,19 @@ def reset_session_state():
     mcp_wrapper._SESSION_STATE.update(previous)
 
 
+@pytest.fixture(autouse=True)
+def reset_transport_and_backend_state():
+    mcp_wrapper._TRANSPORT_CLOSED.clear()
+    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
+        previous = dict(mcp_wrapper._BACKEND_CIRCUIT_STATE)
+        mcp_wrapper._BACKEND_CIRCUIT_STATE["consecutive_failures"] = 0
+        mcp_wrapper._BACKEND_CIRCUIT_STATE["open_until_epoch"] = 0.0
+    yield
+    mcp_wrapper._TRANSPORT_CLOSED.clear()
+    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
+        mcp_wrapper._BACKEND_CIRCUIT_STATE.update(previous)
+
+
 def test_negotiate_protocol_supported():
     assert mcp_wrapper._negotiate_protocol_version("2025-11-25") == "2025-11-25"
     assert mcp_wrapper._negotiate_protocol_version("2025-06-18") == "2025-06-18"
@@ -79,9 +92,35 @@ def test_read_rpc_message_supports_content_length_framing():
     assert msg["id"] == 2
 
 
-def test_read_rpc_message_invalid_content_length_returns_none():
-    stream = io.BytesIO(b"Content-Length: nope\r\n\r\n{}")
-    assert mcp_wrapper._read_rpc_message(stream) is None
+def test_read_rpc_message_invalid_content_length_skips_to_next_message():
+    stream = io.BytesIO(
+        b"Content-Length: nope\r\n\r\n"
+        b'{"jsonrpc":"2.0","id":3,"method":"ping"}\n'
+    )
+    msg = mcp_wrapper._read_rpc_message(stream)
+    assert msg is not None
+    assert msg["id"] == 3
+    assert msg["method"] == "ping"
+
+
+def test_read_rpc_message_invalid_framed_payload_skips_to_next_message():
+    invalid_payload = b"{bad-json}"
+    valid_payload = b'{"jsonrpc":"2.0","id":4,"method":"ping"}'
+    framed = (
+        b"Content-Length: "
+        + str(len(invalid_payload)).encode("ascii")
+        + b"\r\n\r\n"
+        + invalid_payload
+        + b"Content-Length: "
+        + str(len(valid_payload)).encode("ascii")
+        + b"\r\n\r\n"
+        + valid_payload
+    )
+    stream = io.BytesIO(framed)
+    msg = mcp_wrapper._read_rpc_message(stream)
+    assert msg is not None
+    assert msg["id"] == 4
+    assert msg["method"] == "ping"
 
 
 def test_initialize_rejects_unsupported_protocol(monkeypatch):
@@ -311,6 +350,95 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
     assert metadata["operator_model_profile"] == "balanced"
 
 
+def test_handle_call_tool_skips_preflight_when_autostart_disabled(monkeypatch):
+    sent = []
+    calls = {"ensure": 0}
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER", "0")
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    def _ensure():
+        calls["ensure"] += 1
+        return True
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
+    monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda now_epoch=None: False)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", lambda *a, **k: _Resp())
+
+    mcp_wrapper.handle_call_tool(
+        "req-search-no-autostart",
+        {"name": "search_memory", "arguments": {"query": "hello", "limit": 1}},
+    )
+
+    assert calls["ensure"] == 0
+    assert sent
+    assert sent[0]["id"] == "req-search-no-autostart"
+
+
+def test_handle_call_tool_skips_preflight_when_backend_circuit_open(monkeypatch):
+    sent = []
+    calls = {"ensure": 0}
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER", "1")
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    def _ensure():
+        calls["ensure"] += 1
+        return True
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
+    monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda now_epoch=None: True)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", lambda *a, **k: _Resp())
+
+    mcp_wrapper.handle_call_tool(
+        "req-search-circuit-open",
+        {"name": "search_memory", "arguments": {"query": "hello", "limit": 1}},
+    )
+
+    assert calls["ensure"] == 0
+    assert sent
+    assert sent[0]["id"] == "req-search-circuit-open"
+
+
+def test_handle_call_tool_skips_preflight_when_deadline_budget_low(monkeypatch):
+    sent = []
+    calls = {"ensure": 0}
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER", "1")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "1")
+    monkeypatch.setenv("MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC", "2")
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    def _ensure():
+        calls["ensure"] += 1
+        return True
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
+    monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda now_epoch=None: False)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", lambda *a, **k: _Resp())
+
+    mcp_wrapper.handle_call_tool(
+        "req-search-low-budget",
+        {"name": "search_memory", "arguments": {"query": "hello", "limit": 1}},
+    )
+
+    assert calls["ensure"] == 0
+    assert sent
+    assert sent[0]["id"] == "req-search-low-budget"
+
+
 def test_operation_specific_profile_overrides_generic_profile(monkeypatch):
     monkeypatch.setenv("MUNINN_OPERATOR_MODEL_PROFILE", "balanced")
     monkeypatch.setenv("MUNINN_OPERATOR_INGESTION_MODEL_PROFILE", "high_reasoning")
@@ -351,8 +479,13 @@ def test_unknown_notification_method_is_ignored(monkeypatch):
 
 def test_background_dispatch_selection():
     assert mcp_wrapper._should_dispatch_in_background({"method": "tasks/result"}) is True
-    assert mcp_wrapper._should_dispatch_in_background({"method": "tools/call"}) is True
+    assert mcp_wrapper._should_dispatch_in_background({"method": "tools/call"}) is False
     assert mcp_wrapper._should_dispatch_in_background({"method": "ping"}) is False
+
+
+def test_background_dispatch_selection_can_enable_tools_call(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_BACKGROUND_TOOLS_CALL", "1")
+    assert mcp_wrapper._should_dispatch_in_background({"method": "tools/call"}) is True
 
 
 def test_dispatch_guard_logs_generic_message(monkeypatch):
@@ -368,12 +501,61 @@ def test_dispatch_guard_logs_generic_message(monkeypatch):
     assert logged == ["An unexpected error occurred during RPC dispatch."]
 
 
+def test_dispatch_guard_returns_internal_error_for_request_id(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "_dispatch_rpc_message",
+        lambda _msg: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    mcp_wrapper._dispatch_rpc_message_guarded(
+        {"jsonrpc": "2.0", "id": "req-dispatch-crash", "method": "tasks/result"}
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == "req-dispatch-crash"
+    assert sent[0]["error"]["code"] == -32603
+    assert "Internal error during request dispatch." in sent[0]["error"]["message"]
+
+
+def test_send_json_rpc_marks_transport_closed_on_broken_pipe(monkeypatch):
+    sent = []
+
+    class _StdoutStub:
+        def write(self, _value):
+            sent.append("write")
+            return 0
+
+        def flush(self):
+            raise BrokenPipeError("pipe closed")
+
+    monkeypatch.setattr(mcp_wrapper.sys, "stdout", _StdoutStub())
+
+    mcp_wrapper.send_json_rpc({"jsonrpc": "2.0", "id": "req", "result": {}})
+    assert mcp_wrapper._TRANSPORT_CLOSED.is_set() is True
+    writes_before = len(sent)
+
+    # No-op once transport is closed.
+    mcp_wrapper.send_json_rpc({"jsonrpc": "2.0", "id": "req-2", "result": {}})
+    assert len(sent) == writes_before
+
+
 def test_submit_background_dispatch_uses_executor(monkeypatch):
     calls = []
+
+    class _StubFuture:
+        def __init__(self):
+            self.callbacks = []
+
+        def add_done_callback(self, cb):
+            self.callbacks.append(cb)
 
     class _StubExecutor:
         def submit(self, fn, *args):
             calls.append((fn, args))
+            return _StubFuture()
 
     monkeypatch.setattr(mcp_wrapper, "_get_dispatch_executor", lambda: _StubExecutor())
     payload = {"method": "tasks/result", "id": "req"}
@@ -381,6 +563,161 @@ def test_submit_background_dispatch_uses_executor(monkeypatch):
     assert len(calls) == 1
     assert calls[0][0] is mcp_wrapper._dispatch_rpc_message_guarded
     assert calls[0][1][0] == payload
+
+
+def test_submit_background_dispatch_rejects_when_queue_saturated(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    class _SaturatedSemaphore:
+        def acquire(self, blocking=True):
+            return False
+
+    monkeypatch.setattr(mcp_wrapper, "_DISPATCH_QUEUE_SEMAPHORE", _SaturatedSemaphore())
+
+    mcp_wrapper._submit_background_dispatch(
+        {"jsonrpc": "2.0", "id": "req-busy", "method": "tools/call"}
+    )
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32001
+    assert "dispatch queue is saturated" in sent[0]["error"]["message"]
+
+
+def test_make_request_with_retry_fast_fails_when_circuit_is_open(monkeypatch):
+    calls = {"request": 0}
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+
+    def _never_called(_method, _url, **_kwargs):
+        calls["request"] += 1
+        raise AssertionError("requests.request should not be called when circuit is open")
+
+    monkeypatch.setattr(mcp_wrapper.requests, "request", _never_called)
+    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
+        mcp_wrapper._BACKEND_CIRCUIT_STATE["consecutive_failures"] = (
+            mcp_wrapper._BACKEND_CIRCUIT_FAILURE_THRESHOLD
+        )
+        mcp_wrapper._BACKEND_CIRCUIT_STATE["open_until_epoch"] = time.time() + 10
+
+    with pytest.raises(mcp_wrapper._BackendCircuitOpenError):
+        mcp_wrapper.make_request_with_retry("GET", "http://localhost:42069/health", timeout=0.1)
+    assert calls["request"] == 0
+
+
+def test_make_request_with_retry_clamps_timeout_to_remaining_deadline(monkeypatch):
+    observed = {}
+
+    class _Resp:
+        status_code = 200
+
+    def _fake_request(_method, _url, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr(mcp_wrapper.requests, "request", _fake_request)
+
+    deadline_epoch = time.monotonic() + 0.05
+    mcp_wrapper.make_request_with_retry(
+        "GET",
+        "http://localhost:42069/health",
+        timeout=10.0,
+        deadline_epoch=deadline_epoch,
+    )
+
+    timeout_value = observed["timeout"]
+    assert isinstance(timeout_value, float)
+    assert 0 < timeout_value <= 0.06
+
+
+def test_make_request_with_retry_fails_before_request_when_deadline_exhausted(monkeypatch):
+    calls = {"request": 0}
+
+    def _never_called(_method, _url, **_kwargs):
+        calls["request"] += 1
+        raise AssertionError("requests.request should not be called after deadline exhaustion")
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr(mcp_wrapper.requests, "request", _never_called)
+
+    with pytest.raises(mcp_wrapper._RequestDeadlineExceededError):
+        mcp_wrapper.make_request_with_retry(
+            "GET",
+            "http://localhost:42069/health",
+            timeout=1.0,
+            deadline_epoch=time.monotonic() - 1.0,
+        )
+    assert calls["request"] == 0
+
+
+def test_get_tool_call_deadline_seconds_uses_explicit_override(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "42")
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 42.0
+
+
+def test_get_tool_call_deadline_seconds_can_disable_budget(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "0")
+    assert mcp_wrapper._get_tool_call_deadline_seconds() is None
+
+
+def test_get_tool_call_deadline_seconds_derives_from_host_timeout_and_margin(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", raising=False)
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "90")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "15")
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 75.0
+
+
+def test_get_tool_call_deadline_seconds_clamps_to_minimum_when_margin_exceeds_host(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", raising=False)
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "5")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "9")
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 1.0
+
+
+def test_get_tool_call_deadline_seconds_clamps_explicit_value_above_host_safe_budget(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "119")
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+    monkeypatch.delenv("MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN", raising=False)
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 110.0
+
+
+def test_get_tool_call_deadline_seconds_allows_explicit_overrun_when_enabled(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "119")
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN", "1")
+
+    assert mcp_wrapper._get_tool_call_deadline_seconds() == 119.0
+
+
+def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low(monkeypatch):
+    calls = {"ensure": 0}
+
+    def _ensure():
+        calls["ensure"] += 1
+        return True
+
+    def _always_fail(_method, _url, **_kwargs):
+        raise mcp_wrapper.requests.ConnectionError("boom")
+
+    monkeypatch.setenv("MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC", "1")
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
+    monkeypatch.setattr(mcp_wrapper.requests, "request", _always_fail)
+
+    with pytest.raises((mcp_wrapper.requests.ConnectionError, mcp_wrapper._RequestDeadlineExceededError)):
+        mcp_wrapper.make_request_with_retry(
+            "GET",
+            "http://localhost:42069/health",
+            timeout=0.2,
+            deadline_epoch=time.monotonic() + 0.05,
+        )
+    assert calls["ensure"] == 0
 
 
 def test_initialized_notification_requires_prior_initialize(monkeypatch):
@@ -454,7 +791,7 @@ def test_tasks_list_returns_empty_collection(monkeypatch):
         "jsonrpc": "2.0",
         "id": "req-tasks-list-ok",
         "method": "tasks/list",
-        "params": {"cursor": "0"},
+        "params": {},
     })
 
     assert len(sent) == 1
@@ -477,7 +814,7 @@ def test_tasks_list_invalid_cursor_rejected(monkeypatch):
 
     assert len(sent) == 1
     assert sent[0]["error"]["code"] == -32602
-    assert "decimal offset string" in sent[0]["error"]["message"]
+    assert "opaque cursor token" in sent[0]["error"]["message"]
 
 
 def test_tasks_list_supports_cursor_pagination(monkeypatch):
@@ -505,14 +842,15 @@ def test_tasks_list_supports_cursor_pagination(monkeypatch):
     assert len(page1["tasks"]) == 2
     assert page1["tasks"][0]["taskId"] == "task-3"
     assert page1["tasks"][1]["taskId"] == "task-2"
-    assert page1["nextCursor"] == "2"
+    assert page1["nextCursor"] != "2"
+    assert mcp_wrapper._decode_task_cursor(page1["nextCursor"]) == 2
 
     sent.clear()
     mcp_wrapper._dispatch_rpc_message({
         "jsonrpc": "2.0",
         "id": "req-tasks-list-page-2",
         "method": "tasks/list",
-        "params": {"cursor": "2", "limit": 2},
+        "params": {"cursor": page1["nextCursor"], "limit": 2},
     })
     assert len(sent) == 1
     page2 = sent[0]["result"]
@@ -637,7 +975,7 @@ def test_tasks_result_requires_terminal_status(monkeypatch):
     assert len(sent) == 1
     assert sent[0]["id"] == "req-tasks-result-blocking"
     assert sent[0]["result"]["content"][0]["text"] == "ok"
-    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["id"] == "task-1"
+    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == "task-1"
 
 
 def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
@@ -663,7 +1001,7 @@ def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
     assert len(sent) == 1
     assert sent[0]["id"] == "req-tasks-result-ok"
     assert sent[0]["result"]["content"][0]["text"] == "ok"
-    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["id"] == "task-1"
+    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == "task-1"
 
 
 def test_tasks_result_rejects_terminal_task_without_payload(monkeypatch):
@@ -813,6 +1151,7 @@ def test_tools_call_with_task_returns_create_task_and_completes(monkeypatch):
     create_response = next(msg for msg in sent if msg.get("id") == "req-tools-call-task")
     assert create_response["result"]["task"]["status"] == "working"
     assert create_response["result"]["task"]["ttl"] == 1234
+    assert create_response["result"]["task"]["pollInterval"] == mcp_wrapper._TASK_POLL_INTERVAL_MS
     assert "io.modelcontextprotocol/model-immediate-response" in create_response["result"]["_meta"]
 
     notifications = [msg for msg in sent if msg.get("method") == "notifications/tasks/status"]
@@ -829,7 +1168,7 @@ def test_tools_call_with_task_returns_create_task_and_completes(monkeypatch):
     })
     assert len(sent) == 1
     assert sent[0]["result"]["content"][0]["text"] == "ok"
-    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["id"] == task_id
+    assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == task_id
 
 
 def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
@@ -1158,3 +1497,38 @@ def test_ingest_legacy_sources_tool_call_payload(monkeypatch):
     assert captured["json"]["chronological_order"] == "oldest_first"
     assert sent
     assert sent[0]["id"] == "req-legacy-import"
+
+
+def test_delete_memory_tool_call_url_encodes_memory_id_and_sets_deadline(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_SEC", "30")
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "DELETE_COMPLETED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["deadline_epoch"] = kwargs.get("deadline_epoch")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-delete",
+        {
+            "name": "delete_memory",
+            "arguments": {"memory_id": "folder/item?x=1"},
+        },
+    )
+
+    assert captured["method"] == "DELETE"
+    assert captured["url"].endswith("/delete/folder%2Fitem%3Fx%3D1")
+    assert isinstance(captured["deadline_epoch"], float)
+    assert sent
+    assert sent[0]["id"] == "req-delete"
