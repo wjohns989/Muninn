@@ -30,6 +30,7 @@ Evaluator: Codex
 - **Phase 4F runtime profile-control tranche is now implemented**: profile policy can now be read/updated at runtime through memory core + REST (`/profiles/model`) + MCP tools (`get_model_profiles`, `set_model_profiles`) + SDK sync/async parity.
 - **Phase 4G profile-policy audit visibility baseline is now implemented**: runtime profile mutations are now persisted as audit events and exposed through memory core + REST (`/profiles/model/events`) + MCP (`get_model_profile_events`) + SDK sync/async.
 - **Phase 4H local model-matrix benchmarking baseline is now implemented**: versioned Ollama model matrix + prompt pack + sync/benchmark CLI are now shipped for reproducible local model selection under 16GB-class helper-first workflows.
+- **Phase 4I model ability/resource benchmarking baseline is now implemented**: benchmark reports now include rubric-based ability scoring + ability-per-resource metrics, and a new legacy-ingestion benchmark mode can generate deterministic test cases from old project roots.
 
 ## Status vs Plan
 
@@ -77,7 +78,7 @@ Evaluator: Codex
 5. **Plan/dependency mismatch (open):** `pyproject.toml` still lacks full roadmap optional dependency groups (`conflict`, `ingestion`, `sdk`) and release-profile surfaces.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, and local model-matrix benchmarking harness are now implemented, but profile-level eval/telemetry promotion gates and alerting thresholds still need completion before default-policy promotion.
+8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, and ability/resource benchmark scoring are now implemented, but profile-level eval/telemetry promotion gates and alerting thresholds still need completion before default-policy promotion.
 
 ## Validation Snapshot
 
@@ -103,6 +104,9 @@ Evaluator: Codex
 - Local model benchmark tooling smoke checks now pass:
   - `python -m eval.ollama_local_benchmark list`
   - `python -m eval.ollama_local_benchmark sync --dry-run`
+- Phase 4I benchmark extensions now pass targeted checks:
+  - `python -m py_compile eval/ollama_local_benchmark.py`
+  - `5 passed` (`tests/test_ollama_local_benchmark.py`)
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -148,6 +152,7 @@ Evaluator: Codex
 5. Add MCP 2025-11 interoperability and OTel GenAI instrumentation as cross-cutting release criteria.
 6. Add a Phase 4 adaptive operator tranche for browser UI preferences + model profile routing (latency/quality/compute caliber control) with safe defaults.
 7. Enforce single-PR workflow policy operationally: one branch/one open PR per phase, merge before next branch starts, with PR/comment checks at each phase boundary.
+8. Add explicit Phase 4I acceptance criteria: ability-score + ability-per-resource thresholds for live and legacy-ingestion benchmark suites before profile default promotion.
 
 
 ## Vibecoder-Centric Additions (Multi-Assistant Continuity)
@@ -174,6 +179,7 @@ Research notes and implementation guidance are documented in:
 - `docs/WEB_RESEARCH_VIBECODER_SOTA.md`
 - `docs/plans/2026-02-14-browser-ui-model-policy-design.md`
 - `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
+- `docs/plans/2026-02-15-phase4i-ability-resource-benchmarking.md`
 
 ## Model-Caliber Research Update (2026-02-14)
 

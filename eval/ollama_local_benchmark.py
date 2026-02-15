@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import subprocess
 import sys
 import time
@@ -17,6 +18,57 @@ DEFAULT_MATRIX_PATH = ROOT / "eval" / "ollama_model_matrix.json"
 DEFAULT_PROMPTS_PATH = ROOT / "eval" / "ollama_benchmark_prompts.jsonl"
 DEFAULT_OUTPUT_DIR = ROOT / "eval" / "reports" / "ollama"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+LEGACY_TEXT_EXTENSIONS = {
+    ".py",
+    ".pyi",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".cs",
+    ".md",
+    ".txt",
+    ".toml",
+    ".yml",
+    ".yaml",
+    ".json",
+    ".sql",
+    ".sh",
+    ".ps1",
+    ".rb",
+    ".php",
+    ".html",
+    ".css",
+}
+STOPWORDS = {
+    "that",
+    "this",
+    "with",
+    "from",
+    "return",
+    "class",
+    "function",
+    "const",
+    "let",
+    "var",
+    "true",
+    "false",
+    "null",
+    "none",
+    "void",
+    "async",
+    "await",
+    "import",
+    "export",
+    "default",
+    "global",
+    "project",
+    "memory",
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -24,8 +76,8 @@ def _load_json(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
-def _load_prompts(path: Path) -> list[dict[str, str]]:
-    prompts: list[dict[str, str]] = []
+def _load_prompts(path: Path) -> list[dict[str, Any]]:
+    prompts: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
             stripped = line.strip()
@@ -44,7 +96,11 @@ def _load_prompts(path: Path) -> list[dict[str, str]]:
                 raise ValueError(
                     f"Prompt line {line_number} must contain non-empty 'id' and 'prompt'."
                 )
-            prompts.append({"id": prompt_id, "prompt": prompt_text, "category": category})
+            normalized = dict(item)
+            normalized["id"] = prompt_id
+            normalized["prompt"] = prompt_text
+            normalized["category"] = category
+            prompts.append(normalized)
     if not prompts:
         raise ValueError(f"No prompts found in {path}")
     return prompts
@@ -101,6 +157,220 @@ def _resolve_target_models(
     if include_optional:
         return [entry["tag"] for entry in matrix_entries]
     return [entry["tag"] for entry in matrix_entries if bool(entry.get("default_enabled", False))]
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    candidate = text.strip()
+    if not candidate:
+        return None
+
+    if candidate.startswith("```"):
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, flags=re.DOTALL)
+        if fence_match:
+            candidate = fence_match.group(1).strip()
+
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        object_match = re.search(r"\{.*\}", candidate, flags=re.DOTALL)
+        if object_match:
+            candidate = object_match.group(0).strip()
+        else:
+            return None
+
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _tokenize_words(text: str) -> list[str]:
+    return re.findall(r"[A-Za-z0-9_]+", text.lower())
+
+
+def _safe_average(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+def _score_live_response(prompt: dict[str, Any], response_text: str) -> tuple[float, dict[str, Any]]:
+    checks: dict[str, float] = {}
+    text = (response_text or "").strip()
+    lower_text = text.lower()
+
+    checks["non_empty"] = 1.0 if text else 0.0
+
+    required_json_keys = prompt.get("required_json_keys") or []
+    if isinstance(required_json_keys, list) and required_json_keys:
+        payload = _extract_json_object(text)
+        if payload is None:
+            checks["required_json_keys"] = 0.0
+        else:
+            keys = [str(k).strip() for k in required_json_keys if str(k).strip()]
+            if keys:
+                present = sum(1 for key in keys if key in payload)
+                checks["required_json_keys"] = present / len(keys)
+
+    required_substrings = prompt.get("required_substrings") or []
+    if isinstance(required_substrings, list) and required_substrings:
+        needles = [str(s).strip().lower() for s in required_substrings if str(s).strip()]
+        if needles:
+            present = sum(1 for needle in needles if needle in lower_text)
+            checks["required_substrings"] = present / len(needles)
+
+    forbidden_substrings = prompt.get("forbidden_substrings") or []
+    if isinstance(forbidden_substrings, list) and forbidden_substrings:
+        needles = [str(s).strip().lower() for s in forbidden_substrings if str(s).strip()]
+        if needles:
+            present = sum(1 for needle in needles if needle in lower_text)
+            checks["forbidden_substrings"] = max(0.0, 1.0 - (present / len(needles)))
+
+    output_format = str(prompt.get("output_format", "")).strip().lower()
+    if output_format == "code":
+        likely_code = bool(
+            re.search(r"\bdef\b|\bclass\b|=>|\{|\}|import\s+|from\s+\w+\s+import", text)
+        )
+        checks["code_format"] = 1.0 if likely_code else 0.0
+
+    exact_line_count = prompt.get("exact_line_count")
+    if isinstance(exact_line_count, int) and exact_line_count > 0:
+        non_empty_lines = [line for line in text.splitlines() if line.strip()]
+        checks["exact_line_count"] = 1.0 if len(non_empty_lines) == exact_line_count else 0.0
+
+    min_words = prompt.get("min_words")
+    if isinstance(min_words, int) and min_words > 0:
+        word_count = len(_tokenize_words(text))
+        checks["min_words"] = 1.0 if word_count >= min_words else 0.0
+
+    score = _safe_average(list(checks.values()))
+    return score, {"checks": checks}
+
+
+def _read_text_file(path: Path, max_chars: int) -> str:
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    content = content.replace("\r\n", "\n")
+    if len(content) > max_chars:
+        return content[:max_chars]
+    return content
+
+
+def _extract_expected_keywords(text: str, minimum: int = 3, maximum: int = 6) -> list[str]:
+    tokens = [t for t in _tokenize_words(text) if len(t) >= 4 and t not in STOPWORDS]
+    if not tokens:
+        return []
+    counts: dict[str, int] = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    selected = [token for token, _count in ranked[:maximum]]
+    if len(selected) < minimum:
+        return []
+    return selected
+
+
+def _build_legacy_cases(
+    roots: list[Path],
+    *,
+    max_cases_per_root: int,
+    snippet_chars: int,
+) -> list[dict[str, Any]]:
+    all_cases: list[dict[str, Any]] = []
+    for root in roots:
+        resolved_root = root.resolve()
+        if not resolved_root.exists() or not resolved_root.is_dir():
+            continue
+
+        root_cases = 0
+        for path in sorted(resolved_root.rglob("*")):
+            if root_cases >= max_cases_per_root:
+                break
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in LEGACY_TEXT_EXTENSIONS:
+                continue
+            snippet = _read_text_file(path, max_chars=snippet_chars)
+            if len(snippet.strip()) < 120:
+                continue
+            expected_keywords = _extract_expected_keywords(snippet)
+            if len(expected_keywords) < 3:
+                continue
+            relative_path = str(path.resolve().relative_to(resolved_root)).replace("\\", "/")
+            prompt = (
+                "Extract memory-oriented structure from this legacy project snippet. "
+                "Return strict JSON with keys summary, entities, risks, action_items.\n"
+                f"source_path={relative_path}\n"
+                "snippet:\n"
+                f"{snippet}"
+            )
+            case_id = f"{resolved_root.name}:{relative_path}"
+            all_cases.append(
+                {
+                    "id": case_id,
+                    "category": "legacy_ingestion",
+                    "root": str(resolved_root),
+                    "source_path": str(path.resolve()),
+                    "prompt": prompt,
+                    "expected_keywords": expected_keywords,
+                    "required_json_keys": ["summary", "entities", "risks", "action_items"],
+                    "min_words": 20,
+                }
+            )
+            root_cases += 1
+    return all_cases
+
+
+def _score_legacy_response(case: dict[str, Any], response_text: str) -> tuple[float, dict[str, Any]]:
+    checks: dict[str, float] = {}
+    text = (response_text or "").strip()
+    payload = _extract_json_object(text)
+    if payload is None:
+        checks["json_parse"] = 0.0
+        checks["required_json_keys"] = 0.0
+        checks["keyword_coverage"] = 0.0
+        checks["min_words"] = 0.0
+        return 0.0, {"checks": checks}
+
+    checks["json_parse"] = 1.0
+    required_json_keys = [str(k).strip() for k in case.get("required_json_keys", []) if str(k).strip()]
+    if required_json_keys:
+        present = sum(1 for key in required_json_keys if key in payload)
+        checks["required_json_keys"] = present / len(required_json_keys)
+
+    flattened = json.dumps(payload, ensure_ascii=False).lower()
+    expected_keywords = [str(k).strip().lower() for k in case.get("expected_keywords", []) if str(k).strip()]
+    if expected_keywords:
+        present = sum(1 for keyword in expected_keywords if keyword in flattened)
+        checks["keyword_coverage"] = present / len(expected_keywords)
+
+    min_words = int(case.get("min_words") or 0)
+    if min_words > 0:
+        checks["min_words"] = 1.0 if len(_tokenize_words(flattened)) >= min_words else 0.0
+
+    score = _safe_average(list(checks.values()))
+    return score, {"checks": checks}
+
+
+def _entry_for_model(matrix: dict[str, Any], tag: str) -> dict[str, Any]:
+    for entry in _matrix_models(matrix):
+        if str(entry.get("tag", "")).strip() == tag:
+            return entry
+    return {}
+
+
+def _resource_efficiency(summary: dict[str, Any], matrix_entry: dict[str, Any]) -> dict[str, float]:
+    avg_ability = float(summary.get("avg_ability_score", 0.0) or 0.0)
+    avg_wall = float(summary.get("avg_wall_seconds", 0.0) or 0.0)
+    vram_min_gb = float(matrix_entry.get("vram_min_gb", 0.0) or 0.0)
+    return {
+        "vram_min_gb": vram_min_gb,
+        "ability_per_second": round(avg_ability / avg_wall, 6) if avg_wall > 0 else 0.0,
+        "ability_per_vram_gb": round(avg_ability / vram_min_gb, 6) if vram_min_gb > 0 else 0.0,
+    }
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -221,6 +491,7 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     report: dict[str, Any] = {
         "run_id": run_id,
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "suite": "live",
         "ollama_url": ollama_url,
         "ollama_version": ollama_version,
         "matrix_path": str(matrix_path),
@@ -273,25 +544,53 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
                         "eval_count": eval_count,
                         "eval_tokens_per_second": round(eval_tps, 4),
                         "done_reason": result.get("done_reason"),
+                        "response_chars": len(str(result.get("response", "") or "")),
+                        "response_preview": str(result.get("response", "") or "")[:320],
+                        "ability_score": None,
+                        "ability_checks": {},
                         "error": None,
                     }
                 )
+                ability_score, ability_details = _score_live_response(
+                    prompt=prompt,
+                    response_text=str(result.get("response", "") or ""),
+                )
+                model_runs[-1]["ability_score"] = round(float(ability_score), 6)
+                model_runs[-1]["ability_checks"] = ability_details
 
         successful = [run for run in model_runs if run.get("error") is None]
         latencies = [float(run["wall_seconds"]) for run in successful]
         tps_values = [float(run["eval_tokens_per_second"]) for run in successful if run["eval_tokens_per_second"] > 0]
+        ability_scores = [
+            float(run["ability_score"])
+            for run in successful
+            if isinstance(run.get("ability_score"), (int, float))
+        ]
+        pass_threshold = float(args.ability_pass_threshold)
+        passed_runs = sum(1 for score in ability_scores if score >= pass_threshold)
+        matrix_entry = _entry_for_model(matrix, model)
+
+        summary = {
+            "total_runs": len(model_runs),
+            "successful_runs": len(successful),
+            "failed_runs": len(model_runs) - len(successful),
+            "avg_wall_seconds": round(sum(latencies) / len(latencies), 6) if latencies else 0.0,
+            "p95_wall_seconds": round(_percentile(latencies, 0.95), 6) if latencies else 0.0,
+            "avg_eval_tokens_per_second": round(sum(tps_values) / len(tps_values), 4)
+            if tps_values
+            else 0.0,
+            "avg_ability_score": round(sum(ability_scores) / len(ability_scores), 6)
+            if ability_scores
+            else 0.0,
+            "ability_pass_threshold": pass_threshold,
+            "ability_pass_rate": round((passed_runs / len(ability_scores)), 6) if ability_scores else 0.0,
+        }
+        summary["resource_efficiency"] = _resource_efficiency(summary, matrix_entry)
+
         report["models"][model] = {
             "runs": model_runs,
-            "summary": {
-                "total_runs": len(model_runs),
-                "successful_runs": len(successful),
-                "failed_runs": len(model_runs) - len(successful),
-                "avg_wall_seconds": round(sum(latencies) / len(latencies), 6) if latencies else 0.0,
-                "p95_wall_seconds": round(_percentile(latencies, 0.95), 6) if latencies else 0.0,
-                "avg_eval_tokens_per_second": round(sum(tps_values) / len(tps_values), 4)
-                if tps_values
-                else 0.0,
-            },
+            "summary": summary,
+            "matrix_entry": matrix_entry,
         }
 
     report["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -301,6 +600,205 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
         f.write("\n")
 
     print(f"Benchmark report written to: {output_path}")
+    return 0
+
+
+def _parse_legacy_roots(raw: str) -> list[Path]:
+    roots = [Path(item.strip()).resolve() for item in raw.split(",") if item.strip()]
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
+def cmd_legacy_benchmark(args: argparse.Namespace) -> int:
+    matrix_path = Path(args.matrix).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    ollama_url = args.ollama_url.strip()
+    timeout_seconds = int(args.timeout_seconds)
+    num_predict = int(args.num_predict)
+    repeats = int(args.repeats)
+    max_cases_per_root = int(args.max_cases_per_root)
+    snippet_chars = int(args.snippet_chars)
+    pass_threshold = float(args.ability_pass_threshold)
+
+    if repeats < 1:
+        raise ValueError("--repeats must be >= 1")
+    if num_predict < 1:
+        raise ValueError("--num-predict must be >= 1")
+    if max_cases_per_root < 1:
+        raise ValueError("--max-cases-per-root must be >= 1")
+    if snippet_chars < 256:
+        raise ValueError("--snippet-chars must be >= 256")
+
+    roots = _parse_legacy_roots(args.legacy_roots)
+    if not roots:
+        raise ValueError("--legacy-roots must include at least one directory path")
+
+    matrix = _load_json(matrix_path)
+    installed = _installed_models()
+    selected = _resolve_target_models(
+        matrix=matrix,
+        include_optional=bool(args.include_optional),
+        only=args.models.split(",") if args.models else None,
+    )
+    selected = [model for model in selected if model in installed]
+    if not selected:
+        print("No selected models are installed. Run sync first.", file=sys.stderr)
+        return 1
+
+    cases = _build_legacy_cases(
+        roots=roots,
+        max_cases_per_root=max_cases_per_root,
+        snippet_chars=snippet_chars,
+    )
+    if not cases:
+        print("No legacy benchmark cases were generated from --legacy-roots.", file=sys.stderr)
+        return 1
+
+    try:
+        ollama_version = _post_version(ollama_url, timeout_seconds)
+    except error.URLError as exc:
+        print(f"Ollama endpoint unavailable at {ollama_url}: {exc}", file=sys.stderr)
+        return 1
+
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = Path(args.output).resolve() if args.output else output_dir / f"legacy_report_{run_id}.json"
+
+    report: dict[str, Any] = {
+        "run_id": run_id,
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "suite": "legacy_ingestion",
+        "ollama_url": ollama_url,
+        "ollama_version": ollama_version,
+        "matrix_path": str(matrix_path),
+        "legacy_roots": [str(root) for root in roots],
+        "legacy_case_count": len(cases),
+        "repeats": repeats,
+        "num_predict": num_predict,
+        "models": {},
+    }
+
+    for model in selected:
+        print(f"[legacy-benchmark] model={model}")
+        model_runs: list[dict[str, Any]] = []
+        for case in cases:
+            for rep in range(repeats):
+                payload = {
+                    "model": model,
+                    "prompt": case["prompt"],
+                    "stream": False,
+                    "options": {"temperature": 0, "num_predict": num_predict},
+                }
+                wall_start = time.perf_counter()
+                try:
+                    result = _post_generate(ollama_url, payload, timeout_seconds)
+                except Exception as exc:  # noqa: BLE001
+                    model_runs.append(
+                        {
+                            "case_id": case["id"],
+                            "category": case["category"],
+                            "source_path": case["source_path"],
+                            "repeat_index": rep,
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+
+                wall_seconds = time.perf_counter() - wall_start
+                eval_count = int(result.get("eval_count", 0) or 0)
+                eval_duration_ns = int(result.get("eval_duration", 0) or 0)
+                eval_tps = 0.0
+                if eval_count > 0 and eval_duration_ns > 0:
+                    eval_tps = eval_count / (eval_duration_ns / 1_000_000_000.0)
+
+                response_text = str(result.get("response", "") or "")
+                ability_score, ability_details = _score_legacy_response(case, response_text)
+                model_runs.append(
+                    {
+                        "case_id": case["id"],
+                        "category": case["category"],
+                        "source_path": case["source_path"],
+                        "expected_keywords": case.get("expected_keywords", []),
+                        "repeat_index": rep,
+                        "wall_seconds": round(wall_seconds, 6),
+                        "total_seconds_api": round(
+                            (int(result.get("total_duration", 0) or 0) / 1_000_000_000.0), 6
+                        ),
+                        "prompt_eval_count": int(result.get("prompt_eval_count", 0) or 0),
+                        "eval_count": eval_count,
+                        "eval_tokens_per_second": round(eval_tps, 4),
+                        "done_reason": result.get("done_reason"),
+                        "response_chars": len(response_text),
+                        "response_preview": response_text[:320],
+                        "ability_score": round(float(ability_score), 6),
+                        "ability_checks": ability_details,
+                        "error": None,
+                    }
+                )
+
+        successful = [run for run in model_runs if run.get("error") is None]
+        latencies = [float(run["wall_seconds"]) for run in successful]
+        tps_values = [float(run["eval_tokens_per_second"]) for run in successful if run["eval_tokens_per_second"] > 0]
+        ability_scores = [
+            float(run["ability_score"])
+            for run in successful
+            if isinstance(run.get("ability_score"), (int, float))
+        ]
+        passed_runs = sum(1 for score in ability_scores if score >= pass_threshold)
+        matrix_entry = _entry_for_model(matrix, model)
+
+        summary = {
+            "total_runs": len(model_runs),
+            "successful_runs": len(successful),
+            "failed_runs": len(model_runs) - len(successful),
+            "avg_wall_seconds": round(sum(latencies) / len(latencies), 6) if latencies else 0.0,
+            "p95_wall_seconds": round(_percentile(latencies, 0.95), 6) if latencies else 0.0,
+            "avg_eval_tokens_per_second": round(sum(tps_values) / len(tps_values), 4)
+            if tps_values
+            else 0.0,
+            "avg_ability_score": round(sum(ability_scores) / len(ability_scores), 6)
+            if ability_scores
+            else 0.0,
+            "ability_pass_threshold": pass_threshold,
+            "ability_pass_rate": round((passed_runs / len(ability_scores)), 6) if ability_scores else 0.0,
+        }
+        summary["resource_efficiency"] = _resource_efficiency(summary, matrix_entry)
+
+        report["models"][model] = {
+            "runs": model_runs,
+            "summary": summary,
+            "matrix_entry": matrix_entry,
+        }
+
+    report["cases_preview"] = [
+        {
+            "id": case["id"],
+            "source_path": case["source_path"],
+            "expected_keywords": case.get("expected_keywords", []),
+        }
+        for case in cases[:20]
+    ]
+    report["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
+
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+        f.write("\n")
+
+    if args.dump_cases:
+        cases_output = Path(args.dump_cases).resolve()
+        with cases_output.open("w", encoding="utf-8") as f:
+            for case in cases:
+                f.write(json.dumps(case, ensure_ascii=False) + "\n")
+        print(f"Legacy case corpus written to: {cases_output}")
+
+    print(f"Legacy benchmark report written to: {output_path}")
     return 0
 
 
@@ -383,7 +881,87 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Maximum generated tokens per request.",
     )
+    bench_parser.add_argument(
+        "--ability-pass-threshold",
+        default=0.75,
+        type=float,
+        help="Ability score threshold used for pass-rate summaries.",
+    )
     bench_parser.set_defaults(func=cmd_benchmark)
+
+    legacy_parser = subparsers.add_parser(
+        "legacy-benchmark",
+        help="Benchmark extraction quality on legacy project snippets (old projects).",
+    )
+    legacy_parser.add_argument(
+        "--legacy-roots",
+        required=True,
+        help="Comma-separated list of project root directories to build legacy benchmark cases from.",
+    )
+    legacy_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for generated benchmark reports.",
+    )
+    legacy_parser.add_argument(
+        "--output",
+        help="Explicit report output path; defaults to output-dir/legacy_report_<timestamp>.json.",
+    )
+    legacy_parser.add_argument(
+        "--models",
+        help="Comma-separated explicit model tags to benchmark (must exist in matrix and be installed).",
+    )
+    legacy_parser.add_argument(
+        "--include-optional",
+        action="store_true",
+        help="Include optional matrix models when --models is not provided.",
+    )
+    legacy_parser.add_argument(
+        "--repeats",
+        default=1,
+        type=int,
+        help="Number of repeated runs per legacy case per model.",
+    )
+    legacy_parser.add_argument(
+        "--max-cases-per-root",
+        default=12,
+        type=int,
+        help="Maximum generated benchmark cases per root directory.",
+    )
+    legacy_parser.add_argument(
+        "--snippet-chars",
+        default=1800,
+        type=int,
+        help="Maximum chars read from each source file when generating legacy cases.",
+    )
+    legacy_parser.add_argument(
+        "--ollama-url",
+        default=DEFAULT_OLLAMA_URL,
+        help="Base URL for local Ollama server.",
+    )
+    legacy_parser.add_argument(
+        "--timeout-seconds",
+        default=300,
+        type=int,
+        help="HTTP timeout for a single generation request.",
+    )
+    legacy_parser.add_argument(
+        "--num-predict",
+        default=192,
+        type=int,
+        help="Maximum generated tokens per request.",
+    )
+    legacy_parser.add_argument(
+        "--ability-pass-threshold",
+        default=0.75,
+        type=float,
+        help="Ability score threshold used for pass-rate summaries.",
+    )
+    legacy_parser.add_argument(
+        "--dump-cases",
+        help="Optional JSONL output path for generated legacy benchmark cases.",
+    )
+    legacy_parser.set_defaults(func=cmd_legacy_benchmark)
 
     return parser
 
