@@ -662,6 +662,62 @@ def _git_output(args: list[str]) -> str | None:
     return value if value else None
 
 
+def _git_commit_reachable_from(commit_sha: str, ref: str) -> tuple[bool, str | None]:
+    try:
+        normalized_commit_sha = _normalize_commit_sha(commit_sha)
+    except ValueError as exc:
+        return False, str(exc)
+    if not normalized_commit_sha:
+        return False, "Empty commit SHA provided for ancestry verification."
+
+    normalized_ref = str(ref or "").strip()
+    if not normalized_ref:
+        return False, "Empty ref provided for commit ancestry verification."
+    try:
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "--", normalized_ref],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return False, f"git executable unavailable: {exc}"
+
+    if ref_check.returncode != 0:
+        stderr = (ref_check.stderr or "").strip()
+        return False, f"Ref '{normalized_ref}' is not resolvable. {stderr}".strip()
+
+    try:
+        resolved_ref_sha = _normalize_commit_sha(ref_check.stdout)
+    except ValueError:
+        return (
+            False,
+            f"Ref '{normalized_ref}' did not resolve to a valid commit SHA.",
+        )
+    if not resolved_ref_sha:
+        return (
+            False,
+            f"Ref '{normalized_ref}' did not resolve to a valid commit SHA.",
+        )
+
+    try:
+        ancestor_check = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", normalized_commit_sha, resolved_ref_sha],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return False, f"git executable unavailable: {exc}"
+
+    if ancestor_check.returncode == 0:
+        return True, None
+    if ancestor_check.returncode == 1:
+        return False, None
+    stderr = (ancestor_check.stderr or "").strip()
+    return False, f"git merge-base failed. {stderr}".strip()
+
+
 def _normalize_commit_sha(value: str | None) -> str | None:
     candidate = str(value or "").strip().lower()
     if not candidate:
@@ -1101,6 +1157,9 @@ def cmd_apply_checkpoint(args: argparse.Namespace) -> int:
     require_pr_number = bool(getattr(args, "require_pr_number", False))
     require_commit_sha = bool(getattr(args, "require_commit_sha", False))
     require_branch_name = bool(getattr(args, "require_branch_name", False))
+    require_commit_reachable_from = str(
+        getattr(args, "require_commit_reachable_from", "") or ""
+    ).strip()
 
     checkpoint = _load_json(checkpoint_path)
     target_policy = _checkpoint_target_policy(checkpoint)
@@ -1128,6 +1187,26 @@ def cmd_apply_checkpoint(args: argparse.Namespace) -> int:
         require_commit_sha=require_commit_sha,
         require_branch_name=require_branch_name,
     )
+    if require_commit_reachable_from:
+        commit_sha = str(change_context.get("commit_sha") or "").strip()
+        if not commit_sha:
+            raise ValueError(
+                "Approval manifest change_context.commit_sha is required when "
+                "--require-commit-reachable-from is set."
+            )
+        reachable, verify_error = _git_commit_reachable_from(
+            commit_sha, require_commit_reachable_from
+        )
+        if verify_error:
+            raise ValueError(
+                "Unable to verify commit ancestry for --require-commit-reachable-from. "
+                f"{verify_error}"
+            )
+        if not reachable:
+            raise ValueError(
+                "Approval manifest change_context.commit_sha "
+                f"'{commit_sha}' is not reachable from '{require_commit_reachable_from}'."
+            )
 
     apply_payload = {**target_policy, "source": source}
     apply_result: dict[str, Any]
@@ -2303,6 +2382,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-branch-name",
         action="store_true",
         help="Require approval manifest change_context.branch_name.",
+    )
+    apply_checkpoint_parser.add_argument(
+        "--require-commit-reachable-from",
+        help="Require manifest commit SHA to be reachable from this git ref/branch.",
     )
     apply_checkpoint_parser.set_defaults(func=cmd_apply_checkpoint)
 
