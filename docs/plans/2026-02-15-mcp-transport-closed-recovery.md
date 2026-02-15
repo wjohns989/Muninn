@@ -87,3 +87,16 @@ Governance-enforcement follow-on is now implemented in `docs/plans/2026-02-15-ph
    - `change_context` shape and required field checks now gate apply before mutation.
 3. Validation increment:
    - benchmark/policy command tests now at `23 passed` (`tests/test_ollama_local_benchmark.py`).
+
+## Continuation Update (Phase 4Q)
+
+Governance-lineage follow-on is now implemented in `docs/plans/2026-02-15-phase4q-git-ancestry-enforcement.md`:
+
+1. Git ancestry enforcement:
+   - checkpoint apply now supports `--require-commit-reachable-from <ref>` lineage verification.
+2. Deterministic git validation:
+   - apply path now validates ref resolvability and commit ancestry before mutation.
+3. Security hardening follow-up:
+   - git ancestry helper now uses `rev-parse --verify -- <ref>` and evaluates ancestry against resolved ref SHA to prevent option-injection behavior from dash-prefixed refs.
+4. Validation increment:
+   - benchmark/policy command tests now at `29 passed` (`tests/test_ollama_local_benchmark.py`).
