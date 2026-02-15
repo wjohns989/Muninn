@@ -2,7 +2,7 @@
 
 Date: 2026-02-15  
 Owner: Codex  
-Status: Implemented baseline in branch `feat/phase4s-mcp-task-lifecycle-baseline`
+Status: Implemented baseline + review-fix follow-up in branch `feat/phase4s-mcp-task-lifecycle-baseline`
 
 ## Objective
 
@@ -35,16 +35,22 @@ Implementation semantics were checked against the official MCP schema source:
 5. Extended protocol tests:
    - task capability assertions,
    - task-get/result/cancel request-path validation and state transitions.
+6. Review-driven safety/correctness follow-up:
+   - terminal tasks without result payload no longer return synthetic `{}` success payloads,
+   - unknown-task errors now avoid reflecting raw user-provided `taskId` strings,
+   - duplicated task-dispatch validation logic consolidated into one helper path.
+7. Validation-blocker hardening discovered and fixed:
+   - `eval.phase_hygiene` command execution now decodes subprocess output with UTF-8/CP1252 fallback so Windows review text no longer triggers decode crashes during PR hygiene checks.
 
 ## Validation
 
 1. `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
 2. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_mcp_wrapper_protocol.py`
-3. Result: `43 passed`
+3. Result: `45 passed`
 4. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_ollama_local_benchmark.py tests/test_phase_hygiene.py tests/test_mcp_wrapper_protocol.py`
-5. Result: `77 passed`
+5. Result: `81 passed`
 6. `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command ""`
-7. Result: `PASS` (`eval/reports/hygiene/phase_hygiene_20260215_050011.json`)
+7. Result: `PASS` (`eval/reports/hygiene/phase_hygiene_20260215_051620.json`)
 
 ## ROI / Impact
 

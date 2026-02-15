@@ -460,6 +460,25 @@ def test_tasks_get_unknown_task_rejected(monkeypatch):
     assert "unknown taskId" in sent[0]["error"]["message"]
 
 
+def test_tasks_get_unknown_task_does_not_reflect_raw_task_id(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-get-unknown-safe",
+        "method": "tasks/get",
+        "params": {"taskId": "<script>alert(1)</script>"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32602
+    assert "<script>" not in sent[0]["error"]["message"]
+    assert "unknown taskId" in sent[0]["error"]["message"]
+
+
 def test_tasks_get_returns_task(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -526,6 +545,27 @@ def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
     assert len(sent) == 1
     assert sent[0]["id"] == "req-tasks-result-ok"
     assert sent[0]["result"]["content"][0]["text"] == "ok"
+
+
+def test_tasks_result_rejects_terminal_task_without_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="cancelled"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-cancelled-missing",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32001
+    assert "result is unavailable for status 'cancelled'" in sent[0]["error"]["message"]
 
 
 def test_tasks_cancel_rejects_terminal_task(monkeypatch):
