@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure evidence capture applied)
 
 ## Objective
 
@@ -50,12 +50,17 @@ Implemented to reduce external host-side 120s transport timeout risk while block
 4. Browser dashboard rendering now avoids dynamic `innerHTML` injection paths for operator-visible result/table payloads.
 5. Long-running MCP tools now support automatic task-mode deferral (`tools/call` auto-task) so heavy ingest calls can return immediate task handles instead of consuming the host synchronous timeout window.
 6. Transport closure campaign automation now exists via `python -m eval.mcp_transport_closure`, producing deterministic closure-evidence artifacts with explicit criterion booleans.
+7. MCP wrapper now logs per-tool transport telemetry (`elapsed_ms`, response byte totals/max, budget/remaining budget) with near-timeout warning thresholds to accelerate root-cause diagnosis in host-runtime incidents.
+   - Implementation detail: `docs/plans/2026-02-15-phase5a3-mcp-tool-call-telemetry-hardening.md`.
 
 Current assessment:
 
 - Risk is reduced for large-response and reflected-error classes.
 - Blocker remains open until closure criteria are met across rolling soak windows in host runtime.
-- Closure campaign automation is now available and has passed a 5-run dual-transport smoke window (`mcp_transport_closure_20260215_212349.json`), but 30-run closure evidence is still pending.
+- Closure campaign automation now has both smoke and full-window deterministic evidence:
+  - 5-run smoke: `eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`
+  - 30-run closure window: `eval/reports/mcp_transport/mcp_transport_closure_20260215_213858.json` (`closure_ready=true`, streak `30`, p95 ratio `1.0`)
+- Remaining operational risk is primarily external host-runtime intermittency; closure evidence for wrapper-controlled transport behavior is now available and machine-verifiable.
 
 ## Decision Rule
 
