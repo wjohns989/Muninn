@@ -14,6 +14,7 @@ import logging
 import subprocess
 import threading
 import requests
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List, BinaryIO
 from muninn.version import __version__
@@ -33,7 +34,9 @@ _SESSION_STATE = {
     "protocol_version": SUPPORTED_PROTOCOL_VERSIONS[0],
     "client_capabilities": {},
     "client_elicitation_modes": tuple(),
+    "tasks": {},
 }
+_TASK_TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
 
 def get_git_info() -> Dict[str, str]:
     """Get project name and git branch in real-time."""
@@ -429,6 +432,8 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     client_capabilities = raw_capabilities if isinstance(raw_capabilities, dict) else {}
     _SESSION_STATE["client_capabilities"] = client_capabilities
     _SESSION_STATE["client_elicitation_modes"] = _extract_client_elicitation_modes(client_capabilities)
+    if not isinstance(_SESSION_STATE.get("tasks"), dict):
+        _SESSION_STATE["tasks"] = {}
     startup_warnings = _collect_startup_warnings()
 
     send_json_rpc({
@@ -441,7 +446,8 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
                     "listChanged": False
                 },
                 "tasks": {
-                    "list": {}
+                    "list": {},
+                    "cancel": {},
                 }
             },
             "serverInfo": {
@@ -513,23 +519,22 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         return
 
     if method == "tasks/list":
-        if not _SESSION_STATE["initialized"]:
-            if msg_id is not None:
-                _send_json_rpc_error(
-                    msg_id,
-                    -32600,
-                    "Server not initialized. Send initialize then notifications/initialized.",
-                )
+        validated = _validate_initialized_rpc_params(msg_id, method, params)
+        if validated is None:
             return
-        if msg_id is None:
-            logger.debug("Ignoring tasks/list notification without id")
+        handle_list_tasks(msg_id, validated)
+        return
+
+    if method in ("tasks/get", "tasks/result", "tasks/cancel"):
+        validated = _validate_initialized_rpc_params(msg_id, method, params)
+        if validated is None:
             return
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list params must be an object")
-            return
-        handle_list_tasks(msg_id, params)
+        if method == "tasks/get":
+            handle_get_task(msg_id, validated)
+        elif method == "tasks/result":
+            handle_get_task_result(msg_id, validated)
+        else:
+            handle_cancel_task(msg_id, validated)
         return
 
     if method == "tools/call":
@@ -568,6 +573,30 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         logger.debug(f"Ignoring unknown notification method: {method}")
 
 
+def _validate_initialized_rpc_params(
+    msg_id: Any,
+    method: str,
+    params: Any,
+) -> Optional[Dict[str, Any]]:
+    """Validate initialized lifecycle and dict params for request methods."""
+    if not _SESSION_STATE["initialized"]:
+        if msg_id is not None:
+            _send_json_rpc_error(
+                msg_id,
+                -32600,
+                "Server not initialized. Send initialize then notifications/initialized.",
+            )
+        return None
+    if msg_id is None:
+        logger.debug(f"Ignoring {method} notification without id")
+        return None
+    validated = {} if params is None else params
+    if not isinstance(validated, dict):
+        _send_json_rpc_error(msg_id, -32602, f"Invalid params: {method} params must be an object")
+        return None
+    return validated
+
+
 def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     """Return active tasks for this server (currently no async task lifecycle)."""
     params = params or {}
@@ -575,12 +604,103 @@ def handle_list_tasks(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     if cursor is not None and not isinstance(cursor, str):
         _send_json_rpc_error(msg_id, -32602, "Invalid params: tasks/list cursor must be a string")
         return
+    tasks = _task_registry()
     send_json_rpc({
         "jsonrpc": "2.0",
         "id": msg_id,
         "result": {
-            "tasks": []
+            "tasks": list(tasks.values())
         }
+    })
+
+
+def _task_id_or_error(msg_id: Any, params: Dict[str, Any], method: str) -> Optional[str]:
+    task_id = params.get("taskId")
+    if not isinstance(task_id, str) or not task_id.strip():
+        _send_json_rpc_error(msg_id, -32602, f"Invalid params: {method} requires non-empty string taskId")
+        return None
+    return task_id.strip()
+
+
+def _task_registry() -> Dict[str, Dict[str, Any]]:
+    tasks = _SESSION_STATE.get("tasks")
+    if isinstance(tasks, dict):
+        return tasks
+    reset: Dict[str, Dict[str, Any]] = {}
+    _SESSION_STATE["tasks"] = reset
+    return reset
+
+
+def handle_get_task(msg_id: Any, params: Dict[str, Any]) -> None:
+    task_id = _task_id_or_error(msg_id, params, "tasks/get")
+    if task_id is None:
+        return
+    task = _task_registry().get(task_id)
+    if not isinstance(task, dict):
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
+        return
+    send_json_rpc({
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": task,
+    })
+
+
+def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
+    task_id = _task_id_or_error(msg_id, params, "tasks/result")
+    if task_id is None:
+        return
+    task = _task_registry().get(task_id)
+    if not isinstance(task, dict):
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
+        return
+    status = str(task.get("status") or "")
+    if status not in _TASK_TERMINAL_STATUSES:
+        _send_json_rpc_error(
+            msg_id,
+            -32001,
+            f"Task '{task_id}' is not complete; current status is '{status or 'unknown'}'.",
+        )
+        return
+    payload = task.get("result")
+    if not isinstance(payload, dict):
+        if status == "completed":
+            _send_json_rpc_error(msg_id, -32001, "Task is completed but result payload is unavailable.")
+        else:
+            _send_json_rpc_error(msg_id, -32001, f"Task result is unavailable for status '{status}'.")
+        return
+    send_json_rpc({
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": payload,
+    })
+
+
+def handle_cancel_task(msg_id: Any, params: Dict[str, Any]) -> None:
+    task_id = _task_id_or_error(msg_id, params, "tasks/cancel")
+    if task_id is None:
+        return
+    task = _task_registry().get(task_id)
+    if not isinstance(task, dict):
+        _send_json_rpc_error(msg_id, -32602, "Invalid params: unknown taskId")
+        return
+    status = str(task.get("status") or "")
+    if status in _TASK_TERMINAL_STATUSES:
+        _send_json_rpc_error(
+            msg_id,
+            -32001,
+            f"Task '{task_id}' is already terminal with status '{status}'.",
+        )
+        return
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    task["status"] = "cancelled"
+    task["lastUpdatedAt"] = now
+    if not isinstance(task.get("statusMessage"), str) or not str(task.get("statusMessage")).strip():
+        task["statusMessage"] = "Cancelled by client request."
+    send_json_rpc({
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": task,
     })
 
 
