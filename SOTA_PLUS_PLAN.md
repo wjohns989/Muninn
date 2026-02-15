@@ -170,6 +170,10 @@
 46. MCP startup + tray operations hardening implemented:
     - MCP wrapper now triggers launch-time dependency bootstrap (including Ollama when enabled),
     - Windows tray now provides direct Browser UI entry, MCP health probe, Ollama start action, and wrapper-log access.
+47. Phase 4M benchmark-policy apply/rollback baseline implemented:
+    - `dev-cycle` now supports controlled `--apply-policy` updates to running profile defaults,
+    - policy apply now writes pre-mutation checkpoint artifacts with prior active policy,
+    - `rollback-policy` command now restores profile defaults from checkpoint with deterministic report output.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -198,6 +202,7 @@
 - Phase 4K/4L benchmark+hygiene helper verification: `14 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`).
 - MCP transport framing verification: `28 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - MCP startup/bootstrap verification: `30 passed` (`tests/test_mcp_wrapper_protocol.py`) + wrapper initialize smoke check via stdio.
+- Phase 4M benchmark-policy apply/rollback verification: `11 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.

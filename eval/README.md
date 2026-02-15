@@ -157,6 +157,18 @@ python -m eval.ollama_local_benchmark profile-gate \
 python -m eval.ollama_local_benchmark dev-cycle \
   --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
   --repeats 1
+
+# Run dev-cycle and apply profile defaults to a running Muninn server
+# (writes checkpoint artifact for rollback before applying)
+python -m eval.ollama_local_benchmark dev-cycle \
+  --legacy-roots "C:/path/to/old_project_1,C:/path/to/old_project_2" \
+  --repeats 1 \
+  --apply-policy \
+  --muninn-url http://127.0.0.1:42069
+
+# Roll back to previous profile policy using checkpoint
+python -m eval.ollama_local_benchmark rollback-policy \
+  --checkpoint eval/reports/ollama/profile_policy_checkpoint_<run_id>.json
 ```
 
 Versioned inputs:
@@ -177,6 +189,14 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 `profile-gate` consumes benchmark reports and emits per-profile pass/fail + recommendation decisions for `low_latency`, `balanced`, and `high_reasoning` promotion policies.
 
 `dev-cycle` runs `benchmark`, `legacy-benchmark`, and `profile-gate` sequentially in one operator-triggered command and emits a summary that maps recommended models to profile usage roles.
+
+`dev-cycle --apply-policy` additionally:
+- validates gate/recommendation evidence for target profile defaults,
+- fetches current `/profiles/model` policy from server,
+- writes checkpoint artifact with previous policy + apply payload,
+- applies new profile defaults (unless `--apply-dry-run` is used).
+
+`rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
 ## Phase Hygiene Gate
 
