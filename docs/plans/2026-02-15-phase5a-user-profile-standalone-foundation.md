@@ -96,6 +96,11 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - `5 passed` in:
     - `tests/test_memory_user_profile.py`
     - `tests/test_ingestion_discovery.py`
+  - `104 passed` in:
+    - `tests/test_memory_user_profile.py`
+    - `tests/test_sdk_client.py`
+    - `tests/test_mcp_wrapper_protocol.py`
+    - `tests/test_mcp_transport_soak.py`
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 
