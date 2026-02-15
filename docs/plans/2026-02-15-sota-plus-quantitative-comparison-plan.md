@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure evidence/host-safe task-result gating applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + task-result compatibility controls applied)
 
 ## Objective
 
@@ -54,6 +54,11 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - Implementation detail: `docs/plans/2026-02-15-phase5a3-mcp-tool-call-telemetry-hardening.md`.
 8. `tasks/result` now has a host-safe max-wait budget (`MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC`) with deterministic retryable error (`-32002`) when non-terminal waits exceed budget, preventing indefinite blocking from overrunning host timeout windows.
    - Implementation detail: `docs/plans/2026-02-15-phase5a4-mcp-task-result-host-safe-wait-budget.md`.
+9. `tasks/result` compatibility mode now exists to handle spec/client drift:
+   - `MUNINN_MCP_TASK_RESULT_MODE=auto|blocking|immediate_retry`,
+   - `MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS` for deterministic client-profile auto-selection,
+   - optional per-request `params.wait` override.
+   - Implementation detail: `docs/plans/2026-02-15-phase5a5-mcp-task-result-compatibility-mode.md`.
 
 Current assessment:
 
@@ -65,6 +70,9 @@ Current assessment:
 - Post-hardening regression evidence:
   - soak pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`
   - closure mini-campaign pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
+- Post-compatibility-mode regression evidence:
+  - soak pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_221650.json`
+  - closure mini-campaign pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
 - Remaining operational risk is primarily external host-runtime intermittency; closure evidence for wrapper-controlled transport behavior is now available and machine-verifiable.
 
 ## Decision Rule
@@ -215,4 +223,4 @@ The transport intermittency blocker is closed only when:
 5. Add dashboard/report template for leadership-facing release evidence.
 6. Add host-runtime transport diagnostics bundle capture for timeout regressions (wrapper log snapshot + response-size distribution + per-tool p95 wall time).
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
-8. Add explicit `tasks/result` compatibility mode (strict blocking vs immediate retry semantics) to handle host/spec drift safely with deterministic policy selection.
+8. Add compatibility-mode metrics to closure reports (mode distribution + retry-path incidence) for release-gate auditing.

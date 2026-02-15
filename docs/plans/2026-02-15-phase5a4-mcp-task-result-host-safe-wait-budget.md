@@ -47,10 +47,10 @@ Eliminate one remaining transport-closure vector: indefinite `tasks/result` bloc
 2. Converts transport-teardown class failures into deterministic, recoverable retry flow.
 3. Further narrows remaining intermittency risk to external host/runtime transport behavior outside wrapper control.
 
-## Newly Discovered Optimization
+## Follow-on Optimization Status
 
-MCP task semantics references appear to differ across documents (blocking-oriented text vs immediate-error guidance for non-completed states).  
-To reduce cross-host ambiguity risk, next candidate is an explicit compatibility switch (e.g., strict-blocking vs immediate-retry mode) with default selected by negotiated protocol/client profile.
+The compatibility-switch follow-on identified here is now implemented in Phase 5A.5:
+- `docs/plans/2026-02-15-phase5a5-mcp-task-result-compatibility-mode.md`
 
 ## Sources
 
