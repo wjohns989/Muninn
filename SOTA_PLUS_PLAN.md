@@ -207,7 +207,7 @@
 - MCP transport framing verification: `28 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - MCP startup/bootstrap verification: `30 passed` (`tests/test_mcp_wrapper_protocol.py`) + wrapper initialize smoke check via stdio.
 - Phase 4M benchmark-policy apply/rollback verification: `11 passed` (`tests/test_ollama_local_benchmark.py`).
-- Phase 4N policy-approval manifest verification: `15 passed` (`tests/test_ollama_local_benchmark.py`).
+- Phase 4N policy-approval manifest verification: `16 passed` (`tests/test_ollama_local_benchmark.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.

@@ -701,3 +701,46 @@ def test_cmd_apply_checkpoint_rejects_sha_mismatch(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="checkpoint_sha256 does not match"):
         bench.cmd_apply_checkpoint(args)
+
+
+def test_cmd_apply_checkpoint_rejects_path_mismatch(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "target_policy": {
+                    "model_profile": "balanced",
+                    "runtime_model_profile": "low_latency",
+                    "ingestion_model_profile": "balanced",
+                    "legacy_ingestion_model_profile": "balanced",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    wrong_path = tmp_path / "other_checkpoint.json"
+    manifest_path = tmp_path / "approval_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "decision": "approved",
+                "approved_by": "ops@example",
+                "checkpoint_path": str(wrong_path.resolve()),
+                "checkpoint_sha256": bench._sha256_file(checkpoint_path.resolve()),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = SimpleNamespace(
+        checkpoint=str(checkpoint_path),
+        approval_manifest=str(manifest_path),
+        output_dir=str(tmp_path),
+        output=str(tmp_path / "apply_report.json"),
+        muninn_url="http://127.0.0.1:42069",
+        muninn_timeout_seconds=20,
+        source="apply_checkpoint_test",
+        dry_run=False,
+    )
+    with pytest.raises(ValueError, match="checkpoint_path does not match"):
+        bench.cmd_apply_checkpoint(args)
