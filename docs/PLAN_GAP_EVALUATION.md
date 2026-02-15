@@ -80,6 +80,7 @@ Evaluator: Codex
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, and ability/resource benchmark scoring are now implemented, but profile-level eval/telemetry promotion gates and alerting thresholds still need completion before default-policy promotion.
+9. **MCP Muninn transport reliability intermittency (open):** `mcp__muninn__search_memory` returned `Transport closed` during Phase 4J work, requiring local fallback for memory retrieval in this session.
 
 ## Validation Snapshot
 
