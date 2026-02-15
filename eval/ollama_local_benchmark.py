@@ -19,6 +19,7 @@ DEFAULT_MATRIX_PATH = ROOT / "eval" / "ollama_model_matrix.json"
 DEFAULT_PROMPTS_PATH = ROOT / "eval" / "ollama_benchmark_prompts.jsonl"
 DEFAULT_PROMOTION_POLICY_PATH = ROOT / "eval" / "ollama_profile_promotion_policy.json"
 DEFAULT_OUTPUT_DIR = ROOT / "eval" / "reports" / "ollama"
+DEFAULT_SOTA_OUTPUT_DIR = ROOT / "eval" / "reports" / "sota"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_MUNINN_URL = "http://127.0.0.1:42069"
 SUPPORTED_PROFILE_NAMES = ("low_latency", "balanced", "high_reasoning")
@@ -78,6 +79,7 @@ STOPWORDS = {
     "project",
     "memory",
 }
+PRIMARY_METRICS = ("recall", "mrr", "ndcg")
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -2054,6 +2056,475 @@ def cmd_dev_cycle(args: argparse.Namespace) -> int:
     return 0
 
 
+def _metric_bundle_primary_score(metrics: dict[str, float | None]) -> float | None:
+    values = [float(v) for v in metrics.values() if isinstance(v, (int, float))]
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
+def _extract_cutoff_metrics(cutoffs: Any, cutoff: str = "@5") -> dict[str, float | None]:
+    if not isinstance(cutoffs, dict):
+        return {f"{metric}_at5": None for metric in PRIMARY_METRICS}
+    cutoff_payload = cutoffs.get(cutoff)
+    if not isinstance(cutoff_payload, dict):
+        return {f"{metric}_at5": None for metric in PRIMARY_METRICS}
+    return {f"{metric}_at5": _to_float(cutoff_payload.get(metric)) for metric in PRIMARY_METRICS}
+
+
+def _normalize_eval_report_for_sota(report: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    metrics = _extract_cutoff_metrics(report.get("cutoffs"), cutoff="@5")
+    latency = report.get("latency_ms") if isinstance(report.get("latency_ms"), dict) else {}
+    tracks_raw = report.get("tracks") if isinstance(report.get("tracks"), dict) else {}
+    tracks: dict[str, Any] = {}
+    for track_name, payload in tracks_raw.items():
+        if not isinstance(payload, dict):
+            continue
+        track_metrics = _extract_cutoff_metrics(payload.get("cutoffs"), cutoff="@5")
+        tracks[track_name] = {
+            "cases": payload.get("cases"),
+            "metrics": track_metrics,
+            "primary_score": _metric_bundle_primary_score(track_metrics),
+            "latency_ms": payload.get("latency_ms") if isinstance(payload.get("latency_ms"), dict) else {},
+        }
+
+    return {
+        "source_path": str(source_path),
+        "cases": report.get("cases"),
+        "metrics": metrics,
+        "primary_score": _metric_bundle_primary_score(metrics),
+        "latency_ms": {
+            "avg": _to_float(latency.get("avg")),
+            "p50": _to_float(latency.get("p50")),
+            "p95": _to_float(latency.get("p95")),
+            "count": _to_float(latency.get("count")),
+        },
+        "tracks": tracks,
+        "gate_passed": bool((report.get("gates") or {}).get("passed", False))
+        if isinstance(report.get("gates"), dict)
+        else None,
+    }
+
+
+def _normalize_aux_benchmark_report(report: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    # Generic normalization hook for additional benchmark formats.
+    metrics = _extract_cutoff_metrics(report.get("cutoffs"), cutoff="@5")
+    latency_ms = (
+        report.get("latency_ms")
+        if isinstance(report.get("latency_ms"), dict)
+        else ((report.get("results") or {}).get("latency") if isinstance(report.get("results"), dict) else {})
+    )
+    if not isinstance(latency_ms, dict):
+        latency_ms = {}
+    p95 = _to_float(latency_ms.get("p95"))
+    if p95 is None:
+        p95 = _to_float(latency_ms.get("p95_ms"))
+    count = _to_float(latency_ms.get("count"))
+    if count is None:
+        count = _to_float(report.get("cases")) or _to_float(report.get("dataset_size"))
+
+    return {
+        "source_path": str(source_path),
+        "cases": report.get("cases", report.get("dataset_size")),
+        "metrics": metrics,
+        "primary_score": _metric_bundle_primary_score(metrics),
+        "latency_ms": {
+            "p95": p95,
+            "count": count,
+        },
+    }
+
+
+def _percent_delta(current: float | None, baseline: float | None) -> float | None:
+    if current is None or baseline is None:
+        return None
+    if baseline == 0:
+        if current == 0:
+            return 0.0
+        return math.inf
+    return ((current - baseline) / abs(baseline)) * 100.0
+
+
+def _track_nonnegative_ratio(
+    candidate_tracks: dict[str, Any],
+    baseline_tracks: dict[str, Any],
+) -> float | None:
+    common_tracks = sorted(set(candidate_tracks.keys()) & set(baseline_tracks.keys()))
+    if not common_tracks:
+        return None
+    non_negative = 0
+    comparable = 0
+    for track in common_tracks:
+        candidate_score = _to_float((candidate_tracks.get(track) or {}).get("primary_score"))
+        baseline_score = _to_float((baseline_tracks.get(track) or {}).get("primary_score"))
+        if candidate_score is None or baseline_score is None:
+            continue
+        comparable += 1
+        if candidate_score >= baseline_score:
+            non_negative += 1
+    if comparable == 0:
+        return None
+    return non_negative / comparable
+
+
+def _normalize_profile_gate_report(report: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    governance = report.get("governance") if isinstance(report.get("governance"), dict) else {}
+    return {
+        "source_path": str(source_path),
+        "passed": bool(report.get("passed", False)),
+        "governance_blocked": bool(governance.get("blocked", False)),
+        "blocking_alerts_count": int(governance.get("blocking_alerts_count", 0) or 0),
+        "profiles": report.get("profiles") if isinstance(report.get("profiles"), dict) else {},
+    }
+
+
+def _normalize_transport_report(report: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    results = report.get("results") if isinstance(report.get("results"), dict) else {}
+    latency = results.get("latency") if isinstance(results.get("latency"), dict) else {}
+    failures = results.get("failures") if isinstance(results.get("failures"), list) else []
+    error_codes = results.get("error_codes") if isinstance(results.get("error_codes"), dict) else {}
+
+    timeout_failures = 0
+    transport_closed_failures = 0
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        raw = json.dumps(failure, ensure_ascii=False).lower()
+        if "timeout" in raw:
+            timeout_failures += 1
+        if "transport closed" in raw or "broken pipe" in raw or "connection reset" in raw:
+            transport_closed_failures += 1
+
+    total_calls = _to_float(latency.get("count")) or 0.0
+    p95_ms = _to_float(latency.get("p95_ms"))
+
+    return {
+        "source_path": str(source_path),
+        "outcome": str(report.get("outcome", "")).strip().lower(),
+        "total_calls": total_calls,
+        "p95_ms": p95_ms,
+        "timeout_failures": timeout_failures,
+        "transport_closed_failures": transport_closed_failures,
+        "error_codes": error_codes,
+    }
+
+
+def _aggregate_transport_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    total_calls = sum(float(item.get("total_calls") or 0.0) for item in reports)
+    timeout_failures = sum(int(item.get("timeout_failures") or 0) for item in reports)
+    transport_closed_failures = sum(int(item.get("transport_closed_failures") or 0) for item in reports)
+    p95_values = [float(item["p95_ms"]) for item in reports if isinstance(item.get("p95_ms"), (int, float))]
+    non_pass_count = sum(1 for item in reports if str(item.get("outcome", "")).lower() != "pass")
+    timeout_incidence = (timeout_failures / total_calls) * 1000.0 if total_calls > 0 else None
+    transport_closed_incidence = (
+        (transport_closed_failures / total_calls) * 1000.0 if total_calls > 0 else None
+    )
+    return {
+        "reports": len(reports),
+        "total_calls": total_calls,
+        "timeout_failures": timeout_failures,
+        "transport_closed_failures": transport_closed_failures,
+        "timeout_per_1k": timeout_incidence,
+        "transport_closed_per_1k": transport_closed_incidence,
+        "max_p95_ms": max(p95_values) if p95_values else None,
+        "non_pass_reports": non_pass_count,
+    }
+
+
+def _evaluate_statistical_gate(
+    candidate_report: dict[str, Any],
+    *,
+    require_significance: bool,
+    alpha: float,
+    min_positive_significant_metrics: int,
+) -> dict[str, Any]:
+    result = {
+        "passed": True,
+        "violations": [],
+        "positive_significant_metrics": 0,
+        "checked_metrics": [],
+    }
+    if not require_significance:
+        result["status"] = "disabled"
+        return result
+
+    significance = candidate_report.get("significance")
+    if not isinstance(significance, dict):
+        result["passed"] = False
+        result["violations"].append("missing_significance_payload")
+        return result
+
+    global_cutoffs = significance.get("global") if isinstance(significance.get("global"), dict) else {}
+    cutoff_payload = global_cutoffs.get("@5") if isinstance(global_cutoffs.get("@5"), dict) else {}
+    if not cutoff_payload:
+        result["passed"] = False
+        result["violations"].append("missing_global_significance_at5")
+        return result
+
+    positive_significant = 0
+    checked = 0
+    for metric in PRIMARY_METRICS:
+        summary = cutoff_payload.get(metric)
+        if not isinstance(summary, dict):
+            continue
+        checked += 1
+        significant_regression = bool(summary.get("significant_regression", False))
+        significant = bool(summary.get("significant", False))
+        mean_delta = _to_float(summary.get("mean_delta")) or 0.0
+        ci_low = _to_float(summary.get("ci_low")) or 0.0
+        adjusted = _to_float(summary.get("p_value_adjusted"))
+        p_value = _to_float(summary.get("p_value"))
+        if adjusted is not None and adjusted >= alpha and significant:
+            significant = False
+        if adjusted is None and p_value is not None and p_value >= alpha and significant:
+            significant = False
+        if significant_regression:
+            result["violations"].append(f"significant_regression_{metric}")
+        if significant and mean_delta > 0.0 and ci_low > 0.0:
+            positive_significant += 1
+        result["checked_metrics"].append(
+            {
+                "metric": metric,
+                "significant": significant,
+                "significant_regression": significant_regression,
+                "mean_delta": mean_delta,
+                "ci_low": ci_low,
+                "p_value_adjusted": adjusted,
+                "p_value": p_value,
+            }
+        )
+
+    result["positive_significant_metrics"] = positive_significant
+    if checked == 0:
+        result["passed"] = False
+        result["violations"].append("no_primary_significance_metrics_found")
+        return result
+    if positive_significant < max(1, int(min_positive_significant_metrics)):
+        result["passed"] = False
+        result["violations"].append("insufficient_positive_significant_metrics")
+    if result["violations"]:
+        result["passed"] = False
+    return result
+
+
+def _verify_all_artifacts() -> dict[str, Any]:
+    from eval.artifacts import verify_all_preset_artifacts
+
+    return verify_all_preset_artifacts()
+
+
+def cmd_sota_verdict(args: argparse.Namespace) -> int:
+    candidate_eval_path = Path(args.candidate_eval_report).resolve()
+    baseline_eval_path = Path(args.baseline_eval_report).resolve()
+    profile_gate_path = Path(args.profile_gate_report).resolve() if args.profile_gate_report else None
+    aux_paths = [Path(item).resolve() for item in (args.aux_benchmark_report or [])]
+    transport_paths = [Path(item).resolve() for item in (args.transport_report or [])]
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_started = datetime.now(timezone.utc)
+    run_id = run_started.strftime("%Y%m%dT%H%M%SZ")
+    output_path = Path(args.output).resolve() if args.output else output_dir / f"sota_verdict_{run_id}.json"
+
+    candidate_eval_raw = _load_json(candidate_eval_path)
+    baseline_eval_raw = _load_json(baseline_eval_path)
+    candidate_eval = _normalize_eval_report_for_sota(candidate_eval_raw, source_path=candidate_eval_path)
+    baseline_eval = _normalize_eval_report_for_sota(baseline_eval_raw, source_path=baseline_eval_path)
+    profile_gate = (
+        _normalize_profile_gate_report(_load_json(profile_gate_path), source_path=profile_gate_path)
+        if profile_gate_path
+        else None
+    )
+    aux_normalized = [
+        _normalize_aux_benchmark_report(_load_json(path), source_path=path) for path in aux_paths
+    ]
+    transport_normalized = [
+        _normalize_transport_report(_load_json(path), source_path=path) for path in transport_paths
+    ]
+    transport_aggregate = _aggregate_transport_reports(transport_normalized) if transport_normalized else None
+
+    quality_violations: list[str] = []
+    primary_improvement_pct = _percent_delta(
+        _to_float(candidate_eval.get("primary_score")),
+        _to_float(baseline_eval.get("primary_score")),
+    )
+    if primary_improvement_pct is None:
+        quality_violations.append("missing_primary_score_for_comparison")
+    elif primary_improvement_pct < float(args.min_primary_improvement_pct):
+        quality_violations.append(
+            f"primary_improvement_below_threshold ({primary_improvement_pct:.4f}% < {float(args.min_primary_improvement_pct):.4f}%)"
+        )
+
+    track_ratio = _track_nonnegative_ratio(
+        candidate_eval.get("tracks") if isinstance(candidate_eval.get("tracks"), dict) else {},
+        baseline_eval.get("tracks") if isinstance(baseline_eval.get("tracks"), dict) else {},
+    )
+    if track_ratio is None:
+        quality_violations.append("missing_track_overlap_for_ratio")
+    elif track_ratio < float(args.min_track_nonnegative_ratio):
+        quality_violations.append(
+            f"track_nonnegative_ratio_below_threshold ({track_ratio:.4f} < {float(args.min_track_nonnegative_ratio):.4f})"
+        )
+
+    quality_gate = {
+        "passed": not quality_violations,
+        "violations": quality_violations,
+        "primary_improvement_pct": primary_improvement_pct,
+        "track_nonnegative_ratio": track_ratio,
+        "thresholds": {
+            "min_primary_improvement_pct": float(args.min_primary_improvement_pct),
+            "min_track_nonnegative_ratio": float(args.min_track_nonnegative_ratio),
+        },
+    }
+
+    reliability_violations: list[str] = []
+    p95_regression_pct = _percent_delta(
+        _to_float((candidate_eval.get("latency_ms") or {}).get("p95")),
+        _to_float((baseline_eval.get("latency_ms") or {}).get("p95")),
+    )
+    if p95_regression_pct is None:
+        reliability_violations.append("missing_eval_p95_for_regression_check")
+    elif p95_regression_pct > float(args.max_p95_regression_pct):
+        reliability_violations.append(
+            f"p95_regression_above_threshold ({p95_regression_pct:.4f}% > {float(args.max_p95_regression_pct):.4f}%)"
+        )
+
+    if bool(args.require_transport_reports) and not transport_normalized:
+        reliability_violations.append("transport_reports_required_but_missing")
+    if transport_aggregate:
+        timeout_per_1k = _to_float(transport_aggregate.get("timeout_per_1k"))
+        closed_per_1k = _to_float(transport_aggregate.get("transport_closed_per_1k"))
+        max_p95_ms = _to_float(transport_aggregate.get("max_p95_ms"))
+        non_pass_reports = int(transport_aggregate.get("non_pass_reports") or 0)
+        if timeout_per_1k is not None and timeout_per_1k > float(args.max_timeout_per_1k):
+            reliability_violations.append(
+                f"timeout_incidence_above_threshold ({timeout_per_1k:.6f} > {float(args.max_timeout_per_1k):.6f})"
+            )
+        if closed_per_1k is not None and closed_per_1k > float(args.max_transport_closed_per_1k):
+            reliability_violations.append(
+                f"transport_closed_incidence_above_threshold ({closed_per_1k:.6f} > {float(args.max_transport_closed_per_1k):.6f})"
+            )
+        if max_p95_ms is not None and max_p95_ms > float(args.max_transport_p95_ms):
+            reliability_violations.append(
+                f"transport_p95_above_threshold ({max_p95_ms:.4f}ms > {float(args.max_transport_p95_ms):.4f}ms)"
+            )
+        if bool(args.require_transport_reports) and non_pass_reports > 0:
+            reliability_violations.append(f"transport_non_pass_reports={non_pass_reports}")
+
+    reliability_gate = {
+        "passed": not reliability_violations,
+        "violations": reliability_violations,
+        "p95_regression_pct": p95_regression_pct,
+        "transport": transport_aggregate,
+        "thresholds": {
+            "max_p95_regression_pct": float(args.max_p95_regression_pct),
+            "max_timeout_per_1k": float(args.max_timeout_per_1k),
+            "max_transport_closed_per_1k": float(args.max_transport_closed_per_1k),
+            "max_transport_p95_ms": float(args.max_transport_p95_ms),
+        },
+    }
+
+    statistical_gate = _evaluate_statistical_gate(
+        candidate_eval_raw,
+        require_significance=bool(args.require_stat_significance),
+        alpha=float(args.significance_alpha),
+        min_positive_significant_metrics=int(args.min_positive_significant_metrics),
+    )
+
+    reproducibility_violations: list[str] = []
+    artifact_verification: dict[str, Any] | None = None
+    if bool(args.verify_artifacts):
+        artifact_verification = _verify_all_artifacts()
+        if not bool(artifact_verification.get("passed", False)):
+            reproducibility_violations.append("artifact_verification_failed")
+    if bool(args.require_artifact_verification) and artifact_verification is None:
+        reproducibility_violations.append("artifact_verification_required_but_not_run")
+    reproducibility_gate = {
+        "passed": not reproducibility_violations,
+        "violations": reproducibility_violations,
+        "artifact_verification": artifact_verification,
+    }
+
+    profile_violations: list[str] = []
+    if bool(args.require_profile_gate):
+        if profile_gate is None:
+            profile_violations.append("profile_gate_report_required_but_missing")
+        else:
+            if not bool(profile_gate.get("passed", False)):
+                profile_violations.append("profile_gate_failed")
+            if bool(profile_gate.get("governance_blocked", False)):
+                profile_violations.append("profile_gate_governance_blocked")
+    profile_gate_evaluation = {
+        "passed": not profile_violations,
+        "violations": profile_violations,
+        "profile_gate": profile_gate,
+    }
+
+    overall_passed = all(
+        [
+            quality_gate["passed"],
+            reliability_gate["passed"],
+            bool(statistical_gate.get("passed", False)),
+            reproducibility_gate["passed"],
+            profile_gate_evaluation["passed"],
+        ]
+    )
+
+    payload = {
+        "run_id": run_id,
+        "event": "SOTA_PLUS_VERDICT_EVALUATED",
+        "started_at_utc": run_started.isoformat(),
+        "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "passed": overall_passed,
+        "sota_plus_verdict": "pass" if overall_passed else "fail",
+        "inputs": {
+            "candidate_eval_report": str(candidate_eval_path),
+            "baseline_eval_report": str(baseline_eval_path),
+            "profile_gate_report": str(profile_gate_path) if profile_gate_path else None,
+            "transport_reports": [str(path) for path in transport_paths],
+            "aux_benchmark_reports": [str(path) for path in aux_paths],
+        },
+        "normalized": {
+            "candidate_eval": candidate_eval,
+            "baseline_eval": baseline_eval,
+            "aux_benchmarks": aux_normalized,
+            "transport_reports": transport_normalized,
+        },
+        "gates": {
+            "quality": quality_gate,
+            "reliability": reliability_gate,
+            "statistical_validity": statistical_gate,
+            "reproducibility_integrity": reproducibility_gate,
+            "profile_policy": profile_gate_evaluation,
+        },
+        "config": {
+            "min_primary_improvement_pct": float(args.min_primary_improvement_pct),
+            "min_track_nonnegative_ratio": float(args.min_track_nonnegative_ratio),
+            "max_p95_regression_pct": float(args.max_p95_regression_pct),
+            "max_timeout_per_1k": float(args.max_timeout_per_1k),
+            "max_transport_closed_per_1k": float(args.max_transport_closed_per_1k),
+            "max_transport_p95_ms": float(args.max_transport_p95_ms),
+            "require_profile_gate": bool(args.require_profile_gate),
+            "require_transport_reports": bool(args.require_transport_reports),
+            "require_stat_significance": bool(args.require_stat_significance),
+            "significance_alpha": float(args.significance_alpha),
+            "min_positive_significant_metrics": int(args.min_positive_significant_metrics),
+            "require_artifact_verification": bool(args.require_artifact_verification),
+            "verify_artifacts": bool(args.verify_artifacts),
+        },
+    }
+
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+    print(f"SOTA+ verdict report written to: {output_path}")
+    if overall_passed:
+        print("[sota-verdict] PASS")
+        return 0
+    print("[sota-verdict] FAIL")
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Local Ollama model sync and benchmark utility for Muninn profile testing."
@@ -2563,6 +3034,125 @@ def build_parser() -> argparse.ArgumentParser:
         help="Require manifest commit SHA to be reachable from this git ref/branch.",
     )
     apply_checkpoint_parser.set_defaults(func=cmd_apply_checkpoint)
+
+    verdict_parser = subparsers.add_parser(
+        "sota-verdict",
+        help="Evaluate unified SOTA+ go/no-go verdict from benchmark and reliability evidence.",
+    )
+    verdict_parser.add_argument(
+        "--candidate-eval-report",
+        required=True,
+        help="Path to candidate retrieval eval report (eval.run output JSON).",
+    )
+    verdict_parser.add_argument(
+        "--baseline-eval-report",
+        required=True,
+        help="Path to baseline retrieval eval report for comparison.",
+    )
+    verdict_parser.add_argument(
+        "--profile-gate-report",
+        help="Optional profile-gate report path (required by default unless --no-require-profile-gate).",
+    )
+    verdict_parser.add_argument(
+        "--transport-report",
+        action="append",
+        default=[],
+        help="Transport soak report path. Repeat flag to include multiple runs.",
+    )
+    verdict_parser.add_argument(
+        "--aux-benchmark-report",
+        action="append",
+        default=[],
+        help="Optional additional benchmark report path(s) for normalization output.",
+    )
+    verdict_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_SOTA_OUTPUT_DIR),
+        help="Directory for generated SOTA+ verdict reports.",
+    )
+    verdict_parser.add_argument(
+        "--output",
+        help="Explicit verdict output path; defaults to output-dir/sota_verdict_<timestamp>.json.",
+    )
+    verdict_parser.add_argument(
+        "--min-primary-improvement-pct",
+        default=8.0,
+        type=float,
+        help="Minimum primary metric improvement percentage required vs baseline.",
+    )
+    verdict_parser.add_argument(
+        "--min-track-nonnegative-ratio",
+        default=0.7,
+        type=float,
+        help="Minimum ratio of non-negative per-track deltas required.",
+    )
+    verdict_parser.add_argument(
+        "--max-p95-regression-pct",
+        default=10.0,
+        type=float,
+        help="Maximum allowed candidate p95 latency regression percentage vs baseline.",
+    )
+    verdict_parser.add_argument(
+        "--max-timeout-per-1k",
+        default=0.25,
+        type=float,
+        help="Maximum allowed timeout incidence per 1k transport calls.",
+    )
+    verdict_parser.add_argument(
+        "--max-transport-closed-per-1k",
+        default=0.1,
+        type=float,
+        help="Maximum allowed transport-closed incidence per 1k transport calls.",
+    )
+    verdict_parser.add_argument(
+        "--max-transport-p95-ms",
+        default=5000.0,
+        type=float,
+        help="Maximum allowed transport soak p95 latency (ms).",
+    )
+    verdict_parser.add_argument(
+        "--require-profile-gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require profile-gate report to pass as part of verdict.",
+    )
+    verdict_parser.add_argument(
+        "--require-transport-reports",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require one or more transport soak reports.",
+    )
+    verdict_parser.add_argument(
+        "--require-stat-significance",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require significance payload and positive significant deltas in candidate eval report.",
+    )
+    verdict_parser.add_argument(
+        "--significance-alpha",
+        default=0.05,
+        type=float,
+        help="Alpha threshold used for significance checks when enabled.",
+    )
+    verdict_parser.add_argument(
+        "--min-positive-significant-metrics",
+        default=1,
+        type=int,
+        help="Minimum number of primary metrics requiring positive significant improvement.",
+    )
+    verdict_parser.add_argument(
+        "--verify-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run eval artifact integrity verification and include it in reproducibility gate.",
+    )
+    verdict_parser.add_argument(
+        "--require-artifact-verification",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require artifact verification to run and pass.",
+    )
+    verdict_parser.set_defaults(func=cmd_sota_verdict)
 
     return parser
 

@@ -263,6 +263,10 @@
     - final go/no-go SOTA+ gate model defined in `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`,
     - quality/reliability/statistical/reproducibility gate families now have explicit pass/fail criteria,
     - transport intermittency blocker closure now has quantitative soak-window exit criteria.
+69. Phase 4AF unified SOTA+ verdict command baseline implemented:
+    - `python -m eval.ollama_local_benchmark sota-verdict` now emits one deterministic go/no-go artifact,
+    - cross-benchmark normalization hooks now unify retrieval eval, profile-gate, auxiliary benchmark, and transport-soak evidence into a stable schema,
+    - final gate artifact now records quality/reliability/statistical/reproducibility/profile-policy outcomes for auditable release decisions.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -310,6 +314,7 @@
 - Phase 4AC host-timeout-derived deadline-budget verification: `68 passed` (`tests/test_mcp_wrapper_protocol.py`) + `75 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
 - Phase 4AD explicit-deadline overrun guardrail verification: `70 passed` (`tests/test_mcp_wrapper_protocol.py`) + `77 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
 - Phase 4AE guarded-dispatch fail-fast response verification: `71 passed` (`tests/test_mcp_wrapper_protocol.py`) + `78 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + soak pass (`python -m eval.mcp_transport_soak --iterations 10 --warmup-requests 2 --timeout-sec 15 --transport framed --max-p95-ms 5000`, run_id `20260215_170548`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
+- Phase 4AF unified SOTA+ verdict verification: compile checks (`python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`) + `32 passed` (`tests/test_ollama_local_benchmark.py`) + `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Restart hygiene + doc/packaging tranche verification: no unresolved conflict markers repo-wide and no staged restart leftovers (`git diff --cached --name-only` empty), plus hygiene check pass (`7 passed`: `tests/test_phase_hygiene.py`).
 
 ### Newly discovered ROI optimizations (implemented)
@@ -357,6 +362,7 @@
 42. **Packaging reliability ROI**: explicit optional dependency groups for conflict detection and SDK surfaces reduce installation ambiguity and improve reproducibility across operator environments.
 43. **Release-claim defensibility ROI**: a single quantitative SOTA+ decision framework prevents subjective release claims and creates auditable promotion criteria.
 44. **Brand-surface compliance ROI**: README and repo metadata neutralization reduces avoidable branding/legal friction while improving trust for wider adoption.
+45. **Unified release-verdict ROI**: one deterministic SOTA+ artifact removes manual interpretation drift and makes release promotion decisions reproducible across operators and CI runs.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
@@ -364,7 +370,9 @@
 3. GenAI observability tranche using OpenTelemetry GenAI semantic conventions (opt-in content capture + privacy-aware controls).
 4. Adaptive model-caliber routing: keep xLAM as optional provider, maintain profile-based fallback chains (low-latency/balanced/high-reasoning), and expose assistant-session profile selection independent of think-level toggles.
 5. Benchmark breadth expansion with LongMemEval, StructMemEval, and Mem2Act-style memory-conditioned action slices.
-6. Final SOTA+ gate enforcement command that emits one authoritative verdict object bound to artifact checksums and commit SHA.
+6. Final SOTA+ gate enforcement command is now implemented (`sota-verdict`); next step is scheduled CI replay plus signed promotion-manifest emission.
+7. Add a continuous-interaction memory benchmark adapter (EMemBench-style) to quantify long-session memory retention and action consistency under realistic user trajectories.
+8. Add MCP Streamable HTTP transport compliance checks (`MCP-Session-Id`, Origin validation, auth on both POST/GET stream paths) for any HTTP-mode deployment surface.
 
 ## Executive Summary
 

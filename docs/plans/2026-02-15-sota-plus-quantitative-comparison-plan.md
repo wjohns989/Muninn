@@ -1,11 +1,20 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: Planned (pre-completion gate design)
+Status: In progress (Phase 4AF baseline implemented)
 
 ## Objective
 
 Define a deterministic, evidence-grade quantitative comparison protocol that decides whether Muninn meets SOTA+ standards at release time.
+
+## Implemented Baseline (2026-02-15)
+
+- Unified gate runner now exists: `python -m eval.ollama_local_benchmark sota-verdict`.
+- Verdict output now includes:
+  - normalized candidate/baseline eval evidence,
+  - optional normalized profile-gate + transport + auxiliary benchmark evidence,
+  - deterministic gate-family outcomes for quality/reliability/statistical/reproducibility/profile-policy.
+- Implementation details are captured in `docs/plans/2026-02-15-phase4af-unified-sota-verdict-command.md`.
 
 ## Decision Rule
 
@@ -37,7 +46,7 @@ Any gate failure blocks SOTA+ labeling.
 
 - MemoryAgentBench: https://arxiv.org/abs/2507.05257
 - LongMemEval: https://arxiv.org/abs/2410.10813
-- StructMemEval: https://arxiv.org/abs/2509.09090
+- StructMemEval: https://arxiv.org/abs/2602.11243
 - Mem2Act: https://arxiv.org/abs/2505.08200
 
 ### Internal Benchmarks
@@ -148,6 +157,7 @@ The transport intermittency blocker is closed only when:
 ## Open Tasks
 
 1. Add benchmark adapters for LongMemEval/StructMemEval/Mem2Act result normalization.
-2. Add unified gate runner that emits one authoritative SOTA+ verdict object.
-3. Add CI workflow for scheduled benchmark replay and drift alerting.
-4. Add dashboard/report template for leadership-facing release evidence.
+2. Add continuous-interaction memory benchmark slice (EMemBench-style) adapter for long-session retention/consistency scoring.
+3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict`.
+4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
+5. Add dashboard/report template for leadership-facing release evidence.

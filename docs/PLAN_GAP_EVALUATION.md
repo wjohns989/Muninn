@@ -57,6 +57,7 @@ Evaluator: Codex
 - **Phase 4AE guarded-dispatch fail-fast response baseline is now implemented**: guarded RPC dispatch now emits deterministic `-32603` replies for request IDs when unexpected dispatch exceptions occur, preventing silent hangs on background-dispatched request paths.
 - **Restart artifact hygiene is now complete**: stale staged restart artifacts are cleared, obsolete `.bak` backup artifact removed, and unresolved conflict markers are no longer present in working docs.
 - **SOTA+ quantitative decision framework is now documented**: final release verdict gates and benchmark normalization requirements are captured in `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`.
+- **Phase 4AF unified SOTA+ verdict baseline is now implemented**: `sota-verdict` now emits one deterministic release gate artifact with normalized eval/profile-gate/transport evidence and per-gate pass/fail outcomes.
 
 ## Status vs Plan
 
@@ -106,7 +107,7 @@ Evaluator: Codex
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
 9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls + startup-recovery budget gating + host-timeout-derived budgeting + explicit-overrun guardrails + guarded-dispatch fail-fast replies are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`, `MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC`, `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`, `MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, and `MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN` as needed). Post-restart in-session signal: `get_model_profiles` and `add_memory` MCP calls succeeded, and latest framed transport soak run passed (`run_id=20260215_170548`), but continued runtime observation is still required before closing blocker status.
-10. **Unified SOTA+ verdict automation (open):** benchmark breadth extension (LongMemEval/StructMemEval/Mem2Act), cross-benchmark normalization, and one authoritative go/no-go verdict artifact are defined but not yet wired into a single command path.
+10. **Unified SOTA+ verdict automation (partially open):** one authoritative go/no-go verdict artifact is now wired (`sota-verdict`) with normalization hooks; remaining work is benchmark breadth adapters (LongMemEval/StructMemEval/Mem2Act + continuous-interaction slices), CI replay wiring, and signed promotion-manifest emission.
 
 ## Validation Snapshot
 
@@ -231,6 +232,11 @@ Evaluator: Codex
   - `78 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - `python -m eval.mcp_transport_soak --iterations 10 --warmup-requests 2 --timeout-sec 15 --transport framed --max-p95-ms 5000` -> PASS (`run_id=20260215_170548`)
   - guarded-dispatch path now returns deterministic `-32603` replies for request IDs when unexpected dispatcher exceptions occur.
+- Phase 4AF unified SOTA+ verdict tranche now passes targeted checks:
+  - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
+  - `32 passed` (`tests/test_ollama_local_benchmark.py`)
+  - `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`)
+  - command now emits deterministic gate-family outcomes across quality/reliability/statistical/reproducibility/profile-policy dimensions.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 
@@ -321,6 +327,7 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4ad-mcp-explicit-deadline-overrun-guardrail.md`
 - `docs/plans/2026-02-15-phase4ae-mcp-guarded-dispatch-fail-fast-response.md`
 - `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`
+- `docs/plans/2026-02-15-phase4af-unified-sota-verdict-command.md`
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
 ## Model-Caliber Research Update (2026-02-14)
