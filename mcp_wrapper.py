@@ -12,6 +12,7 @@ import math
 import time
 import json
 import base64
+import binascii
 import logging
 import subprocess
 import threading
@@ -953,7 +954,7 @@ def _decode_task_cursor(cursor: str) -> int:
     padded = cursor + "=" * (-len(cursor) % 4)
     try:
         decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
-    except Exception as exc:
+    except (binascii.Error, UnicodeDecodeError) as exc:
         raise ValueError("Invalid params: tasks/list cursor must be an opaque cursor token") from exc
     if not decoded.startswith(_TASK_CURSOR_PREFIX):
         raise ValueError("Invalid params: tasks/list cursor must be an opaque cursor token")
