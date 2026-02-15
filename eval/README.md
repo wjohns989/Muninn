@@ -175,6 +175,10 @@ python -m eval.ollama_local_benchmark approval-manifest \
   --checkpoint eval/reports/ollama/profile_policy_checkpoint_<run_id>.json \
   --decision approved \
   --approved-by "operator@example" \
+  --pr-number 28 \
+  --pr-url "https://github.com/<owner>/<repo>/pull/28" \
+  --commit-sha "abc1234" \
+  --branch-name "feat/phase4o-approval-provenance-context" \
   --notes "Gate evidence + reviewer approval"
 
 # Apply a checkpoint only when approved by manifest
@@ -213,10 +217,13 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 
 `approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.
 
+`approval-manifest` also supports optional change-context provenance (`pr_number`, `pr_url`, `commit_sha`, `branch_name`), with git auto-detection for commit/branch when not explicitly provided.
+
 `apply-checkpoint` enforces approval-manifest controls before applying:
 - manifest decision must be `approved`,
 - manifest checkpoint SHA-256 must match the supplied checkpoint file,
 - optional manifest checkpoint path must match the supplied checkpoint path,
+- optional manifest `change_context` must be a JSON object when present,
 - successful apply writes a deterministic apply report artifact.
 
 ## Phase Hygiene Gate
