@@ -218,6 +218,25 @@ Generated reports are written to `eval/reports/ollama/` (gitignored).
 - writes checkpoint artifact with previous policy + apply payload,
 - applies new profile defaults (unless `--apply-dry-run` is used).
 
+## MCP Transport Soak
+
+Use this to stress MCP transport behavior under controlled backend outage conditions.
+
+```bash
+python -m eval.mcp_transport_soak \
+  --iterations 6 \
+  --warmup-requests 1 \
+  --timeout-sec 12 \
+  --transport framed \
+  --server-url http://127.0.0.1:1 \
+  --failure-threshold 1 \
+  --cooldown-sec 30 \
+  --max-p95-ms 2500 \
+  --inject-malformed-frame
+```
+
+Reports are written to `eval/reports/mcp_transport/`.
+
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
 `approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.

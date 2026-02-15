@@ -350,6 +350,64 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
     assert metadata["operator_model_profile"] == "balanced"
 
 
+def test_handle_call_tool_skips_preflight_when_autostart_disabled(monkeypatch):
+    sent = []
+    calls = {"ensure": 0}
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER", "0")
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    def _ensure():
+        calls["ensure"] += 1
+        return True
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
+    monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda now_epoch=None: False)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", lambda *a, **k: _Resp())
+
+    mcp_wrapper.handle_call_tool(
+        "req-search-no-autostart",
+        {"name": "search_memory", "arguments": {"query": "hello", "limit": 1}},
+    )
+
+    assert calls["ensure"] == 0
+    assert sent
+    assert sent[0]["id"] == "req-search-no-autostart"
+
+
+def test_handle_call_tool_skips_preflight_when_backend_circuit_open(monkeypatch):
+    sent = []
+    calls = {"ensure": 0}
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER", "1")
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    def _ensure():
+        calls["ensure"] += 1
+        return True
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
+    monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda now_epoch=None: True)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", lambda *a, **k: _Resp())
+
+    mcp_wrapper.handle_call_tool(
+        "req-search-circuit-open",
+        {"name": "search_memory", "arguments": {"query": "hello", "limit": 1}},
+    )
+
+    assert calls["ensure"] == 0
+    assert sent
+    assert sent[0]["id"] == "req-search-circuit-open"
+
+
 def test_operation_specific_profile_overrides_generic_profile(monkeypatch):
     monkeypatch.setenv("MUNINN_OPERATOR_MODEL_PROFILE", "balanced")
     monkeypatch.setenv("MUNINN_OPERATOR_INGESTION_MODEL_PROFILE", "high_reasoning")
@@ -390,8 +448,13 @@ def test_unknown_notification_method_is_ignored(monkeypatch):
 
 def test_background_dispatch_selection():
     assert mcp_wrapper._should_dispatch_in_background({"method": "tasks/result"}) is True
-    assert mcp_wrapper._should_dispatch_in_background({"method": "tools/call"}) is True
+    assert mcp_wrapper._should_dispatch_in_background({"method": "tools/call"}) is False
     assert mcp_wrapper._should_dispatch_in_background({"method": "ping"}) is False
+
+
+def test_background_dispatch_selection_can_enable_tools_call(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_BACKGROUND_TOOLS_CALL", "1")
+    assert mcp_wrapper._should_dispatch_in_background({"method": "tools/call"}) is True
 
 
 def test_dispatch_guard_logs_generic_message(monkeypatch):

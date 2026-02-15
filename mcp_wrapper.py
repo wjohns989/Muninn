@@ -1620,10 +1620,13 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
     """Handle tool execution requests."""
     name = params.get("name")
     arguments = params.get("arguments", {})
-    
-    ensure_server_running()
-    
+
     try:
+        # Avoid costly preflight start probes when backend is already in cooldown
+        # or when autostart is explicitly disabled by operator policy.
+        if _env_flag("MUNINN_MCP_AUTOSTART_SERVER", True) and not _backend_circuit_open():
+            ensure_server_running()
+
         if name == "add_memory":
             # SOTA: Inject current working directory as 'project' metadata
             # This allows the memory system to automatically anchor memories to the workspace
@@ -2099,7 +2102,11 @@ def _submit_background_dispatch(msg: Dict[str, Any]) -> None:
 
 def _should_dispatch_in_background(msg: Dict[str, Any]) -> bool:
     method = msg.get("method")
-    return method in {"tasks/result", "tools/call"}
+    if method == "tasks/result":
+        return True
+    if method == "tools/call":
+        return _env_flag("MUNINN_MCP_BACKGROUND_TOOLS_CALL", False)
+    return False
 
 def main():
     logger.info("Muninn MCP Wrapper started")

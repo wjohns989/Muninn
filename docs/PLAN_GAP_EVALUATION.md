@@ -47,6 +47,7 @@ Evaluator: Codex
 - **Phase 4U blocking-result dispatch compliance baseline is now implemented**: `tasks/result` now remains lifecycle-blocking while wrapper dispatch routes blocking methods to background workers with stdout write-locking for concurrent transport safety.
 - **Phase 4V task metadata/cursor compliance baseline is now implemented**: related-task metadata now uses `taskId`, task records now include `pollInterval`, and `tasks/list` now emits opaque cursor tokens.
 - **Phase 4W MCP transport resilience baseline is now implemented**: malformed framed payloads are now recoverable, backend outages now use circuit-breaker fast-fail cooldown, dispatch queue saturation now returns explicit `-32001`, and broken-pipe writes are now transport-guarded.
+- **Phase 4X transport soak + dispatch-policy baseline is now implemented**: deterministic MCP soak harness reports are now generated, `tools/call` background dispatch is now opt-in for transport determinism, and outage preflight start probes are now skipped when autostart is disabled or circuit is open.
 
 ## Status vs Plan
 
@@ -95,7 +96,7 @@ Evaluator: Codex
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
 7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
 8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, and git ancestry enforcement are now implemented, but profile-level telemetry/alert thresholds and auto-governance promotion controls still need completion before default-policy automation.
-9. **MCP Muninn transport reliability intermittency (still partially open):** framing + parser resilience + queue/backoff protections are now in-code, but this session still observes external `muninn/search_memory` 120s deadline timeouts; next operational step is wrapper-process restart + targeted live soak to confirm end-to-end improvement under real MCP host lifecycle.
+9. **MCP Muninn transport reliability intermittency (still partially open):** framing + parser resilience + queue/backoff + soak harness validations are now in-code, but external `muninn/search_memory` calls from this assistant session still hit 120s host-side deadlines; host MCP process restart/diagnostics remain required.
 
 ## Validation Snapshot
 
@@ -184,6 +185,12 @@ Evaluator: Codex
   - `92 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command ""` -> PASS (`eval/reports/hygiene/phase_hygiene_20260215_064545.json`)
   - protocol tests now cover malformed framed payload recovery, circuit-open fast-fail behavior, dispatch queue saturation, and broken-pipe transport guarding.
+- Phase 4X transport soak + dispatch-policy tranche now passes targeted checks:
+  - `python -m py_compile eval/mcp_transport_soak.py tests/test_mcp_transport_soak.py mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+  - `98 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`)
+  - `python -m eval.mcp_transport_soak --iterations 6 --warmup-requests 1 --timeout-sec 12 --transport framed --server-url http://127.0.0.1:1 --failure-threshold 1 --cooldown-sec 30 --max-p95-ms 2500 --inject-malformed-frame` -> PASS (`eval/reports/mcp_transport/mcp_transport_soak_20260215_074136.json`)
+  - `python -m eval.phase_hygiene --max-open-prs 1 --pytest-command ""` -> PASS (`eval/reports/hygiene/phase_hygiene_20260215_074404.json`)
+  - `tools/call` background dispatch is now opt-in (`MUNINN_MCP_BACKGROUND_TOOLS_CALL=1`) while `tasks/result` remains background-dispatched by default.
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
 

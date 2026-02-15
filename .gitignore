@@ -50,6 +50,7 @@ ollama-local-cache/
 eval/reports/ollama/
 eval/reports/hygiene/
 eval/reports/model_benchmarks/
+eval/reports/mcp_transport/
 
 # Loki / session state
 .loki/

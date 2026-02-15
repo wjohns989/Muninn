@@ -205,3 +205,20 @@ Transport-resilience follow-on is now implemented in `docs/plans/2026-02-15-phas
    - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_064545.json`.
 6. Operational blocker note:
    - external Muninn MCP tool calls from this session still show 120-second deadline timeouts; wrapper restart + live soak verification remains the next operator step.
+
+## Continuation Update (Phase 4X)
+
+Soak-validation follow-on is now implemented in `docs/plans/2026-02-15-phase4x-mcp-transport-soak-and-dispatch-policy.md`:
+
+1. Deterministic soak harness:
+   - new command `python -m eval.mcp_transport_soak` now exercises framed/line transport paths and emits JSON reports under `eval/reports/mcp_transport/`.
+2. Dispatch-policy correction:
+   - `tools/call` background dispatch is now opt-in (`MUNINN_MCP_BACKGROUND_TOOLS_CALL=1`) to preserve deterministic request/response semantics by default.
+3. Outage-preflight correction:
+   - tool preflight `ensure_server_running()` probes are now skipped when autostart is disabled or backend circuit cooldown is active.
+4. Validation increment:
+   - `98 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`),
+   - soak pass report: `eval/reports/mcp_transport/mcp_transport_soak_20260215_074136.json`,
+   - hygiene gate pass: `eval/reports/hygiene/phase_hygiene_20260215_074404.json`.
+5. Remaining blocker note:
+   - external MCP Muninn tool calls in this assistant session still timeout at host 120s deadlines despite local wrapper hardening and local soak pass.

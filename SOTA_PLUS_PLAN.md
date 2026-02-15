@@ -219,6 +219,10 @@
     - backend request path now uses a bounded circuit-breaker cooldown to fast-fail repeated outage windows,
     - background dispatch now uses bounded queue backpressure (`-32001` on saturation) to prevent request starvation/timeouts,
     - JSON-RPC emitter now guards broken-pipe conditions to avoid cascading write failures after transport teardown.
+58. Phase 4X transport soak + dispatch policy hardening baseline implemented:
+    - new deterministic soak harness shipped (`python -m eval.mcp_transport_soak`) with framed/line transport options and JSON report artifacts,
+    - root-cause fix applied: `tools/call` background dispatch is now opt-in (`MUNINN_MCP_BACKGROUND_TOOLS_CALL=1`) while `tasks/result` remains background-dispatched by default,
+    - preflight server-start probes are now skipped when autostart is disabled or backend circuit is already open, reducing outage amplification.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -259,6 +263,7 @@
 - Phase 4U review-hardening verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_060835.json`).
 - Phase 4V metadata/cursor compliance verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_061319.json`).
 - Phase 4W transport resilience verification: `56 passed` (`tests/test_mcp_wrapper_protocol.py`) + `92 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_064545.json`).
+- Phase 4X soak/dispatch-policy verification: `98 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_074136.json`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_074404.json`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
