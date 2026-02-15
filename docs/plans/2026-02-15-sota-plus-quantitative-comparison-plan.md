@@ -26,6 +26,20 @@ For active implementation/enhancement phases, use deferred benchmark cadence:
 
 This keeps implementation throughput high without weakening final SOTA+ evidence requirements.
 
+## Cadence Reaffirmation (2026-02-15, Phase 5A)
+
+Decision remains enhancement-first:
+
+1. Continue implementing remaining architecture/performance improvements first.
+2. Keep running fast deterministic regression gates continuously.
+3. Delay full benchmark matrix replay until release-readiness boundaries, not after every tranche.
+
+Rationale:
+
+- Reduces wasted benchmark spend while core capabilities are still moving.
+- Avoids noisy intermediate benchmark churn from partially implemented features.
+- Preserves final evidentiary rigor by requiring full matrix + gate-family pass before SOTA+ labeling.
+
 ## Decision Rule
 
 A release is "SOTA+" only if all four gates pass:
@@ -169,6 +183,6 @@ The transport intermittency blocker is closed only when:
 
 1. Add benchmark adapters for LongMemEval/StructMemEval/Mem2Act result normalization.
 2. Add continuous-interaction memory benchmark slice (EMemBench-style) adapter for long-session retention/consistency scoring.
-3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict`.
+3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
