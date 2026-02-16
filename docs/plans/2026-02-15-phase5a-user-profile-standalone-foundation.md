@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction + diagnostics gate/hygiene integration applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction + diagnostics gate/hygiene integration + incident replay automation applied)
 
 ## Objective
 
@@ -205,6 +205,21 @@ Deliver the first production slice of Phase 5 improvements focused on:
 - Hygiene artifacts now include diagnostics command/return-code/summary fields for auditable release gating.
 - Detailed tranche note: `docs/plans/2026-02-16-phase5a10-transport-diagnostics-hygiene-gating.md`.
 
+### 15) Transport Incident Replay Automation (Phase 5A.11)
+
+- Added deterministic replay utility:
+  - `python -m eval.mcp_transport_incident_replay`
+- Replay utility now scans wrapper logs for configured transport-incident signatures and triggers diagnostics capture only when incident thresholds are met (or always-run mode is enabled).
+- Replay artifacts now include:
+  - incident signature totals and per-pattern counts,
+  - sampled matched lines with timestamps,
+  - trigger decision,
+  - diagnostics command execution metadata and parsed payload,
+  - resolved diagnostics artifact path when available.
+- Replay utility now supports deterministic CI/release failure behavior on diagnostics command errors:
+  - `--fail-on-diagnostics-error` (enabled by default).
+- Detailed tranche note: `docs/plans/2026-02-16-phase5a11-transport-incident-replay-automation.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -275,6 +290,10 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py`
     - `119 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
     - live diagnostics gate artifact: `eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_005047.json` (`results.gate.passed=true`)
+  - transport incident replay automation verification:
+    - `python -m py_compile eval/mcp_transport_incident_replay.py tests/test_mcp_transport_incident_replay.py`
+    - `3 passed` (`tests/test_mcp_transport_incident_replay.py`)
+    - live replay artifact: `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_010414.json` (`results.triggered=false`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

@@ -348,6 +348,23 @@ python -m eval.phase_hygiene \
   --max-transport-near-timeout-incidents 0
 ```
 
+### Transport Incident Replay Automation
+
+Use this to trigger diagnostics capture only when transport incident signatures are detected in the wrapper log window:
+
+```bash
+python -m eval.mcp_transport_incident_replay \
+  --lookback-hours 24 \
+  --signature-pattern "MCP stdio transport closed while sending JSON-RPC message" \
+  --diagnostics-command "python -m eval.mcp_transport_diagnostics --lookback-hours 24 --max-transport-closed-count 0 --max-deadline-exhaustion-count 0 --max-near-timeout-count 0 --enforce-gate"
+```
+
+This emits `eval/reports/mcp_transport/mcp_transport_incident_replay_<run_id>.json` with:
+- detected incident signature counts and sampled matching lines,
+- trigger decision (`results.triggered`),
+- diagnostics command execution details + exit code,
+- resolved diagnostics artifact path when available.
+
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
 `approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.
