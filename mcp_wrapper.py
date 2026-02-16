@@ -2349,26 +2349,30 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                     result = fallback_result
 
             formatted_results = []
-            if result.get("success") and result.get("data"):
-                for item in result["data"]:
-                    content = str(item.get('content', item.get('memory', 'Unknown content')))
-                    score = item.get('score', '')
-                    mem_type = item.get('memory_type', '')
-                    prefix = f"[{mem_type}:{score:.2f}] " if score and mem_type else ""
-                    line = f"- {prefix}{content}"
+            if result.get("success"):
+                data = result.get("data") or []
+                if data:
+                    for item in data:
+                        content = str(item.get('content', item.get('memory', 'Unknown content')))
+                        score = item.get('score', '')
+                        mem_type = item.get('memory_type', '')
+                        prefix = f"[{mem_type}:{score:.2f}] " if score and mem_type else ""
+                        line = f"- {prefix}{content}"
 
-                    # Append recall trace explanation if present (v3.1.0)
-                    trace = item.get("trace")
-                    if trace and explain:
-                        explanation = trace.get("explanation", "")
-                        dominant = trace.get("dominant_signal", "")
-                        if explanation:
-                            line += f"\n  Why: {explanation}"
-                        elif dominant:
-                            line += f"\n  Dominant signal: {dominant}"
+                        # Append recall trace explanation if present (v3.1.0)
+                        trace = item.get("trace")
+                        if trace and explain:
+                            explanation = trace.get("explanation", "")
+                            dominant = trace.get("dominant_signal", "")
+                            if explanation:
+                                line += f"\n  Why: {explanation}"
+                            elif dominant:
+                                line += f"\n  Dominant signal: {dominant}"
 
-                    formatted_results.append(line)
-                text_response = "\n".join(formatted_results) if formatted_results else "No relevant memories found."
+                        formatted_results.append(line)
+                    text_response = "\n".join(formatted_results)
+                else:
+                    text_response = "No relevant memories found."
             else:
                 text_response = f"Error or no data: {result}"
 

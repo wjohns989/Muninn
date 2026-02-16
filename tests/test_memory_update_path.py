@@ -21,8 +21,11 @@ def test_update_persists_content_with_metadata_update_signature():
     async def _extract(_content):
         return ExtractionResult()
 
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    memory._embed = _embed
 
     memory._metadata = MagicMock()
     memory._metadata.get.return_value = record
@@ -60,8 +63,11 @@ def test_update_uses_runtime_model_profile_for_extraction():
         captured["profile"] = model_profile
         return ExtractionResult()
 
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    memory._embed = _embed
 
     memory._metadata = MagicMock()
     memory._metadata.get.return_value = record
