@@ -343,6 +343,11 @@
     - diagnostics report now emits explicit gate verdicts (`results.gate.passed`, `results.gate.violations`),
     - phase hygiene now supports transport diagnostics command execution + incident-budget policy failures,
     - tranche note documented in `docs/plans/2026-02-16-phase5a10-transport-diagnostics-hygiene-gating.md`.
+86. Phase 5A.11 transport incident replay automation implemented:
+    - new replay utility added (`python -m eval.mcp_transport_incident_replay`) to scan log signatures and auto-trigger diagnostics capture,
+    - replay artifacts now include signature counts/samples, trigger decisions, diagnostics execution metadata, and resolved diagnostics artifact paths,
+    - policy-style replay failure handling added via `--fail-on-diagnostics-error`,
+    - tranche note documented in `docs/plans/2026-02-16-phase5a11-transport-incident-replay-automation.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -407,6 +412,7 @@
 - Phase 5A.8 pre-serialization compaction verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `108 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`).
 - Phase 5A.9 diagnostics bundle verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py tests/test_mcp_transport_diagnostics.py`) + `110 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + live artifact (`eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_001515.json`).
 - Phase 5A.10 diagnostics gate + hygiene integration verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py`) + `119 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + live gate artifact (`eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_005047.json`, `results.gate.passed=true`).
+- Phase 5A.11 incident replay automation verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `122 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + replay artifact (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_010414.json`, `results.triggered=false`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -469,6 +475,7 @@
 54. **Closure-evidence fidelity ROI**: telemetry-enriched closure artifacts expose compatibility posture and error composition, reducing false blocker closure/rollback decisions under mixed host runtimes.
 55. **Standalone usability ROI**: Huginn browser branding clarifies operator workflow boundaries (standalone vs MCP-attached), reducing mode confusion and support friction.
 56. **Release-gate enforceability ROI**: wiring diagnostics incident thresholds into phase hygiene turns transport regressions into deterministic policy failures, reducing subjective blocker-status decisions before merge/release.
+57. **Incident-capture automation ROI**: signature-triggered replay diagnostics reduce manual triage overhead and make host/runtime timeout evidence generation repeatable in PR/release pipelines.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
