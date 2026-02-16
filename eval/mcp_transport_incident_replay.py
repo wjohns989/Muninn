@@ -96,6 +96,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-signature-count", type=int, default=1)
     parser.add_argument("--max-match-samples", type=int, default=20)
     parser.add_argument(
+        "--require-log-path-exists",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Fail when log-path does not exist in the replay scan environment.",
+    )
+    parser.add_argument(
         "--diagnostics-command",
         default="python -m eval.mcp_transport_diagnostics --lookback-hours 24",
         help="Command to run when signatures are detected (or when always-run is enabled).",
@@ -171,6 +177,7 @@ def run(argv: list[str] | None = None) -> int:
                             }
                         )
                     break
+    log_path_exists = args.log_path.exists()
 
     triggered = bool(args.always_run_diagnostics or total_signature_count >= args.min_signature_count)
 
@@ -213,7 +220,7 @@ def run(argv: list[str] | None = None) -> int:
                 "window_line_count": window_line_count,
                 "window_start": window_start.isoformat(),
                 "window_end": now.isoformat(),
-                "log_path_exists": args.log_path.exists(),
+                "log_path_exists": log_path_exists,
                 "total_signature_count": total_signature_count,
                 "counts_by_pattern": counts_by_pattern,
                 "sample_matches": sample_matches,
@@ -233,6 +240,8 @@ def run(argv: list[str] | None = None) -> int:
     output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 
+    if args.require_log_path_exists and not log_path_exists:
+        return 4
     if triggered and args.fail_on_diagnostics_error:
         if not args.diagnostics_command.strip():
             return 3

@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction + diagnostics gate/hygiene integration + incident replay automation applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction + diagnostics gate/hygiene integration + incident replay automation + PR/release replay gate wiring applied)
 
 ## Objective
 
@@ -220,6 +220,19 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - `--fail-on-diagnostics-error` (enabled by default).
 - Detailed tranche note: `docs/plans/2026-02-16-phase5a11-transport-incident-replay-automation.md`.
 
+### 16) PR/Release Replay Gate Wiring (Phase 5A.12)
+
+- Added CI workflow wiring:
+  - `.github/workflows/transport-incident-replay-gate.yml`
+- Workflow now executes replay on:
+  - pull requests targeting `main`,
+  - pushes to `main`,
+  - manual dispatch (`workflow_dispatch`) with host-log controls.
+- Workflow now uploads replay/diagnostics artifacts and writes compact replay summaries in check output.
+- Replay utility strict-mode guardrail added:
+  - `--require-log-path-exists` for environments where missing wrapper logs must fail checks.
+- Detailed tranche note: `docs/plans/2026-02-16-phase5a12-pr-release-replay-gate-wiring.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -294,6 +307,10 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `python -m py_compile eval/mcp_transport_incident_replay.py tests/test_mcp_transport_incident_replay.py`
     - `3 passed` (`tests/test_mcp_transport_incident_replay.py`)
     - live replay artifact: `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_010414.json` (`results.triggered=false`)
+  - PR/release replay gate wiring verification:
+    - `python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`
+    - `123 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+    - workflow wiring present: `.github/workflows/transport-incident-replay-gate.yml`
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

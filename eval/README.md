@@ -356,6 +356,7 @@ Use this to trigger diagnostics capture only when transport incident signatures 
 python -m eval.mcp_transport_incident_replay \
   --lookback-hours 24 \
   --signature-pattern "MCP stdio transport closed while sending JSON-RPC message" \
+  --require-log-path-exists \
   --diagnostics-command "python -m eval.mcp_transport_diagnostics --lookback-hours 24 --max-transport-closed-count 0 --max-deadline-exhaustion-count 0 --max-near-timeout-count 0 --enforce-gate"
 ```
 
@@ -364,6 +365,9 @@ This emits `eval/reports/mcp_transport/mcp_transport_incident_replay_<run_id>.js
 - trigger decision (`results.triggered`),
 - diagnostics command execution details + exit code,
 - resolved diagnostics artifact path when available.
+
+PR/release workflow wiring is available in:
+- `.github/workflows/transport-incident-replay-gate.yml`
 
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
