@@ -69,6 +69,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Require replay reports to include log path existence and SHA-256 provenance.",
     )
+    parser.add_argument(
+        "--replay-provenance-policy",
+        choices=("all", "latest_min"),
+        default="all",
+        help=(
+            "How to evaluate replay provenance when required: "
+            "'all' validates every replay report in-window, "
+            "'latest_min' validates only the latest required replay evidence set."
+        ),
+    )
     parser.add_argument("--min-closure-runs", type=int, default=1)
     parser.add_argument(
         "--require-latest-closure-ready",
@@ -117,7 +127,6 @@ def run(argv: list[str] | None = None) -> int:
     replay_summaries: list[dict[str, Any]] = []
     replay_signature_budget_met = True
     replay_diagnostics_return_code_ok = True
-    replay_provenance_met = True
 
     for item in replay_reports:
         parsed = item["parsed"]
@@ -133,11 +142,11 @@ def run(argv: list[str] | None = None) -> int:
         if diagnostics.get("executed") is True and diag_return_code not in (0, None):
             replay_diagnostics_return_code_ok = False
 
-        provenance_ok = True
-        if args.require_replay_provenance:
-            provenance_ok = bool(log_file.get("exists") is True and isinstance(log_file.get("sha256"), str) and log_file.get("sha256"))
-            if not provenance_ok:
-                replay_provenance_met = False
+        provenance_ok = bool(
+            log_file.get("exists") is True
+            and isinstance(log_file.get("sha256"), str)
+            and log_file.get("sha256")
+        )
 
         replay_summaries.append(
             {
@@ -150,6 +159,29 @@ def run(argv: list[str] | None = None) -> int:
                 "diagnostics_return_code": diag_return_code,
                 "provenance_ok": provenance_ok,
             }
+        )
+
+    replay_provenance_required_count = 0
+    replay_provenance_evaluated_count = 0
+    replay_provenance_passing_count = 0
+    replay_provenance_selected_paths: list[str] = []
+    replay_provenance_met = True
+    if args.require_replay_provenance:
+        selected = replay_summaries
+        if args.replay_provenance_policy == "latest_min":
+            replay_provenance_required_count = max(int(args.min_replay_runs), 1)
+            selected = replay_summaries[:replay_provenance_required_count]
+        else:
+            replay_provenance_required_count = len(selected)
+
+        replay_provenance_selected_paths = [str(item.get("path", "")) for item in selected]
+        replay_provenance_evaluated_count = len(selected)
+        replay_provenance_passing_count = sum(
+            1 for item in selected if bool(item.get("provenance_ok", False))
+        )
+        replay_provenance_met = (
+            replay_provenance_evaluated_count >= replay_provenance_required_count
+            and replay_provenance_passing_count >= replay_provenance_required_count
         )
 
     closure_summaries: list[dict[str, Any]] = []
@@ -203,6 +235,7 @@ def run(argv: list[str] | None = None) -> int:
             "min_replay_runs": args.min_replay_runs,
             "max_replay_signature_count": args.max_replay_signature_count,
             "require_replay_provenance": bool(args.require_replay_provenance),
+            "replay_provenance_policy": args.replay_provenance_policy,
             "min_closure_runs": args.min_closure_runs,
             "require_latest_closure_ready": bool(args.require_latest_closure_ready),
             "require_latest_probe_criterion": bool(args.require_latest_probe_criterion),
@@ -213,6 +246,14 @@ def run(argv: list[str] | None = None) -> int:
             "blocker_closure_ready": blocker_closure_ready,
             "criteria": criteria,
             "violations": violations,
+            "replay_provenance": {
+                "required": bool(args.require_replay_provenance),
+                "policy": args.replay_provenance_policy,
+                "required_count": replay_provenance_required_count,
+                "evaluated_count": replay_provenance_evaluated_count,
+                "passing_count": replay_provenance_passing_count,
+                "selected_paths": replay_provenance_selected_paths,
+            },
             "replay_reports_analyzed": replay_summaries,
             "closure_reports_analyzed": closure_summaries,
         },

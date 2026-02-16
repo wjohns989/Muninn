@@ -47,3 +47,7 @@ Replace manual interpretation of replay/closure artifacts with a deterministic b
 1. Converts blocker closure calls from narrative judgment to machine-checkable criteria.
 2. Surfaces exactly what evidence is still missing to close blocker (count/provenance gaps).
 3. Enables future CI/release enforcement with deterministic fail conditions.
+
+## Follow-on
+
+This tranche was extended by Phase 5B.2 (`docs/plans/2026-02-16-phase5b2-replay-provenance-policy-hardening.md`) to add replay provenance evidence-scope policy control (`all` vs `latest_min`) and explicit provenance count reporting.
