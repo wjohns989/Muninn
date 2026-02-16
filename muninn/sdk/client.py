@@ -265,6 +265,40 @@ class MuninnClient(_BaseMuninnClient):
             },
         )
 
+    def set_user_profile(
+        self,
+        *,
+        profile: Dict[str, Any],
+        user_id: str = "global_user",
+        merge: bool = True,
+        source: str = "sdk",
+    ) -> Dict[str, Any]:
+        if not isinstance(profile, dict):
+            raise ValueError("profile must be a JSON object")
+        return self._request(
+            "POST",
+            "/profile/user/set",
+            json_body={
+                "user_id": user_id,
+                "profile": profile,
+                "merge": merge,
+                "source": source,
+            },
+        )
+
+    def get_user_profile(
+        self,
+        *,
+        user_id: str = "global_user",
+    ) -> Dict[str, Any]:
+        return self._request(
+            "GET",
+            "/profile/user/get",
+            params={
+                "user_id": user_id,
+            },
+        )
+
     def get_model_profiles(self) -> Dict[str, Any]:
         return self._request("GET", "/profiles/model")
 
@@ -702,6 +736,40 @@ class AsyncMuninnClient(_BaseMuninnClient):
                 "user_id": user_id,
                 "namespace": namespace,
                 "project": project,
+            },
+        )
+
+    async def set_user_profile(
+        self,
+        *,
+        profile: Dict[str, Any],
+        user_id: str = "global_user",
+        merge: bool = True,
+        source: str = "sdk_async",
+    ) -> Dict[str, Any]:
+        if not isinstance(profile, dict):
+            raise ValueError("profile must be a JSON object")
+        return await self._request(
+            "POST",
+            "/profile/user/set",
+            json_body={
+                "user_id": user_id,
+                "profile": profile,
+                "merge": merge,
+                "source": source,
+            },
+        )
+
+    async def get_user_profile(
+        self,
+        *,
+        user_id: str = "global_user",
+    ) -> Dict[str, Any]:
+        return await self._request(
+            "GET",
+            "/profile/user/get",
+            params={
+                "user_id": user_id,
             },
         )
 

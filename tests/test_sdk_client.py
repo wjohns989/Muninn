@@ -164,6 +164,34 @@ def test_sync_get_model_profiles_payload():
     assert stub.calls[0]["path"] == "/profiles/model"
 
 
+def test_sync_set_and_get_user_profile_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/profile/user/set"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "USER_PROFILE_UPDATED", "profile": {"skills": ["python"]}}},
+            ),
+            ("GET", "/profile/user/get"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "USER_PROFILE_LOADED", "profile": {"skills": ["python"]}}},
+            ),
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    profile = {"skills": ["python"]}
+    set_result = client.set_user_profile(profile=profile, merge=True)
+    get_result = client.get_user_profile()
+
+    assert set_result["event"] == "USER_PROFILE_UPDATED"
+    assert get_result["event"] == "USER_PROFILE_LOADED"
+    set_payload = stub.calls[0]["json"]
+    assert set_payload["profile"] == profile
+    assert set_payload["merge"] is True
+    assert set_payload["source"] == "sdk"
+    assert stub.calls[1]["path"] == "/profile/user/get"
+    assert stub.calls[1]["params"]["user_id"] == "global_user"
+
+
 def test_sync_set_model_profiles_payload():
     stub = _StubSession(
         {
@@ -367,6 +395,38 @@ async def test_async_get_and_set_model_profiles_payload():
         assert profiles["active"]["runtime_model_profile"] == "low_latency"
         result = await client.set_model_profiles(runtime_model_profile="low_latency")
         assert result["event"] == "MODEL_PROFILE_POLICY_UPDATED"
+
+
+@pytest.mark.asyncio
+async def test_async_set_and_get_user_profile_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/profile/user/set":
+            body = json.loads(request.content.decode("utf-8"))
+            assert body["profile"] == {"hardware": {"gpu_vram_gb": 16}}
+            assert body["merge"] is False
+            assert body["source"] == "sdk_async"
+            return httpx.Response(
+                200,
+                json={"success": True, "data": {"event": "USER_PROFILE_UPDATED", "profile": body["profile"]}},
+            )
+        if request.method == "GET" and request.url.path == "/profile/user/get":
+            assert request.url.params.get("user_id") == "global_user"
+            return httpx.Response(
+                200,
+                json={"success": True, "data": {"event": "USER_PROFILE_LOADED", "profile": {"hardware": {"gpu_vram_gb": 16}}}},
+            )
+        return httpx.Response(404, json={"detail": "not found"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        set_result = await client.set_user_profile(
+            profile={"hardware": {"gpu_vram_gb": 16}},
+            merge=False,
+        )
+        get_result = await client.get_user_profile()
+        assert set_result["event"] == "USER_PROFILE_UPDATED"
+        assert get_result["event"] == "USER_PROFILE_LOADED"
 
 
 @pytest.mark.asyncio

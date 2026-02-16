@@ -39,6 +39,7 @@ _SESSION_STATE = {
     "initialized": False,
     "protocol_version": SUPPORTED_PROTOCOL_VERSIONS[0],
     "client_capabilities": {},
+    "client_info": {},
     "client_elicitation_modes": tuple(),
     "tasks": {},
 }
@@ -75,6 +76,7 @@ _BACKEND_CIRCUIT_STATE = {
     "consecutive_failures": 0,
     "open_until_epoch": 0.0,
 }
+_TASK_RESULT_MODES = ("auto", "blocking", "immediate_retry")
 
 
 class _BackendCircuitOpenError(requests.ConnectionError):
@@ -129,6 +131,38 @@ def _env_flag(name: str, default: bool = True) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _get_auto_task_tool_names() -> set[str]:
+    raw_value = os.environ.get(
+        "MUNINN_MCP_AUTO_TASK_TOOL_NAMES",
+        "ingest_sources,ingest_legacy_sources,discover_legacy_sources",
+    )
+    names: set[str] = set()
+    for item in raw_value.split(","):
+        candidate = item.strip()
+        if candidate:
+            names.add(candidate)
+    return names
+
+
+def _client_declared_tasks_capability() -> bool:
+    capabilities = _SESSION_STATE.get("client_capabilities")
+    if not isinstance(capabilities, dict):
+        return False
+    return isinstance(capabilities.get("tasks"), dict)
+
+
+def _should_auto_task_tool_call(name: str, task_request: Optional[Dict[str, Any]]) -> bool:
+    if task_request is not None:
+        return False
+    if not _env_flag("MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS", True):
+        return False
+    if name not in _get_auto_task_tool_names():
+        return False
+    if _env_flag("MUNINN_MCP_AUTO_TASK_REQUIRE_CLIENT_CAP", False):
+        return _client_declared_tasks_capability()
+    return True
 
 
 def _get_tool_call_deadline_seconds() -> Optional[float]:
@@ -217,6 +251,83 @@ def _get_tool_call_deadline_epoch() -> Optional[float]:
     if seconds is None:
         return None
     return time.monotonic() + seconds
+
+
+def _get_task_result_max_wait_seconds() -> Optional[float]:
+    host_safe_budget = _get_host_safe_tool_call_budget_seconds()
+    explicit_raw = os.environ.get("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC")
+    if explicit_raw is not None:
+        try:
+            seconds = float(explicit_raw)
+        except ValueError:
+            logger.warning(
+                "Invalid MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC=%r; falling back to host-safe budget.",
+                explicit_raw,
+            )
+        else:
+            if not math.isfinite(seconds):
+                logger.warning(
+                    "Non-finite MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC=%r; falling back to host-safe budget.",
+                    explicit_raw,
+                )
+            elif seconds <= 0:
+                return None
+            else:
+                return seconds
+    return host_safe_budget
+
+
+def _get_task_result_mode() -> str:
+    raw_mode = os.environ.get("MUNINN_MCP_TASK_RESULT_MODE", "auto").strip().lower()
+    if raw_mode in _TASK_RESULT_MODES:
+        return raw_mode
+    logger.warning(
+        "Invalid MUNINN_MCP_TASK_RESULT_MODE=%r; using 'auto'. Supported modes: %s",
+        raw_mode,
+        ",".join(_TASK_RESULT_MODES),
+    )
+    return "auto"
+
+
+def _get_task_result_auto_retry_clients() -> tuple[str, ...]:
+    raw_value = os.environ.get(
+        "MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS",
+        "claude desktop,claude code,cursor,windsurf,continue",
+    )
+    tokens = tuple(
+        token.strip().lower()
+        for token in raw_value.split(",")
+        if token.strip()
+    )
+    if tokens:
+        return tokens
+    return ("claude desktop", "claude code", "cursor", "windsurf", "continue")
+
+
+def _task_result_should_block(params: Dict[str, Any]) -> bool:
+    wait_hint = params.get("wait")
+    if wait_hint is not None:
+        if not isinstance(wait_hint, bool):
+            raise ValueError("Invalid params: tasks/result wait must be a boolean")
+        return wait_hint
+
+    mode = _get_task_result_mode()
+    if mode == "blocking":
+        return True
+    if mode == "immediate_retry":
+        return False
+
+    client_info = _SESSION_STATE.get("client_info")
+    client_name = ""
+    if isinstance(client_info, dict):
+        name = client_info.get("name")
+        if isinstance(name, str):
+            client_name = name.strip().lower()
+    if client_name:
+        for token in _get_task_result_auto_retry_clients():
+            if token in client_name:
+                return False
+    return True
 
 
 def _get_startup_recovery_min_budget_seconds() -> float:
@@ -656,6 +767,8 @@ def send_json_rpc(message: Dict[str, Any]):
     """Send JSON-RPC message to stdout."""
     if _TRANSPORT_CLOSED.is_set():
         return
+    serialized = json.dumps(message)
+    _record_tool_call_response_metrics(message, serialized)
     emitter = getattr(_thread_local, "rpc_emitter", None)
     if callable(emitter):
         emitter(message)
@@ -664,7 +777,7 @@ def send_json_rpc(message: Dict[str, Any]):
         if _TRANSPORT_CLOSED.is_set():
             return
         try:
-            print(json.dumps(message))
+            print(serialized)
             sys.stdout.flush()
         except (BrokenPipeError, OSError) as exc:
             _TRANSPORT_CLOSED.set()
@@ -681,6 +794,219 @@ def _send_json_rpc_error(msg_id: Any, code: int, message: str):
             "message": message,
         },
     })
+
+
+def _get_tool_response_max_chars() -> int:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "12000")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS=%r; using default of 12000.",
+            raw_value,
+        )
+        return 12000
+    return max(256, parsed)
+
+
+def _get_tool_response_preview_max_items() -> int:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS", "200")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS=%r; using default of 200.",
+            raw_value,
+        )
+        return 200
+    return max(1, min(parsed, 10000))
+
+
+def _get_tool_response_preview_max_depth() -> int:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH", "6")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH=%r; using default of 6.",
+            raw_value,
+        )
+        return 6
+    return max(1, min(parsed, 64))
+
+
+def _get_tool_response_preview_max_string_chars() -> int:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS", "2000")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS=%r; using default of 2000.",
+            raw_value,
+        )
+        return 2000
+    return max(32, min(parsed, 500000))
+
+
+def _get_tool_call_warn_ms() -> float:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_CALL_WARN_MS", "90000")
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_CALL_WARN_MS=%r; using default of 90000.",
+            raw_value,
+        )
+        return 90000.0
+    if not math.isfinite(parsed) or parsed < 0:
+        logger.warning(
+            "Non-finite/negative MUNINN_MCP_TOOL_CALL_WARN_MS=%r; using default of 90000.",
+            raw_value,
+        )
+        return 90000.0
+    return parsed
+
+
+def _record_tool_call_response_metrics(message: Dict[str, Any], serialized: str) -> None:
+    metrics = getattr(_thread_local, "tool_call_metrics", None)
+    if not isinstance(metrics, dict):
+        return
+    if metrics.get("msg_id") != message.get("id"):
+        return
+    payload_size_bytes = len(serialized.encode("utf-8")) + 1  # newline delimiter on stdout
+    metrics["response_count"] = int(metrics.get("response_count", 0)) + 1
+    metrics["response_bytes_total"] = int(metrics.get("response_bytes_total", 0)) + payload_size_bytes
+    metrics["response_bytes_max"] = max(int(metrics.get("response_bytes_max", 0)), payload_size_bytes)
+    if isinstance(message.get("error"), dict):
+        metrics["saw_error"] = True
+
+
+def _safe_json_dumps(payload: Any) -> str:
+    try:
+        return json.dumps(payload, indent=2)
+    except TypeError:
+        return json.dumps(str(payload), indent=2)
+
+
+def _truncate_preview_string(value: str, max_chars: int) -> tuple[str, bool]:
+    if len(value) <= max_chars:
+        return value, False
+    omitted = len(value) - max_chars
+    return f"{value[:max_chars]}... [truncated {omitted} chars]", True
+
+
+def _compact_tool_response_payload(payload: Any) -> tuple[Any, bool]:
+    """
+    Bound payload shape before JSON serialization.
+
+    This avoids pathological full-payload serialization costs when backend
+    responses are very large, while preserving deterministic operator context.
+    """
+    max_items = _get_tool_response_preview_max_items()
+    max_depth = _get_tool_response_preview_max_depth()
+    max_string_chars = _get_tool_response_preview_max_string_chars()
+    marker_key = "_muninn_truncated_items"
+    seen_ids: set[int] = set()
+
+    def _compact(value: Any, depth: int) -> tuple[Any, bool]:
+        if isinstance(value, str):
+            return _truncate_preview_string(value, max_string_chars)
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value, False
+        if isinstance(value, bytes):
+            return f"<bytes:{len(value)}>", True
+        if depth <= 0:
+            return "<truncated: max preview depth reached>", True
+
+        if isinstance(value, dict):
+            obj_id = id(value)
+            if obj_id in seen_ids:
+                return "<truncated: circular reference>", True
+            seen_ids.add(obj_id)
+            try:
+                changed = False
+                compacted: Dict[str, Any] = {}
+                total_items = len(value)
+                for idx, (raw_key, raw_val) in enumerate(value.items()):
+                    if idx >= max_items:
+                        compacted[marker_key] = total_items - max_items
+                        changed = True
+                        break
+                    key, key_changed = _truncate_preview_string(str(raw_key), max_string_chars)
+                    compacted_val, val_changed = _compact(raw_val, depth - 1)
+                    compacted[key] = compacted_val
+                    changed = changed or key_changed or val_changed
+                return compacted, changed
+            finally:
+                seen_ids.discard(obj_id)
+
+        if isinstance(value, (list, tuple, set)):
+            if isinstance(value, set):
+                sequence = list(value)
+            else:
+                sequence = list(value)
+            obj_id = id(sequence if isinstance(value, set) else value)
+            if obj_id in seen_ids:
+                return "<truncated: circular reference>", True
+            seen_ids.add(obj_id)
+            try:
+                changed = False
+                compacted_items: List[Any] = []
+                for idx, item in enumerate(sequence):
+                    if idx >= max_items:
+                        compacted_items.append(f"... [truncated {len(sequence) - max_items} items]")
+                        changed = True
+                        break
+                    compacted_item, item_changed = _compact(item, depth - 1)
+                    compacted_items.append(compacted_item)
+                    changed = changed or item_changed
+                return compacted_items, changed
+            finally:
+                seen_ids.discard(obj_id)
+
+        text_value, changed = _truncate_preview_string(str(value), max_string_chars)
+        return text_value, changed
+
+    return _compact(payload, max_depth)
+
+
+def _truncate_tool_text(text: str, tool_name: str) -> str:
+    max_chars = _get_tool_response_max_chars()
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    trailer = (
+        f"\n... [truncated {omitted} chars; set MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS to increase limit]"
+    )
+    keep_chars = max(0, max_chars - len(trailer))
+    logger.warning(
+        "Truncating MCP tool response for '%s' from %d to %d chars.",
+        tool_name,
+        len(text),
+        max_chars,
+    )
+    return text[:keep_chars] + trailer
+
+
+def _format_tool_result_text(result: Any, tool_name: str) -> str:
+    compacted_payload, compacted = _compact_tool_response_payload(result)
+    if compacted:
+        logger.warning("Compacting MCP tool response payload for '%s' before serialization.", tool_name)
+    return _truncate_tool_text(_safe_json_dumps(compacted_payload), tool_name)
+
+
+def _public_tool_error_message(exc: Exception) -> str:
+    if isinstance(exc, ValueError):
+        return str(exc)
+    if isinstance(exc, _RequestDeadlineExceededError):
+        return "Tool call deadline exceeded before backend completed."
+    if isinstance(exc, _BackendCircuitOpenError):
+        return "Backend temporarily unavailable (circuit open during cooldown)."
+    if isinstance(exc, requests.Timeout):
+        return "Backend request timed out before completion."
+    if isinstance(exc, requests.ConnectionError):
+        return "Unable to reach backend service. Check health and retry."
+    return "Internal tool execution error. See mcp_wrapper.log for details."
 
 def _negotiate_protocol_version(requested: Optional[str]) -> Optional[str]:
     """Return requested protocol version only when explicitly supported."""
@@ -732,6 +1058,8 @@ def handle_initialize(msg_id: Any, params: Optional[Dict[str, Any]] = None):
     raw_capabilities = params.get("capabilities") if isinstance(params, dict) else None
     client_capabilities = raw_capabilities if isinstance(raw_capabilities, dict) else {}
     _SESSION_STATE["client_capabilities"] = client_capabilities
+    raw_client_info = params.get("clientInfo") if isinstance(params, dict) else None
+    _SESSION_STATE["client_info"] = raw_client_info if isinstance(raw_client_info, dict) else {}
     _SESSION_STATE["client_elicitation_modes"] = _extract_client_elicitation_modes(client_capabilities)
     if not isinstance(_SESSION_STATE.get("tasks"), dict):
         _SESSION_STATE["tasks"] = {}
@@ -854,6 +1182,12 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
         name = parsed["name"]
         arguments = parsed["arguments"]
         task_request = parsed.get("task")
+        if _should_auto_task_tool_call(name, task_request):
+            logger.info(
+                "Auto-deferring tools/call '%s' into task mode to avoid host timeout windows.",
+                name,
+            )
+            task_request = {}
         if isinstance(task_request, dict):
             handle_call_tool_with_task(msg_id, name, arguments, task_request)
             return
@@ -928,6 +1262,25 @@ def _sanitize_task_ttl_ms(raw_ttl: Any) -> int:
     if raw_ttl <= 0:
         raise ValueError("tools/call task ttl must be greater than zero")
     return min(raw_ttl, _TASKS_MAX_TTL_MS)
+
+
+def _get_task_worker_start_delay_ms() -> float:
+    raw_value = os.environ.get("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "0")
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TASK_WORKER_START_DELAY_MS=%r; using default of 0ms.",
+            raw_value,
+        )
+        return 0.0
+    if not math.isfinite(parsed) or parsed < 0:
+        logger.warning(
+            "Non-finite/negative MUNINN_MCP_TASK_WORKER_START_DELAY_MS=%r; using default of 0ms.",
+            raw_value,
+        )
+        return 0.0
+    return min(parsed, 60000.0)
 
 
 def _public_task(task: Dict[str, Any]) -> Dict[str, Any]:
@@ -1108,6 +1461,13 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
     task_id = _task_id_or_error(msg_id, params, "tasks/result")
     if task_id is None:
         return
+    try:
+        should_block = _task_result_should_block(params)
+    except ValueError as exc:
+        _send_json_rpc_error(msg_id, -32602, str(exc))
+        return
+    max_wait_seconds = _get_task_result_max_wait_seconds()
+    wait_started_at = time.monotonic()
     with _TASKS_CONDITION:
         while True:
             task = _lookup_task_locked(task_id)
@@ -1117,7 +1477,34 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]) -> None:
             status = str(task.get("status") or "")
             if status in _TASK_TERMINAL_STATUSES or status == "input_required":
                 break
-            _TASKS_CONDITION.wait(timeout=0.1)
+            if not should_block:
+                _send_json_rpc_error(
+                    msg_id,
+                    -32002,
+                    (
+                        "Task result is not ready; task is still "
+                        f"'{status or 'working'}'. Poll tasks/get and retry tasks/result."
+                    ),
+                )
+                return
+            wait_timeout = 0.1
+            if max_wait_seconds is not None:
+                elapsed = time.monotonic() - wait_started_at
+                remaining = max_wait_seconds - elapsed
+                if remaining <= 0:
+                    logger.warning(
+                        "tasks/result wait budget exhausted after %.3fs for msg_id=%r (task still non-terminal).",
+                        elapsed,
+                        msg_id,
+                    )
+                    _send_json_rpc_error(
+                        msg_id,
+                        -32002,
+                        "Task result is not ready within the host-safe wait budget; poll tasks/get and retry tasks/result.",
+                    )
+                    return
+                wait_timeout = min(wait_timeout, remaining)
+            _TASKS_CONDITION.wait(timeout=wait_timeout)
         payload = task.get("result")
         error = task.get("error")
 
@@ -1242,6 +1629,9 @@ def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any
 
     setattr(_thread_local, "rpc_emitter", _capture_rpc)
     try:
+        delay_ms = _get_task_worker_start_delay_ms()
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
         handle_call_tool(task_id, {"name": name, "arguments": arguments})
     except Exception:
         logger.exception("Unhandled exception while executing task-backed tool call")
@@ -1446,6 +1836,38 @@ def handle_list_tools(msg_id: Any):
                         "description": "Optional project override."
                     }
                 }
+            }
+        },
+        {
+            "name": "set_user_profile",
+            "description": "Set or update editable user profile/global context (skills, environments, paths, hardware, preferences).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "object",
+                        "description": "User profile patch/object to store. Can include skills, tools, paths, environment, hardware, and preferences."
+                    },
+                    "merge": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "When true, deep-merge patch into existing profile; when false, replace profile."
+                    },
+                    "source": {
+                        "type": "string",
+                        "default": "mcp_tool",
+                        "description": "Optional mutation source tag for auditability."
+                    }
+                },
+                "required": ["profile"]
+            }
+        },
+        {
+            "name": "get_user_profile",
+            "description": "Fetch editable user profile/global context for the active user scope.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
             }
         },
         {
@@ -1768,6 +2190,7 @@ def handle_list_tools(msg_id: Any):
         "search_memory",
         "get_all_memories",
         "get_project_goal",
+        "get_user_profile",
         "get_model_profiles",
         "get_model_profile_events",
         "export_handoff",
@@ -1779,6 +2202,7 @@ def handle_list_tools(msg_id: Any):
         "delete_memory",
         "delete_all_memories",
         "set_project_goal",
+        "set_user_profile",
         "set_model_profiles",
         "import_handoff",
     })
@@ -1813,6 +2237,22 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
     name = params.get("name")
     arguments = params.get("arguments", {})
     tool_call_deadline_epoch = _get_tool_call_deadline_epoch()
+    tool_call_started_monotonic = time.monotonic()
+    initial_remaining_budget = _remaining_deadline_seconds(tool_call_deadline_epoch)
+    initial_budget_ms = (
+        max(0.0, initial_remaining_budget * 1000.0)
+        if initial_remaining_budget is not None
+        else None
+    )
+    tool_call_metrics = {
+        "msg_id": msg_id,
+        "name": str(name),
+        "response_count": 0,
+        "response_bytes_total": 0,
+        "response_bytes_max": 0,
+        "saw_error": False,
+    }
+    setattr(_thread_local, "tool_call_metrics", tool_call_metrics)
 
     def _request(method: str, url: str, **kwargs) -> requests.Response:
         if tool_call_deadline_epoch is not None:
@@ -1855,16 +2295,25 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
             
         elif name == "search_memory":
             git_info = get_git_info()
-            filters = arguments.get("filters", {})
+            raw_filters = arguments.get("filters")
+            if raw_filters is None:
+                filters: Dict[str, Any] = {}
+            elif isinstance(raw_filters, dict):
+                filters = dict(raw_filters)
+            else:
+                raise ValueError("search_memory 'filters' must be an object when provided")
+
+            auto_project_filter_applied = False
             if "project" not in filters:
                 filters["project"] = git_info["project"]
+                auto_project_filter_applied = True
 
             explain = arguments.get("explain", False)
             payload = {
@@ -1877,6 +2326,27 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             }
             resp = _request("POST", f"{SERVER_URL}/search", json=payload, timeout=10)
             result = resp.json()
+
+            # Keep project-scoped lookup as the default, but retry without the
+            # auto-injected project filter when that scope yields no hits.
+            if (
+                _env_flag("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", True)
+                and auto_project_filter_applied
+                and result.get("success")
+                and not result.get("data")
+            ):
+                fallback_filters = dict(filters)
+                fallback_filters.pop("project", None)
+                fallback_payload = dict(payload)
+                fallback_payload["filters"] = fallback_filters
+                logger.info(
+                    "search_memory returned no results for project '%s'; retrying without project filter.",
+                    filters.get("project"),
+                )
+                fallback_resp = _request("POST", f"{SERVER_URL}/search", json=fallback_payload, timeout=10)
+                fallback_result = fallback_resp.json()
+                if fallback_result.get("success") and fallback_result.get("data"):
+                    result = fallback_result
 
             formatted_results = []
             if result.get("success") and result.get("data"):
@@ -1908,7 +2378,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": text_response
+                        "text": _truncate_tool_text(text_response, name)
                     }]
                 }
             })
@@ -1924,7 +2394,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -1943,7 +2413,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -1960,7 +2430,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -1988,7 +2458,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2009,7 +2479,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2028,7 +2498,42 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
+                    }]
+                }
+            })
+        elif name == "set_user_profile":
+            payload = {
+                "user_id": "global_user",
+                "profile": arguments.get("profile", {}),
+                "merge": bool(arguments.get("merge", True)),
+                "source": arguments.get("source", "mcp_tool"),
+            }
+            resp = _request("POST", f"{SERVER_URL}/profile/user/set", json=payload, timeout=15)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": _format_tool_result_text(result, name)
+                    }]
+                }
+            })
+        elif name == "get_user_profile":
+            params = {
+                "user_id": "global_user",
+            }
+            resp = _request("GET", f"{SERVER_URL}/profile/user/get", params=params, timeout=10)
+            result = resp.json()
+            send_json_rpc({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2041,7 +2546,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2067,7 +2572,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2088,7 +2593,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2108,7 +2613,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2129,7 +2634,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2155,7 +2660,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2182,7 +2687,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2206,7 +2711,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2243,7 +2748,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
                 "result": {
                     "content": [{
                         "type": "text",
-                        "text": json.dumps(result, indent=2)
+                        "text": _format_tool_result_text(result, name)
                     }]
                 }
             })
@@ -2252,15 +2757,47 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             raise ValueError(f"Unknown tool: {name}")
             
     except Exception as e:
-        logger.error(f"Tool execution error: {e}")
+        logger.exception("Tool execution error")
         send_json_rpc({
             "jsonrpc": "2.0",
             "id": msg_id,
             "error": {
                 "code": -32603,
-                "message": str(e)
+                "message": _public_tool_error_message(e)
             }
         })
+    finally:
+        if getattr(_thread_local, "tool_call_metrics", None) is tool_call_metrics:
+            setattr(_thread_local, "tool_call_metrics", None)
+        elapsed_ms = max(0.0, (time.monotonic() - tool_call_started_monotonic) * 1000.0)
+        remaining_budget = _remaining_deadline_seconds(tool_call_deadline_epoch)
+        remaining_budget_ms = (
+            max(0.0, remaining_budget * 1000.0)
+            if remaining_budget is not None
+            else None
+        )
+        if tool_call_metrics["saw_error"]:
+            outcome = "error"
+        elif int(tool_call_metrics["response_count"]) > 0:
+            outcome = "success"
+        else:
+            outcome = "no_response"
+        budget_str = "n/a" if initial_budget_ms is None else f"{initial_budget_ms:.1f}"
+        remaining_str = "n/a" if remaining_budget_ms is None else f"{remaining_budget_ms:.1f}"
+        log_method = logger.warning if elapsed_ms >= _get_tool_call_warn_ms() else logger.info
+        log_method(
+            "Tool call telemetry: name=%s id=%r outcome=%s elapsed_ms=%.1f responses=%d "
+            "response_bytes_total=%d response_bytes_max=%d budget_ms=%s remaining_budget_ms=%s",
+            tool_call_metrics["name"],
+            msg_id,
+            outcome,
+            elapsed_ms,
+            int(tool_call_metrics["response_count"]),
+            int(tool_call_metrics["response_bytes_total"]),
+            int(tool_call_metrics["response_bytes_max"]),
+            budget_str,
+            remaining_str,
+        )
 
 
 def _dispatch_rpc_message_guarded(msg: Dict[str, Any]) -> None:
