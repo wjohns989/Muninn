@@ -34,3 +34,7 @@ Satisfy deterministic blocker-closure evidence criteria by collecting enough str
 1. Converts Phase 5B from “criteria shortfall” to “criteria met” for deterministic closure in the active evidence window.
 2. Demonstrates strict-provenance closure path is operational without manual exception handling.
 3. Provides concrete baseline for next step: release-boundary CI wiring of blocker decision enforcement.
+
+## Follow-on
+
+Release-boundary CI wiring was completed in Phase 5B.4 (`docs/plans/2026-02-16-phase5b4-release-boundary-blocker-decision-gate-wiring.md`).
