@@ -361,6 +361,10 @@
 89. Phase 5A implementation scope formally closed; Phase 5B external host-runtime blocker-validation scope opened:
     - completion decision documented in `docs/plans/2026-02-16-phase5a-completion-and-phase5b-launch.md`,
     - remaining transport blocker work is now explicitly scoped to host-captured validation and closure-window evidence collection.
+90. Phase 5B.1 transport blocker decision utility implemented:
+    - new deterministic decision runner added (`python -m eval.mcp_transport_blocker_decision`),
+    - closure criteria are now machine-checkable across replay+closure artifacts with explicit violations and optional gate enforcement,
+    - tranche note documented in `docs/plans/2026-02-16-phase5b1-transport-blocker-decision-utility.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -428,6 +432,7 @@
 - Phase 5A.11 incident replay automation verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `122 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + replay artifact (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_010414.json`, `results.triggered=false`).
 - Phase 5A.12 PR/release replay gate wiring verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `123 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + workflow wiring (`.github/workflows/transport-incident-replay-gate.yml`).
 - Phase 5A.13 release-profile replay strictness verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `124 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + release-capable workflow profile wiring (`.github/workflows/transport-incident-replay-gate.yml`) + strict-profile replay artifact (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_012731.json`, `log_file.sha256` populated).
+- Phase 5B.1 blocker decision utility verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py eval/mcp_transport_blocker_decision.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py tests/test_mcp_transport_blocker_decision.py`) + `127 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_013548.json`, `blocker_closure_ready=false`, explicit evidence-gap violations).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -494,6 +499,7 @@
 58. **Check-surface observability ROI**: replay-gate CI artifact uploads plus summary output make transport-risk posture visible in PR/release checks without opening raw logs manually.
 59. **Evidence provenance ROI**: release-profile strict replay mode with log digest metadata makes host-log lineage auditable and reduces false-positive closure decisions when log capture is incomplete.
 60. **Scope-governance ROI**: formal phase-boundary closure (internal implementation vs external runtime validation) prevents hidden work drift and keeps blocker decisions evidence-bound.
+61. **Decision-automation ROI**: deterministic blocker-decision utility makes closure readiness and missing evidence auditable, reducing subjective blocker-status churn.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
