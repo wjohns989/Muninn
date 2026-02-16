@@ -21,6 +21,7 @@ Inspired by:
 
 import logging
 import time
+import asyncio
 from typing import List, Optional, Dict, Any, Tuple
 from collections import defaultdict
 
@@ -154,21 +155,33 @@ class HybridRetriever:
                 effective_filters["namespace"] = namespaces[0]
 
         # --- Parallel retrieval across all signals ---
-        # In practice these are all fast local operations so we run them
-        # sequentially to avoid asyncio overhead. If any store becomes
-        # remote, wrap in asyncio.gather().
+        # We use asyncio.to_thread to run synchronous store operations in separate threads,
+        # avoiding blocking the event loop and allowing potential I/O parallelism.
 
-            vector_results = self._vector_search(query_embedding, limit * 3, effective_filters)
-            graph_results = self._graph_search(query, limit * 2)
-            bm25_results = self._bm25_search(query, limit * 2)
-            goal_results = self._goal_search(goal_embedding, limit * 2, effective_filters)
-            temporal_results = self._temporal_search(
-                filters=effective_filters,
-                namespaces=namespaces,
-                user_id=user_id,
-                limit=limit * 2,
+            (
+                vector_results,
+                graph_results,
+                bm25_results,
+                goal_results,
+                temporal_results,
+            ) = await asyncio.gather(
+                asyncio.to_thread(self._vector_search, query_embedding, limit * 3, effective_filters),
+                asyncio.to_thread(self._graph_search, query, limit * 2),
+                asyncio.to_thread(self._bm25_search, query, limit * 2),
+                asyncio.to_thread(self._goal_search, goal_embedding, limit * 2, effective_filters),
+                asyncio.to_thread(
+                    self._temporal_search,
+                    filters=effective_filters,
+                    namespaces=namespaces,
+                    user_id=user_id,
+                    limit=limit * 2,
+                ),
             )
-            chain_results = self._chain_search(
+
+            # Chain search depends on other signals, so it runs after
+            # We run it in a thread as well for consistency/non-blocking
+            chain_results = await asyncio.to_thread(
+                self._chain_search,
                 vector_results=vector_results,
                 graph_results=graph_results,
                 bm25_results=bm25_results,
