@@ -591,35 +591,50 @@ class MuninnMemory:
             )
             record.importance = importance
 
-            self._metadata.add(record)
-            self._vectors.upsert(
-                memory_id=record.id,
-                embedding=embedding,
-                metadata={
-                    "content": content[:500],
-                    "memory_type": memory_type.value,
-                    "namespace": namespace,
-                    "importance": importance,
-                    "user_id": user_id,
-                    "project": project,
-                    "branch": branch,
-                },
-            )
+            # Parallelize store writes
+            def _write_metadata():
+                self._metadata.add(record)
 
-            self._graph.add_memory_node(record.id, extraction.summary or content[:200])
-            for entity in extraction.entities:
-                self._graph.add_entity(entity.name, entity.entity_type)
-                self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
-            for relation in extraction.relations:
-                self._graph.add_entity(relation.subject, "concept")
-                self._graph.add_entity(relation.object, "concept")
-                self._graph.add_relation(
-                    relation.subject,
-                    relation.predicate,
-                    relation.object,
-                    record.id,
-                    relation.confidence,
+            def _write_vectors():
+                self._vectors.upsert(
+                    memory_id=record.id,
+                    embedding=embedding,
+                    metadata={
+                        "content": content[:500],
+                        "memory_type": memory_type.value,
+                        "namespace": namespace,
+                        "importance": importance,
+                        "user_id": user_id,
+                        "project": project,
+                        "branch": branch,
+                    },
                 )
+
+            def _write_graph():
+                self._graph.add_memory_node(record.id, extraction.summary or content[:200])
+                for entity in extraction.entities:
+                    self._graph.add_entity(entity.name, entity.entity_type)
+                    self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
+                for relation in extraction.relations:
+                    self._graph.add_entity(relation.subject, "concept")
+                    self._graph.add_entity(relation.object, "concept")
+                    self._graph.add_relation(
+                        relation.subject,
+                        relation.predicate,
+                        relation.object,
+                        record.id,
+                        relation.confidence,
+                    )
+
+            def _write_bm25():
+                self._bm25.add(record.id, content)
+
+            await asyncio.gather(
+                asyncio.to_thread(_write_metadata),
+                asyncio.to_thread(_write_vectors),
+                asyncio.to_thread(_write_graph),
+                asyncio.to_thread(_write_bm25),
+            )
 
             chain_links_created = self._upsert_memory_chain_links(
                 successor_record=record,
@@ -627,7 +642,6 @@ class MuninnMemory:
                 successor_entity_names=entity_names,
             )
 
-            self._bm25.add(record.id, content)
             logger.info(
                 "Added memory %s (importance=%.3f, entities=%d, relations=%d, chains=%d)",
                 record.id,
@@ -1603,46 +1617,56 @@ class MuninnMemory:
         record.metadata = updated_metadata
 
         # Re-embed
-        embedding = self._embed(data)
+        embedding = await self._embed(data)
 
         # Update stores
-        self._metadata.update(record.id, content=record.content, metadata=record.metadata)
-        self._vectors.upsert(
-            memory_id=record.id,
-            embedding=embedding,
-            metadata={
-                "content": data[:500],
-                "memory_type": record.memory_type.value,
-                "namespace": record.namespace,
-                "importance": record.importance,
-                "user_id": record.metadata.get("user_id", "global_user"),
-                "project": record.project,
-                "branch": record.branch,
-            },
-        )
+        def _update_metadata():
+            self._metadata.update(record.id, content=record.content, metadata=record.metadata)
 
-        # Update graph
-        self._graph.delete_memory_references(record.id)
-        self._graph.add_memory_node(record.id, extraction.summary or data[:200])
-        for entity in extraction.entities:
-            self._graph.add_entity(entity.name, entity.entity_type)
-            self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
-        for relation in extraction.relations:
-            self._graph.add_entity(relation.subject, "concept")
-            self._graph.add_entity(relation.object, "concept")
-            self._graph.add_relation(
-                relation.subject, relation.predicate,
-                relation.object, record.id, relation.confidence,
+        def _update_vectors():
+            self._vectors.upsert(
+                memory_id=record.id,
+                embedding=embedding,
+                metadata={
+                    "content": data[:500],
+                    "memory_type": record.memory_type.value,
+                    "namespace": record.namespace,
+                    "importance": record.importance,
+                    "user_id": record.metadata.get("user_id", "global_user"),
+                    "project": record.project,
+                    "branch": record.branch,
+                },
             )
+
+        def _update_graph():
+            self._graph.delete_memory_references(record.id)
+            self._graph.add_memory_node(record.id, extraction.summary or data[:200])
+            for entity in extraction.entities:
+                self._graph.add_entity(entity.name, entity.entity_type)
+                self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
+            for relation in extraction.relations:
+                self._graph.add_entity(relation.subject, "concept")
+                self._graph.add_entity(relation.object, "concept")
+                self._graph.add_relation(
+                    relation.subject, relation.predicate,
+                    relation.object, record.id, relation.confidence,
+                )
+
+        def _update_bm25():
+            self._bm25.add(record.id, data)
+
+        await asyncio.gather(
+            asyncio.to_thread(_update_metadata),
+            asyncio.to_thread(_update_vectors),
+            asyncio.to_thread(_update_graph),
+            asyncio.to_thread(_update_bm25),
+        )
 
         chain_links_created = self._upsert_memory_chain_links(
             successor_record=record,
             successor_content=data,
             successor_entity_names=entity_names,
         )
-
-        # Update BM25
-        self._bm25.add(record.id, data)
 
         logger.info("Updated memory %s (chains=%d)", memory_id, chain_links_created)
 
@@ -1658,10 +1682,12 @@ class MuninnMemory:
         """Delete a memory from all stores."""
         self._check_initialized()
 
-        self._metadata.delete(memory_id)
-        self._vectors.delete(memory_id)
-        self._graph.delete_memory_references(memory_id)
-        self._bm25.remove(memory_id)
+        await asyncio.gather(
+            asyncio.to_thread(self._metadata.delete, memory_id),
+            asyncio.to_thread(self._vectors.delete, memory_id),
+            asyncio.to_thread(self._graph.delete_memory_references, memory_id),
+            asyncio.to_thread(self._bm25.remove, memory_id),
+        )
 
         logger.info("Deleted memory %s", memory_id)
         return {"id": memory_id, "event": "DELETE"}
@@ -1707,11 +1733,24 @@ class MuninnMemory:
         """Return system health status."""
         self._check_initialized()
 
+        def _get_graph_node_count():
+            return len(self._graph.get_all_entities())
+
+        (
+            memory_count,
+            vector_count,
+            graph_nodes,
+        ) = await asyncio.gather(
+            asyncio.to_thread(self._metadata.count),
+            asyncio.to_thread(self._vectors.count),
+            asyncio.to_thread(_get_graph_node_count),
+        )
+
         return {
             "status": "ok",
-            "memory_count": self._metadata.count(),
-            "vector_count": self._vectors.count(),
-            "graph_nodes": len(self._graph.get_all_entities()),
+            "memory_count": memory_count,
+            "vector_count": vector_count,
+            "graph_nodes": graph_nodes,
             "bm25_size": self._bm25.size,
             "reranker": "active" if (self._reranker and self._reranker.is_available) else "inactive",
             "consolidation": self._consolidation.status if self._consolidation else {"running": False},
@@ -1832,15 +1871,18 @@ class MuninnMemory:
             logger.warning("FastEmbed init failed: %s — falling back to Ollama", e)
             self._embed_model = None
 
-    def _embed(self, text: str) -> List[float]:
+    async def _embed(self, text: str) -> List[float]:
         """Generate embedding for text."""
         if self._embed_model is not None:
-            # fastembed
-            embeddings = list(self._embed_model.embed([text]))
-            return embeddings[0].tolist()
+            # fastembed is CPU-bound, run in thread
+            def _run_fastembed():
+                embeddings = list(self._embed_model.embed([text]))
+                return embeddings[0].tolist()
+            return await asyncio.to_thread(_run_fastembed)
         else:
-            # Ollama fallback
-            return self._ollama_embed(text)
+            # Ollama fallback (already using httpx but wrapped in sync func, let's offload it or make it async if possible)
+            # _ollama_embed uses httpx.post synchronously.
+            return await asyncio.to_thread(self._ollama_embed, text)
 
     def _ollama_embed(self, text: str) -> List[float]:
         """Generate embedding via Ollama API."""
