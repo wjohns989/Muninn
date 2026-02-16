@@ -151,6 +151,19 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - Muninn = MCP-attached assistant surface.
 - Detailed tranche note: `docs/plans/2026-02-15-phase5a6-closure-telemetry-huginn-branding.md`.
 
+### 11) Deterministic Non-Terminal `tasks/result` Probe Hardening (Phase 5A.7)
+
+- Soak runner now supports explicit non-terminal probe path:
+  - `--probe-nonterminal-task-result`
+  - `--task-worker-start-delay-ms`
+- Wrapper task-worker start-delay control added for deterministic probe timing:
+  - `MUNINN_MCP_TASK_WORKER_START_DELAY_MS`
+- Closure campaign now forwards probe controls and enforces probe criterion:
+  - `nonterminal_task_result_probe_met`
+- Closure telemetry now tracks non-terminal probe coverage/quality:
+  - enabled count, success count, failure count, success ratio.
+- Detailed tranche note: `docs/plans/2026-02-15-phase5a7-task-result-nonterminal-probe.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -205,6 +218,11 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `111 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`, `tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`)
     - soak regression check pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_224206.json`
     - closure mini-campaign pass with telemetry: `eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
+  - non-terminal `tasks/result` probe hardening verification:
+    - `python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py mcp_wrapper.py tests/test_mcp_transport_soak.py tests/test_mcp_transport_closure.py tests/test_mcp_wrapper_protocol.py`
+    - `105 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`, `tests/test_mcp_wrapper_protocol.py`)
+    - soak probe pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_235614.json` (observed `-32002`)
+    - closure probe-criteria pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json` (`closure_ready=true`, `nonterminal_task_result_probe_met=true`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

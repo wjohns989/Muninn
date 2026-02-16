@@ -325,6 +325,11 @@
     - standalone/browser UI surface now presents Huginn branding while preserving Muninn MCP identity,
     - standalone build default name updated to `HuginnControlCenter`,
     - tranche note documented in `docs/plans/2026-02-15-phase5a6-closure-telemetry-huginn-branding.md`.
+82. Phase 5A.7 deterministic non-terminal `tasks/result` probe hardening implemented:
+    - soak runner now supports explicit non-terminal probe path (`--probe-nonterminal-task-result`, `--task-worker-start-delay-ms`),
+    - wrapper task worker now supports deterministic probe start delay via `MUNINN_MCP_TASK_WORKER_START_DELAY_MS`,
+    - closure campaign now evaluates probe-specific criterion (`nonterminal_task_result_probe_met`) and emits probe telemetry success ratios,
+    - tranche note documented in `docs/plans/2026-02-15-phase5a7-task-result-nonterminal-probe.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -385,6 +390,7 @@
 - Phase 5A.4 `tasks/result` host-safe wait-budget verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `92 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json`).
 - Phase 5A.5 `tasks/result` compatibility-mode verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `98 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_221650.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json`).
 - Phase 5A.6 closure telemetry + Huginn branding verification: compile checks (`python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py mcp_wrapper.py muninn_standalone.py scripts/build_standalone.py server.py`) + `111 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`, `tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_224206.json`) + closure mini-campaign telemetry pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json`).
+- Phase 5A.7 non-terminal probe verification: compile checks (`python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py mcp_wrapper.py tests/test_mcp_transport_soak.py tests/test_mcp_transport_closure.py tests/test_mcp_wrapper_protocol.py`) + `105 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`, `tests/test_mcp_wrapper_protocol.py`) + soak probe pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_235614.json`) + closure probe-criteria pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json`, `nonterminal_task_result_probe_met=true`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.

@@ -1,7 +1,7 @@
 # Phase 5A.2: MCP Transport Blocker-Closure Campaign Automation
 
 Date: 2026-02-15  
-Status: Implemented (automation baseline complete + 30-run closure evidence captured)
+Status: Implemented (automation baseline complete + non-terminal probe criterion integrated)
 
 ## Objective
 
@@ -25,7 +25,8 @@ The command now evaluates:
 3. p95 compliance ratio threshold,
 4. unresolved transport regressions input,
 5. unresolved wrapper-defect input,
-6. unclassified-failure input.
+6. unclassified-failure input,
+7. non-terminal `tasks/result` probe evidence gate (`nonterminal_task_result_probe_met`).
 
 Outputs explicit per-criterion booleans plus final `closure_ready`.
 
@@ -37,6 +38,7 @@ Outputs explicit per-criterion booleans plus final `closure_ready`.
 - `--min-p95-compliance-ratio` (default `0.95`)
 - Soak passthrough controls:
   - iterations, warmup, timeout, p95 budget, server URL, threshold/cooldown
+  - non-terminal probe controls (`--soak-probe-nonterminal-task-result`, `--soak-task-worker-start-delay-ms`)
 - Governance inputs:
   - `--open-wrapper-defects`
   - `--unresolved-transport-regressions`
@@ -77,6 +79,10 @@ Outputs explicit per-criterion booleans plus final `closure_ready`.
    - `python -m eval.mcp_transport_closure --streak-target 5 --max-campaign-runs 5 --transports framed,line --soak-iterations 10 --soak-warmup-requests 2 --soak-timeout-sec 15 --soak-max-p95-ms 5000 --soak-task-result-mode auto --soak-task-result-auto-retry-clients "claude desktop,claude code,cursor,windsurf,continue" --soak-server-url http://127.0.0.1:1`
    - Result: `closure_ready=true` with telemetry rollups populated (`error_code_totals`, mode/profile distributions)
    - Artifact: `eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json`
+8. Non-terminal `tasks/result` probe-criteria evidence:
+   - `python -m eval.mcp_transport_closure --streak-target 5 --max-campaign-runs 5 --transports framed,line --soak-iterations 10 --soak-warmup-requests 2 --soak-timeout-sec 15 --soak-max-p95-ms 5000 --soak-server-url http://127.0.0.1:1 --soak-task-result-mode auto --soak-task-result-auto-retry-clients "claude desktop,claude code,cursor,windsurf,continue" --soak-probe-nonterminal-task-result --soak-task-worker-start-delay-ms 350`
+   - Result: `closure_ready=true`, `nonterminal_task_result_probe_met=true`, probe success ratio `1.0`
+   - Artifact: `eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json`
 
 ## ROI / Blocker Impact
 
