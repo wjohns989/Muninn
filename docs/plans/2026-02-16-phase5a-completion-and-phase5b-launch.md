@@ -56,6 +56,10 @@ Phase 5B.3 progress update:
   - `eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_015409.json`
   - `blocker_closure_ready=true`, `violations=[]`.
 
+Phase 5B.4 progress update:
+- release-boundary replay workflow now defaults release events to strict profile when profile input is omitted;
+- strict profile now runs blocker decision enforcement (`--replay-provenance-policy latest_min --enforce-gate`) and uploads decision artifact + summary in CI.
+
 ## ROI / Ecosystem Impact
 
 1. Separates code-complete internal implementation from external runtime validation risk, reducing scope ambiguity.

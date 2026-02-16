@@ -371,6 +371,7 @@ PR/release workflow wiring is available in:
 - Workflow profile options:
   - `pr_safe` (default): non-strict mode, no required host log.
   - `release_host_captured`: strict mode (`--require-log-path-exists` + `--include-log-sha256`) for host-captured release environments.
+  - release-boundary blocker decision enforcement now runs in `release_host_captured` profile and uploads a decision artifact with summary verdict.
 
 ### Transport Blocker Decision Utility
 

@@ -1,7 +1,7 @@
 # Muninn SOTA+ Implementation Plan
 
 > **Version**: v3.1.1 → v3.3.0 Roadmap
-> **Status**: Active implementation (Phase 5A complete; Phase 5B closure-readiness evidence achieved in-session; release-boundary gate wiring/merge sequencing in progress)
+> **Status**: Active implementation (Phase 5A complete; Phase 5B closure-readiness evidence achieved in-session; release-boundary gate wiring implemented; awaiting CI execution evidence + merge sequencing)
 > **Estimated Effort**: 22–32 developer-days across 3 phases
 > **License Constraint**: Apache-2.0 — all dependencies verified compatible
 > **Backward Compatibility**: 100% — all enhancements are additive & optional
@@ -374,6 +374,10 @@
     - additional strict replay artifacts were captured with host-log existence and SHA-256 provenance,
     - blocker decision gate now passes in enforcement mode under `--replay-provenance-policy latest_min`,
     - tranche note documented in `docs/plans/2026-02-16-phase5b3-strict-replay-evidence-closure-readiness.md`.
+93. Phase 5B.4 release-boundary blocker decision gate wiring implemented:
+    - replay workflow now defaults `release` events to strict `release_host_captured` profile when input profile is omitted,
+    - strict profile now executes enforced blocker decision gate and uploads decision artifact + summary,
+    - tranche note documented in `docs/plans/2026-02-16-phase5b4-release-boundary-blocker-decision-gate-wiring.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -444,6 +448,7 @@
 - Phase 5B.1 blocker decision utility verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py eval/mcp_transport_blocker_decision.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py tests/test_mcp_transport_blocker_decision.py`) + `127 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_013548.json`, `blocker_closure_ready=false`, explicit evidence-gap violations).
 - Phase 5B.2 replay provenance policy hardening verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py eval/mcp_transport_blocker_decision.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py tests/test_mcp_transport_blocker_decision.py`) + blocker decision suite (`4 passed`: `tests/test_mcp_transport_blocker_decision.py`) + expanded targeted suite (`128 passed`: `tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + live decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_014909.json`, `replay_provenance.policy=latest_min`, blocker still open due insufficient strict replay count/provenance).
 - Phase 5B.3 strict replay evidence capture + closure-readiness verification: strict replay artifacts (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015345.json`, `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015355.json`) + enforced decision run (`python -m eval.mcp_transport_blocker_decision --lookback-hours 48 --min-replay-runs 3 --max-replay-signature-count 0 --require-replay-provenance --replay-provenance-policy latest_min --min-closure-runs 1 --require-latest-closure-ready --require-latest-probe-criterion --enforce-gate`) + passing decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_015409.json`, `blocker_closure_ready=true`, no violations).
+- Phase 5B.4 release-boundary blocker-decision wiring verification: workflow update (`.github/workflows/transport-incident-replay-gate.yml`) now includes strict-profile blocker-decision gate execution + decision artifact upload/summary emission for release-boundary runs.
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.

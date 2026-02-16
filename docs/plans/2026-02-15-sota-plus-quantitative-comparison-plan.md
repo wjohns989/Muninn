@@ -122,6 +122,11 @@ Implemented to reduce external host-side 120s transport timeout risk (initially 
    - additional strict replay artifacts captured with host-log SHA-256 provenance,
    - enforced blocker decision gate now passes with no violations under `latest_min`.
    - Implementation detail: `docs/plans/2026-02-16-phase5b3-strict-replay-evidence-closure-readiness.md`.
+22. Release-boundary blocker decision gate wiring now exists:
+   - `.github/workflows/transport-incident-replay-gate.yml` now executes blocker decision enforcement in `release_host_captured` profile,
+   - release events default to strict profile when no manual input profile is provided,
+   - decision artifact + verdict summary now publish alongside replay/diagnostics artifacts.
+   - Implementation detail: `docs/plans/2026-02-16-phase5b4-release-boundary-blocker-decision-gate-wiring.md`.
 
 Current assessment:
 
@@ -172,6 +177,9 @@ Current assessment:
 - Post-strict-replay evidence campaign:
   - strict replay artifacts: `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015345.json`, `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015355.json`
   - enforced decision artifact: `eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_015409.json` (`blocker_closure_ready=true`, violations: none, latest-min provenance evidence `required=3`, `evaluated=3`, `passing=3`)
+- Post-release-boundary gate wiring:
+  - workflow updated: `.github/workflows/transport-incident-replay-gate.yml`
+  - release profile now runs enforced blocker-decision gate and uploads decision artifact for auditable release-boundary checks.
 - Remaining operational risk is primarily external host-runtime intermittency; wrapper-side transport regressions are now diagnosable and gate-enforceable.
 
 ## Decision Rule
@@ -323,4 +331,4 @@ The transport intermittency blocker is closed only when:
 6. Sustain Phase 5B host-captured strict replay evidence cadence so the latest-min closure window remains populated (>=3 strict provenance artifacts in-window).
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
-9. Wire `eval.mcp_transport_blocker_decision --enforce-gate --replay-provenance-policy latest_min` into release-boundary checks after host-captured replay evidence collection.
+9. Validate end-to-end release-profile workflow execution in CI (`release_host_captured`) and capture first CI-generated blocker decision artifact for governance baseline.
