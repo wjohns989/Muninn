@@ -124,6 +124,16 @@ def _run_text_command(command: str) -> tuple[int, str, dict[str, int] | None, li
     return completed.returncode, output, junit_summary, run_tokens
 
 
+def _try_parse_json_output(output: str) -> Any:
+    text = (output or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
 def _extract_count(pattern: str, summary_text: str) -> int:
     match = re.search(pattern, summary_text, flags=re.IGNORECASE)
     if not match:
@@ -221,6 +231,11 @@ def _evaluate_policy(
     fail_on_failing_checks: bool,
     max_skipped_tests: int,
     max_test_warnings: int,
+    transport_diagnostics: dict[str, Any] | None,
+    fail_on_transport_diagnostics: bool,
+    max_transport_closed_incidents: int,
+    max_transport_deadline_exhaustion_incidents: int,
+    max_transport_near_timeout_incidents: int,
 ) -> list[str]:
     violations: list[str] = []
 
@@ -251,6 +266,30 @@ def _evaluate_policy(
                 f"pytest_warnings_exceeds_budget: {pytest_summary['warnings']} > {max_test_warnings}"
             )
 
+    if fail_on_transport_diagnostics and transport_diagnostics:
+        incidents = transport_diagnostics.get("incidents")
+        if isinstance(incidents, dict):
+            transport_closed = int(incidents.get("transport_closed_count", 0) or 0)
+            deadline_exhaustion = int(incidents.get("deadline_exhaustion_count", 0) or 0)
+            near_timeout = int(incidents.get("near_timeout_count", 0) or 0)
+            if transport_closed > max_transport_closed_incidents:
+                violations.append(
+                    "transport_closed_incidents_exceed_budget: "
+                    f"{transport_closed} > {max_transport_closed_incidents}"
+                )
+            if deadline_exhaustion > max_transport_deadline_exhaustion_incidents:
+                violations.append(
+                    "transport_deadline_exhaustion_incidents_exceed_budget: "
+                    f"{deadline_exhaustion} > {max_transport_deadline_exhaustion_incidents}"
+                )
+            if near_timeout > max_transport_near_timeout_incidents:
+                violations.append(
+                    "transport_near_timeout_incidents_exceed_budget: "
+                    f"{near_timeout} > {max_transport_near_timeout_incidents}"
+                )
+        else:
+            violations.append("transport_diagnostics_missing_incident_summary")
+
     return violations
 
 
@@ -278,6 +317,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-skipped-tests", type=int, default=0)
     parser.add_argument("--max-test-warnings", type=int, default=0)
+    parser.add_argument(
+        "--transport-diagnostics-command",
+        default="",
+        help=(
+            "Optional command that emits diagnostics JSON (e.g. "
+            "\"python -m eval.mcp_transport_diagnostics --lookback-hours 24\")."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on-transport-diagnostics",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--max-transport-closed-incidents", type=int, default=0)
+    parser.add_argument("--max-transport-deadline-exhaustion-incidents", type=int, default=0)
+    parser.add_argument("--max-transport-near-timeout-incidents", type=int, default=0)
     parser.add_argument(
         "--output-dir",
         default="eval/reports/hygiene",
@@ -308,6 +363,10 @@ def main(argv: list[str] | None = None) -> int:
     pytest_output = ""
     pytest_summary: dict[str, int] | None = None
     resolved_test_command: list[str] | None = None
+    diagnostics_return_code: int | None = None
+    diagnostics_output = ""
+    diagnostics_payload: dict[str, Any] | None = None
+    resolved_diagnostics_command: list[str] | None = None
     if args.pytest_command and args.pytest_command.strip():
         pytest_return_code, pytest_output, junit_summary, resolved_test_command = _run_text_command(
             args.pytest_command
@@ -319,6 +378,17 @@ def main(argv: list[str] | None = None) -> int:
             pytest_summary["warnings"] = summary_from_output.get("warnings", 0)
             pytest_summary["xfailed"] = summary_from_output.get("xfailed", 0)
             pytest_summary["xpassed"] = summary_from_output.get("xpassed", 0)
+    if args.transport_diagnostics_command and args.transport_diagnostics_command.strip():
+        diagnostics_return_code, diagnostics_output, _, resolved_diagnostics_command = _run_text_command(
+            args.transport_diagnostics_command
+        )
+        parsed_diagnostics = _try_parse_json_output(diagnostics_output)
+        if isinstance(parsed_diagnostics, dict):
+            results = parsed_diagnostics.get("results")
+            if isinstance(results, dict):
+                diagnostics_payload = results
+            else:
+                diagnostics_payload = parsed_diagnostics
 
     violations = _evaluate_policy(
         open_prs=open_prs,
@@ -331,6 +401,11 @@ def main(argv: list[str] | None = None) -> int:
         fail_on_failing_checks=args.fail_on_failing_checks,
         max_skipped_tests=args.max_skipped_tests,
         max_test_warnings=args.max_test_warnings,
+        transport_diagnostics=diagnostics_payload,
+        fail_on_transport_diagnostics=args.fail_on_transport_diagnostics,
+        max_transport_closed_incidents=args.max_transport_closed_incidents,
+        max_transport_deadline_exhaustion_incidents=args.max_transport_deadline_exhaustion_incidents,
+        max_transport_near_timeout_incidents=args.max_transport_near_timeout_incidents,
     )
 
     report = {
@@ -342,6 +417,10 @@ def main(argv: list[str] | None = None) -> int:
             "fail_on_failing_checks": args.fail_on_failing_checks,
             "max_skipped_tests": args.max_skipped_tests,
             "max_test_warnings": args.max_test_warnings,
+            "fail_on_transport_diagnostics": args.fail_on_transport_diagnostics,
+            "max_transport_closed_incidents": args.max_transport_closed_incidents,
+            "max_transport_deadline_exhaustion_incidents": args.max_transport_deadline_exhaustion_incidents,
+            "max_transport_near_timeout_incidents": args.max_transport_near_timeout_incidents,
         },
         "open_prs": open_prs,
         "target_pr": None,
@@ -350,6 +429,12 @@ def main(argv: list[str] | None = None) -> int:
             "resolved_command": resolved_test_command,
             "return_code": pytest_return_code,
             "summary": pytest_summary,
+        },
+        "transport_diagnostics": {
+            "command": args.transport_diagnostics_command,
+            "resolved_command": resolved_diagnostics_command,
+            "return_code": diagnostics_return_code,
+            "summary": diagnostics_payload,
         },
         "passed": len(violations) == 0,
         "violations": violations,

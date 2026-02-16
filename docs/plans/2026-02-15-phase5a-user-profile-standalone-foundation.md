@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction + diagnostics gate/hygiene integration applied)
 
 ## Objective
 
@@ -186,6 +186,25 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - blocker-signal heuristics for wrapper-vs-host attribution.
 - Detailed tranche note: `docs/plans/2026-02-16-phase5a9-transport-diagnostics-bundle.md`.
 
+### 14) Transport Diagnostics Gate + Hygiene Integration (Phase 5A.10)
+
+- `eval.mcp_transport_diagnostics` now supports threshold-based gate enforcement:
+  - `--max-transport-closed-count`
+  - `--max-deadline-exhaustion-count`
+  - `--max-near-timeout-count`
+  - `--enforce-gate`
+- Diagnostics report output now includes explicit gate verdict fields:
+  - `results.gate.passed`
+  - `results.gate.violations`
+- `eval.phase_hygiene` now supports transport diagnostics policy wiring:
+  - `--transport-diagnostics-command`
+  - `--fail-on-transport-diagnostics`
+  - `--max-transport-closed-incidents`
+  - `--max-transport-deadline-exhaustion-incidents`
+  - `--max-transport-near-timeout-incidents`
+- Hygiene artifacts now include diagnostics command/return-code/summary fields for auditable release gating.
+- Detailed tranche note: `docs/plans/2026-02-16-phase5a10-transport-diagnostics-hygiene-gating.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -252,6 +271,10 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `python -m py_compile eval/mcp_transport_diagnostics.py tests/test_mcp_transport_diagnostics.py`
     - `110 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
     - live diagnostics artifact: `eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_001515.json`
+  - transport diagnostics gate + hygiene integration verification:
+    - `python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py`
+    - `119 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+    - live diagnostics gate artifact: `eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_005047.json` (`results.gate.passed=true`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 
