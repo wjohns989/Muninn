@@ -155,6 +155,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--near-timeout-ms", type=float, default=90000.0)
     parser.add_argument("--recent-soak-limit", type=int, default=5)
     parser.add_argument("--recent-closure-limit", type=int, default=3)
+    parser.add_argument("--max-transport-closed-count", type=int, default=0)
+    parser.add_argument("--max-deadline-exhaustion-count", type=int, default=0)
+    parser.add_argument("--max-near-timeout-count", type=int, default=0)
+    parser.add_argument(
+        "--enforce-gate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Return non-zero exit status when diagnostics gate thresholds are exceeded.",
+    )
     parser.add_argument("--output", type=Path, default=None)
     return parser
 
@@ -170,6 +179,12 @@ def run(argv: list[str] | None = None) -> int:
         raise ValueError("--recent-soak-limit must be non-negative")
     if args.recent_closure_limit < 0:
         raise ValueError("--recent-closure-limit must be non-negative")
+    if args.max_transport_closed_count < 0:
+        raise ValueError("--max-transport-closed-count must be non-negative")
+    if args.max_deadline_exhaustion_count < 0:
+        raise ValueError("--max-deadline-exhaustion-count must be non-negative")
+    if args.max_near_timeout_count < 0:
+        raise ValueError("--max-near-timeout-count must be non-negative")
 
     now = _utc_now()
     window_start = now - timedelta(hours=float(args.lookback_hours))
@@ -262,6 +277,10 @@ def run(argv: list[str] | None = None) -> int:
             "near_timeout_ms": args.near_timeout_ms,
             "recent_soak_limit": args.recent_soak_limit,
             "recent_closure_limit": args.recent_closure_limit,
+            "max_transport_closed_count": args.max_transport_closed_count,
+            "max_deadline_exhaustion_count": args.max_deadline_exhaustion_count,
+            "max_near_timeout_count": args.max_near_timeout_count,
+            "enforce_gate": bool(args.enforce_gate),
             "output": str(output_path),
         },
         "results": {
@@ -292,10 +311,31 @@ def run(argv: list[str] | None = None) -> int:
             },
         },
     }
+    gate_violations: list[str] = []
+    if transport_closed_count > args.max_transport_closed_count:
+        gate_violations.append(
+            f"transport_closed_count_exceeds_limit:{transport_closed_count}>{args.max_transport_closed_count}"
+        )
+    if deadline_exhaustion_count > args.max_deadline_exhaustion_count:
+        gate_violations.append(
+            "deadline_exhaustion_count_exceeds_limit:"
+            f"{deadline_exhaustion_count}>{args.max_deadline_exhaustion_count}"
+        )
+    if len(near_timeout_events) > args.max_near_timeout_count:
+        gate_violations.append(
+            f"near_timeout_count_exceeds_limit:{len(near_timeout_events)}>{args.max_near_timeout_count}"
+        )
+    gate_passed = len(gate_violations) == 0
+    report["results"]["gate"] = {
+        "passed": gate_passed,
+        "violations": gate_violations,
+    }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
+    if args.enforce_gate and not gate_passed:
+        return 2
     return 0
 
 

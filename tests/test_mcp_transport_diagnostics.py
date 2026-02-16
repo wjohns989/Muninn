@@ -107,3 +107,41 @@ def test_run_builds_diagnostics_bundle(tmp_path: Path) -> None:
     assert incidents["near_timeout_count"] == 1
     assert parsed["results"]["recent_reports"]["soak"][0]["run_id"] == "soak-1"
     assert parsed["results"]["recent_reports"]["closure"][0]["run_id"] == "closure-1"
+
+
+def test_run_enforce_gate_fails_when_threshold_exceeded(tmp_path: Path) -> None:
+    log_path = tmp_path / "mcp_wrapper.log"
+    report_dir = tmp_path / "reports"
+    output_path = report_dir / "bundle.json"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    now_line = _log_ts_now()
+    log_path.write_text(
+        (
+            f"{now_line} - Muninn - WARNING - "
+            "MCP stdio transport closed while sending JSON-RPC message: Broken pipe"
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = diagnostics.run(
+        [
+            "--log-path",
+            str(log_path),
+            "--report-dir",
+            str(report_dir),
+            "--lookback-hours",
+            "4",
+            "--max-transport-closed-count",
+            "0",
+            "--enforce-gate",
+            "--output",
+            str(output_path),
+        ]
+    )
+    assert exit_code == 2
+    parsed = json.loads(output_path.read_text(encoding="utf-8"))
+    assert parsed["results"]["gate"]["passed"] is False
+    assert any(
+        str(item).startswith("transport_closed_count_exceeds_limit:")
+        for item in parsed["results"]["gate"]["violations"]
+    )
