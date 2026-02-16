@@ -296,6 +296,14 @@ This emits `eval/reports/mcp_transport/mcp_transport_closure_<run_id>.json` with
 - explicit criteria flags (including unresolved regression/defect inputs and `nonterminal_task_result_probe_met`),
 - telemetry rollups for error-code totals, task-result compatibility mode/profile distributions, and non-terminal probe success ratios.
 
+### Wrapper Response-Compaction Knobs
+
+For oversized tool payloads in host runtimes, wrapper-side response shaping can be tuned via:
+- `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS` (default `200`)
+- `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH` (default `6`)
+- `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS` (default `2000`)
+- `MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS` (default `12000`, final emitted text cap)
+
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
 `approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.

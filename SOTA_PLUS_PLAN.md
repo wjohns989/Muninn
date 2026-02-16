@@ -330,6 +330,10 @@
     - wrapper task worker now supports deterministic probe start delay via `MUNINN_MCP_TASK_WORKER_START_DELAY_MS`,
     - closure campaign now evaluates probe-specific criterion (`nonterminal_task_result_probe_met`) and emits probe telemetry success ratios,
     - tranche note documented in `docs/plans/2026-02-15-phase5a7-task-result-nonterminal-probe.md`.
+83. Phase 5A.8 tool-response pre-serialization compaction hardening implemented:
+    - wrapper now compacts oversized tool payloads before JSON serialization using bounded preview controls (items/depth/string chars),
+    - existing final output truncation guardrail remains enforced after compact serialization,
+    - tranche note documented in `docs/plans/2026-02-16-phase5a8-tool-response-pre-serialization-compaction.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -391,6 +395,7 @@
 - Phase 5A.5 `tasks/result` compatibility-mode verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `98 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_221650.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json`).
 - Phase 5A.6 closure telemetry + Huginn branding verification: compile checks (`python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py mcp_wrapper.py muninn_standalone.py scripts/build_standalone.py server.py`) + `111 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`, `tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_224206.json`) + closure mini-campaign telemetry pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json`).
 - Phase 5A.7 non-terminal probe verification: compile checks (`python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py mcp_wrapper.py tests/test_mcp_transport_soak.py tests/test_mcp_transport_closure.py tests/test_mcp_wrapper_protocol.py`) + `105 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`, `tests/test_mcp_wrapper_protocol.py`) + soak probe pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_235614.json`) + closure probe-criteria pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json`, `nonterminal_task_result_probe_met=true`).
+- Phase 5A.8 pre-serialization compaction verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `108 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -444,6 +449,7 @@
 47. **User-context persistence ROI**: first-class editable profile context reduces repeated preference re-teaching and improves retrieval prioritization for environment-/workflow-specific facts.
 48. **Chronology-plus-hierarchy ROI**: propagating file modification and path-structure context into legacy-ingested chunks improves phase-aware recall and disambiguation of similarly worded artifacts across project epochs.
 49. **Standalone adoption ROI**: dedicated launcher and packaging path reduce assistant dependency for ingestion/search workflows and improve operability for non-IDE users.
+50. **Serialization-overhead ROI**: compact-before-serialize response shaping reduces worst-case wrapper CPU/memory spikes from oversized payload formatting and lowers timeout-window pressure in host runtimes.
 50. **Operator-throughput ROI**: auto discover-and-import flow for parser-supported legacy artifacts reduces manual multi-click migration overhead while preserving deterministic selection controls.
 51. **Timeout forensics ROI**: per-tool-call elapsed/byte/budget telemetry in wrapper logs reduces mean time to isolate external host transport-close regressions and supports objective remediation decisions.
 52. **Blocking-path resilience ROI**: host-safe `tasks/result` wait budgeting converts potential host-timeout transport teardown into deterministic, recoverable retry flow and reduces intermittent session loss.

@@ -817,6 +817,37 @@ def test_format_tool_result_text_truncates_large_payload(monkeypatch):
     assert "truncated" in text
 
 
+def test_format_tool_result_text_compacts_large_list_before_serialization(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "4096")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS", "3")
+    text = mcp_wrapper._format_tool_result_text(
+        {"items": [1, 2, 3, 4, 5]},
+        "discover_legacy_sources",
+    )
+
+    assert "_muninn_truncated_items" in text or "truncated 2 items" in text
+
+
+def test_format_tool_result_text_compacts_nested_depth(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "4096")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH", "2")
+    text = mcp_wrapper._format_tool_result_text(
+        {"outer": {"inner": {"leaf": "value"}}},
+        "discover_legacy_sources",
+    )
+
+    assert "max preview depth reached" in text
+
+
+def test_compact_tool_response_payload_truncates_long_string(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS", "16")
+    compacted, changed = mcp_wrapper._compact_tool_response_payload({"blob": "x" * 64})
+
+    assert changed is True
+    assert isinstance(compacted, dict)
+    assert "truncated" in str(compacted["blob"])
+
+
 def test_public_tool_error_message_redacts_connection_details():
     msg = mcp_wrapper._public_tool_error_message(
         mcp_wrapper.requests.ConnectionError("socket timeout to 10.0.0.7")
