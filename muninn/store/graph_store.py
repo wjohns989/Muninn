@@ -7,6 +7,7 @@ Kuzu-based knowledge graph for entity relationships and graph-enhanced retrieval
 import logging
 import time
 import json
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -21,15 +22,20 @@ class GraphStore:
     def __init__(self, db_path):
         self.db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
         self._db: Optional[kuzu.Database] = None
-        self._conn: Optional[kuzu.Connection] = None
+        self._thread_local = threading.local()
+        # Initialize DB immediately to fail fast on lock errors
+        self._get_db()
         self._initialize()
 
-    def _get_conn(self) -> kuzu.Connection:
+    def _get_db(self) -> kuzu.Database:
         if self._db is None:
             self._db = kuzu.Database(str(self.db_path))
-        if self._conn is None:
-            self._conn = kuzu.Connection(self._db)
-        return self._conn
+        return self._db
+
+    def _get_conn(self) -> kuzu.Connection:
+        if not hasattr(self._thread_local, "conn"):
+            self._thread_local.conn = kuzu.Connection(self._get_db())
+        return self._thread_local.conn
 
     def _initialize(self):
         conn = self._get_conn()
@@ -402,5 +408,9 @@ class GraphStore:
             return False
 
     def close(self):
-        self._conn = None
+        # We cannot easily close all thread-local connections, but Kuzu handles cleanup
+        # when the database object is destroyed or process exits.
         self._db = None
+        # Clear current thread's connection if it exists
+        if hasattr(self._thread_local, "conn"):
+            del self._thread_local.conn
