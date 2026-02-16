@@ -8,6 +8,7 @@ Status: Resolved
 Root cause identified as auto-injected project filter in `mcp_wrapper` masking global or cross-project continuity records.
 Fixed by implementing a deterministic fallback: if the default project-scoped search yields no results, `search_memory` retries without the project scope.
 Verified with regression test suite `tests/test_search_fallback.py`.
+Also improved `search_memory` response formatting to return a user-friendly "No relevant memories found" message instead of a raw error object when valid results are empty.
 
 ## Issue Summary
 
