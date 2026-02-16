@@ -2044,3 +2044,56 @@ def test_delete_memory_tool_call_url_encodes_memory_id_and_sets_deadline(monkeyp
     assert isinstance(captured["deadline_epoch"], float)
     assert sent
     assert sent[0]["id"] == "req-delete"
+
+
+def test_search_memory_retries_without_project_filter_when_empty(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setenv("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", "1")
+
+    # We expect two calls:
+    # 1. First call with project filter -> returns empty data
+    # 2. Second call without project filter -> returns data
+    
+    requests_made = []
+
+    class _Resp:
+        def __init__(self, data):
+            self._data = data
+        def json(self):
+            return {"success": True, "data": self._data}
+
+    def _fake_request(method, url, **kwargs):
+        payload = kwargs.get("json")
+        filters = payload.get("filters", {})
+        requests_made.append(filters)
+        
+        # If project is in filters, return empty to simulate "not found in project scope"
+        if "project" in filters:
+            return _Resp([])
+        
+        # If project is NOT in filters (fallback), return a result
+        return _Resp([{"content": "fallback memory", "score": 0.9}])
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-search-fallback",
+        {
+            "name": "search_memory",
+            "arguments": {"query": "test"},
+        },
+    )
+
+    assert len(requests_made) == 2
+    # First request should have auto-injected project
+    assert requests_made[0]["project"] == "muninn"
+    # Second request should NOT have project
+    assert "project" not in requests_made[1]
+
+    # The final result sent to client should contain the fallback memory
+    assert sent
+    result_text = sent[0]["result"]["content"][0]["text"]
+    assert "fallback memory" in result_text
