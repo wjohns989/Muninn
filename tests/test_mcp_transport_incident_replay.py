@@ -119,3 +119,25 @@ def test_run_returns_nonzero_when_diagnostics_fails(tmp_path: Path, monkeypatch)
     parsed = json.loads(output_path.read_text(encoding="utf-8"))
     assert parsed["results"]["triggered"] is True
     assert parsed["results"]["diagnostics"]["return_code"] == 7
+
+
+def test_run_fails_when_log_is_required_but_missing(tmp_path: Path) -> None:
+    report_dir = tmp_path / "reports"
+    output_path = report_dir / "replay.json"
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    exit_code = replay.run(
+        [
+            "--log-path",
+            str(tmp_path / "missing.log"),
+            "--report-dir",
+            str(report_dir),
+            "--require-log-path-exists",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 4
+    parsed = json.loads(output_path.read_text(encoding="utf-8"))
+    assert parsed["results"]["scan"]["log_path_exists"] is False

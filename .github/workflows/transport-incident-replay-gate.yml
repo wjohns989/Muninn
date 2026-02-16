@@ -1,0 +1,154 @@
+name: Transport Incident Replay Gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      log_path:
+        description: "Path to wrapper log on runner"
+        required: false
+        default: "mcp_wrapper.log"
+      lookback_hours:
+        description: "Log scan lookback window"
+        required: false
+        default: "24"
+      require_log_path_exists:
+        description: "Fail if log path is missing"
+        required: false
+        type: boolean
+        default: false
+      always_run_diagnostics:
+        description: "Run diagnostics even with zero signatures"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Transport Incident Replay
+        id: replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p eval/reports/mcp_transport
+
+          LOG_PATH="${{ github.event.inputs.log_path }}"
+          LOOKBACK_HOURS="${{ github.event.inputs.lookback_hours }}"
+          REQUIRE_LOG="${{ github.event.inputs.require_log_path_exists }}"
+          ALWAYS_RUN="${{ github.event.inputs.always_run_diagnostics }}"
+
+          if [ -z "${LOG_PATH}" ]; then
+            LOG_PATH="mcp_wrapper.log"
+          fi
+          if [ -z "${LOOKBACK_HOURS}" ]; then
+            LOOKBACK_HOURS="24"
+          fi
+          if [ -z "${REQUIRE_LOG}" ]; then
+            REQUIRE_LOG="false"
+          fi
+          if [ -z "${ALWAYS_RUN}" ]; then
+            ALWAYS_RUN="false"
+          fi
+
+          REQUIRE_FLAG="--no-require-log-path-exists"
+          if [ "${REQUIRE_LOG}" = "true" ]; then
+            REQUIRE_FLAG="--require-log-path-exists"
+          fi
+
+          ALWAYS_FLAG="--no-always-run-diagnostics"
+          if [ "${ALWAYS_RUN}" = "true" ]; then
+            ALWAYS_FLAG="--always-run-diagnostics"
+          fi
+
+          REPORT_PATH="eval/reports/mcp_transport/mcp_transport_incident_replay_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.json"
+
+          python -m eval.mcp_transport_incident_replay \
+            --log-path "${LOG_PATH}" \
+            --lookback-hours "${LOOKBACK_HOURS}" \
+            --signature-pattern "MCP stdio transport closed while sending JSON-RPC message" \
+            --diagnostics-command "python -m eval.mcp_transport_diagnostics --lookback-hours ${LOOKBACK_HOURS} --max-transport-closed-count 0 --max-deadline-exhaustion-count 0 --max-near-timeout-count 0 --enforce-gate" \
+            ${REQUIRE_FLAG} \
+            ${ALWAYS_FLAG} \
+            --output "${REPORT_PATH}"
+
+          echo "report_path=${REPORT_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Replay Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-transport-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            ${{ steps.replay.outputs.report_path }}
+            eval/reports/mcp_transport/mcp_transport_diagnostics_*.json
+
+      - name: Write Replay Summary
+        if: always()
+        shell: bash
+        env:
+          REPORT_PATH: ${{ steps.replay.outputs.report_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_path = os.environ.get("REPORT_PATH", "")
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          lines = ["## MCP Transport Incident Replay"]
+
+          if not report_path:
+              lines.append("- Report path unavailable (replay step did not set output).")
+          else:
+              path = Path(report_path)
+              if not path.exists():
+                  lines.append(f"- Report not found: `{report_path}`")
+              else:
+                  parsed = json.loads(path.read_text(encoding="utf-8"))
+                  results = parsed.get("results", {}) if isinstance(parsed, dict) else {}
+                  scan = results.get("scan", {}) if isinstance(results.get("scan"), dict) else {}
+                  diagnostics = (
+                      results.get("diagnostics", {})
+                      if isinstance(results.get("diagnostics"), dict)
+                      else {}
+                  )
+                  lines.append(f"- Replay report: `{report_path}`")
+                  lines.append(
+                      f"- Signature count: `{scan.get('total_signature_count', 0)}`"
+                  )
+                  lines.append(f"- Triggered diagnostics: `{results.get('triggered', False)}`")
+                  lines.append(
+                      f"- Diagnostics executed: `{diagnostics.get('executed', False)}`"
+                  )
+                  lines.append(
+                      f"- Diagnostics return code: `{diagnostics.get('return_code', None)}`"
+                  )
+                  artifact = diagnostics.get("artifact_path")
+                  if artifact:
+                      lines.append(f"- Diagnostics artifact: `{artifact}`")
+
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(lines) + "\n")
+          else:
+              print("\n".join(lines))
+          PY
