@@ -378,6 +378,14 @@
     - replay workflow now defaults `release` events to strict `release_host_captured` profile when input profile is omitted,
     - strict profile now executes enforced blocker decision gate and uploads decision artifact + summary,
     - tranche note documented in `docs/plans/2026-02-16-phase5b4-release-boundary-blocker-decision-gate-wiring.md`.
+94. Phase 5B.5 agent continuity + local Muninn memory bootstrap implemented:
+    - deterministic successor-agent runbook added (`docs/AGENT_CONTINUATION_RUNBOOK.md`),
+    - README docs index now links continuation runbook,
+    - local Muninn memory seeded with startup/access/phase-continuation instructions for cross-agent resumption,
+    - tranche note documented in `docs/plans/2026-02-16-phase5b5-agent-continuity-and-muninn-memory-bootstrap.md`.
+95. Phase 5B.6 search-freshness triage opened:
+    - discovered in-session mismatch where newly added continuity memories persisted but were not immediately returned by `search_memory`,
+    - dedicated triage plan recorded in `docs/plans/2026-02-16-phase5b6-muninn-search-freshness-regression-triage.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -449,6 +457,8 @@
 - Phase 5B.2 replay provenance policy hardening verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py eval/mcp_transport_blocker_decision.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py tests/test_mcp_transport_blocker_decision.py`) + blocker decision suite (`4 passed`: `tests/test_mcp_transport_blocker_decision.py`) + expanded targeted suite (`128 passed`: `tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + live decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_014909.json`, `replay_provenance.policy=latest_min`, blocker still open due insufficient strict replay count/provenance).
 - Phase 5B.3 strict replay evidence capture + closure-readiness verification: strict replay artifacts (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015345.json`, `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015355.json`) + enforced decision run (`python -m eval.mcp_transport_blocker_decision --lookback-hours 48 --min-replay-runs 3 --max-replay-signature-count 0 --require-replay-provenance --replay-provenance-policy latest_min --min-closure-runs 1 --require-latest-closure-ready --require-latest-probe-criterion --enforce-gate`) + passing decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_015409.json`, `blocker_closure_ready=true`, no violations).
 - Phase 5B.4 release-boundary blocker-decision wiring verification: workflow update (`.github/workflows/transport-incident-replay-gate.yml`) now includes strict-profile blocker-decision gate execution + decision artifact upload/summary emission for release-boundary runs.
+- Phase 5B.5 continuity bootstrap verification: transport governance subset `20 passed` (`tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`) + continuation runbook and local Muninn continuation memory seeding/retrieval check completed.
+- Phase 5B.6 issue discovery: continuation memories persist and are visible via `get_all_memories`, but immediate `search_memory` retrieval did not surface newly inserted entries in-session; triage plan opened.
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -517,6 +527,8 @@
 59. **Evidence provenance ROI**: release-profile strict replay mode with log digest metadata makes host-log lineage auditable and reduces false-positive closure decisions when log capture is incomplete.
 60. **Scope-governance ROI**: formal phase-boundary closure (internal implementation vs external runtime validation) prevents hidden work drift and keeps blocker decisions evidence-bound.
 61. **Decision-automation ROI**: deterministic blocker-decision utility makes closure readiness and missing evidence auditable, reducing subjective blocker-status churn.
+62. **Session-budget resilience ROI**: explicit continuation runbook plus seeded local Muninn handoff memory reduces restart friction and prevents phase-context loss when switching agents mid-implementation.
+63. **Continuity reliability ROI**: surfacing and tracking search-freshness regression risk early prevents silent handoff failures and prioritizes index-refresh correctness for memory-critical workflows.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
