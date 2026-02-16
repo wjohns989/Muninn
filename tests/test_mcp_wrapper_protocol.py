@@ -330,6 +330,23 @@ def test_bootstrap_dependencies_on_launch_disabled(monkeypatch):
     assert calls["ollama"] == 0
 
 
+def test_get_task_worker_start_delay_ms_defaults_zero(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", raising=False)
+    assert mcp_wrapper._get_task_worker_start_delay_ms() == 0.0
+
+
+def test_get_task_worker_start_delay_ms_invalid_or_negative(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "not-a-number")
+    assert mcp_wrapper._get_task_worker_start_delay_ms() == 0.0
+    monkeypatch.setenv("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "-1")
+    assert mcp_wrapper._get_task_worker_start_delay_ms() == 0.0
+
+
+def test_get_task_worker_start_delay_ms_clamps_large_value(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "999999")
+    assert mcp_wrapper._get_task_worker_start_delay_ms() == 60000.0
+
+
 def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))

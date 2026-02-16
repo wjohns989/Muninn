@@ -261,6 +261,8 @@ python -m eval.mcp_transport_soak \
   --max-p95-ms 2500 \
   --task-result-mode auto \
   --task-result-auto-retry-clients "claude desktop,claude code,cursor,windsurf,continue" \
+  --probe-nonterminal-task-result \
+  --task-worker-start-delay-ms 350 \
   --inject-malformed-frame
 ```
 
@@ -282,6 +284,8 @@ python -m eval.mcp_transport_closure \
   --soak-max-p95-ms 5000 \
   --soak-task-result-mode auto \
   --soak-task-result-auto-retry-clients "claude desktop,claude code,cursor,windsurf,continue" \
+  --soak-probe-nonterminal-task-result \
+  --soak-task-worker-start-delay-ms 350 \
   --soak-server-url http://127.0.0.1:1
 ```
 
@@ -289,8 +293,8 @@ This emits `eval/reports/mcp_transport/mcp_transport_closure_<run_id>.json` with
 - closure-ready verdict,
 - consecutive-pass streak state,
 - p95 compliance ratio in observation window,
-- explicit criteria flags (including unresolved regression/defect inputs),
-- telemetry rollups for error-code totals and task-result compatibility mode/profile distributions.
+- explicit criteria flags (including unresolved regression/defect inputs and `nonterminal_task_result_probe_met`),
+- telemetry rollups for error-code totals, task-result compatibility mode/profile distributions, and non-terminal probe success ratios.
 
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 

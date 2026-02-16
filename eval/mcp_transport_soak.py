@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import subprocess
@@ -25,6 +26,16 @@ def _decode_bytes(data: bytes) -> str:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         return data.decode("cp1252", errors="replace")
+
+
+def _float_env(name: str, default: float) -> float:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default
 
 
 def _percentile(values: list[float], p: float) -> float:
@@ -65,6 +76,20 @@ def _latency_stats(samples_ms: list[float]) -> dict[str, float]:
 def _report_path(report_dir: Path, run_id: str) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     return report_dir / f"mcp_transport_soak_{run_id}.json"
+
+
+def _extract_task_id_from_tools_call_response(response: dict[str, Any]) -> str | None:
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return None
+    task = result.get("task")
+    if not isinstance(task, dict):
+        return None
+    task_id = task.get("taskId")
+    if not isinstance(task_id, str):
+        return None
+    normalized = task_id.strip()
+    return normalized or None
 
 
 def _read_rpc_message(stream: BinaryIO) -> dict[str, Any] | None:
@@ -224,6 +249,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Comma-delimited client profile tokens used by auto mode.",
     )
     parser.add_argument(
+        "--probe-nonterminal-task-result",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Issue a task-backed tools/call and immediate tasks/result(wait=false) probe expecting -32002.",
+    )
+    parser.add_argument(
+        "--task-worker-start-delay-ms",
+        type=float,
+        default=_float_env("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", 0.0),
+        help=(
+            "Inject wrapper task-worker start delay in milliseconds "
+            "(via MUNINN_MCP_TASK_WORKER_START_DELAY_MS)."
+        ),
+    )
+    parser.add_argument(
         "--inject-malformed-frame",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -256,6 +296,12 @@ def run(argv: list[str] | None = None) -> int:
         raise ValueError("--timeout-sec must be positive")
     if args.max_p95_ms <= 0:
         raise ValueError("--max-p95-ms must be positive")
+    if not math.isfinite(args.task_worker_start_delay_ms) or args.task_worker_start_delay_ms < 0:
+        raise ValueError("--task-worker-start-delay-ms must be a non-negative finite number")
+    if args.probe_nonterminal_task_result and args.task_worker_start_delay_ms < 50:
+        raise ValueError(
+            "--task-worker-start-delay-ms must be >= 50 when --probe-nonterminal-task-result is enabled"
+        )
 
     wrapper_path = args.wrapper.resolve()
     if not wrapper_path.exists():
@@ -275,6 +321,7 @@ def run(argv: list[str] | None = None) -> int:
             "MUNINN_MCP_BACKEND_COOLDOWN_SEC": str(args.cooldown_sec),
             "MUNINN_MCP_TASK_RESULT_MODE": args.task_result_mode,
             "MUNINN_MCP_TASK_RESULT_AUTO_RETRY_CLIENTS": args.task_result_auto_retry_clients,
+            "MUNINN_MCP_TASK_WORKER_START_DELAY_MS": str(args.task_worker_start_delay_ms),
         }
     )
 
@@ -285,6 +332,14 @@ def run(argv: list[str] | None = None) -> int:
     timings_ms: list[float] = []
     error_codes: dict[str, int] = {}
     malformed_probe_ok = True
+    task_result_probe: dict[str, Any] = {
+        "enabled": bool(args.probe_nonterminal_task_result),
+        "expected_error_code": "-32002",
+        "requested_wait": False,
+        "task_worker_start_delay_ms": float(args.task_worker_start_delay_ms),
+        "observed_error_code": None,
+        "observed_retryable_nonterminal_error": None,
+    }
 
     try:
         proc = _start_wrapper(wrapper_path, env)
@@ -312,6 +367,57 @@ def run(argv: list[str] | None = None) -> int:
             malformed_probe_ok = "result" in probe and "error" not in probe
             if not malformed_probe_ok:
                 failures.append("malformed_frame_probe_failed")
+
+        if args.probe_nonterminal_task_result:
+            try:
+                task_call_response = session.call(
+                    request_id="probe-task-call",
+                    method="tools/call",
+                    params={
+                        "name": "search_memory",
+                        "arguments": {"query": "transport-probe", "limit": 1},
+                        "task": {},
+                    },
+                    timeout_sec=args.timeout_sec,
+                )
+            except Exception as exc:
+                task_result_probe["failure"] = f"task_call_exception:{exc}"
+                task_result_probe["observed_retryable_nonterminal_error"] = False
+                failures.append(f"task_result_probe_exception:{exc}")
+            else:
+                task_id = _extract_task_id_from_tools_call_response(task_call_response)
+                task_result_probe["task_id"] = task_id
+                if task_id is None:
+                    task_result_probe["failure"] = "missing_task_id"
+                    task_result_probe["observed_retryable_nonterminal_error"] = False
+                    failures.append("task_result_probe_missing_task_id")
+                else:
+                    try:
+                        task_result_response = session.call(
+                            request_id="probe-task-result",
+                            method="tasks/result",
+                            params={"taskId": task_id, "wait": False},
+                            timeout_sec=args.timeout_sec,
+                        )
+                    except Exception as exc:
+                        task_result_probe["failure"] = f"task_result_exception:{exc}"
+                        task_result_probe["observed_retryable_nonterminal_error"] = False
+                        failures.append(f"task_result_probe_exception:{exc}")
+                    else:
+                        if "error" not in task_result_response:
+                            task_result_probe["failure"] = "missing_error"
+                            task_result_probe["observed_retryable_nonterminal_error"] = False
+                            task_result_probe["returned_terminal_result"] = bool(
+                                "result" in task_result_response
+                            )
+                            failures.append("task_result_probe_missing_error")
+                        else:
+                            observed_code = str(task_result_response["error"].get("code", "unknown"))
+                            task_result_probe["observed_error_code"] = observed_code
+                            is_expected = observed_code == task_result_probe["expected_error_code"]
+                            task_result_probe["observed_retryable_nonterminal_error"] = is_expected
+                            if not is_expected:
+                                failures.append(f"task_result_probe_unexpected_error_code:{observed_code}")
 
         total_requests = args.warmup_requests + args.iterations
         for idx in range(total_requests):
@@ -372,11 +478,14 @@ def run(argv: list[str] | None = None) -> int:
                 "max_p95_ms": args.max_p95_ms,
                 "task_result_mode": args.task_result_mode,
                 "task_result_auto_retry_clients": args.task_result_auto_retry_clients,
+                "probe_nonterminal_task_result": bool(args.probe_nonterminal_task_result),
+                "task_worker_start_delay_ms": float(args.task_worker_start_delay_ms),
                 "inject_malformed_frame": bool(args.inject_malformed_frame),
                 "wrapper": str(wrapper_path),
             },
             "results": {
                 "malformed_probe_ok": malformed_probe_ok,
+                "task_result_probe": task_result_probe,
                 "error_codes": error_codes,
                 "latency": stats,
                 "failures": failures,
