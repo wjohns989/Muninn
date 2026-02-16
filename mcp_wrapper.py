@@ -809,6 +809,45 @@ def _get_tool_response_max_chars() -> int:
     return max(256, parsed)
 
 
+def _get_tool_response_preview_max_items() -> int:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS", "200")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS=%r; using default of 200.",
+            raw_value,
+        )
+        return 200
+    return max(1, min(parsed, 10000))
+
+
+def _get_tool_response_preview_max_depth() -> int:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH", "6")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH=%r; using default of 6.",
+            raw_value,
+        )
+        return 6
+    return max(1, min(parsed, 64))
+
+
+def _get_tool_response_preview_max_string_chars() -> int:
+    raw_value = os.environ.get("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS", "2000")
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS=%r; using default of 2000.",
+            raw_value,
+        )
+        return 2000
+    return max(32, min(parsed, 500000))
+
+
 def _get_tool_call_warn_ms() -> float:
     raw_value = os.environ.get("MUNINN_MCP_TOOL_CALL_WARN_MS", "90000")
     try:
@@ -849,6 +888,88 @@ def _safe_json_dumps(payload: Any) -> str:
         return json.dumps(str(payload), indent=2)
 
 
+def _truncate_preview_string(value: str, max_chars: int) -> tuple[str, bool]:
+    if len(value) <= max_chars:
+        return value, False
+    omitted = len(value) - max_chars
+    return f"{value[:max_chars]}... [truncated {omitted} chars]", True
+
+
+def _compact_tool_response_payload(payload: Any) -> tuple[Any, bool]:
+    """
+    Bound payload shape before JSON serialization.
+
+    This avoids pathological full-payload serialization costs when backend
+    responses are very large, while preserving deterministic operator context.
+    """
+    max_items = _get_tool_response_preview_max_items()
+    max_depth = _get_tool_response_preview_max_depth()
+    max_string_chars = _get_tool_response_preview_max_string_chars()
+    marker_key = "_muninn_truncated_items"
+    seen_ids: set[int] = set()
+
+    def _compact(value: Any, depth: int) -> tuple[Any, bool]:
+        if isinstance(value, str):
+            return _truncate_preview_string(value, max_string_chars)
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value, False
+        if isinstance(value, bytes):
+            return f"<bytes:{len(value)}>", True
+        if depth <= 0:
+            return "<truncated: max preview depth reached>", True
+
+        if isinstance(value, dict):
+            obj_id = id(value)
+            if obj_id in seen_ids:
+                return "<truncated: circular reference>", True
+            seen_ids.add(obj_id)
+            try:
+                changed = False
+                compacted: Dict[str, Any] = {}
+                total_items = len(value)
+                for idx, (raw_key, raw_val) in enumerate(value.items()):
+                    if idx >= max_items:
+                        compacted[marker_key] = total_items - max_items
+                        changed = True
+                        break
+                    key, key_changed = _truncate_preview_string(str(raw_key), max_string_chars)
+                    compacted_val, val_changed = _compact(raw_val, depth - 1)
+                    compacted[key] = compacted_val
+                    changed = changed or key_changed or val_changed
+                return compacted, changed
+            finally:
+                seen_ids.discard(obj_id)
+
+        if isinstance(value, (list, tuple, set)):
+            if isinstance(value, set):
+                sequence = list(value)
+            else:
+                sequence = list(value)
+            obj_id = id(sequence if isinstance(value, set) else value)
+            if obj_id in seen_ids:
+                return "<truncated: circular reference>", True
+            seen_ids.add(obj_id)
+            try:
+                changed = False
+                compacted_items: List[Any] = []
+                for idx, item in enumerate(sequence):
+                    if idx >= max_items:
+                        compacted_items.append(f"... [truncated {len(sequence) - max_items} items]")
+                        changed = True
+                        break
+                    compacted_item, item_changed = _compact(item, depth - 1)
+                    compacted_items.append(compacted_item)
+                    changed = changed or item_changed
+                return compacted_items, changed
+            finally:
+                seen_ids.discard(obj_id)
+
+        text_value, changed = _truncate_preview_string(str(value), max_string_chars)
+        return text_value, changed
+
+    return _compact(payload, max_depth)
+
+
 def _truncate_tool_text(text: str, tool_name: str) -> str:
     max_chars = _get_tool_response_max_chars()
     if len(text) <= max_chars:
@@ -868,7 +989,10 @@ def _truncate_tool_text(text: str, tool_name: str) -> str:
 
 
 def _format_tool_result_text(result: Any, tool_name: str) -> str:
-    return _truncate_tool_text(_safe_json_dumps(result), tool_name)
+    compacted_payload, compacted = _compact_tool_response_payload(result)
+    if compacted:
+        logger.warning("Compacting MCP tool response payload for '%s' before serialization.", tool_name)
+    return _truncate_tool_text(_safe_json_dumps(compacted_payload), tool_name)
 
 
 def _public_tool_error_message(exc: Exception) -> str:
