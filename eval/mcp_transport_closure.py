@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -60,6 +61,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="auto-mode retry client profile tokens forwarded to soak runner.",
     )
     parser.add_argument(
+        "--soak-probe-nonterminal-task-result",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable soak non-terminal tasks/result probe that intentionally expects retryable -32002.",
+    )
+    parser.add_argument(
+        "--soak-task-worker-start-delay-ms",
+        type=float,
+        default=350.0,
+        help="Wrapper task-worker start delay (ms) forwarded to soak runner for deterministic non-terminal probe.",
+    )
+    parser.add_argument(
         "--inject-malformed-frame",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -88,6 +101,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _build_soak_command(args: argparse.Namespace, transport: str) -> list[str]:
+    probe_nonterminal = bool(getattr(args, "soak_probe_nonterminal_task_result", False))
+    task_worker_start_delay_ms = float(getattr(args, "soak_task_worker_start_delay_ms", 0.0))
     command = [
         sys.executable,
         "-m",
@@ -112,11 +127,18 @@ def _build_soak_command(args: argparse.Namespace, transport: str) -> list[str]:
         str(args.soak_task_result_mode),
         "--task-result-auto-retry-clients",
         str(args.soak_task_result_auto_retry_clients),
+        "--task-worker-start-delay-ms",
+        str(task_worker_start_delay_ms),
         "--report-dir",
         str(args.report_dir),
         "--wrapper",
         str(args.wrapper),
     ]
+    command.append(
+        "--probe-nonterminal-task-result"
+        if probe_nonterminal
+        else "--no-probe-nonterminal-task-result"
+    )
     command.append("--inject-malformed-frame" if args.inject_malformed_frame else "--no-inject-malformed-frame")
     return command
 
@@ -149,12 +171,20 @@ def _run_soak(command: list[str]) -> dict[str, Any]:
 def _transport_attempt_summary(transport: str, attempt: dict[str, Any], max_p95_ms: float) -> dict[str, Any]:
     report = attempt.get("report") if isinstance(attempt.get("report"), dict) else None
     report_outcome = report.get("outcome") if report else "error"
-    latency = report.get("results", {}).get("latency", {}) if report else {}
+    report_results = report.get("results", {}) if report else {}
+    latency = report_results.get("latency", {})
     p95 = float(latency.get("p95_ms", 0.0) or 0.0)
     p95_compliant = bool(report_outcome == "pass" and p95 <= max_p95_ms)
-    report_failures = report.get("results", {}).get("failures", []) if report else []
+    report_failures = report_results.get("failures", [])
     report_config = report.get("config", {}) if report else {}
-    raw_error_codes = report.get("results", {}).get("error_codes", {}) if report else {}
+    raw_error_codes = report_results.get("error_codes", {})
+    task_result_probe = report_results.get("task_result_probe")
+    task_result_probe_enabled = False
+    task_result_nonterminal_probe_ok: bool | None = None
+    if isinstance(task_result_probe, dict):
+        task_result_probe_enabled = bool(task_result_probe.get("enabled"))
+        if task_result_probe_enabled:
+            task_result_nonterminal_probe_ok = bool(task_result_probe.get("observed_retryable_nonterminal_error"))
     error_codes: dict[str, int] = {}
     if isinstance(raw_error_codes, dict):
         for key, value in raw_error_codes.items():
@@ -171,6 +201,8 @@ def _transport_attempt_summary(transport: str, attempt: dict[str, Any], max_p95_
         failures.append("invalid_soak_stdout_json")
     if attempt.get("returncode", 0) not in (0, 2):
         failures.append(f"soak_process_exit:{attempt.get('returncode')}")
+    if task_result_probe_enabled and task_result_nonterminal_probe_ok is not True:
+        failures.append("task_result_nonterminal_probe_not_observed")
 
     return {
         "transport": transport,
@@ -190,6 +222,8 @@ def _transport_attempt_summary(transport: str, attempt: dict[str, Any], max_p95_
             if isinstance(report_config.get("task_result_auto_retry_clients"), str)
             else None
         ),
+        "task_result_probe_enabled": task_result_probe_enabled,
+        "task_result_nonterminal_probe_ok": task_result_nonterminal_probe_ok,
         "failures": failures,
     }
 
@@ -198,6 +232,8 @@ def _aggregate_campaign_telemetry(campaign_runs: list[dict[str, Any]]) -> dict[s
     error_code_totals: dict[str, int] = {}
     mode_distribution: dict[str, int] = {}
     auto_retry_profile_distribution: dict[str, int] = {}
+    task_result_nonterminal_probe_enabled_count = 0
+    task_result_nonterminal_probe_success_count = 0
 
     for run in campaign_runs:
         transports = run.get("transports")
@@ -225,11 +261,25 @@ def _aggregate_campaign_telemetry(campaign_runs: list[dict[str, Any]]) -> dict[s
                     auto_retry_profile_distribution.get(profiles, 0) + 1
                 )
 
+            if transport.get("task_result_probe_enabled") is True:
+                task_result_nonterminal_probe_enabled_count += 1
+                if transport.get("task_result_nonterminal_probe_ok") is True:
+                    task_result_nonterminal_probe_success_count += 1
+
     retryable_task_result_error_count = error_code_totals.get("-32002", 0)
     total_error_count = sum(error_code_totals.values())
     retryable_task_result_error_ratio = (
         float(retryable_task_result_error_count) / float(total_error_count)
         if total_error_count > 0
+        else 0.0
+    )
+    task_result_nonterminal_probe_failure_count = (
+        task_result_nonterminal_probe_enabled_count - task_result_nonterminal_probe_success_count
+    )
+    task_result_nonterminal_probe_success_ratio = (
+        float(task_result_nonterminal_probe_success_count)
+        / float(task_result_nonterminal_probe_enabled_count)
+        if task_result_nonterminal_probe_enabled_count > 0
         else 0.0
     )
 
@@ -239,6 +289,10 @@ def _aggregate_campaign_telemetry(campaign_runs: list[dict[str, Any]]) -> dict[s
         "task_result_auto_retry_profile_distribution": auto_retry_profile_distribution,
         "retryable_task_result_error_count": retryable_task_result_error_count,
         "retryable_task_result_error_ratio": retryable_task_result_error_ratio,
+        "task_result_nonterminal_probe_enabled_count": task_result_nonterminal_probe_enabled_count,
+        "task_result_nonterminal_probe_success_count": task_result_nonterminal_probe_success_count,
+        "task_result_nonterminal_probe_failure_count": task_result_nonterminal_probe_failure_count,
+        "task_result_nonterminal_probe_success_ratio": task_result_nonterminal_probe_success_ratio,
     }
 
 
@@ -250,6 +304,7 @@ def _evaluate_campaign(
     unresolved_transport_regressions: int,
     open_wrapper_defects: int,
     unclassified_failures: int,
+    require_nonterminal_task_result_probe: bool = False,
 ) -> dict[str, Any]:
     streak = 0
     for run in reversed(campaign_runs):
@@ -268,6 +323,14 @@ def _evaluate_campaign(
     window_pass_count = sum(1 for run in window if run.get("pass"))
     window_p95_count = sum(1 for run in window if run.get("p95_compliant"))
     window_p95_ratio = (window_p95_count / window_size) if window_size else 0.0
+    window_nonterminal_probe_ok = (
+        bool(
+            window_size == streak_target
+            and all(bool(run.get("task_result_nonterminal_probe_ok")) for run in window)
+        )
+        if require_nonterminal_task_result_probe
+        else True
+    )
 
     criteria = {
         "streak_target_met": streak_target_met,
@@ -275,6 +338,7 @@ def _evaluate_campaign(
         "p95_compliance_met": bool(
             window_size == streak_target and window_p95_ratio >= min_p95_compliance_ratio
         ),
+        "nonterminal_task_result_probe_met": window_nonterminal_probe_ok,
         "no_unresolved_transport_regressions": unresolved_transport_regressions <= 0,
         "no_open_wrapper_defects": open_wrapper_defects <= 0,
         "no_unclassified_failures": unclassified_failures <= 0,
@@ -306,6 +370,12 @@ def run(argv: list[str] | None = None) -> int:
         raise ValueError("--soak-timeout-sec must be positive")
     if args.soak_max_p95_ms <= 0:
         raise ValueError("--soak-max-p95-ms must be positive")
+    if not math.isfinite(args.soak_task_worker_start_delay_ms) or args.soak_task_worker_start_delay_ms < 0:
+        raise ValueError("--soak-task-worker-start-delay-ms must be a non-negative finite number")
+    if args.soak_probe_nonterminal_task_result and args.soak_task_worker_start_delay_ms < 50:
+        raise ValueError(
+            "--soak-task-worker-start-delay-ms must be >= 50 when --soak-probe-nonterminal-task-result is enabled"
+        )
     if not 0.0 <= args.min_p95_compliance_ratio <= 1.0:
         raise ValueError("--min-p95-compliance-ratio must be in [0,1]")
     transports = _parse_transports(args.transports)
@@ -330,6 +400,12 @@ def run(argv: list[str] | None = None) -> int:
 
         run_pass = all(item["outcome"] == "pass" for item in per_transport)
         run_p95_compliant = all(item["p95_compliant"] for item in per_transport)
+        probe_enabled_in_run = any(item.get("task_result_probe_enabled") is True for item in per_transport)
+        run_probe_ok = (
+            all(item.get("task_result_nonterminal_probe_ok") is True for item in per_transport)
+            if probe_enabled_in_run
+            else True
+        )
         run_failures: list[str] = []
         for item in per_transport:
             run_failures.extend(f"{item['transport']}:{failure}" for failure in item["failures"])
@@ -338,6 +414,7 @@ def run(argv: list[str] | None = None) -> int:
                 "index": idx,
                 "pass": run_pass,
                 "p95_compliant": run_p95_compliant,
+                "task_result_nonterminal_probe_ok": run_probe_ok,
                 "transports": per_transport,
                 "failures": run_failures,
             }
@@ -349,6 +426,7 @@ def run(argv: list[str] | None = None) -> int:
             unresolved_transport_regressions=args.unresolved_transport_regressions,
             open_wrapper_defects=args.open_wrapper_defects,
             unclassified_failures=args.unclassified_failures,
+            require_nonterminal_task_result_probe=bool(args.soak_probe_nonterminal_task_result),
         )
         if evaluation["criteria"]["streak_target_met"]:
             break
@@ -360,6 +438,7 @@ def run(argv: list[str] | None = None) -> int:
         unresolved_transport_regressions=args.unresolved_transport_regressions,
         open_wrapper_defects=args.open_wrapper_defects,
         unclassified_failures=args.unclassified_failures,
+        require_nonterminal_task_result_probe=bool(args.soak_probe_nonterminal_task_result),
     )
 
     report = {
@@ -380,6 +459,8 @@ def run(argv: list[str] | None = None) -> int:
             "soak_cooldown_sec": args.soak_cooldown_sec,
             "soak_task_result_mode": args.soak_task_result_mode,
             "soak_task_result_auto_retry_clients": args.soak_task_result_auto_retry_clients,
+            "soak_probe_nonterminal_task_result": bool(args.soak_probe_nonterminal_task_result),
+            "soak_task_worker_start_delay_ms": args.soak_task_worker_start_delay_ms,
             "inject_malformed_frame": bool(args.inject_malformed_frame),
             "wrapper": str(args.wrapper),
             "open_wrapper_defects": args.open_wrapper_defects,

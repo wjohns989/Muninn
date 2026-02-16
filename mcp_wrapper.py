@@ -1140,6 +1140,25 @@ def _sanitize_task_ttl_ms(raw_ttl: Any) -> int:
     return min(raw_ttl, _TASKS_MAX_TTL_MS)
 
 
+def _get_task_worker_start_delay_ms() -> float:
+    raw_value = os.environ.get("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "0")
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_MCP_TASK_WORKER_START_DELAY_MS=%r; using default of 0ms.",
+            raw_value,
+        )
+        return 0.0
+    if not math.isfinite(parsed) or parsed < 0:
+        logger.warning(
+            "Non-finite/negative MUNINN_MCP_TASK_WORKER_START_DELAY_MS=%r; using default of 0ms.",
+            raw_value,
+        )
+        return 0.0
+    return min(parsed, 60000.0)
+
+
 def _public_task(task: Dict[str, Any]) -> Dict[str, Any]:
     public = {}
     for key, value in task.items():
@@ -1486,6 +1505,9 @@ def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any
 
     setattr(_thread_local, "rpc_emitter", _capture_rpc)
     try:
+        delay_ms = _get_task_worker_start_delay_ms()
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
         handle_call_tool(task_id, {"name": name, "arguments": arguments})
     except Exception:
         logger.exception("Unhandled exception while executing task-backed tool call")

@@ -23,3 +23,12 @@ def test_report_path_builds_under_dir(tmp_path: Path) -> None:
     output = soak._report_path(tmp_path / "reports", "20260215_070000")
     assert output.parent.exists()
     assert output.name == "mcp_transport_soak_20260215_070000.json"
+
+
+def test_extract_task_id_from_tools_call_response() -> None:
+    response = {"result": {"task": {"taskId": "task-123"}}}
+    assert soak._extract_task_id_from_tools_call_response(response) == "task-123"
+
+
+def test_extract_task_id_from_tools_call_response_missing() -> None:
+    assert soak._extract_task_id_from_tools_call_response({"result": {}}) is None

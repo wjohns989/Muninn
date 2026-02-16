@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion applied)
 
 ## Objective
 
@@ -66,6 +66,11 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - Implementation detail: `docs/plans/2026-02-15-phase5a6-closure-telemetry-huginn-branding.md`.
 11. Browser-first standalone UX is now explicitly branded as Huginn while preserving Muninn naming for MCP-attached assistant mode.
    - Implementation detail: `docs/plans/2026-02-15-phase5a6-closure-telemetry-huginn-branding.md`.
+12. Transport closure campaign now supports deterministic non-terminal `tasks/result` probe criteria:
+   - soak probe controls: `--probe-nonterminal-task-result`, `--task-worker-start-delay-ms`,
+   - closure criterion: `nonterminal_task_result_probe_met`,
+   - closure telemetry adds probe enabled/success/failure counts and success ratio.
+   - Implementation detail: `docs/plans/2026-02-15-phase5a7-task-result-nonterminal-probe.md`.
 
 Current assessment:
 
@@ -83,6 +88,9 @@ Current assessment:
 - Post-telemetry/branding regression evidence:
   - soak pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_224206.json`
   - closure mini-campaign pass with telemetry: `eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json` (`closure_ready=true`, streak `5`, p95 ratio `1.0`)
+- Post-nonterminal-probe criterion evidence:
+  - soak probe pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_235614.json` (observed retryable `-32002`)
+  - closure mini-campaign pass with probe criterion: `eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json` (`closure_ready=true`, `nonterminal_task_result_probe_met=true`, probe success ratio `1.0`)
 - Remaining operational risk is primarily external host-runtime intermittency; closure evidence for wrapper-controlled transport behavior is now available and machine-verifiable.
 
 ## Decision Rule
@@ -233,4 +241,4 @@ The transport intermittency blocker is closed only when:
 5. Add dashboard/report template for leadership-facing release evidence.
 6. Add host-runtime transport diagnostics bundle capture for timeout regressions (wrapper log snapshot + response-size distribution + per-tool p95 wall time).
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
-8. Add optional `tasks/result` non-terminal scenario to soak/closure harness to intentionally exercise `-32002` path and validate compatibility semantics under stress.
+8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
