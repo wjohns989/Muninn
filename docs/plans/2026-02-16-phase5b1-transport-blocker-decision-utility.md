@@ -50,4 +50,6 @@ Replace manual interpretation of replay/closure artifacts with a deterministic b
 
 ## Follow-on
 
-This tranche was extended by Phase 5B.2 (`docs/plans/2026-02-16-phase5b2-replay-provenance-policy-hardening.md`) to add replay provenance evidence-scope policy control (`all` vs `latest_min`) and explicit provenance count reporting.
+This tranche was extended by:
+1. Phase 5B.2 (`docs/plans/2026-02-16-phase5b2-replay-provenance-policy-hardening.md`) to add replay provenance evidence-scope policy control (`all` vs `latest_min`) and explicit provenance count reporting.
+2. Phase 5B.3 (`docs/plans/2026-02-16-phase5b3-strict-replay-evidence-closure-readiness.md`) to execute strict replay evidence capture and pass the enforced blocker decision gate in-window.

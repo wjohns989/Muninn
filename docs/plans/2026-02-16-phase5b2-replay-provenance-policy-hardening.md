@@ -46,3 +46,7 @@ Eliminate false-negative blocker decisions caused by legacy non-strict replay ar
 1. Prevents historical non-strict artifacts from obscuring current strict-evidence readiness in closure decisions.
 2. Makes blocker-closure gaps operationally actionable via explicit required/evaluated/passing evidence counts.
 3. Preserves deterministic strictness: blocker still cannot close until required strict replay evidence count is actually met.
+
+## Follow-on
+
+This policy hardening was validated in Phase 5B.3 (`docs/plans/2026-02-16-phase5b3-strict-replay-evidence-closure-readiness.md`), where strict replay evidence count/provenance criteria were satisfied and the enforced blocker decision gate passed.

@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A internal implementation complete + Phase 5B external host-runtime validation active; replay/diagnostics gate stack + release-profile strict provenance mode + blocker-decision provenance policy hardening applied)
+Status: In progress (Phase 4AF baseline + Phase 5A internal implementation complete + Phase 5B external host-runtime validation active; replay/diagnostics gate stack + release-profile strict provenance mode + blocker-decision provenance policy hardening applied + in-window closure-readiness decision passed)
 
 ## Objective
 
@@ -52,7 +52,7 @@ Phase 5B now tracks external host-runtime closure scope:
 
 ## Interim Mitigation Update (2026-02-15, continuation tranche)
 
-Implemented to reduce external host-side 120s transport timeout risk while blocker remains open:
+Implemented to reduce external host-side 120s transport timeout risk (initially while blocker remained open):
 
 1. MCP tool response payloads are now bounded in wrapper transport (`MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS`), with deterministic truncation metadata.
 2. Search text responses now use the same bounded transport limiter.
@@ -118,6 +118,10 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - closure decisions can now enforce provenance on latest required replay evidence set (`min_replay_runs`) instead of entire historical lookback,
    - decision reports now emit provenance evidence counts (`required/evaluated/passing`) + selected replay paths for auditability.
    - Implementation detail: `docs/plans/2026-02-16-phase5b2-replay-provenance-policy-hardening.md`.
+21. Strict replay evidence campaign now meets closure criteria in-window:
+   - additional strict replay artifacts captured with host-log SHA-256 provenance,
+   - enforced blocker decision gate now passes with no violations under `latest_min`.
+   - Implementation detail: `docs/plans/2026-02-16-phase5b3-strict-replay-evidence-closure-readiness.md`.
 
 Current assessment:
 
@@ -165,6 +169,9 @@ Current assessment:
   - blocker decision suite: `4 passed` (`tests/test_mcp_transport_blocker_decision.py`)
   - expanded targeted suite: `128 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
   - live decision artifact: `eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_014909.json` (`replay_provenance.policy=latest_min`, blocker still open due strict replay evidence shortage: required `3`, evaluated `2`, passing `1`)
+- Post-strict-replay evidence campaign:
+  - strict replay artifacts: `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015345.json`, `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015355.json`
+  - enforced decision artifact: `eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_015409.json` (`blocker_closure_ready=true`, violations: none, latest-min provenance evidence `required=3`, `evaluated=3`, `passing=3`)
 - Remaining operational risk is primarily external host-runtime intermittency; wrapper-side transport regressions are now diagnosable and gate-enforceable.
 
 ## Decision Rule
@@ -313,7 +320,7 @@ The transport intermittency blocker is closed only when:
 3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
-6. Execute Phase 5B host-captured validation for `release_host_captured` replay profile and collect >=3 strict replay artifacts with `log_file.sha256` so `latest_min` provenance/count criteria can pass.
+6. Sustain Phase 5B host-captured strict replay evidence cadence so the latest-min closure window remains populated (>=3 strict provenance artifacts in-window).
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
 9. Wire `eval.mcp_transport_blocker_decision --enforce-gate --replay-provenance-policy latest_min` into release-boundary checks after host-captured replay evidence collection.

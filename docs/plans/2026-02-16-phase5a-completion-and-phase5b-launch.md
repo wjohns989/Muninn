@@ -50,6 +50,12 @@ Phase 5B.2 progress update:
 - latest-min mode now evaluates only latest required replay evidence set and emits explicit provenance counts (`required/evaluated/passing`);
 - latest decision artifact still keeps blocker open with explicit strict-evidence shortage (`required=3`, `evaluated=2`, `passing=1`).
 
+Phase 5B.3 progress update:
+- additional strict replay artifacts captured with host-log SHA-256 provenance (`20260216_015345`, `20260216_015355`);
+- enforced blocker-decision gate now passes in-window under latest-min policy:
+  - `eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_015409.json`
+  - `blocker_closure_ready=true`, `violations=[]`.
+
 ## ROI / Ecosystem Impact
 
 1. Separates code-complete internal implementation from external runtime validation risk, reducing scope ambiguity.
