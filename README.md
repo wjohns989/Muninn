@@ -134,6 +134,12 @@ Reference plans:
 - `docs/MUNINN_COMPREHENSIVE_ROADMAP.md`
 - `docs/plans/`
 
+## Agent Continuation
+
+If a coding session is interrupted and another agent needs to resume implementation, use:
+
+- `docs/AGENT_CONTINUATION_RUNBOOK.md`
+
 ## Data and Security Posture
 
 - Default local data directory: `~/.muninn/data`
@@ -150,6 +156,7 @@ Reference plans:
 
 ## Documentation Index
 
+- `docs/AGENT_CONTINUATION_RUNBOOK.md`
 - `docs/ARCHITECTURE.md`
 - `docs/PLAN_GAP_EVALUATION.md`
 - `docs/WEB_RESEARCH_VIBECODER_SOTA.md`

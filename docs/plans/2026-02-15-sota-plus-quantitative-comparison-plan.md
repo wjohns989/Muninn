@@ -127,11 +127,19 @@ Implemented to reduce external host-side 120s transport timeout risk (initially 
    - release events default to strict profile when no manual input profile is provided,
    - decision artifact + verdict summary now publish alongside replay/diagnostics artifacts.
    - Implementation detail: `docs/plans/2026-02-16-phase5b4-release-boundary-blocker-decision-gate-wiring.md`.
+23. Cross-agent continuation bootstrap now exists:
+   - deterministic resume runbook added (`docs/AGENT_CONTINUATION_RUNBOOK.md`) with startup/access/gate commands,
+   - local Muninn memory seeded with continuation instructions for successor-agent retrieval.
+   - Implementation detail: `docs/plans/2026-02-16-phase5b5-agent-continuity-and-muninn-memory-bootstrap.md`.
+24. Search-freshness triage opened from continuity validation:
+   - newly added continuation memories persisted but were not immediately returned by `search_memory` in-session,
+   - dedicated triage plan now tracks reproducibility + indexing-path diagnosis.
+   - Implementation detail: `docs/plans/2026-02-16-phase5b6-muninn-search-freshness-regression-triage.md`.
 
 Current assessment:
 
 - Risk is reduced for large-response and reflected-error classes.
-- Blocker remains open until closure criteria are met across rolling soak windows in host runtime.
+- In-session closure-readiness criteria currently pass under strict latest-min policy; operational closure now depends on sustained host/CI evidence cadence and release-boundary workflow evidence.
 - Closure campaign automation now has both smoke and full-window deterministic evidence:
   - 5-run smoke: `eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`
   - 30-run closure window: `eval/reports/mcp_transport/mcp_transport_closure_20260215_213858.json` (`closure_ready=true`, streak `30`, p95 ratio `1.0`)
@@ -180,7 +188,10 @@ Current assessment:
 - Post-release-boundary gate wiring:
   - workflow updated: `.github/workflows/transport-incident-replay-gate.yml`
   - release profile now runs enforced blocker-decision gate and uploads decision artifact for auditable release-boundary checks.
-- Remaining operational risk is primarily external host-runtime intermittency; wrapper-side transport regressions are now diagnosable and gate-enforceable.
+- Post-continuity bootstrap validation:
+  - continuation runbook + local memory seeding completed (`docs/AGENT_CONTINUATION_RUNBOOK.md`)
+  - discovered issue: immediate `search_memory` did not surface newly seeded continuation entries though persistence succeeded (`get_all_memories`), triage opened (`docs/plans/2026-02-16-phase5b6-muninn-search-freshness-regression-triage.md`).
+- Remaining operational risk is primarily external host-runtime intermittency in CI/release-host environments; local closure-readiness criteria now pass and release-boundary gate enforcement is wired.
 
 ## Decision Rule
 
@@ -332,3 +343,5 @@ The transport intermittency blocker is closed only when:
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
 9. Validate end-to-end release-profile workflow execution in CI (`release_host_captured`) and capture first CI-generated blocker decision artifact for governance baseline.
+10. Keep continuation runbook + seeded Muninn handoff memory synchronized whenever branch/PR/phase state changes.
+11. Execute Phase 5B.6 search-freshness triage and ship regression test for immediate post-add search visibility.

@@ -60,6 +60,14 @@ Phase 5B.4 progress update:
 - release-boundary replay workflow now defaults release events to strict profile when profile input is omitted;
 - strict profile now runs blocker decision enforcement (`--replay-provenance-policy latest_min --enforce-gate`) and uploads decision artifact + summary in CI.
 
+Phase 5B.5 progress update:
+- successor-agent continuity runbook added (`docs/AGENT_CONTINUATION_RUNBOOK.md`);
+- local Muninn memory seeded with startup/access/phase-continuation instructions to support handoff when session budgets are exhausted.
+
+Phase 5B.6 progress update:
+- continuity validation discovered a search-freshness issue: newly seeded continuation memories persisted (`get_all_memories`) but were not immediately returned by `search_memory` in-session;
+- dedicated triage plan opened: `docs/plans/2026-02-16-phase5b6-muninn-search-freshness-regression-triage.md`.
+
 ## ROI / Ecosystem Impact
 
 1. Separates code-complete internal implementation from external runtime validation risk, reducing scope ambiguity.
