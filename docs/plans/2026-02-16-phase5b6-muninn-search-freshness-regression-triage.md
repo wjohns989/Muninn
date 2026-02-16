@@ -1,7 +1,13 @@
 # Phase 5B.6: Muninn Search Freshness Regression Triage
 
 Date: 2026-02-16  
-Status: Discovered (triage queued)
+Status: Resolved
+
+## Resolution
+
+Root cause identified as auto-injected project filter in `mcp_wrapper` masking global or cross-project continuity records.
+Fixed by implementing a deterministic fallback: if the default project-scoped search yields no results, `search_memory` retries without the project scope.
+Verified with regression test suite `tests/test_search_fallback.py`.
 
 ## Issue Summary
 

@@ -2302,9 +2302,18 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             
         elif name == "search_memory":
             git_info = get_git_info()
-            filters = arguments.get("filters", {})
+            raw_filters = arguments.get("filters")
+            if raw_filters is None:
+                filters: Dict[str, Any] = {}
+            elif isinstance(raw_filters, dict):
+                filters = dict(raw_filters)
+            else:
+                raise ValueError("search_memory 'filters' must be an object when provided")
+
+            auto_project_filter_applied = False
             if "project" not in filters:
                 filters["project"] = git_info["project"]
+                auto_project_filter_applied = True
 
             explain = arguments.get("explain", False)
             payload = {
@@ -2317,6 +2326,27 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any]):
             }
             resp = _request("POST", f"{SERVER_URL}/search", json=payload, timeout=10)
             result = resp.json()
+
+            # Keep project-scoped lookup as the default, but retry without the
+            # auto-injected project filter when that scope yields no hits.
+            if (
+                _env_flag("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", True)
+                and auto_project_filter_applied
+                and result.get("success")
+                and not result.get("data")
+            ):
+                fallback_filters = dict(filters)
+                fallback_filters.pop("project", None)
+                fallback_payload = dict(payload)
+                fallback_payload["filters"] = fallback_filters
+                logger.info(
+                    "search_memory returned no results for project '%s'; retrying without project filter.",
+                    filters.get("project"),
+                )
+                fallback_resp = _request("POST", f"{SERVER_URL}/search", json=fallback_payload, timeout=10)
+                fallback_result = fallback_resp.json()
+                if fallback_result.get("success") and fallback_result.get("data"):
+                    result = fallback_result
 
             formatted_results = []
             if result.get("success") and result.get("data"):
