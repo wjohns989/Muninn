@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A internal implementation complete + Phase 5B external host-runtime validation active; replay/diagnostics gate stack + release-profile strict provenance mode applied)
+Status: In progress (Phase 4AF baseline + Phase 5A internal implementation complete + Phase 5B external host-runtime validation active; replay/diagnostics gate stack + release-profile strict provenance mode + blocker-decision provenance policy hardening applied)
 
 ## Objective
 
@@ -113,6 +113,11 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - `python -m eval.mcp_transport_blocker_decision`,
    - evaluates replay/closure criteria and emits explicit closure-ready verdict + violations.
    - Implementation detail: `docs/plans/2026-02-16-phase5b1-transport-blocker-decision-utility.md`.
+20. Blocker decision provenance-scope hardening now exists:
+   - `python -m eval.mcp_transport_blocker_decision --replay-provenance-policy latest_min`,
+   - closure decisions can now enforce provenance on latest required replay evidence set (`min_replay_runs`) instead of entire historical lookback,
+   - decision reports now emit provenance evidence counts (`required/evaluated/passing`) + selected replay paths for auditability.
+   - Implementation detail: `docs/plans/2026-02-16-phase5b2-replay-provenance-policy-hardening.md`.
 
 Current assessment:
 
@@ -156,6 +161,10 @@ Current assessment:
 - Post-blocker-decision utility verification:
   - expanded targeted suite: `127 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
   - decision artifact: `eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_013548.json` (`blocker_closure_ready=false`, violations: `replay_run_count_meets_min`, `replay_provenance_met`)
+- Post-provenance-policy hardening verification:
+  - blocker decision suite: `4 passed` (`tests/test_mcp_transport_blocker_decision.py`)
+  - expanded targeted suite: `128 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+  - live decision artifact: `eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_014909.json` (`replay_provenance.policy=latest_min`, blocker still open due strict replay evidence shortage: required `3`, evaluated `2`, passing `1`)
 - Remaining operational risk is primarily external host-runtime intermittency; wrapper-side transport regressions are now diagnosable and gate-enforceable.
 
 ## Decision Rule
@@ -304,7 +313,7 @@ The transport intermittency blocker is closed only when:
 3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
-6. Execute Phase 5B host-captured validation for `release_host_captured` replay profile and confirm provenance fields in release-check summaries.
+6. Execute Phase 5B host-captured validation for `release_host_captured` replay profile and collect >=3 strict replay artifacts with `log_file.sha256` so `latest_min` provenance/count criteria can pass.
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
-9. Wire `eval.mcp_transport_blocker_decision --enforce-gate` into release-boundary checks after host-captured replay evidence collection.
+9. Wire `eval.mcp_transport_blocker_decision --enforce-gate --replay-provenance-policy latest_min` into release-boundary checks after host-captured replay evidence collection.
