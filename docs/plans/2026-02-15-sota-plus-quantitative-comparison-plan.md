@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction + diagnostics bundle utility + diagnostics gate/hygiene integration applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction + diagnostics bundle utility + diagnostics gate/hygiene integration + incident replay automation utility applied)
 
 ## Objective
 
@@ -84,6 +84,11 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - diagnostics now emits explicit gate verdicts (`results.gate`) and can fail on threshold violations (`--enforce-gate`),
    - phase hygiene can now consume diagnostics summaries and fail on incident budgets in PR/release checks.
    - Implementation detail: `docs/plans/2026-02-16-phase5a10-transport-diagnostics-hygiene-gating.md`.
+16. Transport incident replay automation utility now exists:
+   - `python -m eval.mcp_transport_incident_replay`,
+   - scans bounded lookback windows for transport signatures and auto-triggers diagnostics capture when incident thresholds are met,
+   - emits deterministic replay artifacts with signature evidence + diagnostics execution metadata.
+   - Implementation detail: `docs/plans/2026-02-16-phase5a11-transport-incident-replay-automation.md`.
 
 Current assessment:
 
@@ -113,6 +118,10 @@ Current assessment:
   - targeted compile + protocol/transport/diagnostics/hygiene tests pass: `119 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
   - gate-mode diagnostics artifact: `eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_005047.json` (`results.gate.passed=true`)
   - hygiene checks now support transport incident budgets for deterministic policy enforcement.
+- Post-incident-replay automation verification:
+  - compile + replay tests pass: `python -m py_compile eval/mcp_transport_incident_replay.py tests/test_mcp_transport_incident_replay.py`
+  - replay suite result: `3 passed` (`tests/test_mcp_transport_incident_replay.py`)
+  - live replay artifact: `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_010414.json` (`results.triggered=false`)
 - Remaining operational risk is primarily external host-runtime intermittency; wrapper-side transport regressions are now diagnosable and gate-enforceable.
 
 ## Decision Rule
@@ -261,6 +270,6 @@ The transport intermittency blocker is closed only when:
 3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
-6. Expand host-runtime incident replay automation so transport-closure signatures trigger diagnostics capture and auto-attach artifacts to PR/release checks (phase-hygiene gating integration is complete; runtime replay triggering remains).
+6. Wire `eval.mcp_transport_incident_replay` into PR/release checks so replay artifacts are automatically attached and surfaced in check outputs.
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
