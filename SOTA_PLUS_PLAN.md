@@ -532,6 +532,9 @@
 62. **Session-budget resilience ROI**: explicit continuation runbook plus seeded local Muninn handoff memory reduces restart friction and prevents phase-context loss when switching agents mid-implementation.
 63. **Continuity reliability ROI**: surfacing and tracking search-freshness regression risk early prevents silent handoff failures and prioritizes index-refresh correctness for memory-critical workflows.
 64. **Search-fallback usability ROI**: auto-retrying zero-result project searches without scope filters preserves "do what I mean" intuition for cross-project memory recall while keeping default scoping strict for noise reduction.
+65. **Hybrid-retrieval latency ROI**: parallelizing retrieval signals (vector/graph/bm25/temporal/goal) via `asyncio` threads reduces total search latency by overlapping IO/compute, especially for cold-start or multi-store queries.
+66. **Ingestion-throughput ROI**: parallelizing file parsing/chunking via `ProcessPoolExecutor` isolates crash risks and saturates CPU for PDF/DOCX heavy workloads.
+67. **Core-responsiveness ROI**: offloading synchronous store operations in `add/update/delete/health` to threads prevents event-loop blocking during heavy I/O, maintaining API liveness under load.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
