@@ -72,7 +72,11 @@ jobs:
           ALWAYS_RUN="${{ github.event.inputs.always_run_diagnostics }}"
 
           if [ -z "${PROFILE}" ]; then
-            PROFILE="pr_safe"
+            if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+              PROFILE="release_host_captured"
+            else
+              PROFILE="pr_safe"
+            fi
           fi
           if [ -z "${LOG_PATH}" ]; then
             LOG_PATH="mcp_wrapper.log"
@@ -94,6 +98,7 @@ jobs:
             REQUIRE_LOG="true"
             INCLUDE_LOG_SHA="true"
           fi
+          echo "gate_profile=${PROFILE}" >> "$GITHUB_OUTPUT"
 
           REQUIRE_FLAG="--no-require-log-path-exists"
           if [ "${REQUIRE_LOG}" = "true" ]; then
@@ -123,6 +128,28 @@ jobs:
             ${ALWAYS_FLAG} \
             --output "${REPORT_PATH}"
 
+      - name: Run Blocker Decision Gate
+        id: decision
+        if: steps.replay.outputs.gate_profile == 'release_host_captured'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DECISION_REPORT_PATH="eval/reports/mcp_transport/mcp_transport_blocker_decision_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.json"
+          echo "decision_report_path=${DECISION_REPORT_PATH}" >> "$GITHUB_OUTPUT"
+
+          python -m eval.mcp_transport_blocker_decision \
+            --report-dir eval/reports/mcp_transport \
+            --lookback-hours 48 \
+            --min-replay-runs 3 \
+            --max-replay-signature-count 0 \
+            --require-replay-provenance \
+            --replay-provenance-policy latest_min \
+            --min-closure-runs 1 \
+            --require-latest-closure-ready \
+            --require-latest-probe-criterion \
+            --enforce-gate \
+            --output "${DECISION_REPORT_PATH}"
+
       - name: Upload Replay Artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -131,6 +158,7 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ steps.replay.outputs.report_path }}
+            ${{ steps.decision.outputs.decision_report_path }}
             eval/reports/mcp_transport/mcp_transport_diagnostics_*.json
 
       - name: Write Replay Summary
@@ -138,6 +166,8 @@ jobs:
         shell: bash
         env:
           REPORT_PATH: ${{ steps.replay.outputs.report_path }}
+          DECISION_REPORT_PATH: ${{ steps.decision.outputs.decision_report_path }}
+          GATE_PROFILE: ${{ steps.replay.outputs.gate_profile }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -147,7 +177,10 @@ jobs:
 
           report_path = os.environ.get("REPORT_PATH", "")
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          decision_report_path = os.environ.get("DECISION_REPORT_PATH", "")
+          gate_profile = os.environ.get("GATE_PROFILE", "")
           lines = ["## MCP Transport Incident Replay"]
+          lines.append(f"- Gate profile: `{gate_profile or 'unknown'}`")
 
           if not report_path:
               lines.append("- Report path unavailable (replay step did not set output).")
@@ -185,6 +218,26 @@ jobs:
                   artifact = diagnostics.get("artifact_path")
                   if artifact:
                       lines.append(f"- Diagnostics artifact: `{artifact}`")
+
+          if gate_profile == "release_host_captured":
+              lines.append("")
+              lines.append("## Transport Blocker Decision")
+              if not decision_report_path:
+                  lines.append("- Decision report path unavailable.")
+              else:
+                  path = Path(decision_report_path)
+                  if not path.exists():
+                      lines.append(f"- Decision report not found: `{decision_report_path}`")
+                  else:
+                      parsed = json.loads(path.read_text(encoding="utf-8"))
+                      results = parsed.get("results", {}) if isinstance(parsed, dict) else {}
+                      lines.append(f"- Decision report: `{decision_report_path}`")
+                      lines.append(
+                          f"- Blocker closure ready: `{results.get('blocker_closure_ready', False)}`"
+                      )
+                      lines.append(
+                          f"- Violations: `{results.get('violations', [])}`"
+                      )
 
           if summary_path:
               with open(summary_path, "a", encoding="utf-8") as handle:
