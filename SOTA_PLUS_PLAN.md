@@ -1,7 +1,7 @@
 # Muninn SOTA+ Implementation Plan
 
 > **Version**: v3.1.1 → v3.3.0 Roadmap
-> **Status**: Active implementation (ROI-first tranche in progress)
+> **Status**: Active implementation (Phase 5A complete; Phase 5B external host-runtime blocker validation in progress)
 > **Estimated Effort**: 22–32 developer-days across 3 phases
 > **License Constraint**: Apache-2.0 — all dependencies verified compatible
 > **Backward Compatibility**: 100% — all enhancements are additive & optional
@@ -358,6 +358,9 @@
     - release-host profile now enforces strict replay posture (`--require-log-path-exists`, `--include-log-sha256`),
     - replay reports/check summaries now include log provenance fields (size, modified timestamp, optional SHA-256 digest),
     - tranche note documented in `docs/plans/2026-02-16-phase5a13-release-profile-replay-strictness-provenance.md`.
+89. Phase 5A implementation scope formally closed; Phase 5B external host-runtime blocker-validation scope opened:
+    - completion decision documented in `docs/plans/2026-02-16-phase5a-completion-and-phase5b-launch.md`,
+    - remaining transport blocker work is now explicitly scoped to host-captured validation and closure-window evidence collection.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -490,6 +493,7 @@
 57. **Incident-capture automation ROI**: signature-triggered replay diagnostics reduce manual triage overhead and make host/runtime timeout evidence generation repeatable in PR/release pipelines.
 58. **Check-surface observability ROI**: replay-gate CI artifact uploads plus summary output make transport-risk posture visible in PR/release checks without opening raw logs manually.
 59. **Evidence provenance ROI**: release-profile strict replay mode with log digest metadata makes host-log lineage auditable and reduces false-positive closure decisions when log capture is incomplete.
+60. **Scope-governance ROI**: formal phase-boundary closure (internal implementation vs external runtime validation) prevents hidden work drift and keeps blocker decisions evidence-bound.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
