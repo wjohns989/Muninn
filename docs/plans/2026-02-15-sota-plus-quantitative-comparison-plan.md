@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction + diagnostics bundle utility + diagnostics gate/hygiene integration + incident replay automation utility + PR/release replay gate wiring + release-profile strict provenance mode applied)
+Status: In progress (Phase 4AF baseline + Phase 5A internal implementation complete + Phase 5B external host-runtime validation active; replay/diagnostics gate stack + release-profile strict provenance mode applied)
 
 ## Objective
 
@@ -39,6 +39,16 @@ Rationale:
 - Reduces wasted benchmark spend while core capabilities are still moving.
 - Avoids noisy intermediate benchmark churn from partially implemented features.
 - Preserves final evidentiary rigor by requiring full matrix + gate-family pass before SOTA+ labeling.
+
+## Phase Boundary Update (2026-02-16)
+
+Phase 5A internal implementation scope is complete (see `docs/plans/2026-02-16-phase5a-completion-and-phase5b-launch.md`).
+
+Phase 5B now tracks external host-runtime closure scope:
+
+1. Validate strict replay profile behavior in host-captured environments.
+2. Collect extended host-runtime closure-window evidence.
+3. Execute evidence-bound transport blocker closure decision.
 
 ## Interim Mitigation Update (2026-02-15, continuation tranche)
 
@@ -287,6 +297,6 @@ The transport intermittency blocker is closed only when:
 3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
-6. Validate `release_host_captured` profile in an environment that provides runner-accessible wrapper logs and confirm provenance fields are populated in release-check summaries.
+6. Execute Phase 5B host-captured validation for `release_host_captured` replay profile and confirm provenance fields in release-check summaries.
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
