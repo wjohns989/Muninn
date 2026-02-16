@@ -4,6 +4,12 @@ Local-first persistent memory infrastructure for coding agents and MCP-compatibl
 
 Muninn provides deterministic, explainable memory retrieval with robust transport behavior and production-grade operational controls. It is designed for long-running development workflows where continuity, auditability, and measurable quality matter.
 
+## Runtime Modes
+
+- **Huginn mode**: browser-first standalone UX for direct ingestion/search/admin workflows.
+- **Muninn mode**: MCP wrapper surface for active assistant/IDE sessions.
+- Both modes use the same underlying Muninn memory engine and data.
+
 ## Why Muninn
 
 - Local-first data residency by default
@@ -31,6 +37,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 3. Operations:
 - Background consolidation daemon
 - Runtime profile policy controls and audit events
+- Editable user profile/global context for skills, paths, environment, and hardware hints
 - Transport hardening for framed/line JSON-RPC and timeout-window guardrails
 - Browser control center for ingestion/search/admin flows
 
@@ -48,10 +55,22 @@ Run the backend service:
 python server.py
 ```
 
-Run the MCP wrapper (stdio bridge):
+Run the standalone browser-first launcher (Huginn mode):
+
+```bash
+python muninn_standalone.py
+```
+
+Run the MCP wrapper (Muninn MCP mode for active assistants):
 
 ```bash
 python mcp_wrapper.py
+```
+
+Build a standalone executable package (PyInstaller):
+
+```bash
+python scripts/build_standalone.py --name HuginnControlCenter --windowed
 ```
 
 ## Minimal MCP Client Configuration
@@ -96,6 +115,8 @@ Primary endpoints:
 - `GET /profiles/model`
 - `POST /profiles/model`
 - `GET /profiles/model/events`
+- `GET /profile/user/get`
+- `POST /profile/user/set`
 
 ## Evaluation and SOTA+ Readiness
 
@@ -113,6 +134,12 @@ Reference plans:
 - `docs/MUNINN_COMPREHENSIVE_ROADMAP.md`
 - `docs/plans/`
 
+## Agent Continuation
+
+If a coding session is interrupted and another agent needs to resume implementation, use:
+
+- `docs/AGENT_CONTINUATION_RUNBOOK.md`
+
 ## Data and Security Posture
 
 - Default local data directory: `~/.muninn/data`
@@ -125,9 +152,11 @@ Reference plans:
 - Code license: Apache License 2.0 (`LICENSE`)
 - Third-party dependency licenses remain with their respective owners
 - No trademark endorsement is claimed by this project
+- Third-party names are used only for factual interoperability references
 
 ## Documentation Index
 
+- `docs/AGENT_CONTINUATION_RUNBOOK.md`
 - `docs/ARCHITECTURE.md`
 - `docs/PLAN_GAP_EVALUATION.md`
 - `docs/WEB_RESEARCH_VIBECODER_SOTA.md`

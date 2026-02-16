@@ -259,10 +259,142 @@ python -m eval.mcp_transport_soak \
   --failure-threshold 1 \
   --cooldown-sec 30 \
   --max-p95-ms 2500 \
+  --task-result-mode auto \
+  --task-result-auto-retry-clients "claude desktop,claude code,cursor,windsurf,continue" \
+  --probe-nonterminal-task-result \
+  --task-worker-start-delay-ms 350 \
   --inject-malformed-frame
 ```
 
 Reports are written to `eval/reports/mcp_transport/`.
+
+### Transport Blocker Closure Campaign
+
+Use this to run deterministic multi-run closure checks against the transport intermittency criteria.
+
+```bash
+python -m eval.mcp_transport_closure \
+  --streak-target 30 \
+  --max-campaign-runs 60 \
+  --transports framed,line \
+  --min-p95-compliance-ratio 0.95 \
+  --soak-iterations 25 \
+  --soak-warmup-requests 2 \
+  --soak-timeout-sec 15 \
+  --soak-max-p95-ms 5000 \
+  --soak-task-result-mode auto \
+  --soak-task-result-auto-retry-clients "claude desktop,claude code,cursor,windsurf,continue" \
+  --soak-probe-nonterminal-task-result \
+  --soak-task-worker-start-delay-ms 350 \
+  --soak-server-url http://127.0.0.1:1
+```
+
+This emits `eval/reports/mcp_transport/mcp_transport_closure_<run_id>.json` with:
+- closure-ready verdict,
+- consecutive-pass streak state,
+- p95 compliance ratio in observation window,
+- explicit criteria flags (including unresolved regression/defect inputs and `nonterminal_task_result_probe_met`),
+- telemetry rollups for error-code totals, task-result compatibility mode/profile distributions, and non-terminal probe success ratios.
+
+### Wrapper Response-Compaction Knobs
+
+For oversized tool payloads in host runtimes, wrapper-side response shaping can be tuned via:
+- `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS` (default `200`)
+- `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH` (default `6`)
+- `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS` (default `2000`)
+- `MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS` (default `12000`, final emitted text cap)
+
+### Transport Diagnostics Bundle
+
+Use this to generate deterministic incident triage artifacts from wrapper logs plus recent soak/closure reports:
+
+```bash
+python -m eval.mcp_transport_diagnostics \
+  --lookback-hours 24 \
+  --recent-soak-limit 5 \
+  --recent-closure-limit 3
+```
+
+This emits `eval/reports/mcp_transport/mcp_transport_diagnostics_<run_id>.json` with:
+- wrapper incident counters (`transport_closed`, deadline exhaustion),
+- per-tool wall-time/response-size summaries,
+- near-timeout event extraction,
+- recent soak/closure artifact rollups,
+- blocker-signal heuristic summary for wrapper-vs-host attribution.
+
+Optional enforcement mode (for CI/release gates):
+
+```bash
+python -m eval.mcp_transport_diagnostics \
+  --lookback-hours 24 \
+  --max-transport-closed-count 0 \
+  --max-deadline-exhaustion-count 0 \
+  --max-near-timeout-count 0 \
+  --enforce-gate
+```
+
+### Phase Hygiene + Transport Diagnostics
+
+You can wire transport diagnostics directly into `eval.phase_hygiene`:
+
+```bash
+python -m eval.phase_hygiene \
+  --require-open-pr \
+  --pytest-command "python -m pytest -q tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py" \
+  --transport-diagnostics-command "python -m eval.mcp_transport_diagnostics --lookback-hours 24 --max-transport-closed-count 0 --max-deadline-exhaustion-count 0 --max-near-timeout-count 0 --enforce-gate" \
+  --fail-on-transport-diagnostics \
+  --max-transport-closed-incidents 0 \
+  --max-transport-deadline-exhaustion-incidents 0 \
+  --max-transport-near-timeout-incidents 0
+```
+
+### Transport Incident Replay Automation
+
+Use this to trigger diagnostics capture only when transport incident signatures are detected in the wrapper log window:
+
+```bash
+python -m eval.mcp_transport_incident_replay \
+  --lookback-hours 24 \
+  --signature-pattern "MCP stdio transport closed while sending JSON-RPC message" \
+  --require-log-path-exists \
+  --diagnostics-command "python -m eval.mcp_transport_diagnostics --lookback-hours 24 --max-transport-closed-count 0 --max-deadline-exhaustion-count 0 --max-near-timeout-count 0 --enforce-gate"
+```
+
+This emits `eval/reports/mcp_transport/mcp_transport_incident_replay_<run_id>.json` with:
+- detected incident signature counts and sampled matching lines,
+- trigger decision (`results.triggered`),
+- diagnostics command execution details + exit code,
+- resolved diagnostics artifact path when available.
+
+PR/release workflow wiring is available in:
+- `.github/workflows/transport-incident-replay-gate.yml`
+- Workflow profile options:
+  - `pr_safe` (default): non-strict mode, no required host log.
+  - `release_host_captured`: strict mode (`--require-log-path-exists` + `--include-log-sha256`) for host-captured release environments.
+  - release-boundary blocker decision enforcement now runs in `release_host_captured` profile and uploads a decision artifact with summary verdict.
+
+### Transport Blocker Decision Utility
+
+Use this to evaluate closure readiness from replay + closure artifacts in a bounded observation window:
+
+```bash
+python -m eval.mcp_transport_blocker_decision \
+  --lookback-hours 48 \
+  --min-replay-runs 3 \
+  --max-replay-signature-count 0 \
+  --require-replay-provenance \
+  --replay-provenance-policy latest_min \
+  --min-closure-runs 1 \
+  --require-latest-closure-ready \
+  --require-latest-probe-criterion \
+  --enforce-gate
+```
+
+This emits `eval/reports/mcp_transport/mcp_transport_blocker_decision_<run_id>.json` with:
+- criteria booleans and violations list,
+- replay provenance policy/evidence counts (`all` or `latest_min`),
+- replay/closure reports analyzed in window,
+- deterministic `blocker_closure_ready` verdict.
 
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 

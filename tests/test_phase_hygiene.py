@@ -34,6 +34,11 @@ def test_evaluate_policy_flags_expected_violations() -> None:
         fail_on_failing_checks=True,
         max_skipped_tests=0,
         max_test_warnings=0,
+        transport_diagnostics=None,
+        fail_on_transport_diagnostics=False,
+        max_transport_closed_incidents=0,
+        max_transport_deadline_exhaustion_incidents=0,
+        max_transport_near_timeout_incidents=0,
     )
 
     assert "open_pr_count_exceeds_limit: 2 > 1" in violations
@@ -63,6 +68,11 @@ def test_evaluate_policy_passes_within_budgets() -> None:
         fail_on_failing_checks=True,
         max_skipped_tests=0,
         max_test_warnings=0,
+        transport_diagnostics=None,
+        fail_on_transport_diagnostics=False,
+        max_transport_closed_incidents=0,
+        max_transport_deadline_exhaustion_incidents=0,
+        max_transport_near_timeout_incidents=0,
     )
 
     assert violations == []
@@ -106,3 +116,32 @@ def test_run_json_command_decodes_bytes_output(monkeypatch) -> None:
     monkeypatch.setattr(hygiene.subprocess, "run", _fake_run)
     result = hygiene._run_json_command(["gh", "api", "dummy"])
     assert result["name"] == "Résumé"
+
+
+def test_evaluate_policy_flags_transport_diagnostics_incidents() -> None:
+    violations = hygiene._evaluate_policy(
+        open_prs=[],
+        target_pr=None,
+        pytest_return_code=0,
+        pytest_summary={"skipped": 0, "warnings": 0},
+        max_open_prs=1,
+        require_open_pr=False,
+        fail_on_changes_requested=True,
+        fail_on_failing_checks=True,
+        max_skipped_tests=0,
+        max_test_warnings=0,
+        transport_diagnostics={
+            "incidents": {
+                "transport_closed_count": 2,
+                "deadline_exhaustion_count": 1,
+                "near_timeout_count": 3,
+            }
+        },
+        fail_on_transport_diagnostics=True,
+        max_transport_closed_incidents=0,
+        max_transport_deadline_exhaustion_incidents=0,
+        max_transport_near_timeout_incidents=1,
+    )
+    assert any(v.startswith("transport_closed_incidents_exceed_budget") for v in violations)
+    assert any(v.startswith("transport_deadline_exhaustion_incidents_exceed_budget") for v in violations)
+    assert any(v.startswith("transport_near_timeout_incidents_exceed_budget") for v in violations)
