@@ -5,8 +5,18 @@ on:
     branches: [main]
   push:
     branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
+      gate_profile:
+        description: "Replay gate profile"
+        required: false
+        type: choice
+        options:
+          - pr_safe
+          - release_host_captured
+        default: pr_safe
       log_path:
         description: "Path to wrapper log on runner"
         required: false
@@ -17,6 +27,11 @@ on:
         default: "24"
       require_log_path_exists:
         description: "Fail if log path is missing"
+        required: false
+        type: boolean
+        default: false
+      include_log_sha256:
+        description: "Include SHA-256 of scanned log in replay report"
         required: false
         type: boolean
         default: false
@@ -49,11 +64,16 @@ jobs:
           set -euo pipefail
           mkdir -p eval/reports/mcp_transport
 
+          PROFILE="${{ github.event.inputs.gate_profile }}"
           LOG_PATH="${{ github.event.inputs.log_path }}"
           LOOKBACK_HOURS="${{ github.event.inputs.lookback_hours }}"
           REQUIRE_LOG="${{ github.event.inputs.require_log_path_exists }}"
+          INCLUDE_LOG_SHA="${{ github.event.inputs.include_log_sha256 }}"
           ALWAYS_RUN="${{ github.event.inputs.always_run_diagnostics }}"
 
+          if [ -z "${PROFILE}" ]; then
+            PROFILE="pr_safe"
+          fi
           if [ -z "${LOG_PATH}" ]; then
             LOG_PATH="mcp_wrapper.log"
           fi
@@ -63,13 +83,26 @@ jobs:
           if [ -z "${REQUIRE_LOG}" ]; then
             REQUIRE_LOG="false"
           fi
+          if [ -z "${INCLUDE_LOG_SHA}" ]; then
+            INCLUDE_LOG_SHA="false"
+          fi
           if [ -z "${ALWAYS_RUN}" ]; then
             ALWAYS_RUN="false"
+          fi
+
+          if [ "${PROFILE}" = "release_host_captured" ]; then
+            REQUIRE_LOG="true"
+            INCLUDE_LOG_SHA="true"
           fi
 
           REQUIRE_FLAG="--no-require-log-path-exists"
           if [ "${REQUIRE_LOG}" = "true" ]; then
             REQUIRE_FLAG="--require-log-path-exists"
+          fi
+
+          INCLUDE_LOG_SHA_FLAG="--no-include-log-sha256"
+          if [ "${INCLUDE_LOG_SHA}" = "true" ]; then
+            INCLUDE_LOG_SHA_FLAG="--include-log-sha256"
           fi
 
           ALWAYS_FLAG="--no-always-run-diagnostics"
@@ -78,6 +111,7 @@ jobs:
           fi
 
           REPORT_PATH="eval/reports/mcp_transport/mcp_transport_incident_replay_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.json"
+          echo "report_path=${REPORT_PATH}" >> "$GITHUB_OUTPUT"
 
           python -m eval.mcp_transport_incident_replay \
             --log-path "${LOG_PATH}" \
@@ -85,10 +119,9 @@ jobs:
             --signature-pattern "MCP stdio transport closed while sending JSON-RPC message" \
             --diagnostics-command "python -m eval.mcp_transport_diagnostics --lookback-hours ${LOOKBACK_HOURS} --max-transport-closed-count 0 --max-deadline-exhaustion-count 0 --max-near-timeout-count 0 --enforce-gate" \
             ${REQUIRE_FLAG} \
+            ${INCLUDE_LOG_SHA_FLAG} \
             ${ALWAYS_FLAG} \
             --output "${REPORT_PATH}"
-
-          echo "report_path=${REPORT_PATH}" >> "$GITHUB_OUTPUT"
 
       - name: Upload Replay Artifacts
         if: always()
@@ -131,11 +164,18 @@ jobs:
                       if isinstance(results.get("diagnostics"), dict)
                       else {}
                   )
+                  log_file = scan.get("log_file", {}) if isinstance(scan.get("log_file"), dict) else {}
                   lines.append(f"- Replay report: `{report_path}`")
                   lines.append(
                       f"- Signature count: `{scan.get('total_signature_count', 0)}`"
                   )
                   lines.append(f"- Triggered diagnostics: `{results.get('triggered', False)}`")
+                  lines.append(f"- Log path exists: `{scan.get('log_path_exists', False)}`")
+                  if log_file:
+                      lines.append(f"- Log size bytes: `{log_file.get('size_bytes', None)}`")
+                      lines.append(f"- Log modified at: `{log_file.get('modified_at', None)}`")
+                      if log_file.get("sha256"):
+                          lines.append(f"- Log sha256: `{log_file.get('sha256')}`")
                   lines.append(
                       f"- Diagnostics executed: `{diagnostics.get('executed', False)}`"
                   )

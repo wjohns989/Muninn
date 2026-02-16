@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shlex
@@ -69,6 +70,17 @@ def _try_parse_json_output(output: str) -> Any:
         return None
 
 
+def _compute_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _report_path(report_dir: Path, run_id: str) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     return report_dir / f"mcp_transport_incident_replay_{run_id}.json"
@@ -95,6 +107,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--min-signature-count", type=int, default=1)
     parser.add_argument("--max-match-samples", type=int, default=20)
+    parser.add_argument(
+        "--include-log-sha256",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include SHA-256 digest of the scanned log file in replay report provenance.",
+    )
     parser.add_argument(
         "--require-log-path-exists",
         action=argparse.BooleanOptionalAction,
@@ -154,7 +172,24 @@ def run(argv: list[str] | None = None) -> int:
     counts_by_pattern: dict[str, int] = {pattern: 0 for pattern, _ in compiled_patterns}
     sample_matches: list[dict[str, Any]] = []
 
-    if args.log_path.exists():
+    log_path_exists = args.log_path.exists()
+    log_file_metadata: dict[str, Any] = {
+        "path": str(args.log_path),
+        "exists": log_path_exists,
+        "size_bytes": None,
+        "modified_at": None,
+        "sha256": None,
+    }
+    if log_path_exists:
+        stat_result = args.log_path.stat()
+        log_file_metadata["size_bytes"] = int(stat_result.st_size)
+        log_file_metadata["modified_at"] = datetime.fromtimestamp(
+            stat_result.st_mtime, tz=timezone.utc
+        ).isoformat()
+        if args.include_log_sha256:
+            log_file_metadata["sha256"] = _compute_sha256(args.log_path)
+
+    if log_path_exists:
         with args.log_path.open("r", encoding="utf-8", errors="replace") as handle:
             for raw_line in handle:
                 line_count += 1
@@ -177,8 +212,6 @@ def run(argv: list[str] | None = None) -> int:
                             }
                         )
                     break
-    log_path_exists = args.log_path.exists()
-
     triggered = bool(args.always_run_diagnostics or total_signature_count >= args.min_signature_count)
 
     diagnostics_return_code: int | None = None
@@ -221,6 +254,7 @@ def run(argv: list[str] | None = None) -> int:
                 "window_start": window_start.isoformat(),
                 "window_end": now.isoformat(),
                 "log_path_exists": log_path_exists,
+                "log_file": log_file_metadata,
                 "total_signature_count": total_signature_count,
                 "counts_by_pattern": counts_by_pattern,
                 "sample_matches": sample_matches,

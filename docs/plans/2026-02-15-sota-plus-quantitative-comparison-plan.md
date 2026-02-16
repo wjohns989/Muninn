@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction + diagnostics bundle utility + diagnostics gate/hygiene integration + incident replay automation utility + PR/release replay gate wiring applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction + diagnostics bundle utility + diagnostics gate/hygiene integration + incident replay automation utility + PR/release replay gate wiring + release-profile strict provenance mode applied)
 
 ## Objective
 
@@ -94,6 +94,11 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - artifact upload + replay summary output are now included in check runs,
    - strict host-log mode support added via replay utility guardrail (`--require-log-path-exists`).
    - Implementation detail: `docs/plans/2026-02-16-phase5a12-pr-release-replay-gate-wiring.md`.
+18. Replay gate now includes release-profile strict provenance mode:
+   - workflow profile options: `pr_safe`, `release_host_captured`,
+   - release profile forces strict log requirements and digest capture (`--require-log-path-exists`, `--include-log-sha256`),
+   - release trigger support added (`release.published`) for boundary checks.
+   - Implementation detail: `docs/plans/2026-02-16-phase5a13-release-profile-replay-strictness-provenance.md`.
 
 Current assessment:
 
@@ -130,6 +135,10 @@ Current assessment:
 - Post-replay-gate wiring verification:
   - expanded targeted suite: `123 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
   - workflow wiring present: `.github/workflows/transport-incident-replay-gate.yml`
+- Post-release-profile strictness verification:
+  - expanded targeted suite: `124 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+  - release-capable strict profile wiring present: `.github/workflows/transport-incident-replay-gate.yml`
+  - strict-profile replay artifact: `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_012731.json` (provenance fields populated, `results.triggered=false`)
 - Remaining operational risk is primarily external host-runtime intermittency; wrapper-side transport regressions are now diagnosable and gate-enforceable.
 
 ## Decision Rule
@@ -278,6 +287,6 @@ The transport intermittency blocker is closed only when:
 3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
-6. Add release-profile variant of replay gate that enables `--require-log-path-exists` in host-captured environments and verifies wrapper-log provenance in summary output.
+6. Validate `release_host_captured` profile in an environment that provides runner-accessible wrapper logs and confirm provenance fields are populated in release-check summaries.
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
