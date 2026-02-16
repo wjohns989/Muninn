@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction applied)
 
 ## Objective
 
@@ -164,6 +164,16 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - enabled count, success count, failure count, success ratio.
 - Detailed tranche note: `docs/plans/2026-02-15-phase5a7-task-result-nonterminal-probe.md`.
 
+### 12) Tool-Response Pre-Serialization Compaction (Phase 5A.8)
+
+- Wrapper now compacts tool result payloads before JSON serialization to prevent large pre-truncation formatting spikes.
+- New operator controls:
+  - `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS`
+  - `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH`
+  - `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS`
+- Existing post-serialization output cap (`MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS`) remains in place as final transport guardrail.
+- Detailed tranche note: `docs/plans/2026-02-16-phase5a8-tool-response-pre-serialization-compaction.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -223,6 +233,9 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `105 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`, `tests/test_mcp_wrapper_protocol.py`)
     - soak probe pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_235614.json` (observed `-32002`)
     - closure probe-criteria pass: `eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json` (`closure_ready=true`, `nonterminal_task_result_probe_met=true`)
+  - tool-response pre-serialization compaction verification:
+    - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
+    - `108 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

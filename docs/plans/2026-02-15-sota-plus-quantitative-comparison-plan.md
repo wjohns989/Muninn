@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction applied)
 
 ## Objective
 
@@ -71,6 +71,11 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - closure criterion: `nonterminal_task_result_probe_met`,
    - closure telemetry adds probe enabled/success/failure counts and success ratio.
    - Implementation detail: `docs/plans/2026-02-15-phase5a7-task-result-nonterminal-probe.md`.
+13. Wrapper tool-response formatting now applies bounded pre-serialization payload compaction:
+   - item/depth/string preview limits are enforced before JSON serialization,
+   - reduces oversized-response formatting spikes that can consume host timeout windows,
+   - final text truncation guardrail remains enforced.
+   - Implementation detail: `docs/plans/2026-02-16-phase5a8-tool-response-pre-serialization-compaction.md`.
 
 Current assessment:
 
@@ -91,6 +96,8 @@ Current assessment:
 - Post-nonterminal-probe criterion evidence:
   - soak probe pass: `eval/reports/mcp_transport/mcp_transport_soak_20260215_235614.json` (observed retryable `-32002`)
   - closure mini-campaign pass with probe criterion: `eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json` (`closure_ready=true`, `nonterminal_task_result_probe_met=true`, probe success ratio `1.0`)
+- Post-pre-serialization-compaction verification:
+  - targeted compile + protocol/transport tests pass: `108 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
 - Remaining operational risk is primarily external host-runtime intermittency; closure evidence for wrapper-controlled transport behavior is now available and machine-verifiable.
 
 ## Decision Rule
