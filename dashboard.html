@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Muninn Control Center</title>
+  <title>Huginn Control Center (Muninn Standalone)</title>
   <style>
     :root {
       --bg: #0b1220;
@@ -295,10 +295,11 @@
   <div class="app">
     <section class="hero">
       <div>
-        <h1>Muninn Browser Control Center</h1>
-        <div class="sub">Legacy assistant reingestion, project-folder contextual ingestion, and memory ops in one place.</div>
+        <h1>Huginn Browser Control Center</h1>
+        <div class="sub">Standalone browser app for the Muninn memory engine. Use Muninn MCP mode when attached to an active assistant.</div>
       </div>
       <div class="status-strip">
+        <div class="chip"><strong>Mode:</strong> <span id="chip-mode">Huginn (browser)</span></div>
         <div class="chip"><strong>Status:</strong> <span id="chip-status">checking</span></div>
         <div class="chip"><strong>Backend:</strong> <span id="chip-backend">-</span></div>
         <div class="chip"><strong>Memories:</strong> <span id="chip-count">-</span></div>
@@ -447,6 +448,7 @@
 
         <div class="btn-row">
           <button id="btn-discover-legacy">Discover Sources</button>
+          <button id="btn-auto-discover-import" class="good">Auto Discover + Import Supported</button>
           <button id="btn-select-supported" class="secondary">Select Parser-Supported</button>
           <button id="btn-clear-selection" class="secondary">Clear Selection</button>
           <button id="btn-import-legacy" class="good">Import Selected</button>
@@ -462,11 +464,13 @@
                 <th>Confidence</th>
                 <th>Type</th>
                 <th>Size</th>
+                <th>Modified (UTC)</th>
+                <th>Relative</th>
                 <th>Path</th>
               </tr>
             </thead>
             <tbody id="legacy-table-body">
-              <tr><td colspan="7">No discovery run yet.</td></tr>
+              <tr><td colspan="9">No discovery run yet.</td></tr>
             </tbody>
           </table>
         </div>
@@ -509,6 +513,23 @@
       </div>
 
       <div class="panel col-12">
+        <h2>User Profile and Global Context</h2>
+        <p class="desc">Editable user context that helps Huginn/Muninn prioritize relevant memories: skills, tool paths, environments, hardware, and workflow preferences.</p>
+        <div class="row">
+          <div class="field-12">
+            <label for="user-profile-json">Profile JSON</label>
+            <textarea id="user-profile-json" placeholder='{"preferences":{"coding_style":"roi-first"},"skills":["python","typescript"],"paths":{"workspace":"C:\\Users\\user\\muninn_mcp"},"hardware":{"gpu_vram_gb":16}}'></textarea>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="btn-load-user-profile" class="secondary">Load Profile</button>
+          <button id="btn-save-user-profile-merge">Save Profile (Merge)</button>
+          <button id="btn-save-user-profile-replace" class="warn">Replace Profile</button>
+        </div>
+        <div class="result" id="user-profile-result">User profile not loaded yet.</div>
+      </div>
+
+      <div class="panel col-12">
         <h2>Activity Log</h2>
         <p class="desc">Live browser action and API result trace.</p>
         <div class="log" id="activity-log"></div>
@@ -545,6 +566,7 @@
       "legacy-namespace": { type: "value", default: "global" },
       "legacy-chronological": { type: "value", default: "none" },
       "legacy-recursive": { type: "checked", default: true },
+      "user-profile-json": { type: "value", default: "" },
     };
 
     function nowStamp() {
@@ -579,26 +601,59 @@
       }
     }
 
+    function summarizeServerDetail(detail, statusCode = null) {
+      const fallback = statusCode
+        ? `Request failed (HTTP ${statusCode}). Check server logs for details.`
+        : "Request failed. Check server logs for details.";
+      if (detail === null || detail === undefined) return fallback;
+
+      const raw = typeof detail === "string" ? detail : JSON.stringify(detail);
+      if (!raw || raw === "{}") return fallback;
+
+      const lowered = raw.toLowerCase();
+      const sensitiveMarkers = [
+        "traceback",
+        "exception",
+        "stack",
+        "sql",
+        "http://",
+        "https://",
+        "file \"",
+      ];
+      if (sensitiveMarkers.some((marker) => lowered.includes(marker))) {
+        return fallback;
+      }
+      return raw.length > 220 ? `${raw.slice(0, 220)}...` : raw;
+    }
+
     async function apiRequest(path, payload = null, method = "POST") {
       const opts = { method, headers: { "Content-Type": "application/json" } };
       if (payload !== null) {
         opts.body = JSON.stringify(payload);
       }
       const response = await fetch(`${API_BASE}${path}`, opts);
-      const data = await response.json();
+      let data = {};
+      try {
+        data = await response.json();
+      } catch (_err) {
+        data = {};
+      }
       if (!response.ok) {
-        const detail = data?.detail || JSON.stringify(data);
-        throw new Error(detail);
+        throw new Error(summarizeServerDetail(data?.detail ?? data, response.status));
       }
       if (data.success === false) {
-        throw new Error(data.detail || JSON.stringify(data));
+        throw new Error(summarizeServerDetail(data?.detail ?? data, response.status));
       }
       return data.data ?? data;
     }
 
     function setResult(elId, payload) {
       const el = document.getElementById(elId);
-      el.innerHTML = `<pre>${JSON.stringify(payload, null, 2)}</pre>`;
+      if (!el) return;
+      el.replaceChildren();
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(payload, null, 2);
+      el.appendChild(pre);
     }
 
     function getModelProfile() {
@@ -784,34 +839,68 @@
 
     function renderLegacyTable() {
       const tbody = document.getElementById("legacy-table-body");
+      tbody.replaceChildren();
       if (!legacyCatalog.length) {
-        tbody.innerHTML = "<tr><td colspan=\"7\">No sources discovered.</td></tr>";
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 9;
+        cell.textContent = "No sources discovered.";
+        row.appendChild(cell);
+        tbody.appendChild(row);
         return;
       }
 
-      tbody.innerHTML = legacyCatalog
-        .map((source) => {
-          const safePath = source.path
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;");
-          const checked = source.parser_supported ? "checked" : "";
-          const supportBadge = source.parser_supported
-            ? "<span class=\"badge\">supported</span>"
-            : "<span class=\"badge off\">unsupported</span>";
-          return `
-            <tr>
-              <td><input type="checkbox" data-source-id="${source.source_id}" ${checked}></td>
-              <td class="code">${source.provider}</td>
-              <td>${supportBadge}</td>
-              <td>${source.confidence}</td>
-              <td>${source.source_type}</td>
-              <td>${source.size_bytes}</td>
-              <td class="code">${safePath}</td>
-            </tr>
-          `;
-        })
-        .join("");
+      legacyCatalog.forEach((source) => {
+        const row = document.createElement("tr");
+
+        const selectionCell = document.createElement("td");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.dataset.sourceId = String(source.source_id || "");
+        checkbox.checked = Boolean(source.parser_supported);
+        selectionCell.appendChild(checkbox);
+        row.appendChild(selectionCell);
+
+        const providerCell = document.createElement("td");
+        providerCell.className = "code";
+        providerCell.textContent = String(source.provider || "-");
+        row.appendChild(providerCell);
+
+        const supportCell = document.createElement("td");
+        const supportBadge = document.createElement("span");
+        supportBadge.className = source.parser_supported ? "badge" : "badge off";
+        supportBadge.textContent = source.parser_supported ? "supported" : "unsupported";
+        supportCell.appendChild(supportBadge);
+        row.appendChild(supportCell);
+
+        const confidenceCell = document.createElement("td");
+        confidenceCell.textContent = String(source.confidence ?? "-");
+        row.appendChild(confidenceCell);
+
+        const typeCell = document.createElement("td");
+        typeCell.textContent = String(source.source_type || "-");
+        row.appendChild(typeCell);
+
+        const sizeCell = document.createElement("td");
+        sizeCell.textContent = String(source.size_bytes ?? "-");
+        row.appendChild(sizeCell);
+
+        const modifiedCell = document.createElement("td");
+        modifiedCell.textContent = String(source.modified_at_iso || "-");
+        row.appendChild(modifiedCell);
+
+        const relativePathCell = document.createElement("td");
+        relativePathCell.className = "code";
+        relativePathCell.textContent = String(source.relative_path_hint || "-");
+        row.appendChild(relativePathCell);
+
+        const fullPathCell = document.createElement("td");
+        fullPathCell.className = "code";
+        fullPathCell.textContent = String(source.path || "-");
+        row.appendChild(fullPathCell);
+
+        tbody.appendChild(row);
+      });
     }
 
     async function discoverLegacySources() {
@@ -841,9 +930,11 @@
           provider_counts: result.provider_counts,
         });
         logLine(`Legacy discovery completed. Found ${result.total_discovered || 0} sources.`);
+        return result;
       } catch (err) {
         setResult("legacy-result", { error: err.message });
         logLine(`Legacy discovery failed: ${err.message}`, "err");
+        return null;
       }
     }
 
@@ -868,7 +959,7 @@
       const selectedSourceIds = selectedLegacySourceIds();
       if (!selectedSourceIds.length) {
         setResult("legacy-result", { warning: "Select at least one discovered source." });
-        return;
+        return null;
       }
 
       const roots = parseLines(document.getElementById("legacy-roots").value);
@@ -901,9 +992,71 @@
         setResult("legacy-result", result);
         logLine(`Legacy import completed. Added ${result.added_memories || 0} memories.`);
         refreshHealth();
+        return result;
       } catch (err) {
         setResult("legacy-result", { error: err.message });
         logLine(`Legacy import failed: ${err.message}`, "err");
+        return null;
+      }
+    }
+
+    async function autoDiscoverAndImportLegacy() {
+      const priorOrder = document.getElementById("legacy-chronological").value;
+      if (priorOrder === "none") {
+        document.getElementById("legacy-chronological").value = "oldest_first";
+        logLine("Auto mode set legacy chronological order to oldest_first for development-phase continuity.");
+      }
+      const discovery = await discoverLegacySources();
+      if (!discovery) return;
+      selectParserSupported();
+      const selected = selectedLegacySourceIds();
+      if (!selected.length) {
+        setResult("legacy-result", { warning: "No parser-supported discovered sources available for import." });
+        logLine("Auto import skipped because no parser-supported sources were discovered.", "warn");
+        return;
+      }
+      await importSelectedLegacy();
+    }
+
+    async function loadUserProfile() {
+      try {
+        const result = await apiRequest("/profile/user/get", null, "GET");
+        const profile = result.profile || {};
+        document.getElementById("user-profile-json").value = JSON.stringify(profile, null, 2);
+        setResult("user-profile-result", result);
+        logLine(`Loaded user profile (${result.event}).`);
+      } catch (err) {
+        setResult("user-profile-result", { error: err.message });
+        logLine(`Load user profile failed: ${err.message}`, "err");
+      }
+    }
+
+    async function saveUserProfile(merge) {
+      let profile;
+      try {
+        profile = parseJsonOrEmpty(document.getElementById("user-profile-json").value);
+      } catch (err) {
+        const message = "Invalid JSON format in user profile.";
+        setResult("user-profile-result", { error: message });
+        logLine(message, "err");
+        return;
+      }
+
+      const payload = {
+        user_id: "global_user",
+        profile,
+        merge: Boolean(merge),
+        source: "browser_ui_user_profile",
+      };
+
+      try {
+        const result = await apiRequest("/profile/user/set", payload);
+        document.getElementById("user-profile-json").value = JSON.stringify(result.profile || {}, null, 2);
+        setResult("user-profile-result", result);
+        logLine(`Saved user profile with merge=${Boolean(merge)}.`);
+      } catch (err) {
+        setResult("user-profile-result", { error: err.message });
+        logLine(`Save user profile failed: ${err.message}`, "err");
       }
     }
 
@@ -937,9 +1090,13 @@
     document.getElementById("btn-clear-search").addEventListener("click", clearSearchResult);
     document.getElementById("btn-ingest-project").addEventListener("click", ingestProjectPaths);
     document.getElementById("btn-discover-legacy").addEventListener("click", discoverLegacySources);
+    document.getElementById("btn-auto-discover-import").addEventListener("click", autoDiscoverAndImportLegacy);
     document.getElementById("btn-select-supported").addEventListener("click", selectParserSupported);
     document.getElementById("btn-clear-selection").addEventListener("click", clearLegacySelection);
     document.getElementById("btn-import-legacy").addEventListener("click", importSelectedLegacy);
+    document.getElementById("btn-load-user-profile").addEventListener("click", loadUserProfile);
+    document.getElementById("btn-save-user-profile-merge").addEventListener("click", () => saveUserProfile(true));
+    document.getElementById("btn-save-user-profile-replace").addEventListener("click", () => saveUserProfile(false));
     document.getElementById("btn-save-preferences").addEventListener("click", () => {
       savePreferences(true);
       logLine("Preferences saved.");
@@ -956,6 +1113,7 @@
     loadPreferences();
     bindPreferenceAutoSave();
     refreshHealth();
+    loadUserProfile();
     logLine("Browser control center loaded.");
   </script>
 </body>

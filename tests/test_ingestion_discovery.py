@@ -31,6 +31,13 @@ def test_custom_root_discovery_includes_sqlite_artifacts(tmp_path: Path):
     assert str(jsonl_path.resolve()) in custom_paths
     assert str(sqlite_path.resolve()) in custom_paths
 
+    sample = next(item for item in discovered if str(item["path"]) == str(jsonl_path.resolve()))
+    assert sample["parent_path"] == str(jsonl_path.resolve().parent)
+    assert sample["path_depth"] >= 1
+    assert "relative_path_hint" in sample
+    assert "modified_at_epoch" in sample
+    assert "modified_at_iso" in sample
+
 
 def test_iter_paths_handles_repeated_base_segments(tmp_path: Path):
     base = tmp_path / "same"

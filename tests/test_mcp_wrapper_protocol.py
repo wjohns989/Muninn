@@ -1,5 +1,6 @@
 import copy
 import io
+import json
 import threading
 import time
 
@@ -35,6 +36,7 @@ def reset_session_state():
         "initialized": False,
         "protocol_version": mcp_wrapper.SUPPORTED_PROTOCOL_VERSIONS[0],
         "client_capabilities": {},
+        "client_info": {},
         "client_elicitation_modes": tuple(),
         "tasks": {},
     })
@@ -215,6 +217,23 @@ def test_initialize_advertises_tasks_capability(monkeypatch):
     assert capabilities["tasks"]["notifications"]["status"] == {}
 
 
+def test_initialize_stores_client_info(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "_collect_startup_warnings", lambda: [])
+
+    mcp_wrapper.handle_initialize(
+        "req-client-info",
+        {
+            "protocolVersion": "2025-11-25",
+            "clientInfo": {"name": "Claude Desktop", "version": "1.0.0"},
+        },
+    )
+
+    assert len(sent) == 1
+    assert mcp_wrapper._SESSION_STATE["client_info"]["name"] == "Claude Desktop"
+
+
 def test_initialize_elicitation_empty_object_defaults_to_form_mode(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -309,6 +328,23 @@ def test_bootstrap_dependencies_on_launch_disabled(monkeypatch):
     mcp_wrapper._bootstrap_dependencies_on_launch()
     assert calls["server"] == 0
     assert calls["ollama"] == 0
+
+
+def test_get_task_worker_start_delay_ms_defaults_zero(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", raising=False)
+    assert mcp_wrapper._get_task_worker_start_delay_ms() == 0.0
+
+
+def test_get_task_worker_start_delay_ms_invalid_or_negative(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "not-a-number")
+    assert mcp_wrapper._get_task_worker_start_delay_ms() == 0.0
+    monkeypatch.setenv("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "-1")
+    assert mcp_wrapper._get_task_worker_start_delay_ms() == 0.0
+
+
+def test_get_task_worker_start_delay_ms_clamps_large_value(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "999999")
+    assert mcp_wrapper._get_task_worker_start_delay_ms() == 60000.0
 
 
 def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
@@ -542,6 +578,49 @@ def test_send_json_rpc_marks_transport_closed_on_broken_pipe(monkeypatch):
     assert len(sent) == writes_before
 
 
+def test_record_tool_call_response_metrics_updates_thread_local_state():
+    metrics = {
+        "msg_id": "req-metrics",
+        "response_count": 0,
+        "response_bytes_total": 0,
+        "response_bytes_max": 0,
+        "saw_error": False,
+    }
+    setattr(mcp_wrapper._thread_local, "tool_call_metrics", metrics)
+    try:
+        success_msg = {"jsonrpc": "2.0", "id": "req-metrics", "result": {"ok": True}}
+        serialized_success = json.dumps(success_msg)
+        mcp_wrapper._record_tool_call_response_metrics(success_msg, serialized_success)
+        assert metrics["response_count"] == 1
+        assert metrics["response_bytes_total"] >= len(serialized_success.encode("utf-8")) + 1
+        assert metrics["response_bytes_max"] >= len(serialized_success.encode("utf-8")) + 1
+        assert metrics["saw_error"] is False
+
+        error_msg = {"jsonrpc": "2.0", "id": "req-metrics", "error": {"code": -32603, "message": "boom"}}
+        serialized_error = json.dumps(error_msg)
+        mcp_wrapper._record_tool_call_response_metrics(error_msg, serialized_error)
+        assert metrics["response_count"] == 2
+        assert metrics["saw_error"] is True
+
+        unmatched_msg = {"jsonrpc": "2.0", "id": "other-id", "result": {"ok": True}}
+        before = dict(metrics)
+        mcp_wrapper._record_tool_call_response_metrics(unmatched_msg, json.dumps(unmatched_msg))
+        assert metrics == before
+    finally:
+        setattr(mcp_wrapper._thread_local, "tool_call_metrics", None)
+
+
+def test_get_tool_call_warn_ms_defaults_and_invalid(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TOOL_CALL_WARN_MS", raising=False)
+    assert mcp_wrapper._get_tool_call_warn_ms() == 90000.0
+
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_WARN_MS", "not-a-number")
+    assert mcp_wrapper._get_tool_call_warn_ms() == 90000.0
+
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_WARN_MS", "-1")
+    assert mcp_wrapper._get_tool_call_warn_ms() == 90000.0
+
+
 def test_submit_background_dispatch_uses_executor(monkeypatch):
     calls = []
 
@@ -694,6 +773,117 @@ def test_get_tool_call_deadline_seconds_allows_explicit_overrun_when_enabled(mon
     monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN", "1")
 
     assert mcp_wrapper._get_tool_call_deadline_seconds() == 119.0
+
+
+def test_get_task_result_max_wait_seconds_defaults_to_host_safe_budget(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC", raising=False)
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "10")
+
+    assert mcp_wrapper._get_task_result_max_wait_seconds() == 110.0
+
+
+def test_get_task_result_max_wait_seconds_can_disable_budget(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC", "0")
+    assert mcp_wrapper._get_task_result_max_wait_seconds() is None
+
+
+def test_get_task_result_max_wait_seconds_invalid_value_falls_back(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC", "invalid")
+    monkeypatch.setenv("MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC", "90")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC", "20")
+
+    assert mcp_wrapper._get_task_result_max_wait_seconds() == 70.0
+
+
+def test_get_task_result_mode_defaults_to_auto(monkeypatch):
+    monkeypatch.delenv("MUNINN_MCP_TASK_RESULT_MODE", raising=False)
+    assert mcp_wrapper._get_task_result_mode() == "auto"
+
+
+def test_get_task_result_mode_invalid_value_falls_back(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MODE", "invalid-mode")
+    assert mcp_wrapper._get_task_result_mode() == "auto"
+
+
+def test_format_tool_result_text_truncates_large_payload(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "512")
+    text = mcp_wrapper._format_tool_result_text(
+        {"success": True, "data": {"blob": "x" * 1000}},
+        "discover_legacy_sources",
+    )
+
+    assert len(text) <= 512
+    assert "truncated" in text
+
+
+def test_format_tool_result_text_compacts_large_list_before_serialization(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "4096")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_ITEMS", "3")
+    text = mcp_wrapper._format_tool_result_text(
+        {"items": [1, 2, 3, 4, 5]},
+        "discover_legacy_sources",
+    )
+
+    assert "_muninn_truncated_items" in text or "truncated 2 items" in text
+
+
+def test_format_tool_result_text_compacts_nested_depth(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "4096")
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_DEPTH", "2")
+    text = mcp_wrapper._format_tool_result_text(
+        {"outer": {"inner": {"leaf": "value"}}},
+        "discover_legacy_sources",
+    )
+
+    assert "max preview depth reached" in text
+
+
+def test_compact_tool_response_payload_truncates_long_string(monkeypatch):
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS", "16")
+    compacted, changed = mcp_wrapper._compact_tool_response_payload({"blob": "x" * 64})
+
+    assert changed is True
+    assert isinstance(compacted, dict)
+    assert "truncated" in str(compacted["blob"])
+
+
+def test_public_tool_error_message_redacts_connection_details():
+    msg = mcp_wrapper._public_tool_error_message(
+        mcp_wrapper.requests.ConnectionError("socket timeout to 10.0.0.7")
+    )
+    assert "10.0.0.7" not in msg
+    assert "Unable to reach backend service" in msg
+
+
+def test_handle_call_tool_truncates_large_json_response(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setenv("MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS", "512")
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"blob": "z" * 2000}}
+
+    monkeypatch.setattr(
+        mcp_wrapper,
+        "make_request_with_retry",
+        lambda *_a, **_k: _Resp(),
+    )
+
+    mcp_wrapper.handle_call_tool(
+        "req-truncate",
+        {
+            "name": "discover_legacy_sources",
+            "arguments": {},
+        },
+    )
+
+    assert sent
+    text = sent[0]["result"]["content"][0]["text"]
+    assert len(text) <= 512
+    assert "truncated" in text
 
 
 def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low(monkeypatch):
@@ -978,6 +1168,137 @@ def test_tasks_result_requires_terminal_status(monkeypatch):
     assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == "task-1"
 
 
+def test_tasks_result_auto_mode_uses_client_profile_for_immediate_retry(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.delenv("MUNINN_MCP_TASK_RESULT_MODE", raising=False)
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["client_info"] = {"name": "Claude Desktop"}
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-auto-retry",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32002
+    assert "Task result is not ready" in sent[0]["error"]["message"]
+
+
+def test_tasks_result_returns_retryable_error_when_wait_budget_exhausted(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MAX_WAIT_SEC", "0.01")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-timeout",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == "req-tasks-result-timeout"
+    assert sent[0]["error"]["code"] == -32002
+    assert "not ready within the host-safe wait budget" in sent[0]["error"]["message"]
+
+
+def test_tasks_result_wait_override_can_force_blocking(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MODE", "immediate_retry")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+    done = threading.Event()
+
+    def _invoke_result():
+        mcp_wrapper._dispatch_rpc_message({
+            "jsonrpc": "2.0",
+            "id": "req-tasks-result-wait-true",
+            "method": "tasks/result",
+            "params": {"taskId": "task-1", "wait": True},
+        })
+        done.set()
+
+    thread = threading.Thread(target=_invoke_result, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    assert done.is_set() is False
+    assert sent == []
+
+    with mcp_wrapper._TASKS_CONDITION:
+        task = mcp_wrapper._SESSION_STATE["tasks"]["task-1"]
+        mcp_wrapper._set_task_state_locked(
+            task,
+            status="completed",
+            status_message="done",
+            result={"content": [{"type": "text", "text": "ok"}]},
+        )
+        mcp_wrapper._TASKS_CONDITION.notify_all()
+
+    thread.join(timeout=1.0)
+    assert done.is_set() is True
+    assert len(sent) == 1
+    assert sent[0]["result"]["content"][0]["text"] == "ok"
+
+
+def test_tasks_result_wait_override_can_force_immediate_retry(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_TASK_RESULT_MODE", "blocking")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-wait-false",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1", "wait": False},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32002
+    assert "Task result is not ready" in sent[0]["error"]["message"]
+
+
+def test_tasks_result_wait_override_rejects_non_boolean(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["tasks"] = {
+        "task-1": _sample_task(task_id="task-1", status="working"),
+    }
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tasks-result-wait-invalid",
+        "method": "tasks/result",
+        "params": {"taskId": "task-1", "wait": "yes"},
+    })
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32602
+    assert "wait must be a boolean" in sent[0]["error"]["message"]
+
+
 def test_tasks_result_returns_payload_for_completed_task(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -1171,6 +1492,113 @@ def test_tools_call_with_task_returns_create_task_and_completes(monkeypatch):
     assert sent[0]["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"] == task_id
 
 
+def test_tools_call_auto_defers_configured_long_tool(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS", "1")
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_TOOL_NAMES", "ingest_legacy_sources")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    class _InlineThread:
+        def __init__(self, target, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            self._target(*self._args, **self._kwargs)
+
+    def _fake_worker(task_id: str, _name: str, _arguments: dict):
+        with mcp_wrapper._TASKS_CONDITION:
+            task = mcp_wrapper._SESSION_STATE["tasks"][task_id]
+            mcp_wrapper._set_task_state_locked(
+                task,
+                status="completed",
+                status_message="done",
+                result={"content": [{"type": "text", "text": "ok"}]},
+            )
+            task_snapshot = mcp_wrapper._public_task(task)
+            mcp_wrapper._TASKS_CONDITION.notify_all()
+        mcp_wrapper._emit_task_status_notification(task_snapshot)
+
+    monkeypatch.setattr(mcp_wrapper.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(mcp_wrapper, "_run_tool_call_task_worker", _fake_worker)
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tools-call-auto-task",
+        "method": "tools/call",
+        "params": {
+            "name": "ingest_legacy_sources",
+            "arguments": {"selected_source_ids": ["src_1"]},
+        },
+    })
+
+    create_response = next(msg for msg in sent if msg.get("id") == "req-tools-call-auto-task")
+    assert create_response["result"]["task"]["status"] == "working"
+    assert "io.modelcontextprotocol/model-immediate-response" in create_response["result"]["_meta"]
+
+
+def test_tools_call_auto_defer_can_be_disabled(monkeypatch):
+    sent = []
+    handled = {}
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS", "0")
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_TOOL_NAMES", "ingest_legacy_sources")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    def _fake_handle_call_tool(msg_id, params):
+        handled["id"] = msg_id
+        handled["params"] = params
+
+    monkeypatch.setattr(mcp_wrapper, "handle_call_tool", _fake_handle_call_tool)
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tools-call-no-auto-task",
+        "method": "tools/call",
+        "params": {
+            "name": "ingest_legacy_sources",
+            "arguments": {"selected_source_ids": ["src_1"]},
+        },
+    })
+
+    assert handled["id"] == "req-tools-call-no-auto-task"
+    assert handled["params"]["name"] == "ingest_legacy_sources"
+
+
+def test_tools_call_auto_defer_can_require_client_capability(monkeypatch):
+    sent = []
+    handled = {}
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_FOR_LONG_TOOLS", "1")
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_TOOL_NAMES", "ingest_legacy_sources")
+    monkeypatch.setenv("MUNINN_MCP_AUTO_TASK_REQUIRE_CLIENT_CAP", "1")
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+    mcp_wrapper._SESSION_STATE["client_capabilities"] = {}
+
+    def _fake_handle_call_tool(msg_id, params):
+        handled["id"] = msg_id
+        handled["params"] = params
+
+    monkeypatch.setattr(mcp_wrapper, "handle_call_tool", _fake_handle_call_tool)
+
+    mcp_wrapper._dispatch_rpc_message({
+        "jsonrpc": "2.0",
+        "id": "req-tools-call-cap-gated",
+        "method": "tools/call",
+        "params": {
+            "name": "ingest_legacy_sources",
+            "arguments": {"selected_source_ids": ["src_1"]},
+        },
+    })
+
+    assert handled["id"] == "req-tools-call-cap-gated"
+    assert handled["params"]["name"] == "ingest_legacy_sources"
+
 def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -1187,6 +1615,8 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert "get_model_profiles" in by_name
     assert "set_model_profiles" in by_name
     assert "get_model_profile_events" in by_name
+    assert "set_user_profile" in by_name
+    assert "get_user_profile" in by_name
     assert "ingest_sources" in by_name
     assert "discover_legacy_sources" in by_name
     assert "ingest_legacy_sources" in by_name
@@ -1204,6 +1634,8 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert by_name["search_memory"]["annotations"]["readOnlyHint"] is True
     assert by_name["get_model_profiles"]["annotations"]["readOnlyHint"] is True
     assert by_name["get_model_profile_events"]["annotations"]["readOnlyHint"] is True
+    assert by_name["get_user_profile"]["annotations"]["readOnlyHint"] is True
+    assert by_name["set_user_profile"]["annotations"]["readOnlyHint"] is False
     assert by_name["set_model_profiles"]["annotations"]["readOnlyHint"] is False
     assert by_name["record_retrieval_feedback"]["annotations"]["readOnlyHint"] is False
     assert by_name["ingest_sources"]["annotations"]["readOnlyHint"] is False
@@ -1212,6 +1644,7 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert by_name["delete_memory"]["annotations"]["destructiveHint"] is True
     assert by_name["delete_all_memories"]["annotations"]["destructiveHint"] is True
     assert by_name["search_memory"]["annotations"]["idempotentHint"] is True
+    assert by_name["set_user_profile"]["annotations"]["idempotentHint"] is True
     assert by_name["set_model_profiles"]["annotations"]["idempotentHint"] is True
     assert by_name["update_memory"]["annotations"]["idempotentHint"] is True
     assert by_name["import_handoff"]["annotations"]["idempotentHint"] is True
@@ -1229,6 +1662,12 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert "runtime_model_profile" in set_profile_props
     assert "legacy_ingestion_model_profile" in set_profile_props
     assert "source" in set_profile_props
+    set_user_profile_props = by_name["set_user_profile"]["inputSchema"]["properties"]
+    assert "profile" in set_user_profile_props
+    assert "merge" in set_user_profile_props
+    assert "source" in set_user_profile_props
+    get_user_profile_props = by_name["get_user_profile"]["inputSchema"]["properties"]
+    assert get_user_profile_props == {}
     profile_event_props = by_name["get_model_profile_events"]["inputSchema"]["properties"]
     assert "limit" in profile_event_props
 
@@ -1325,6 +1764,79 @@ def test_get_model_profiles_tool_call_payload(monkeypatch):
     assert captured["json"] is None
     assert sent
     assert sent[0]["id"] == "req-get-profiles"
+
+
+def test_set_user_profile_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "USER_PROFILE_UPDATED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-set-user-profile",
+        {
+            "name": "set_user_profile",
+            "arguments": {
+                "profile": {"skills": ["python"]},
+                "merge": False,
+            },
+        },
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/profile/user/set")
+    assert captured["json"]["profile"] == {"skills": ["python"]}
+    assert captured["json"]["merge"] is False
+    assert captured["json"]["source"] == "mcp_tool"
+    assert sent
+    assert sent[0]["id"] == "req-set-user-profile"
+
+
+def test_get_user_profile_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "USER_PROFILE_LOADED", "profile": {}}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-get-user-profile",
+        {
+            "name": "get_user_profile",
+            "arguments": {},
+        },
+    )
+
+    assert captured["method"] == "GET"
+    assert captured["url"].endswith("/profile/user/get")
+    assert captured["params"]["user_id"] == "global_user"
+    assert sent
+    assert sent[0]["id"] == "req-get-user-profile"
 
 
 def test_set_model_profiles_tool_call_payload(monkeypatch):
@@ -1532,3 +2044,56 @@ def test_delete_memory_tool_call_url_encodes_memory_id_and_sets_deadline(monkeyp
     assert isinstance(captured["deadline_epoch"], float)
     assert sent
     assert sent[0]["id"] == "req-delete"
+
+
+def test_search_memory_retries_without_project_filter_when_empty(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setenv("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", "1")
+
+    # We expect two calls:
+    # 1. First call with project filter -> returns empty data
+    # 2. Second call without project filter -> returns data
+    
+    requests_made = []
+
+    class _Resp:
+        def __init__(self, data):
+            self._data = data
+        def json(self):
+            return {"success": True, "data": self._data}
+
+    def _fake_request(method, url, **kwargs):
+        payload = kwargs.get("json")
+        filters = payload.get("filters", {})
+        requests_made.append(filters)
+        
+        # If project is in filters, return empty to simulate "not found in project scope"
+        if "project" in filters:
+            return _Resp([])
+        
+        # If project is NOT in filters (fallback), return a result
+        return _Resp([{"content": "fallback memory", "score": 0.9}])
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-search-fallback",
+        {
+            "name": "search_memory",
+            "arguments": {"query": "test"},
+        },
+    )
+
+    assert len(requests_made) == 2
+    # First request should have auto-injected project
+    assert requests_made[0]["project"] == "muninn"
+    # Second request should NOT have project
+    assert "project" not in requests_made[1]
+
+    # The final result sent to client should contain the fallback memory
+    assert sent
+    result_text = sent[0]["result"]["content"][0]["text"]
+    assert "fallback memory" in result_text
