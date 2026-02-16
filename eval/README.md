@@ -322,6 +322,32 @@ This emits `eval/reports/mcp_transport/mcp_transport_diagnostics_<run_id>.json` 
 - recent soak/closure artifact rollups,
 - blocker-signal heuristic summary for wrapper-vs-host attribution.
 
+Optional enforcement mode (for CI/release gates):
+
+```bash
+python -m eval.mcp_transport_diagnostics \
+  --lookback-hours 24 \
+  --max-transport-closed-count 0 \
+  --max-deadline-exhaustion-count 0 \
+  --max-near-timeout-count 0 \
+  --enforce-gate
+```
+
+### Phase Hygiene + Transport Diagnostics
+
+You can wire transport diagnostics directly into `eval.phase_hygiene`:
+
+```bash
+python -m eval.phase_hygiene \
+  --require-open-pr \
+  --pytest-command "python -m pytest -q tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py" \
+  --transport-diagnostics-command "python -m eval.mcp_transport_diagnostics --lookback-hours 24 --max-transport-closed-count 0 --max-deadline-exhaustion-count 0 --max-near-timeout-count 0 --enforce-gate" \
+  --fail-on-transport-diagnostics \
+  --max-transport-closed-incidents 0 \
+  --max-transport-deadline-exhaustion-incidents 0 \
+  --max-transport-near-timeout-incidents 0
+```
+
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
 `approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.

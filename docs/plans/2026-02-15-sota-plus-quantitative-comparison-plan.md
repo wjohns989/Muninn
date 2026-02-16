@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction + diagnostics bundle utility applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction + diagnostics bundle utility + diagnostics gate/hygiene integration applied)
 
 ## Objective
 
@@ -80,6 +80,10 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - `python -m eval.mcp_transport_diagnostics`,
    - includes per-tool latency/size summaries + incident counters + recent transport artifact rollups.
    - Implementation detail: `docs/plans/2026-02-16-phase5a9-transport-diagnostics-bundle.md`.
+15. Transport diagnostics now support deterministic gate enforcement and hygiene-policy integration:
+   - diagnostics now emits explicit gate verdicts (`results.gate`) and can fail on threshold violations (`--enforce-gate`),
+   - phase hygiene can now consume diagnostics summaries and fail on incident budgets in PR/release checks.
+   - Implementation detail: `docs/plans/2026-02-16-phase5a10-transport-diagnostics-hygiene-gating.md`.
 
 Current assessment:
 
@@ -105,7 +109,11 @@ Current assessment:
 - Post-diagnostics-bundle verification:
   - targeted compile + protocol/transport/diagnostics tests pass: `110 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
   - diagnostics artifact: `eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_001515.json` (no wrapper-level failure signals in 24h window)
-- Remaining operational risk is primarily external host-runtime intermittency; closure evidence for wrapper-controlled transport behavior is now available and machine-verifiable.
+- Post-diagnostics-gate/hygiene integration verification:
+  - targeted compile + protocol/transport/diagnostics/hygiene tests pass: `119 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+  - gate-mode diagnostics artifact: `eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_005047.json` (`results.gate.passed=true`)
+  - hygiene checks now support transport incident budgets for deterministic policy enforcement.
+- Remaining operational risk is primarily external host-runtime intermittency; wrapper-side transport regressions are now diagnosable and gate-enforceable.
 
 ## Decision Rule
 
@@ -253,6 +261,6 @@ The transport intermittency blocker is closed only when:
 3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
-6. Add host-runtime incident replay automation that triggers diagnostics bundle capture on transport-closure signatures and attaches artifacts to PR/release checks.
+6. Expand host-runtime incident replay automation so transport-closure signatures trigger diagnostics capture and auto-attach artifacts to PR/release checks (phase-hygiene gating integration is complete; runtime replay triggering remains).
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
