@@ -1,7 +1,7 @@
 # SOTA+ Quantitative Comparison Plan
 
 Date: 2026-02-15  
-Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction applied)
+Status: In progress (Phase 4AF baseline + Phase 5A continuation hardening + closure telemetry/Huginn UX wiring + non-terminal probe criterion + pre-serialization compaction + diagnostics bundle utility applied)
 
 ## Objective
 
@@ -76,6 +76,10 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - reduces oversized-response formatting spikes that can consume host timeout windows,
    - final text truncation guardrail remains enforced.
    - Implementation detail: `docs/plans/2026-02-16-phase5a8-tool-response-pre-serialization-compaction.md`.
+14. Transport diagnostics bundle utility now provides deterministic wrapper/soak/closure triage evidence:
+   - `python -m eval.mcp_transport_diagnostics`,
+   - includes per-tool latency/size summaries + incident counters + recent transport artifact rollups.
+   - Implementation detail: `docs/plans/2026-02-16-phase5a9-transport-diagnostics-bundle.md`.
 
 Current assessment:
 
@@ -98,6 +102,9 @@ Current assessment:
   - closure mini-campaign pass with probe criterion: `eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json` (`closure_ready=true`, `nonterminal_task_result_probe_met=true`, probe success ratio `1.0`)
 - Post-pre-serialization-compaction verification:
   - targeted compile + protocol/transport tests pass: `108 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+- Post-diagnostics-bundle verification:
+  - targeted compile + protocol/transport/diagnostics tests pass: `110 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+  - diagnostics artifact: `eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_001515.json` (no wrapper-level failure signals in 24h window)
 - Remaining operational risk is primarily external host-runtime intermittency; closure evidence for wrapper-controlled transport behavior is now available and machine-verifiable.
 
 ## Decision Rule
@@ -246,6 +253,6 @@ The transport intermittency blocker is closed only when:
 3. Wire scheduled CI benchmark replay and drift-alert policy to `sota-verdict` (release-boundary trigger + scheduled cadence only).
 4. Add signed promotion-manifest emission bound to verdict artifact SHA + commit SHA.
 5. Add dashboard/report template for leadership-facing release evidence.
-6. Add host-runtime transport diagnostics bundle capture for timeout regressions (wrapper log snapshot + response-size distribution + per-tool p95 wall time).
+6. Add host-runtime incident replay automation that triggers diagnostics bundle capture on transport-closure signatures and attaches artifacts to PR/release checks.
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.

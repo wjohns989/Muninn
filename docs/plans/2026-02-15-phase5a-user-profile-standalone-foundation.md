@@ -174,6 +174,18 @@ Deliver the first production slice of Phase 5 improvements focused on:
 - Existing post-serialization output cap (`MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS`) remains in place as final transport guardrail.
 - Detailed tranche note: `docs/plans/2026-02-16-phase5a8-tool-response-pre-serialization-compaction.md`.
 
+### 13) Transport Diagnostics Bundle Utility (Phase 5A.9)
+
+- Added deterministic diagnostics utility:
+  - `python -m eval.mcp_transport_diagnostics`
+- Utility now composes:
+  - wrapper incident counts (`transport_closed`, deadline exhaustion, startup-budget skips),
+  - per-tool latency/size telemetry summaries,
+  - near-timeout events,
+  - recent soak/closure report summaries,
+  - blocker-signal heuristics for wrapper-vs-host attribution.
+- Detailed tranche note: `docs/plans/2026-02-16-phase5a9-transport-diagnostics-bundle.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -236,6 +248,10 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - tool-response pre-serialization compaction verification:
     - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
     - `108 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+  - transport diagnostics bundle verification:
+    - `python -m py_compile eval/mcp_transport_diagnostics.py tests/test_mcp_transport_diagnostics.py`
+    - `110 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+    - live diagnostics artifact: `eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_001515.json`
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

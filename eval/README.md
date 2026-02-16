@@ -304,6 +304,24 @@ For oversized tool payloads in host runtimes, wrapper-side response shaping can 
 - `MUNINN_MCP_TOOL_RESPONSE_PREVIEW_MAX_STRING_CHARS` (default `2000`)
 - `MUNINN_MCP_TOOL_RESPONSE_MAX_CHARS` (default `12000`, final emitted text cap)
 
+### Transport Diagnostics Bundle
+
+Use this to generate deterministic incident triage artifacts from wrapper logs plus recent soak/closure reports:
+
+```bash
+python -m eval.mcp_transport_diagnostics \
+  --lookback-hours 24 \
+  --recent-soak-limit 5 \
+  --recent-closure-limit 3
+```
+
+This emits `eval/reports/mcp_transport/mcp_transport_diagnostics_<run_id>.json` with:
+- wrapper incident counters (`transport_closed`, deadline exhaustion),
+- per-tool wall-time/response-size summaries,
+- near-timeout event extraction,
+- recent soak/closure artifact rollups,
+- blocker-signal heuristic summary for wrapper-vs-host attribution.
+
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
 `approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.
