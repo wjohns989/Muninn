@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,6 +43,8 @@ def test_run_skips_diagnostics_when_no_signatures(tmp_path: Path, monkeypatch) -
     assert parsed["results"]["triggered"] is False
     assert parsed["results"]["scan"]["total_signature_count"] == 0
     assert parsed["results"]["diagnostics"]["executed"] is False
+    assert parsed["results"]["scan"]["log_file"]["exists"] is True
+    assert parsed["results"]["scan"]["log_file"]["sha256"] is None
 
 
 def test_run_triggers_diagnostics_on_signature(tmp_path: Path, monkeypatch) -> None:
@@ -141,3 +144,34 @@ def test_run_fails_when_log_is_required_but_missing(tmp_path: Path) -> None:
     assert exit_code == 4
     parsed = json.loads(output_path.read_text(encoding="utf-8"))
     assert parsed["results"]["scan"]["log_path_exists"] is False
+    assert parsed["results"]["scan"]["log_file"]["exists"] is False
+
+
+def test_run_includes_log_sha256_when_enabled(tmp_path: Path, monkeypatch) -> None:
+    log_path = tmp_path / "mcp_wrapper.log"
+    report_dir = tmp_path / "reports"
+    output_path = report_dir / "replay.json"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    content = f"{_log_ts_now()} - Muninn - INFO - no signature here"
+    log_path.write_text(content, encoding="utf-8")
+    expected_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def _unexpected_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("diagnostics command should not execute when no signatures match")
+
+    monkeypatch.setattr(replay.subprocess, "run", _unexpected_run)
+
+    exit_code = replay.run(
+        [
+            "--log-path",
+            str(log_path),
+            "--report-dir",
+            str(report_dir),
+            "--include-log-sha256",
+            "--output",
+            str(output_path),
+        ]
+    )
+    assert exit_code == 0
+    parsed = json.loads(output_path.read_text(encoding="utf-8"))
+    assert parsed["results"]["scan"]["log_file"]["sha256"] == expected_sha

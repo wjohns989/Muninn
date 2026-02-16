@@ -1,7 +1,7 @@
 # Phase 5A: User Profile + Standalone Foundation
 
 Date: 2026-02-15  
-Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction + diagnostics gate/hygiene integration + incident replay automation + PR/release replay gate wiring applied)
+Status: Implemented (baseline complete + continuation hardening/diagnostics/task-result compatibility + Huginn browser branding + pre-serialization compaction + diagnostics gate/hygiene integration + incident replay automation + PR/release replay gate wiring + release-profile replay strictness/provenance applied)
 
 ## Objective
 
@@ -233,6 +233,23 @@ Deliver the first production slice of Phase 5 improvements focused on:
   - `--require-log-path-exists` for environments where missing wrapper logs must fail checks.
 - Detailed tranche note: `docs/plans/2026-02-16-phase5a12-pr-release-replay-gate-wiring.md`.
 
+### 17) Release-Profile Replay Strictness + Log Provenance (Phase 5A.13)
+
+- Replay gate workflow now supports profile modes:
+  - `pr_safe`
+  - `release_host_captured`
+- Workflow now runs on release publication boundaries:
+  - `release` trigger (`published`).
+- Release-host profile now enforces strict replay posture:
+  - `--require-log-path-exists`
+  - `--include-log-sha256`
+- Replay reports and check summaries now include log provenance fields:
+  - log existence,
+  - log size,
+  - log modified timestamp,
+  - optional SHA-256 digest.
+- Detailed tranche note: `docs/plans/2026-02-16-phase5a13-release-profile-replay-strictness-provenance.md`.
+
 ## Verification
 
 - Targeted + integration suite for this tranche:
@@ -311,6 +328,11 @@ Deliver the first production slice of Phase 5 improvements focused on:
     - `python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`
     - `123 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
     - workflow wiring present: `.github/workflows/transport-incident-replay-gate.yml`
+  - release-profile replay strictness + provenance verification:
+    - `python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`
+    - `124 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+    - release-capable workflow profile wiring present: `.github/workflows/transport-incident-replay-gate.yml`
+    - live strict-profile replay artifact: `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_012731.json` (`log_file.sha256` populated, `results.triggered=false`)
 - Full-suite checkpoint:
   - `520 passed, 2 skipped, 1 warning`.
 

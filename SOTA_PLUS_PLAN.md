@@ -353,6 +353,11 @@
     - CI now uploads replay + diagnostics artifacts and writes transport replay summaries in check outputs,
     - replay utility strict-mode guardrail added (`--require-log-path-exists`) for host-runtime pipelines that require captured wrapper logs,
     - tranche note documented in `docs/plans/2026-02-16-phase5a12-pr-release-replay-gate-wiring.md`.
+88. Phase 5A.13 release-profile replay strictness + provenance hardening implemented:
+    - replay gate workflow now supports profile modes (`pr_safe`, `release_host_captured`) and release trigger execution (`release.published`),
+    - release-host profile now enforces strict replay posture (`--require-log-path-exists`, `--include-log-sha256`),
+    - replay reports/check summaries now include log provenance fields (size, modified timestamp, optional SHA-256 digest),
+    - tranche note documented in `docs/plans/2026-02-16-phase5a13-release-profile-replay-strictness-provenance.md`.
 
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
@@ -419,6 +424,7 @@
 - Phase 5A.10 diagnostics gate + hygiene integration verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py`) + `119 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + live gate artifact (`eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_005047.json`, `results.gate.passed=true`).
 - Phase 5A.11 incident replay automation verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `122 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + replay artifact (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_010414.json`, `results.triggered=false`).
 - Phase 5A.12 PR/release replay gate wiring verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `123 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + workflow wiring (`.github/workflows/transport-incident-replay-gate.yml`).
+- Phase 5A.13 release-profile replay strictness verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `124 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + release-capable workflow profile wiring (`.github/workflows/transport-incident-replay-gate.yml`) + strict-profile replay artifact (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_012731.json`, `log_file.sha256` populated).
 
 ### Newly discovered ROI optimizations (implemented)
 1. **Tenant filter correctness + performance**: replaced fragile `metadata LIKE` user matching with JSON1 exact-match where available.
@@ -483,6 +489,7 @@
 56. **Release-gate enforceability ROI**: wiring diagnostics incident thresholds into phase hygiene turns transport regressions into deterministic policy failures, reducing subjective blocker-status decisions before merge/release.
 57. **Incident-capture automation ROI**: signature-triggered replay diagnostics reduce manual triage overhead and make host/runtime timeout evidence generation repeatable in PR/release pipelines.
 58. **Check-surface observability ROI**: replay-gate CI artifact uploads plus summary output make transport-risk posture visible in PR/release checks without opening raw logs manually.
+59. **Evidence provenance ROI**: release-profile strict replay mode with log digest metadata makes host-log lineage auditable and reduces false-positive closure decisions when log capture is incomplete.
 
 ### High-ROI SOTA additions from web research now required in roadmap
 1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).

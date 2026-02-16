@@ -368,6 +368,9 @@ This emits `eval/reports/mcp_transport/mcp_transport_incident_replay_<run_id>.js
 
 PR/release workflow wiring is available in:
 - `.github/workflows/transport-incident-replay-gate.yml`
+- Workflow profile options:
+  - `pr_safe` (default): non-strict mode, no required host log.
+  - `release_host_captured`: strict mode (`--require-log-path-exists` + `--include-log-sha256`) for host-captured release environments.
 
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
