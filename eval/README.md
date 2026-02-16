@@ -382,6 +382,7 @@ python -m eval.mcp_transport_blocker_decision \
   --min-replay-runs 3 \
   --max-replay-signature-count 0 \
   --require-replay-provenance \
+  --replay-provenance-policy latest_min \
   --min-closure-runs 1 \
   --require-latest-closure-ready \
   --require-latest-probe-criterion \
@@ -390,6 +391,7 @@ python -m eval.mcp_transport_blocker_decision \
 
 This emits `eval/reports/mcp_transport/mcp_transport_blocker_decision_<run_id>.json` with:
 - criteria booleans and violations list,
+- replay provenance policy/evidence counts (`all` or `latest_min`),
 - replay/closure reports analyzed in window,
 - deterministic `blocker_closure_ready` verdict.
 

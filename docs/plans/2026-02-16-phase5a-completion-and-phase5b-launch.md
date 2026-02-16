@@ -45,6 +45,11 @@ Phase 5B.1 progress update:
 - deterministic blocker decision utility implemented (`python -m eval.mcp_transport_blocker_decision`);
 - current decision artifact reports blocker still open due missing strict replay evidence count/provenance.
 
+Phase 5B.2 progress update:
+- replay provenance policy hardening implemented (`--replay-provenance-policy all|latest_min`);
+- latest-min mode now evaluates only latest required replay evidence set and emits explicit provenance counts (`required/evaluated/passing`);
+- latest decision artifact still keeps blocker open with explicit strict-evidence shortage (`required=3`, `evaluated=2`, `passing=1`).
+
 ## ROI / Ecosystem Impact
 
 1. Separates code-complete internal implementation from external runtime validation risk, reducing scope ambiguity.
