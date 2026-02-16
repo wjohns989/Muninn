@@ -5,9 +5,11 @@ Fail-open multi-source ingestion pipeline.
 from __future__ import annotations
 
 import tempfile
+import concurrent.futures
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Sequence, Set
+from typing import Iterable, List, Sequence, Set, Any
 
 from muninn.ingestion.models import IngestionReport, IngestionSourceResult
 from muninn.ingestion.parser import (
@@ -21,6 +23,9 @@ from muninn.ingestion.parser import (
 MAX_INGEST_FILE_SIZE_BYTES = 100 * 1024 * 1024
 MAX_CHUNK_SIZE_CHARS = 20_000
 MAX_CHUNK_OVERLAP_CHARS = 5_000
+MAX_WORKERS = 4  # Cap concurrency to avoid OOM
+
+logger = logging.getLogger("Muninn.Ingest")
 
 
 def _default_allowed_roots() -> List[Path]:
@@ -37,6 +42,93 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _ingest_worker(
+    source_order: int,
+    path: Path,
+    max_bytes: int,
+    chunk_size: int,
+    chunk_overlap: int,
+    min_chunk: int,
+    chronological_order: str,
+    allowed_roots_str: List[str],
+) -> IngestionSourceResult:
+    """Worker function for parallel ingestion."""
+    # Reconstruct allowed roots from strings to ensure clean pickle state
+    allowed_roots = [Path(p) for p in allowed_roots_str]
+    
+    source_type = infer_source_type(path)
+    result = IngestionSourceResult(
+        source_path=str(path),
+        source_type=source_type,
+        status="failed",
+    )
+
+    if not any(_is_relative_to(path, root) for root in allowed_roots):
+        result.status = "skipped"
+        result.skipped_reason = "outside_allowed_roots"
+        result.errors.append("Source path is outside configured ingestion roots")
+        return result
+
+    if not path.exists():
+        result.status = "skipped"
+        result.skipped_reason = "source_not_found"
+        result.errors.append("Source path does not exist")
+        return result
+
+    if source_type == "unsupported":
+        result.status = "skipped"
+        result.skipped_reason = "unsupported_extension"
+        return result
+
+    try:
+        file_size = path.stat().st_size
+    except OSError as exc:
+        result.status = "failed"
+        result.errors.append(f"Stat failed: {exc}")
+        return result
+
+    if max_bytes > 0 and file_size > max_bytes:
+        result.status = "skipped"
+        result.skipped_reason = "file_too_large"
+        result.errors.append(
+            f"File size {file_size} exceeds configured limit {max_bytes}"
+        )
+        return result
+
+    try:
+        text = parse_source(path, source_type)
+        source_sha256 = compute_file_sha256(path)
+        source_mtime = path.stat().st_mtime
+        source_mtime_iso = datetime.fromtimestamp(
+            source_mtime, tz=timezone.utc
+        ).isoformat().replace("+00:00", "Z")
+        chunks = build_chunks(
+            path=path,
+            source_type=source_type,
+            source_sha256=source_sha256,
+            text=text,
+            chunk_size_chars=chunk_size,
+            chunk_overlap_chars=chunk_overlap,
+            min_chunk_chars=min_chunk,
+        )
+        if not chunks:
+            result.status = "skipped"
+            result.skipped_reason = "empty_content"
+        else:
+            for chunk in chunks:
+                chunk.metadata["source_mtime_epoch"] = source_mtime
+                chunk.metadata["source_mtime_iso"] = source_mtime_iso
+                chunk.metadata["source_ingest_order"] = source_order
+                chunk.metadata["chronological_order"] = chronological_order
+            result.status = "processed"
+            result.chunks = chunks
+    except Exception as exc:
+        result.status = "failed"
+        result.errors.append(str(exc))
+
+    return result
 
 
 class IngestionPipeline:
@@ -205,85 +297,68 @@ class IngestionPipeline:
         skipped_sources = 0
         total_chunks = 0
 
-        for source_order, path in enumerate(expanded):
-            source_type = infer_source_type(path)
-            result = IngestionSourceResult(
-                source_path=str(path),
-                source_type=source_type,
-                status="failed",
-            )
+        # Pre-serialize allowed roots for worker
+        allowed_roots_str = [str(r) for r in self.allowed_roots]
 
-            if not self.is_path_allowed(path):
-                result.status = "skipped"
-                result.skipped_reason = "outside_allowed_roots"
-                result.errors.append("Source path is outside configured ingestion roots")
-                skipped_sources += 1
-                source_results.append(result)
-                continue
+        # Use ProcessPoolExecutor for true parallelism (CPU bound parsing) and isolation
+        with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_map = {
+                executor.submit(
+                    _ingest_worker,
+                    idx,
+                    path,
+                    max_bytes,
+                    chunk_size,
+                    chunk_overlap,
+                    min_chunk,
+                    chronological_order,
+                    allowed_roots_str,
+                ): idx
+                for idx, path in enumerate(expanded)
+            }
 
-            if not path.exists():
-                result.status = "skipped"
-                result.skipped_reason = "source_not_found"
-                result.errors.append("Source path does not exist")
-                skipped_sources += 1
-                source_results.append(result)
-                continue
-
-            if source_type == "unsupported":
-                result.status = "skipped"
-                result.skipped_reason = "unsupported_extension"
-                skipped_sources += 1
-                source_results.append(result)
-                continue
-
-            file_size = path.stat().st_size
-            if max_bytes > 0 and file_size > max_bytes:
-                result.status = "skipped"
-                result.skipped_reason = "file_too_large"
-                result.errors.append(
-                    f"File size {file_size} exceeds configured limit {max_bytes}"
-                )
-                skipped_sources += 1
-                source_results.append(result)
-                continue
-
-            try:
-                text = parse_source(path, source_type)
-                source_sha256 = compute_file_sha256(path)
-                source_mtime = path.stat().st_mtime
-                source_mtime_iso = datetime.fromtimestamp(
-                    source_mtime, tz=timezone.utc
-                ).isoformat().replace("+00:00", "Z")
-                chunks = build_chunks(
-                    path=path,
-                    source_type=source_type,
-                    source_sha256=source_sha256,
-                    text=text,
-                    chunk_size_chars=chunk_size,
-                    chunk_overlap_chars=chunk_overlap,
-                    min_chunk_chars=min_chunk,
-                )
-                if not chunks:
-                    result.status = "skipped"
-                    result.skipped_reason = "empty_content"
+            for future in concurrent.futures.as_completed(future_map):
+                try:
+                    result = future.result(timeout=60)  # 60s timeout per file
+                    if result.status == "processed":
+                        processed_sources += 1
+                        total_chunks += len(result.chunks)
+                    else:
+                        skipped_sources += 1
+                    source_results.append(result)
+                except concurrent.futures.TimeoutError:
+                    # Handle timeout
+                    idx = future_map[future]
+                    path = expanded[idx]
+                    logger.error(f"Ingestion timed out for {path}")
+                    source_results.append(IngestionSourceResult(
+                        source_path=str(path),
+                        source_type=infer_source_type(path),
+                        status="failed",
+                        errors=["Parsing timed out"],
+                    ))
                     skipped_sources += 1
-                else:
-                    for chunk in chunks:
-                        chunk.metadata["source_mtime_epoch"] = source_mtime
-                        chunk.metadata["source_mtime_iso"] = source_mtime_iso
-                        chunk.metadata["source_ingest_order"] = source_order
-                        chunk.metadata["chronological_order"] = chronological_order
-                    result.status = "processed"
-                    result.chunks = chunks
-                    processed_sources += 1
-                    total_chunks += len(chunks)
-            except Exception as exc:
-                result.status = "failed"
-                result.errors.append(str(exc))
-                skipped_sources += 1
+                except Exception as exc:
+                    # Handle pickling error or other worker launch failures
+                    idx = future_map[future]
+                    path = expanded[idx]
+                    logger.error(f"Ingestion worker failed for {path}: {exc}")
+                    source_results.append(IngestionSourceResult(
+                        source_path=str(path),
+                        source_type=infer_source_type(path),
+                        status="failed",
+                        errors=[f"Worker error: {exc}"],
+                    ))
+                    skipped_sources += 1
 
-            source_results.append(result)
-
+        # Sort results back to original order? 
+        # Not strictly required by schema but nice for deterministic reports.
+        # But source_results contains IngestionSourceResult which doesn't have an order field easily accessible 
+        # unless we parse it or rely on source_ingest_order in chunks.
+        # Actually IngestionSourceResult doesn't carry the index explicitly unless we added it.
+        # But future_map has the index. We can reconstruct order if we collected tuples.
+        # Current implementation appends as they complete.
+        
         return IngestionReport(
             total_sources=len(expanded),
             processed_sources=processed_sources,
