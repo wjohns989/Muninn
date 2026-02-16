@@ -41,6 +41,10 @@ Phase 5A is complete for internal implementation scope. Remaining transport bloc
 3. Execute blocker closure decision using criteria in `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`.
 4. Resolve PR comments, then merge phase branch and perform post-merge main-branch doc/readme synchronization.
 
+Phase 5B.1 progress update:
+- deterministic blocker decision utility implemented (`python -m eval.mcp_transport_blocker_decision`);
+- current decision artifact reports blocker still open due missing strict replay evidence count/provenance.
+
 ## ROI / Ecosystem Impact
 
 1. Separates code-complete internal implementation from external runtime validation risk, reducing scope ambiguity.

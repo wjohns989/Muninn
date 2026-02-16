@@ -109,6 +109,10 @@ Implemented to reduce external host-side 120s transport timeout risk while block
    - release profile forces strict log requirements and digest capture (`--require-log-path-exists`, `--include-log-sha256`),
    - release trigger support added (`release.published`) for boundary checks.
    - Implementation detail: `docs/plans/2026-02-16-phase5a13-release-profile-replay-strictness-provenance.md`.
+19. Blocker decision utility now exists for deterministic closure readiness:
+   - `python -m eval.mcp_transport_blocker_decision`,
+   - evaluates replay/closure criteria and emits explicit closure-ready verdict + violations.
+   - Implementation detail: `docs/plans/2026-02-16-phase5b1-transport-blocker-decision-utility.md`.
 
 Current assessment:
 
@@ -149,6 +153,9 @@ Current assessment:
   - expanded targeted suite: `124 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
   - release-capable strict profile wiring present: `.github/workflows/transport-incident-replay-gate.yml`
   - strict-profile replay artifact: `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_012731.json` (provenance fields populated, `results.triggered=false`)
+- Post-blocker-decision utility verification:
+  - expanded targeted suite: `127 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`)
+  - decision artifact: `eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_013548.json` (`blocker_closure_ready=false`, violations: `replay_run_count_meets_min`, `replay_provenance_met`)
 - Remaining operational risk is primarily external host-runtime intermittency; wrapper-side transport regressions are now diagnosable and gate-enforceable.
 
 ## Decision Rule
@@ -300,3 +307,4 @@ The transport intermittency blocker is closed only when:
 6. Execute Phase 5B host-captured validation for `release_host_captured` replay profile and confirm provenance fields in release-check summaries.
 7. Wire closure-campaign artifact summary into scheduled CI and release checks.
 8. Wire `nonterminal_task_result_probe_met` and probe-success telemetry thresholds into scheduled CI/release gates so closure evidence includes explicit probe consistency requirements.
+9. Wire `eval.mcp_transport_blocker_decision --enforce-gate` into release-boundary checks after host-captured replay evidence collection.

@@ -372,6 +372,27 @@ PR/release workflow wiring is available in:
   - `pr_safe` (default): non-strict mode, no required host log.
   - `release_host_captured`: strict mode (`--require-log-path-exists` + `--include-log-sha256`) for host-captured release environments.
 
+### Transport Blocker Decision Utility
+
+Use this to evaluate closure readiness from replay + closure artifacts in a bounded observation window:
+
+```bash
+python -m eval.mcp_transport_blocker_decision \
+  --lookback-hours 48 \
+  --min-replay-runs 3 \
+  --max-replay-signature-count 0 \
+  --require-replay-provenance \
+  --min-closure-runs 1 \
+  --require-latest-closure-ready \
+  --require-latest-probe-criterion \
+  --enforce-gate
+```
+
+This emits `eval/reports/mcp_transport/mcp_transport_blocker_decision_<run_id>.json` with:
+- criteria booleans and violations list,
+- replay/closure reports analyzed in window,
+- deterministic `blocker_closure_ready` verdict.
+
 `rollback-policy` restores profile defaults from a checkpoint artifact and writes a rollback report.
 
 `approval-manifest` writes an explicit approval/rejection artifact tied to checkpoint path + SHA-256 digest + reviewer identity.
