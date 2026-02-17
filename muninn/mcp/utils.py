@@ -23,7 +23,7 @@ def _read_operator_model_profile(env_var: str) -> Optional[str]:
     )
     return None
 
-def get_git_info() -> Dict[str, str]:
+def _do_get_git_info() -> Dict[str, str]:
     """Retrieve Git branch and repository name for contextual metadata."""
     try:
         branch = subprocess.check_output(
@@ -39,11 +39,19 @@ def get_git_info() -> Dict[str, str]:
         ).strip()
         
         project = repo_url.split("/")[-1].replace(".git", "") if repo_url else "unknown"
-        # Debug print
-        # print(f"DEBUG: get_git_info project={project}")
         return {"branch": branch, "project": project}
     except Exception:
         return {"branch": "unknown", "project": os.path.basename(os.getcwd())}
+
+def get_git_info() -> Dict[str, str]:
+    """Facade-aware get_git_info wrapper."""
+    try:
+        import mcp_wrapper
+        if hasattr(mcp_wrapper, "get_git_info") and mcp_wrapper.get_git_info != get_git_info:
+            return mcp_wrapper.get_git_info()
+    except (ImportError, AttributeError):
+        pass
+    return _do_get_git_info()
 
 def _get_operator_model_profile_for_operation(operation: str) -> Optional[str]:
     env_map = {
