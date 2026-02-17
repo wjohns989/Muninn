@@ -472,26 +472,36 @@ class ConsolidationDaemon:
         try:
             # Audit top-K important recent memories
             records = self.metadata.get_for_consolidation(limit=50)
+            if not records:
+                return {"audited": 0, "conflicts_resolved": 0, "elapsed": round(time.time() - t0, 2)}
+
+            # v3.6.2 Phase Optimization: Batch vector and metadata retrieval
+            record_ids = [r.id for r in records]
+            vector_map = self.vectors.get_vectors(record_ids)
+            
+            # neighbor_map: record_id -> List[neighbor_id]
+            neighbor_map = {}
+            all_neighbor_ids = set()
             
             for record in records:
-                # v3.6.1 Refinement: Semantic-Driven Candidate Selection
-                # Instead of a random window, fetch the nearest neighbors globally to find contradictions.
-                vec = self.vectors.get_vector(record.id)
+                vec = vector_map.get(record.id)
                 if not vec:
                     continue
-
-                # Search Top-5 closest neighbors
-                similar_results = self.vectors.search(query_embedding=vec, limit=6) 
                 
-                # Fetch full records for NLI audit
-                candidates = []
-                for sim_id, score in similar_results:
-                    if sim_id == record.id:
-                        continue
-                    # Fetch candidate from metadata
-                    cand_record = self.metadata.get(sim_id)
-                    if cand_record:
-                        candidates.append(cand_record)
+                # Search Top-5 closest neighbors (limit 6 to exclude self)
+                similar = self.vectors.search(query_embedding=vec, limit=6)
+                sim_ids = [s[0] for s in similar if s[0] != record.id]
+                neighbor_map[record.id] = sim_ids
+                all_neighbor_ids.update(sim_ids)
+
+            # Batch fetch all candidate metadata
+            candidate_records = self.metadata.get_by_ids(list(all_neighbor_ids))
+            cand_map = {c.id: c for c in candidate_records}
+
+            # Final NLI Audit Loop
+            for record in records:
+                sim_ids = neighbor_map.get(record.id, [])
+                candidates = [cand_map[sid] for sid in sim_ids if sid in cand_map]
                 
                 if not candidates:
                     continue

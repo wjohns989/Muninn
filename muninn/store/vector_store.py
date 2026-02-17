@@ -139,6 +139,32 @@ class VectorStore:
             logger.error(f"Failed to retrieve vector for {memory_id}: {e}")
             return None
 
+    def get_vectors(self, memory_ids: List[str]) -> Dict[str, List[float]]:
+        """
+        Retrieve multiple embedding vectors in a single batch.
+        """
+        if not memory_ids:
+            return {}
+        try:
+            client = self._get_client()
+            results = client.retrieve(
+                collection_name=self.collection_name,
+                ids=memory_ids,
+                with_vectors=True
+            )
+            vectors = {}
+            for res in results:
+                if res.vector:
+                    vec = res.vector
+                    if isinstance(vec, dict):
+                        vectors[str(res.id)] = vec.get("default", list(vec.values())[0])
+                    else:
+                        vectors[str(res.id)] = vec
+            return vectors
+        except Exception as e:
+            logger.error(f"Failed to retrieve batch vectors: {e}")
+            return {}
+
     def set_payload(self, memory_id: str, payload: Dict[str, Any]) -> bool:
         """Update payload fields for an existing vector point by memory ID."""
         if not payload:
