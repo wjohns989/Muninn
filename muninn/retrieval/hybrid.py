@@ -42,10 +42,7 @@ from muninn.advanced.colbert import ColBERTScorer
 from muninn.observability import OTelGenAITracer
 
 # Optional Qdrant imports for late interaction
-try:
-    from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
-except ImportError:
-    Filter = FieldCondition = MatchValue = MatchAny = None
+from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 
 logger = logging.getLogger("Muninn.Retrieval")
 
@@ -181,8 +178,8 @@ class HybridRetriever:
                 temporal_results,
             ) = await asyncio.gather(
                 asyncio.to_thread(self._vector_search, query_embedding, limit * 3, effective_filters),
-                asyncio.to_thread(self._graph_search, query, limit * 2),
-                asyncio.to_thread(self._bm25_search, query, limit * 2),
+                asyncio.to_thread(self._graph_search, query, limit * 2, user_id=user_id, namespaces=namespaces),
+                asyncio.to_thread(self._bm25_search, query, limit * 2, user_id=user_id, namespaces=namespaces),
                 asyncio.to_thread(self._goal_search, goal_embedding, limit * 2, effective_filters),
                 asyncio.to_thread(
                     self._temporal_search,
@@ -355,10 +352,21 @@ class HybridRetriever:
             logger.warning("Graph search failed: %s", e)
             return []
 
-    def _bm25_search(self, query: str, limit: int) -> List[Tuple[str, float]]:
+    def _bm25_search(
+        self,
+        query: str,
+        limit: int,
+        user_id: Optional[str] = None,
+        namespaces: Optional[List[str]] = None,
+    ) -> List[Tuple[str, float]]:
         """BM25 keyword search. Returns list of (id, score)."""
         try:
-            results = self.bm25.search(query, limit=limit)
+            results = self.bm25.search(
+                query,
+                limit=limit,
+                user_id=user_id,
+                namespaces=namespaces,
+            )
             return [(doc_id, float(score)) for doc_id, score in results]
         except Exception as e:
             logger.warning("BM25 search failed: %s", e)
@@ -642,18 +650,29 @@ class HybridRetriever:
             # union of top-8 centroids for each query token
             relevant_centroids = self._colbert_indexer.get_query_centroids(query_vectors, top_k=8)
         
+        # 3. Security/Scoping: Resolve target namespace and user for strict isolation
+        # We use search metrics context or default to record_map items
+        target_records = list(record_map.values())
+        target_user = target_records[0].user_id if target_records else None
+        target_namespace = target_records[0].namespace if target_records else None
+        
         scored_candidates = []
         for mem_id, _fused_score in candidates:
             if mem_id not in record_map:
                 continue
             
-            # 3. Retrieve ONLY document tokens matching the relevant centroids
+            # 4. Retrieve ONLY document tokens matching the relevant centroids
             # This is the core PLAID-Lite optimization
             client = self.vectors._get_client()
-            # Filter by memory_id AND optionally centroid_id in relevant_centroids
+            # Filter by memory_id AND user/namespace for strict isolation
             must_conditions = [
                 FieldCondition(key="memory_id", match=MatchValue(value=mem_id))
             ]
+            if target_user:
+                must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=target_user)))
+            if target_namespace:
+                must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=target_namespace)))
+                
             if relevant_centroids:
                 must_conditions.append(
                     FieldCondition(key="centroid_id", match=MatchAny(any=relevant_centroids))

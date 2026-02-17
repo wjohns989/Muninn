@@ -244,30 +244,80 @@ class ConsolidationDaemon:
         - Remove absorbed duplicates
         """
         t0 = time.time()
+        # Process in batches to maintain isolation context
         records = self.metadata.get_for_consolidation(limit=500)
         episodic = [r for r in records if r.memory_type == MemoryType.EPISODIC]
 
         if not episodic:
             return {"merged": 0, "elapsed": 0.0}
 
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+
         # Find candidates using vector similarity
-        def vector_search_fn(vector_id):
+        def vector_search_fn(vector_id, user_id=None, namespace=None):
             try:
-                # Search for similar vectors to this memory's embedding
-                record = self.metadata.get(vector_id)
-                if not record:
+                # v3.8.0 Isolation: We need the actual vector to search
+                # But since merge happens in background, we rely on find_merge_candidates
+                # to respect the passed records. 
+                # Optimization: We use the daemon's vector search with strict filters.
+                vec = self.vectors.get_vectors([vector_id]).get(vector_id)
+                if not vec:
                     return []
+                
+                must_conditions = []
+                if user_id:
+                    must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=user_id)))
+                if namespace:
+                    must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=namespace)))
+                
+                search_filter = Filter(must=must_conditions) if must_conditions else None
+                
                 results = self.vectors.search(
-                    query_vector=None,  # We'd need the actual vector
+                    query_embedding=vec,
                     limit=5,
+                    filter=search_filter
                 )
                 return results
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Merge vector search failed: {e}")
                 return []
 
-        # For merge, we use a simplified approach: iterate pairs from metadata
-        # Full vector-based merge requires embedding lookup (Phase 2 optimization)
+        # Find merge candidates across the batch
+        candidates = find_merge_candidates(episodic, vector_search_fn)
         merged_count = 0
+
+        for primary_id, secondary_id, _ in candidates:
+            primary = self.metadata.get(primary_id)
+            secondary = self.metadata.get(secondary_id)
+            
+            if not primary or not secondary:
+                continue
+            
+            # CRITICAL SAFETY check: Never merge across namespaces
+            if primary.user_id != secondary.user_id or primary.namespace != secondary.namespace:
+                logger.warning(
+                    "BLOCKED cross-namespace merge attempt: %s (%s/%s) vs %s (%s/%s)",
+                    primary.id, primary.user_id, primary.namespace,
+                    secondary.id, secondary.user_id, secondary.namespace
+                )
+                continue
+
+            merged = merge_memories(primary, secondary)
+            
+            # Update stores
+            self.metadata.update(merged)
+            self.metadata.delete(secondary.id)
+            self.vectors.delete([secondary.id])
+            self.graph.delete_memory_references(secondary.id)
+            # Graph update: primary node summary changes
+            self.graph.add_memory_node(
+                merged.id, 
+                merged.content[:500], 
+                user_id=merged.user_id, 
+                namespace=merged.namespace
+            )
+            
+            merged_count += 1
 
         elapsed = time.time() - t0
         result = {"merged": merged_count, "candidates_checked": len(episodic),
@@ -462,6 +512,8 @@ class ConsolidationDaemon:
         - Audit high-importance recent memories for contradictions
         - Resolve detected conflicts automatically
         """
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+        
         if not self._conflict_detector.is_available:
             return {"status": "skipped", "reason": "nli_model_unavailable", "elapsed": 0.0}
             
@@ -488,12 +540,15 @@ class ConsolidationDaemon:
                 if not vec:
                     continue
                 
-                # v3.6.2 Security Fix: Enforce user-scoping in semantic search 
-                # candidates must belong to the same user as the record being audited
-                search_filter = None
+                # v3.6.2/v3.8.0 Security Fix: Enforce user and namespace scoping in semantic search 
+                # candidates must belong to the same user AND namespace as the record being audited
+                must_conditions = []
                 if record.user_id:
-                    from qdrant_client.http.models import Filter, FieldCondition, MatchValue
-                    search_filter = Filter(must=[FieldCondition(key="user_id", match=MatchValue(value=record.user_id))])
+                    must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=record.user_id)))
+                if record.namespace:
+                    must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=record.namespace)))
+                
+                search_filter = Filter(must=must_conditions) if must_conditions else None
 
                 # Search Top-5 closest neighbors (limit 6 to exclude self)
                 similar = self.vectors.search(query_embedding=vec, limit=6, filter=search_filter)
