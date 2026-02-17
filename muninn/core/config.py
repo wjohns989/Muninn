@@ -205,6 +205,13 @@ class MemoryChainsConfig(BaseModel):
     retrieval_seed_limit: int = 6
 
 
+class AdvancedConfig(BaseModel):
+    """Advanced differentiating features (Phase 6)."""
+    enable_colbert: bool = False
+    colbert_dim: int = 128
+    enable_temporal_kg: bool = False
+
+
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
@@ -244,6 +251,7 @@ class MuninnConfig(BaseModel):
     retrieval_feedback: RetrievalFeedbackConfig = Field(default_factory=RetrievalFeedbackConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     memory_chains: MemoryChainsConfig = Field(default_factory=MemoryChainsConfig)
+    advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     data_dir: str = DEFAULT_DATA_DIR
 
@@ -431,6 +439,11 @@ class MuninnConfig(BaseModel):
                 retrieval_seed_limit=int(
                     os.environ.get("MUNINN_CHAINS_SEED_LIMIT", "6")
                 ),
+            ),
+            advanced=AdvancedConfig(
+                enable_colbert=os.environ.get("MUNINN_COLBERT_ENABLED", "false").lower() == "true",
+                colbert_dim=int(os.environ.get("MUNINN_COLBERT_DIM", "128")),
+                enable_temporal_kg=os.environ.get("MUNINN_TEMPORAL_KG_ENABLED", "false").lower() == "true",
             ),
             server=ServerConfig(
                 host=os.environ.get("MUNINN_HOST", "127.0.0.1"),
