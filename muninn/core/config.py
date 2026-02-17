@@ -226,6 +226,7 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 42069
     log_level: str = "info"
+    auth_token: Optional[str] = None
 
 
 class MuninnConfig(BaseModel):
@@ -435,6 +436,7 @@ class MuninnConfig(BaseModel):
                 host=os.environ.get("MUNINN_HOST", "127.0.0.1"),
                 port=int(os.environ.get("MUNINN_PORT", "42069")),
                 log_level=os.environ.get("MUNINN_LOG_LEVEL", "info"),
+                auth_token=os.environ.get("MUNINN_SERVER_AUTH_TOKEN"),
             ),
         )
 
