@@ -424,9 +424,9 @@
 - Phase 4S MCP task lifecycle verification: `45 passed` (`tests/test_mcp_wrapper_protocol.py`) + `81 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_051620.json`).
 - Phase 4T task-augmented tools/call verification: `50 passed` (`tests/test_mcp_wrapper_protocol.py`) + `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_055320.json`).
 - Phase 4U blocking-result dispatch verification: `50 passed` (`tests/test_mcp_wrapper_protocol.py`) + `86 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_055320.json`).
-- Phase 4U review-hardening verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_060835.json`).
-- Phase 4V metadata/cursor compliance verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_061319.json`).
-- Phase 4W transport resilience verification: `56 passed` (`tests/test_mcp_wrapper_protocol.py`) + `92 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_064545.json`).
+- Phase 4U review-hardening verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `71 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_060835.json`).
+- Phase 4V metadata/cursor compliance verification: `52 passed` (`tests/test_mcp_wrapper_protocol.py`) + `78 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_061319.json`).
+- Phase 4W transport resilience verification: `56 passed` (`tests/test_mcp_wrapper_protocol.py`) + `75 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_064545.json`).
 - Phase 4X soak/dispatch-policy verification: `98 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_074136.json`) + hygiene gate pass (`eval/reports/hygiene/phase_hygiene_20260215_074404.json`).
 - Phase 4Y governance telemetry/guardrail verification: `30 passed` (`tests/test_ollama_local_benchmark.py`) + compile checks (`python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`).
 - Phase 4AA tools/call deadline-budget hardening verification: `62 passed` (`tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
@@ -983,7 +983,7 @@ class ConflictDetector:
 ```
 
 **Resolution Strategies:**
-| Strategy | When Applied | Action |
+| Strategy | Action | When |
 |---|---|---|
 | `SUPERSEDE` | New memory is clearly more recent, same topic | Archive old, store new |
 | `MERGE` | Both partially true, complementary | Combine into unified memory |
@@ -1303,6 +1303,35 @@ async with AsyncMemory() as m:
 
 ---
 
+## Phase 5C: Security & Optimization (v3.3.1)
+
+> **Priority**: 🔴 HIGHEST (Security Blocker)
+> **Risk**: LOW
+> **Effort**: 3-5 days
+> **Theme**: Production readiness, process isolation, API security
+
+### 5C.1 REST API Authentication
+**Problem**: The REST API currently allows unauthenticated access to all endpoints, including destructive operations (`delete_all`, `add`). This is unsafe for standalone mode or shared network deployments.
+**Solution**: Implement Bearer token authentication.
+- **Mechanism**: `fastapi.security.HTTPBearer`.
+- **Config**: `MUNINN_SERVER_AUTH_TOKEN` env var. If not set, generate a secure random token on startup and print to logs.
+- **Scope**: Protect all write/delete/admin endpoints. Configurable read-only access for `search`/`get_all`.
+
+### 5C.2 Ingestion Process Isolation
+**Problem**: Parsing complex binary formats (PDF, DOCX) is CPU-bound and prone to crashes (e.g., malformed PDF causing segfaults in underlying C libraries). Running this in the main asyncio loop or threads can block/crash the server.
+**Solution**: Use `concurrent.futures.ProcessPoolExecutor` for the parsing stage.
+- **Implementation**: Isolate `pypdf`, `python-docx`, and `beautifulsoup4` calls.
+- **Resilience**: Timeout per file processing to prevent hang.
+
+### 5C.3 Granular Locking & Async Optimization
+**Problem**: `server.py` uses a global `GLOBAL_LOCK` for all write operations. While safe, it serializes operations that might be parallelizable (e.g., ingestion of different files).
+**Solution**:
+- **Granular Locking**: Move locking down to `MuninnMemory` or `SQLiteMetadata` level where appropriate.
+- **WAL Mode Verification**: Ensure SQLite WAL mode is active to allow concurrent reads during writes.
+- **Search Optimization**: Verify `search` path remains lock-free.
+
+---
+
 ## Dependency Summary
 
 ### New Dependencies by Phase
@@ -1428,3 +1457,3795 @@ Phase 3 (v3.3.0): Weeks 6-8
 | Memory hierarchy (4-tier) | ✅ UNIQUE | ❌ | ❌ | ❌ | ❌ |
 | Bi-temporal provenance | ✅ | ❌ | ✅ | ❌ | ❌ |
 | Semantic dedup | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Cross-assistant handoff | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Operational traceability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Causal reasoning | ✅ | ❌ | ❌ | ❌ | ❌ |
+| VRAM-aware routing | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Runtime profile control | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Governance-aware policy apply | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Review-to-runtime provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident forensics | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Protocol correctness | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Concurrency guardrail | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence-scope precision | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Host-timeout avoidance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Long-call timeout-mitigation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Closure-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Incident-capture automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Check-surface observability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Evidence provenance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Scope-governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Decision automation | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session budget resilience | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Continuity reliability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Search-fallback usability | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Hybrid-retrieval latency | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Ingestion throughput | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Core responsiveness | ✅ | ❌ | ❌
