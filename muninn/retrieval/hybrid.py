@@ -503,8 +503,14 @@ class HybridRetriever:
         This means importance can boost by up to 30%.
         """
         weighted = {}
+        mem_ids = list(rrf_scores.keys())
+        
+        # Batch fetch all records to avoid N+1 queries (P0 Performance Fix)
+        records = self.metadata.get_by_ids(mem_ids)
+        record_cache = {r.id: r for r in records}
+
         for mem_id, rrf_score in rrf_scores.items():
-            record = self.metadata.get(mem_id)
+            record = record_cache.get(mem_id)
             if record:
                 importance = record.importance
                 boost_factor = 0.7 + 0.3 * importance
