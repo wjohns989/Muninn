@@ -559,6 +559,17 @@ class ConsolidationDaemon:
                 neighbor_map[record.id] = sim_ids
                 all_neighbor_ids.update(sim_ids)
 
+            # v3.6.3 Fallback: Get random samples for records with no neighbors
+            lonely_ids = [r.id for r in records if not neighbor_map.get(r.id)]
+            if lonely_ids:
+                random_pool = self.metadata.get_random(limit=20)
+                random_ids = [r.id for r in random_pool]
+                for rid in lonely_ids:
+                    # Provide up to 5 random candidates for auditing
+                    sample = [sid for sid in random_ids if sid != rid][:5]
+                    neighbor_map[rid] = sample
+                    all_neighbor_ids.update(sample)
+
             # Batch fetch all candidate metadata
             candidate_records = self.metadata.get_by_ids(list(all_neighbor_ids))
             cand_map = {c.id: c for c in candidate_records}
