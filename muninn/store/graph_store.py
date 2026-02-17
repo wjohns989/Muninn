@@ -10,6 +10,7 @@ import json
 import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
+import math
 
 import kuzu
 
@@ -245,8 +246,11 @@ class GraphStore:
             )
             if result.has_next():
                 degree = result.get_next()[0]
-                # Normalize: assume max degree ~50 for practical purposes
-                return min(1.0, degree / 50.0)
+                # Normalize: Use log-scaling to handle high-degree nodes without losing resolution.
+                # Normalized centrality = log(1 + degree) / log(1 + 100)
+                # This gives 1.0 at degree 100, but keeps scaling (slower) above that.
+                # w["centrality"] is 0.20, so high degree nodes get full boost.
+                return min(1.0, math.log1p(degree) / math.log1p(100))
         except Exception:
             pass
         return 0.0

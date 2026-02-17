@@ -46,6 +46,7 @@ from muninn.observability import OTelGenAITracer
 from muninn.chains import MemoryChainDetector
 from muninn.ingestion import IngestionPipeline, discover_legacy_sources as discover_legacy_sources_catalog
 from muninn.ingestion.parser import infer_source_type
+from muninn.core.ingestion_manager import IngestionManager
 
 logger = logging.getLogger("Muninn")
 
@@ -105,6 +106,12 @@ class MuninnMemory:
         self._dedup = None           # SemanticDedup
         self._conflict_detector = None  # ConflictDetector
         self._conflict_resolver = None  # ConflictResolver
+
+        # Managers
+        self._ingestion_manager: Optional[IngestionManager] = None
+
+        # Locking
+        self._write_lock = asyncio.Lock()
 
         # Embedding
         self._embed_model = None
@@ -265,6 +272,9 @@ class MuninnMemory:
                 self._conflict_detector = None
                 self._conflict_resolver = None
 
+        # Initialize ingestion manager
+        self._ingestion_manager = IngestionManager(self)
+
         # Controlled migration for legacy records that predate user_id metadata scope.
         migration_complete = self._metadata.get_meta("user_scope_migration_complete", "0") == "1"
         if not migration_complete:
@@ -393,19 +403,7 @@ class MuninnMemory:
         provenance: Provenance = Provenance.AUTO_EXTRACTED,
     ) -> Dict[str, Any]:
         """
-        Add a new memory.
-
-        Args:
-            content: The memory content text.
-            user_id: User identifier.
-            agent_id: Agent/assistant identifier.
-            metadata: Optional key-value metadata.
-            namespace: Memory namespace for isolation.
-            memory_type: Type of memory (default: episodic).
-            provenance: How this memory was created.
-
-        Returns:
-            Dict with 'id', 'content', 'importance', and extraction results.
+        Add a new memory. Delegation to IngestionManager.
         """
         self._check_initialized()
         with self._otel.span(
@@ -418,255 +416,121 @@ class MuninnMemory:
                 "muninn.project": (metadata or {}).get("project", "global"),
             },
         ):
-            self._otel.add_event(
-                "muninn.add.request",
-                {"content_preview": self._otel.maybe_content(content)},
-            )
-
-            scoped_metadata = {**(metadata or {}), "user_id": user_id}
-            project_value = scoped_metadata.get("project")
-            project = str(project_value) if project_value else "global"
-            branch = scoped_metadata.get("branch")
-            if branch is not None:
-                branch = str(branch)
-
-            scope_filters = {"namespace": namespace, "user_id": user_id}
-            if project_value:
-                scope_filters["project"] = project
-
-            extraction_profile = str(
-                scoped_metadata.get("operator_model_profile")
-                or self.config.extraction.runtime_model_profile
-                or self.config.extraction.model_profile
-            )
-            extraction = await self._extract_with_profile(
-                content,
-                model_profile=extraction_profile,
-            )
-            entity_names = self._extract_entity_names(extraction)
-            if entity_names:
-                scoped_metadata["entity_names"] = entity_names
-            embedding = await self._embed(content)
-
-            record = MemoryRecord(
+            # Process via IngestionManager
+            processed = await self._ingestion_manager.process_add(
                 content=content,
+                user_id=user_id,
+                agent_id=agent_id,
+                metadata=metadata,
+                namespace=namespace,
                 memory_type=memory_type,
                 provenance=provenance,
-                source_agent=agent_id or "unknown",
-                project=project,
-                branch=branch,
-                namespace=namespace,
-                metadata=scoped_metadata,
-                novelty_score=0.0,
             )
 
-            dedup_result = None
-            vectors_count = await asyncio.to_thread(self._vectors.count)
-            if self._dedup and vectors_count > 0:
-                from muninn.dedup.semantic_dedup import DedupStrategy
+            # Handle terminal early returns (DEDUP_SKIP, CONFLICT_SKIP)
+            if processed.get("id") is None and "event" in processed and processed["event"] != "PROCESS_COMPLETE":
+                return processed
 
-                dedup_result = await asyncio.to_thread(
-                    self._dedup.check_duplicate,
-                    embedding=embedding,
-                    content=content,
-                    vector_store=self._vectors,
-                    metadata_store=self._metadata,
-                    filters=scope_filters,
-                )
-                if dedup_result and dedup_result.is_duplicate:
-                    if dedup_result.strategy == DedupStrategy.SKIP:
-                        logger.info(
-                            "Dedup SKIP: duplicate of %s (sim=%.3f)",
-                            dedup_result.existing_memory_id,
-                            dedup_result.similarity,
+            # Handle Dedup Update
+            if processed.get("event") == "DEDUP_SIGNAL_UPDATE":
+                dedup_result = processed["dedup"]
+                embedding = processed["embedding"]
+                record = processed["record"]
+                
+                async with self._write_lock:
+                    existing = await asyncio.to_thread(self._metadata.get, dedup_result.existing_memory_id)
+                    if existing and self._record_matches_scope(existing, namespace, user_id):
+                        merged_content = self._dedup.merge_content(content, existing.content)
+                        await asyncio.gather(
+                            asyncio.to_thread(self._metadata.update, dedup_result.existing_memory_id, content=merged_content),
+                            asyncio.to_thread(
+                                self._vectors.upsert,
+                                memory_id=dedup_result.existing_memory_id,
+                                embedding=await self._embed(merged_content),
+                                metadata={
+                                    "content": merged_content[:500],
+                                    "memory_type": existing.memory_type.value,
+                                    "namespace": namespace,
+                                    "importance": existing.importance,
+                                    "user_id": user_id,
+                                    "project": existing.project,
+                                    "branch": existing.branch,
+                                },
+                            ),
+                            asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content)
                         )
                         return {
-                            "id": None,
-                            "content": content,
-                            "event": "DEDUP_SKIP",
+                            "id": dedup_result.existing_memory_id,
+                            "content": merged_content,
+                            "event": "DEDUP_MERGED",
                             "dedup": dedup_result.model_dump(),
                         }
-                    if dedup_result.strategy == DedupStrategy.UPDATE_EXISTING:
-                        existing = await asyncio.to_thread(self._metadata.get, dedup_result.existing_memory_id)
-                        if existing:
-                            if not self._record_matches_scope(existing, namespace, user_id):
-                                logger.warning(
-                                    "Dedup UPDATE_EXISTING scope mismatch: memory_id=%s namespace=%s user_id=%s",
-                                    dedup_result.existing_memory_id,
-                                    existing.namespace,
-                                    (existing.metadata or {}).get("user_id"),
-                                )
-                            else:
-                                merged_content = self._dedup.merge_content(content, existing.content)
-                                await asyncio.to_thread(
-                                    self._metadata.update,
-                                    dedup_result.existing_memory_id,
-                                    content=merged_content,
-                                )
-                                merged_embedding = await self._embed(merged_content)
-                                await asyncio.to_thread(
-                                    self._vectors.upsert,
-                                    memory_id=dedup_result.existing_memory_id,
-                                    embedding=merged_embedding,
-                                    metadata={
-                                        "content": merged_content[:500],
-                                        "memory_type": existing.memory_type.value,
-                                        "namespace": namespace,
-                                        "importance": existing.importance,
-                                        "user_id": user_id,
-                                        "project": existing.project,
-                                        "branch": existing.branch,
-                                    },
-                                )
-                                await asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content)
-                                logger.info(
-                                    "Dedup UPDATE_EXISTING: merged into %s",
-                                    dedup_result.existing_memory_id,
-                                )
-                                return {
-                                    "id": dedup_result.existing_memory_id,
-                                    "content": merged_content,
-                                    "event": "DEDUP_MERGED",
-                                    "dedup": dedup_result.model_dump(),
-                                }
+                return processed # Fallback
 
-            conflict_info = None
-            if self._conflict_detector and vectors_count > 0:
-                try:
-                    similar_for_conflict = await asyncio.to_thread(
-                        self._vectors.search,
-                        embedding,
-                        limit=5,
-                        score_threshold=self.config.conflict_detection.similarity_prefilter,
-                        filters=scope_filters,
+            # Handle Persistence for PROCESS_COMPLETE
+            record = processed["record"]
+            extraction = processed["extraction"]
+            embedding = processed["embedding"]
+            entity_names = processed["entity_names"]
+            conflict_info = processed["conflict_info"]
+
+            # Acquire write lock only for the persistence phase
+            async with self._write_lock:
+                def _write_metadata():
+                    self._metadata.add(record)
+
+                def _write_vectors():
+                    self._vectors.upsert(
+                        memory_id=record.id,
+                        embedding=embedding,
+                        metadata={
+                            "content": content[:500],
+                            "memory_type": memory_type.value,
+                            "namespace": namespace,
+                            "importance": record.importance,
+                            "user_id": user_id,
+                            "project": record.project,
+                            "branch": record.branch,
+                        },
                     )
-                    if similar_for_conflict:
-                        candidate_ids = [mid for mid, _score in similar_for_conflict]
-                        all_candidates = await asyncio.to_thread(self._metadata.get_by_ids, candidate_ids)
-                        candidate_records = [
-                            candidate
-                            for candidate in all_candidates
-                            if self._record_matches_scope(candidate, namespace, user_id)
-                        ]
-                        if candidate_records:
-                            conflicts = await asyncio.to_thread(
-                                self._conflict_detector.detect_conflicts, content, candidate_records
-                            )
-                            if conflicts and self._conflict_resolver:
-                                conflicts.sort(key=lambda c: c.contradiction_score, reverse=True)
-                                conflict = conflicts[0]
-                                resolution = await asyncio.to_thread(
-                                    self._conflict_resolver.resolve,
-                                    conflict,
-                                    new_record=record,
-                                    new_embedding=embedding,
-                                    user_id=user_id,
-                                )
-                                conflict_info = {
-                                    "conflict_detected": True,
-                                    "resolution": resolution,
-                                    "conflict_details": conflict.model_dump(),
-                                }
-                                if resolution.get("skip_new_storage"):
-                                    logger.info(
-                                        "Conflict resolution: %s — skipping new storage",
-                                        resolution.get("resolution"),
-                                    )
-                                    return {
-                                        "id": None,
-                                        "content": content,
-                                        "event": f"CONFLICT_{resolution['resolution'].upper()}",
-                                        "conflict": conflict_info,
-                                    }
-                except Exception as e:
-                    logger.warning("Conflict detection failed (non-fatal): %s", e)
 
-            max_similarity = 0.0
-            if vectors_count > 0:
-                try:
-                    similar = await asyncio.to_thread(
-                        self._vectors.search, embedding, limit=5, filters=scope_filters
-                    )
-                    if similar:
-                        max_similarity = similar[0][1]
-                except Exception:
-                    pass
+                def _write_graph():
+                    self._graph.add_memory_node(record.id, extraction.summary or content[:200])
+                    for entity in extraction.entities:
+                        self._graph.add_entity(entity.name, entity.entity_type)
+                        self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
+                    for relation in extraction.relations:
+                        self._graph.add_entity(relation.subject, "concept")
+                        self._graph.add_entity(relation.object, "concept")
+                        self._graph.add_relation(
+                            relation.subject,
+                            relation.predicate,
+                            relation.object,
+                            record.id,
+                            relation.confidence,
+                        )
 
-            record.novelty_score = calculate_novelty(max_similarity)
+                def _write_bm25():
+                    self._bm25.add(record.id, content)
 
-            centrality = 0.1 if extraction.entities else 0.0
-            importance = calculate_importance(
-                record,
-                max_similarity=max_similarity,
-                centrality=centrality,
-            )
-            record.importance = importance
-
-            # Parallelize store writes
-            def _write_metadata():
-                self._metadata.add(record)
-
-            def _write_vectors():
-                self._vectors.upsert(
-                    memory_id=record.id,
-                    embedding=embedding,
-                    metadata={
-                        "content": content[:500],
-                        "memory_type": memory_type.value,
-                        "namespace": namespace,
-                        "importance": importance,
-                        "user_id": user_id,
-                        "project": project,
-                        "branch": branch,
-                    },
+                await asyncio.gather(
+                    asyncio.to_thread(_write_metadata),
+                    asyncio.to_thread(_write_vectors),
+                    asyncio.to_thread(_write_graph),
+                    asyncio.to_thread(_write_bm25),
                 )
 
-            def _write_graph():
-                self._graph.add_memory_node(record.id, extraction.summary or content[:200])
-                for entity in extraction.entities:
-                    self._graph.add_entity(entity.name, entity.entity_type)
-                    self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
-                for relation in extraction.relations:
-                    self._graph.add_entity(relation.subject, "concept")
-                    self._graph.add_entity(relation.object, "concept")
-                    self._graph.add_relation(
-                        relation.subject,
-                        relation.predicate,
-                        relation.object,
-                        record.id,
-                        relation.confidence,
-                    )
-
-            def _write_bm25():
-                self._bm25.add(record.id, content)
-
-            await asyncio.gather(
-                asyncio.to_thread(_write_metadata),
-                asyncio.to_thread(_write_vectors),
-                asyncio.to_thread(_write_graph),
-                asyncio.to_thread(_write_bm25),
-            )
-
-            chain_links_created = await asyncio.to_thread(
-                self._upsert_memory_chain_links,
-                successor_record=record,
-                successor_content=content,
-                successor_entity_names=entity_names,
-            )
-
-            logger.info(
-                "Added memory %s (importance=%.3f, entities=%d, relations=%d, chains=%d)",
-                record.id,
-                importance,
-                len(extraction.entities),
-                len(extraction.relations),
-                chain_links_created,
-            )
+                chain_links_created = await asyncio.to_thread(
+                    self._upsert_memory_chain_links,
+                    successor_record=record,
+                    successor_content=content,
+                    successor_entity_names=entity_names,
+                )
 
             result = {
                 "id": record.id,
                 "content": content,
-                "importance": importance,
+                "importance": record.importance,
                 "memory_type": memory_type.value,
                 "entities": [e.model_dump() for e in extraction.entities],
                 "relations": [r.model_dump() for r in extraction.relations],
@@ -675,21 +539,20 @@ class MuninnMemory:
             }
             if conflict_info:
                 result["conflict"] = conflict_info
-            if dedup_result:
-                result["dedup"] = dedup_result.model_dump()
-            if self._goal_compass is not None and project:
+            
+            if self._goal_compass is not None and record.project:
                 drift = await self._goal_compass.evaluate_drift(
                     text=content,
                     user_id=user_id,
                     namespace=namespace,
-                    project=project,
+                    project=record.project,
                 )
                 if drift is not None:
                     result["goal_alignment"] = drift
 
             self._otel.add_event(
                 "muninn.add.result",
-                {"memory_id": record.id, "importance": importance},
+                {"memory_id": record.id, "importance": record.importance},
             )
             return result
 
@@ -893,18 +756,19 @@ class MuninnMemory:
     ) -> Dict[str, Any]:
         """Persist retrieval feedback for adaptive weighting calibration."""
         self._check_initialized()
-        feedback_id = self._metadata.add_retrieval_feedback(
-            user_id=user_id,
-            namespace=namespace,
-            project=project,
-            query_text=query,
-            memory_id=memory_id,
-            outcome=outcome,
-            rank=rank,
-            sampling_prob=sampling_prob,
-            signals=signals or {},
-            source=source,
-        )
+        async with self._write_lock:
+            feedback_id = self._metadata.add_retrieval_feedback(
+                user_id=user_id,
+                namespace=namespace,
+                project=project,
+                query_text=query,
+                memory_id=memory_id,
+                outcome=outcome,
+                rank=rank,
+                sampling_prob=sampling_prob,
+                signals=signals or {},
+                source=source,
+            )
         self._feedback_multiplier_cache.pop((user_id, namespace, project), None)
         return {
             "feedback_id": feedback_id,
@@ -960,23 +824,24 @@ class MuninnMemory:
         if not isinstance(profile, dict):
             raise ValueError("profile must be a JSON object")
 
-        existing = self._metadata.get_user_profile(user_id=user_id)
-        current_profile = (
-            dict(existing.get("profile", {}))
-            if existing and isinstance(existing.get("profile"), dict)
-            else {}
-        )
-        next_profile = (
-            self._merge_profile_patch(current_profile, profile)
-            if merge
-            else dict(profile)
-        )
+        async with self._write_lock:
+            existing = self._metadata.get_user_profile(user_id=user_id)
+            current_profile = (
+                dict(existing.get("profile", {}))
+                if existing and isinstance(existing.get("profile"), dict)
+                else {}
+            )
+            next_profile = (
+                self._merge_profile_patch(current_profile, profile)
+                if merge
+                else dict(profile)
+            )
 
-        self._metadata.set_user_profile(
-            user_id=user_id,
-            profile=next_profile,
-            source=source,
-        )
+            self._metadata.set_user_profile(
+                user_id=user_id,
+                profile=next_profile,
+                source=source,
+            )
         stored = self._metadata.get_user_profile(user_id=user_id)
         return {
             "event": "USER_PROFILE_UPDATED",
@@ -1026,13 +891,15 @@ class MuninnMemory:
             raise RuntimeError("Goal compass is disabled by feature flag")
         if not goal_statement.strip():
             raise ValueError("goal_statement cannot be empty")
-        return await self._goal_compass.set_goal(
-            user_id=user_id,
-            namespace=namespace,
-            project=project,
-            goal_statement=goal_statement,
-            constraints=constraints or [],
-        )
+        
+        async with self._write_lock:
+            return await self._goal_compass.set_goal(
+                user_id=user_id,
+                namespace=namespace,
+                project=project,
+                goal_statement=goal_statement,
+                constraints=constraints or [],
+            )
 
     async def get_project_goal(
         self,
@@ -1181,45 +1048,46 @@ class MuninnMemory:
         imported = 0
         skipped = 0
 
-        goal = payload.get("goal")
-        if isinstance(goal, dict) and goal.get("goal_statement"):
-            await self.set_project_goal(
-                user_id=user_id,
-                namespace=namespace,
-                project=project,
-                goal_statement=str(goal.get("goal_statement")),
-                constraints=[str(item) for item in goal.get("constraints", [])],
-            )
+        async with self._write_lock:
+            goal = payload.get("goal")
+            if isinstance(goal, dict) and goal.get("goal_statement"):
+                await self.set_project_goal(
+                    user_id=user_id,
+                    namespace=namespace,
+                    project=project,
+                    goal_statement=str(goal.get("goal_statement")),
+                    constraints=[str(item) for item in goal.get("constraints", [])],
+                )
 
-        memories = payload.get("memories", [])
-        for item in memories:
-            if not isinstance(item, dict):
-                skipped += 1
-                continue
-            content = str(item.get("content") or "").strip()
-            if not content:
-                skipped += 1
-                continue
+            memories = payload.get("memories", [])
+            for item in memories:
+                if not isinstance(item, dict):
+                    skipped += 1
+                    continue
+                content = str(item.get("content") or "").strip()
+                if not content:
+                    skipped += 1
+                    continue
 
-            merged_meta = dict(item.get("metadata") or {})
-            merged_meta.setdefault("project", project)
-            merged_meta.setdefault("kind", "handoff_memory")
-            merged_meta["handoff_event_id"] = event_id
-            merged_meta["handoff_source"] = source
+                merged_meta = dict(item.get("metadata") or {})
+                merged_meta.setdefault("project", project)
+                merged_meta.setdefault("kind", "handoff_memory")
+                merged_meta["handoff_event_id"] = event_id
+                merged_meta["handoff_source"] = source
 
-            add_result = await self.add(
-                content=content,
-                user_id=user_id,
-                namespace=namespace,
-                metadata=merged_meta,
-                provenance=Provenance.INGESTED,
-            )
-            if add_result.get("event") in {"DEDUP_SKIP", "CONFLICT_SKIP"}:
-                skipped += 1
-            else:
-                imported += 1
+                add_result = await self.add(
+                    content=content,
+                    user_id=user_id,
+                    namespace=namespace,
+                    metadata=merged_meta,
+                    provenance=Provenance.INGESTED,
+                )
+                if add_result.get("event") in {"DEDUP_SKIP", "CONFLICT_SKIP"}:
+                    skipped += 1
+                else:
+                    imported += 1
 
-        self._metadata.record_handoff_event(event_id=event_id, source=source)
+            self._metadata.record_handoff_event(event_id=event_id, source=source)
         return {
             "event": "HANDOFF_IMPORTED",
             "event_id": event_id,
@@ -1262,6 +1130,39 @@ class MuninnMemory:
         failed_chunks = 0
         source_context_by_path = source_context_by_path or {}
 
+        # Use a semaphore to bound concurrency for chunk processing (extractions/embeddings).
+        # This prevents overwhelming local LLM endpoints or thread pools.
+        semaphore = asyncio.Semaphore(8)
+
+        async def _add_chunk_task(chunk, source_context, record_ref):
+            nonlocal added_memories, skipped_chunks, failed_chunks
+            chunk_metadata = dict(base_metadata)
+            chunk_metadata.update(source_context)
+            chunk_metadata.update(chunk.metadata)
+            
+            async with semaphore:
+                try:
+                    add_result = await self.add(
+                        content=chunk.content,
+                        user_id=user_id,
+                        namespace=namespace,
+                        metadata=chunk_metadata,
+                        provenance=Provenance.INGESTED,
+                    )
+                    
+                    if add_result.get("event") in {"DEDUP_SKIP", "CONFLICT_SKIP"}:
+                        skipped_chunks += 1
+                        record_ref["chunks_skipped"] += 1
+                    else:
+                        added_memories += 1
+                        record_ref["chunks_added"] += 1
+                except Exception as exc:
+                    failed_chunks += 1
+                    record_ref["chunks_failed"] += 1
+                    record_ref["errors"].append(
+                        f"chunk[{chunk.chunk_index}] add failed: {exc}"
+                    )
+
         for source_result in report.source_results:
             source_record: Dict[str, Any] = {
                 "source_path": source_result.source_path,
@@ -1274,39 +1175,20 @@ class MuninnMemory:
                 "chunks_skipped": 0,
                 "chunks_failed": 0,
             }
+            source_payloads.append(source_record)
+            
             if source_result.status != "processed":
-                source_payloads.append(source_record)
                 continue
 
             source_context = source_context_by_path.get(source_result.source_path, {})
-            for chunk in source_result.chunks:
-                chunk_metadata = dict(base_metadata)
-                chunk_metadata.update(source_context)
-                chunk_metadata.update(chunk.metadata)
-                try:
-                    add_result = await self.add(
-                        content=chunk.content,
-                        user_id=user_id,
-                        namespace=namespace,
-                        metadata=chunk_metadata,
-                        provenance=Provenance.INGESTED,
-                    )
-                except Exception as exc:
-                    failed_chunks += 1
-                    source_record["chunks_failed"] += 1
-                    source_record["errors"].append(
-                        f"chunk[{chunk.chunk_index}] add failed: {exc}"
-                    )
-                    continue
-
-                if add_result.get("event") in {"DEDUP_SKIP", "CONFLICT_SKIP"}:
-                    skipped_chunks += 1
-                    source_record["chunks_skipped"] += 1
-                else:
-                    added_memories += 1
-                    source_record["chunks_added"] += 1
-
-            source_payloads.append(source_record)
+            
+            # Create tasks for all chunks in this source
+            tasks = [
+                _add_chunk_task(chunk, source_context, source_record)
+                for chunk in source_result.chunks
+            ]
+            if tasks:
+                await asyncio.gather(*tasks)
 
         return {
             "total_sources": report.total_sources,
@@ -1634,54 +1516,58 @@ class MuninnMemory:
         embedding = await self._embed(data)
 
         # Update stores
-        def _update_metadata():
-            self._metadata.update(record.id, content=record.content, metadata=record.metadata)
+        async with self._write_lock:
+            def _update_metadata():
+                self._metadata.update(record.id, content=record.content, metadata=record.metadata)
 
-        def _update_vectors():
-            self._vectors.upsert(
-                memory_id=record.id,
-                embedding=embedding,
-                metadata={
-                    "content": data[:500],
-                    "memory_type": record.memory_type.value,
-                    "namespace": record.namespace,
-                    "importance": record.importance,
-                    "user_id": record.metadata.get("user_id", "global_user"),
-                    "project": record.project,
-                    "branch": record.branch,
-                },
-            )
-
-        def _update_graph():
-            self._graph.delete_memory_references(record.id)
-            self._graph.add_memory_node(record.id, extraction.summary or data[:200])
-            for entity in extraction.entities:
-                self._graph.add_entity(entity.name, entity.entity_type)
-                self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
-            for relation in extraction.relations:
-                self._graph.add_entity(relation.subject, "concept")
-                self._graph.add_entity(relation.object, "concept")
-                self._graph.add_relation(
-                    relation.subject, relation.predicate,
-                    relation.object, record.id, relation.confidence,
+            def _update_vectors():
+                self._vectors.upsert(
+                    memory_id=record.id,
+                    embedding=embedding,
+                    metadata={
+                        "content": data[:500],
+                        "memory_type": record.memory_type.value,
+                        "namespace": record.namespace,
+                        "importance": record.importance,
+                        "user_id": record.metadata.get("user_id", "global_user"),
+                        "project": record.project,
+                        "branch": record.branch,
+                    },
                 )
 
-        def _update_bm25():
-            self._bm25.add(record.id, data)
+            def _update_graph():
+                self._graph.delete_memory_references(record.id)
+                self._graph.add_memory_node(record.id, extraction.summary or data[:200])
+                for entity in extraction.entities:
+                    self._graph.add_entity(entity.name, entity.entity_type)
+                    self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
+                for relation in extraction.relations:
+                    self._graph.add_entity(relation.subject, "concept")
+                    self._graph.add_entity(relation.object, "concept")
+                    self._graph.add_relation(
+                        relation.subject,
+                        relation.predicate,
+                        relation.object,
+                        record.id,
+                        relation.confidence,
+                    )
 
-        await asyncio.gather(
-            asyncio.to_thread(_update_metadata),
-            asyncio.to_thread(_update_vectors),
-            asyncio.to_thread(_update_graph),
-            asyncio.to_thread(_update_bm25),
-        )
+            def _update_bm25():
+                self._bm25.add(record.id, data)
 
-        chain_links_created = await asyncio.to_thread(
-            self._upsert_memory_chain_links,
-            successor_record=record,
-            successor_content=data,
-            successor_entity_names=entity_names,
-        )
+            await asyncio.gather(
+                asyncio.to_thread(_update_metadata),
+                asyncio.to_thread(_update_vectors),
+                asyncio.to_thread(_update_graph),
+                asyncio.to_thread(_update_bm25),
+            )
+
+            chain_links_created = await asyncio.to_thread(
+                self._upsert_memory_chain_links,
+                successor_record=record,
+                successor_content=data,
+                successor_entity_names=entity_names,
+            )
 
         logger.info("Updated memory %s (chains=%d)", memory_id, chain_links_created)
 
@@ -1697,18 +1583,19 @@ class MuninnMemory:
         """Delete a memory from all stores."""
         self._check_initialized()
 
-        await asyncio.gather(
-            asyncio.to_thread(self._metadata.delete, memory_id),
-            asyncio.to_thread(self._vectors.delete, memory_id),
-            asyncio.to_thread(self._graph.delete_memory_references, memory_id),
-            asyncio.to_thread(self._bm25.remove, memory_id),
-        )
+        async with self._write_lock:
+            await asyncio.gather(
+                asyncio.to_thread(self._metadata.delete, memory_id),
+                asyncio.to_thread(self._vectors.delete, memory_id),
+                asyncio.to_thread(self._graph.delete_memory_references, memory_id),
+                asyncio.to_thread(self._bm25.remove, memory_id),
+            )
 
         logger.info("Deleted memory %s", memory_id)
         return {"id": memory_id, "event": "DELETE"}
 
     async def delete_all(self, user_id: str = "global_user") -> Dict[str, Any]:
-        """Delete all memories for the given user.
+        """Delete all memories for a user.
 
         Scoped by ``user_id`` so that one tenant cannot wipe another's data.
         Individual vectors and BM25 entries are removed per-record to keep
@@ -1716,30 +1603,31 @@ class MuninnMemory:
         """
         self._check_initialized()
 
-        # 1. Collect IDs to delete from vector / BM25 stores
-        records = self._metadata.get_all(user_id=user_id, limit=100_000)
-        memory_ids = [r.id for r in records]
+        async with self._write_lock:
+            # 1. Collect IDs to delete from vector / BM25 stores
+            records = self._metadata.get_all(user_id=user_id, limit=100_000)
+            memory_ids = [r.id for r in records]
 
-        # 2. User-scoped deletion in SQLite
-        count = self._metadata.delete_all(user_id=user_id)
+            # 2. User-scoped deletion in SQLite
+            count = self._metadata.delete_all(user_id=user_id)
 
-        # 3. Remove matching vectors individually (best-effort)
-        for mid in memory_ids:
-            try:
-                self._vectors.delete(mid)
-            except Exception:
-                logger.debug("Vector delete skipped for %s", mid)
+            # 3. Remove matching vectors individually (best-effort)
+            for mid in memory_ids:
+                try:
+                    self._vectors.delete(mid)
+                except Exception:
+                    logger.debug("Vector delete skipped for %s", mid)
 
-        # 4. Remove matching BM25 documents individually
-        for mid in memory_ids:
-            self._bm25.remove(mid)
+            # 4. Remove matching BM25 documents individually
+            for mid in memory_ids:
+                self._bm25.remove(mid)
 
-        # 5. Clean up graph references
-        for mid in memory_ids:
-            try:
-                self._graph.delete_memory_references(mid)
-            except Exception:
-                logger.debug("Graph cleanup skipped for %s", mid)
+            # 5. Clean up graph references
+            for mid in memory_ids:
+                try:
+                    self._graph.delete_memory_references(mid)
+                except Exception:
+                    logger.debug("Graph cleanup skipped for %s", mid)
 
         logger.info("Deleted %d memories for user %s", count, user_id)
         return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
@@ -1843,11 +1731,12 @@ class MuninnMemory:
         policy = await self.get_model_profiles()
         audit_event_id: Optional[int] = None
         if updates:
-            audit_event_id = self._metadata.record_profile_policy_event(
-                source=source,
-                updates=updates,
-                policy=policy,
-            )
+            async with self._write_lock:
+                audit_event_id = self._metadata.record_profile_policy_event(
+                    source=source,
+                    updates=updates,
+                    policy=policy,
+                )
         return {
             "event": event,
             "updates": updates,

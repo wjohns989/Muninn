@@ -33,9 +33,11 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Security, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
+import secrets
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
@@ -66,7 +68,7 @@ logger = logging.getLogger("Muninn")
 
 # --- Global State ---
 memory: Optional[MuninnMemory] = None
-GLOBAL_LOCK: Optional[asyncio.Lock] = None
+GLOBAL_AUTH_TOKEN: Optional[str] = None
 
 
 # --- Pydantic Models (API compatibility) ---
@@ -227,10 +229,47 @@ class SetModelProfilesRequest(BaseModel):
     source: str = "api"
 
 
+# --- Security ---
+security = HTTPBearer(auto_error=False)
+
+async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)):
+    """Verify the Bearer token against the configured server token."""
+    # If no token is configured, we might generate one or allow open access.
+    # The plan says: "If not set, generate a secure random token on startup and print to logs."
+    # We'll handle generation in lifespan.
+    
+    config = MuninnConfig.from_env()
+    expected_token = config.server.auth_token
+    
+    # If config wasn't updated in-process (e.g. if we generated one), check GLOBAL_AUTH_TOKEN
+    global GLOBAL_AUTH_TOKEN
+    if expected_token is None and GLOBAL_AUTH_TOKEN:
+        expected_token = GLOBAL_AUTH_TOKEN
+    
+    # If still None, it means we are running in insecure mode? 
+    # Or maybe we should enforce generation. 
+    # Let's enforce that if we are here, we expect a token if one is configured/generated.
+    
+    if expected_token:
+        if not credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing authentication credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if credentials.credentials != expected_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    return credentials
+
+
 # --- Application Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global memory, GLOBAL_LOCK
+    global memory
 
     logger.info("Muninn Server starting...")
 
@@ -238,12 +277,27 @@ async def lifespan(app: FastAPI):
         # Initialize configuration from environment
         config = MuninnConfig.from_env()
 
+        # Auth Token Generation (Phase 5C.1)
+        global GLOBAL_AUTH_TOKEN
+        if config.server.auth_token:
+            GLOBAL_AUTH_TOKEN = config.server.auth_token
+            logger.info("Server authentication enabled (configured via environment)")
+        else:
+            # Generate a secure random token
+            generated_token = secrets.token_urlsafe(32)
+            GLOBAL_AUTH_TOKEN = generated_token
+            logger.warning("-" * 60)
+            logger.warning("NO AUTH TOKEN CONFIGURED. Generated temporary token:")
+            logger.warning(f"MUNINN_SERVER_AUTH_TOKEN={generated_token}")
+            logger.warning("-" * 60)
+
         # Initialize memory engine
         memory = MuninnMemory(config)
         await memory.initialize()
 
-        GLOBAL_LOCK = asyncio.Lock()
-        logger.info("Global concurrency lock initialized")
+        # Phase 5C.3: Removed GLOBAL_LOCK in favor of granular MuninnMemory._write_lock
+        # GLOBAL_LOCK = asyncio.Lock()
+        # logger.info("Global concurrency lock initialized")
 
         yield
     finally:
@@ -295,83 +349,86 @@ async def health_check():
         return {"status": "error", "error": str(e), "backend": "muninn-native"}
 
 
-@app.post("/add")
+@app.post("/add", dependencies=[Depends(verify_token)])
 async def add_memory_endpoint(req: AddMemoryRequest):
     """Add a memory to the store with entity extraction and auto-indexing."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
+        # Phase 5C.3: Removed global lock; concurrency managed by memory engine
+        # if GLOBAL_LOCK is None:
+        #     raise HTTPException(status_code=503, detail="Server not initialized")
 
-        async with GLOBAL_LOCK:
-            # Support both messages list and simple content string
-            if req.messages:
-                # Convert messages to a single content string
-                content = " ".join(
-                    msg.get("content", "") for msg in req.messages
-                    if msg.get("role") in ("user", "assistant")
-                )
-            elif req.content:
-                content = req.content
-            else:
-                raise HTTPException(
-                    status_code=400, detail="Either 'messages' or 'content' required"
-                )
-
-            if not content.strip():
-                raise HTTPException(status_code=400, detail="Content cannot be empty")
-
-            # Determine provenance
-            provenance = Provenance.AUTO_EXTRACTED
-            if req.metadata and req.metadata.get("provenance"):
-                try:
-                    provenance = Provenance(req.metadata["provenance"])
-                except ValueError:
-                    pass
-
-            # Chunking for long content
-            if len(content) > 1000:
-                logger.info("Content > 1000 chars, applying semantic splitting...")
-                import re
-                chunks = re.split(r"\n\n|(?<!\s\w)\.\s", content)
-                merged_chunks = []
-                current = ""
-                for c in chunks:
-                    if len(current) + len(c) < 800:
-                        current += " " + c
-                    else:
-                        if current.strip():
-                            merged_chunks.append(current.strip())
-                        current = c
-                if current.strip():
-                    merged_chunks.append(current.strip())
-
-                results = []
-                for chunk in merged_chunks:
-                    result = await memory.add(
-                        content=chunk,
-                        user_id=req.user_id or "global_user",
-                        agent_id=req.agent_id,
-                        metadata=req.metadata,
-                        namespace=req.namespace or "global",
-                        provenance=provenance,
-                    )
-                    results.append(result)
-                return {"success": True, "data": {"chunks_added": len(results), "results": results}}
-
-            result = await memory.add(
-                content=content,
-                user_id=req.user_id or "global_user",
-                agent_id=req.agent_id,
-                metadata=req.metadata,
-                namespace=req.namespace or "global",
-                provenance=provenance,
+        # async with GLOBAL_LOCK:
+        # Support both messages list and simple content string
+        if req.messages:
+            # Convert messages to a single content string
+            content = " ".join(
+                msg.get("content", "") for msg in req.messages
+                if msg.get("role") in ("user", "assistant")
+            )
+        elif req.content:
+            content = req.content
+        else:
+            raise HTTPException(
+                status_code=400, detail="Either 'messages' or 'content' required"
             )
 
-            logger.info("Added memory for user %s", req.user_id)
-            return {"success": True, "data": result}
+        if not content.strip():
+            raise HTTPException(status_code=400, detail="Content cannot be empty")
+
+        # Determine provenance
+        provenance = Provenance.AUTO_EXTRACTED
+        if req.metadata and req.metadata.get("provenance"):
+            try:
+                provenance = Provenance(req.metadata["provenance"])
+            except ValueError:
+                pass
+
+        # Chunking for long content
+        if len(content) > 1000:
+            logger.info("Content > 1000 chars, applying semantic splitting...")
+            import re
+            chunks = re.split(r"\n\n|(?<!\s\w)\.\s", content)
+            merged_chunks = []
+            current = ""
+            for c in chunks:
+                if len(current) + len(c) < 800:
+                    current += " " + c
+                else:
+                    if current.strip():
+                        merged_chunks.append(current.strip())
+                    current = c
+            if current.strip():
+                merged_chunks.append(current.strip())
+
+            # Parallelize chunk additions to overlap extractions/embeddings
+            tasks = [
+                memory.add(
+                    content=chunk,
+                    user_id=req.user_id or "global_user",
+                    agent_id=req.agent_id,
+                    metadata=req.metadata,
+                    namespace=req.namespace or "global",
+                    provenance=provenance,
+                )
+                for chunk in merged_chunks
+            ]
+            results = await asyncio.gather(*tasks)
+            return {"success": True, "data": {"chunks_added": len(results), "results": results}}
+
+        result = await memory.add(
+            content=content,
+            user_id=req.user_id or "global_user",
+            agent_id=req.agent_id,
+            metadata=req.metadata,
+            namespace=req.namespace or "global",
+            provenance=provenance,
+        )
+
+        logger.info("Added memory for user %s", req.user_id)
+        return {"success": True, "data": result}
 
     except HTTPException:
         raise
@@ -385,7 +442,7 @@ async def add_memory_endpoint(req: AddMemoryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/search")
+@app.post("/search", dependencies=[Depends(verify_token)])
 async def search_memory_endpoint(req: SearchMemoryRequest):
     """Search for relevant memories using hybrid multi-signal retrieval."""
     if memory is None:
@@ -416,17 +473,15 @@ async def set_project_goal_endpoint(req: SetProjectGoalRequest):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.set_project_goal(
-                user_id=req.user_id or "global_user",
-                namespace=req.namespace or "global",
-                project=req.project,
-                goal_statement=req.goal_statement,
-                constraints=req.constraints,
-            )
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.set_project_goal(
+            user_id=req.user_id or "global_user",
+            namespace=req.namespace or "global",
+            project=req.project,
+            goal_statement=req.goal_statement,
+            constraints=req.constraints,
+        )
+        return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error setting project goal: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -439,16 +494,14 @@ async def set_user_profile_endpoint(req: SetUserProfileRequest):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.set_user_profile(
-                user_id=req.user_id or "global_user",
-                profile=req.profile,
-                merge=req.merge,
-                source=req.source,
-            )
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.set_user_profile(
+            user_id=req.user_id or "global_user",
+            profile=req.profile,
+            merge=req.merge,
+            source=req.source,
+        )
+        return {"success": True, "data": result}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -459,7 +512,7 @@ async def set_user_profile_endpoint(req: SetUserProfileRequest):
         )
 
 
-@app.get("/profile/user/get")
+@app.get("/profile/user/get", dependencies=[Depends(verify_token)])
 async def get_user_profile_endpoint(
     user_id: str = "global_user",
 ):
@@ -480,7 +533,7 @@ async def get_user_profile_endpoint(
         )
 
 
-@app.get("/goal/get")
+@app.get("/goal/get", dependencies=[Depends(verify_token)])
 async def get_project_goal_endpoint(
     user_id: str = "global_user",
     namespace: str = "global",
@@ -502,7 +555,7 @@ async def get_project_goal_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/profiles/model")
+@app.get("/profiles/model", dependencies=[Depends(verify_token)])
 async def get_model_profiles_endpoint():
     """Return active runtime extraction profile policy."""
     if memory is None:
@@ -532,10 +585,8 @@ async def set_model_profiles_endpoint(req: SetModelProfilesRequest):
         )
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.set_model_profiles(**payload)
+        # Phase 5C.3: Removed global lock
+        result = await memory.set_model_profiles(**payload)
         return {"success": True, "data": result}
     except HTTPException:
         raise
@@ -546,7 +597,7 @@ async def set_model_profiles_endpoint(req: SetModelProfilesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/profiles/model/events")
+@app.get("/profiles/model/events", dependencies=[Depends(verify_token)])
 async def get_model_profile_events_endpoint(limit: int = 25):
     """Return recent runtime profile policy mutation events."""
     if memory is None:
@@ -587,17 +638,15 @@ async def import_handoff_endpoint(req: ImportHandoffRequest):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.import_handoff(
-                bundle=req.bundle,
-                user_id=req.user_id or "global_user",
-                namespace=req.namespace or "global",
-                project=req.project,
-                source=req.source,
-            )
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.import_handoff(
+            bundle=req.bundle,
+            user_id=req.user_id or "global_user",
+            namespace=req.namespace or "global",
+            project=req.project,
+            source=req.source,
+        )
+        return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error importing handoff: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -610,22 +659,20 @@ async def retrieval_feedback_endpoint(req: RetrievalFeedbackRequest):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.record_retrieval_feedback(
-                query=req.query,
-                memory_id=req.memory_id,
-                outcome=req.outcome,
-                user_id=req.user_id or "global_user",
-                namespace=req.namespace or "global",
-                project=req.project or "global",
-                rank=req.rank,
-                sampling_prob=req.sampling_prob,
-                signals=req.signals,
-                source=req.source,
-            )
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.record_retrieval_feedback(
+            query=req.query,
+            memory_id=req.memory_id,
+            outcome=req.outcome,
+            user_id=req.user_id or "global_user",
+            namespace=req.namespace or "global",
+            project=req.project or "global",
+            rank=req.rank,
+            sampling_prob=req.sampling_prob,
+            signals=req.signals,
+            source=req.source,
+        )
+        return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error recording retrieval feedback: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -638,23 +685,21 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.ingest_sources(
-                sources=req.sources,
-                user_id=req.user_id or "global_user",
-                namespace=req.namespace or "global",
-                project=req.project or "global",
-                metadata=req.metadata,
-                recursive=req.recursive,
-                chronological_order=req.chronological_order,
-                max_file_size_bytes=req.max_file_size_bytes,
-                chunk_size_chars=req.chunk_size_chars,
-                chunk_overlap_chars=req.chunk_overlap_chars,
-                min_chunk_chars=req.min_chunk_chars,
-            )
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.ingest_sources(
+            sources=req.sources,
+            user_id=req.user_id or "global_user",
+            namespace=req.namespace or "global",
+            project=req.project or "global",
+            metadata=req.metadata,
+            recursive=req.recursive,
+            chronological_order=req.chronological_order,
+            max_file_size_bytes=req.max_file_size_bytes,
+            chunk_size_chars=req.chunk_size_chars,
+            chunk_overlap_chars=req.chunk_overlap_chars,
+            min_chunk_chars=req.min_chunk_chars,
+        )
+        return {"success": True, "data": result}
     except HTTPException:
         raise
     except Exception as e:
@@ -688,38 +733,37 @@ async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.ingest_legacy_sources(
-                selected_source_ids=req.selected_source_ids,
-                selected_paths=req.selected_paths,
-                roots=req.roots,
-                providers=req.providers,
-                include_unsupported=req.include_unsupported,
-                max_results_per_provider=req.max_results_per_provider,
-                user_id=req.user_id or "global_user",
-                namespace=req.namespace or "global",
-                project=req.project or "global",
-                metadata=req.metadata,
-                recursive=req.recursive,
-                chronological_order=req.chronological_order,
-                max_file_size_bytes=req.max_file_size_bytes,
-                chunk_size_chars=req.chunk_size_chars,
-                chunk_overlap_chars=req.chunk_overlap_chars,
-                min_chunk_chars=req.min_chunk_chars,
-            )
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.ingest_legacy_sources(
+            selected_source_ids=req.selected_source_ids,
+            selected_paths=req.selected_paths,
+            roots=req.roots,
+            providers=req.providers,
+            include_unsupported=req.include_unsupported,
+            max_results_per_provider=req.max_results_per_provider,
+            user_id=req.user_id or "global_user",
+            namespace=req.namespace or "global",
+            project=req.project or "global",
+            metadata=req.metadata,
+            recursive=req.recursive,
+            chronological_order=req.chronological_order,
+            max_file_size_bytes=req.max_file_size_bytes,
+            chunk_size_chars=req.chunk_size_chars,
+            chunk_overlap_chars=req.chunk_overlap_chars,
+            min_chunk_chars=req.min_chunk_chars,
+        )
+        return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error importing legacy sources: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/get_all")
+@app.get("/get_all", dependencies=[Depends(verify_token)])
 async def get_all_memories_endpoint(
     user_id: Optional[str] = "global_user",
     agent_id: Optional[str] = None,
     limit: int = 10,
+    namespace: Optional[str] = None,
 ):
     """Get all memories for a user."""
     if memory is None:
@@ -737,82 +781,75 @@ async def get_all_memories_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put("/update")
+@app.put("/update", dependencies=[Depends(verify_token)])
 async def update_memory_endpoint(req: UpdateMemoryRequest):
     """Update a specific memory."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.update(req.memory_id, req.data)
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.update(req.memory_id, req.data)
+        return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error updating memory: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/delete/{memory_id}")
+@app.delete("/delete/{memory_id}", dependencies=[Depends(verify_token)])
 async def delete_memory_endpoint(memory_id: str):
     """Delete a specific memory."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.delete(memory_id)
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.delete(memory_id)
+        return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error deleting memory: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/delete_all")
+@app.post("/delete_all", dependencies=[Depends(verify_token)])
 async def delete_all_endpoint(req: DeleteAllRequest):
     """Delete all memories for a user."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            result = await memory.delete_all(user_id=req.user_id or "global_user")
-            return {"success": True, "data": result}
+        # Phase 5C.3: Removed global lock
+        result = await memory.delete_all(user_id=req.user_id or "global_user")
+        return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error deleting all memories: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/delete_batch")
+@app.post("/delete_batch", dependencies=[Depends(verify_token)])
 async def delete_batch_endpoint(req: DeleteBatchRequest):
     """Delete a batch of memories."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        if GLOBAL_LOCK is None:
-            raise HTTPException(status_code=503, detail="Server not initialized")
-        async with GLOBAL_LOCK:
-            results = []
-            for mem_id in req.memory_ids:
-                try:
-                    await memory.delete(mem_id)
-                    results.append({"id": mem_id, "status": "deleted"})
-                except Exception as e:
-                    logger.warning("Failed to delete %s: %s", mem_id, e)
-                    results.append({"id": mem_id, "status": "failed", "error": str(e)})
-            return {"success": True, "data": results}
+        # Phase 5C.3: Removed global lock
+        results = []
+        for mem_id in req.memory_ids:
+            try:
+                # Delete logic is thread-safe via core lock
+                await memory.delete(mem_id)
+                results.append({"id": mem_id, "status": "deleted"})
+            except Exception as e:
+                logger.warning("Failed to delete %s: %s", mem_id, e)
+                results.append({"id": mem_id, "status": "failed", "error": str(e)})
+        return {"success": True, "data": results}
     except Exception as e:
         logger.error("Error batch deleting memories: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/graph")
+@app.get("/graph", dependencies=[Depends(verify_token)])
 async def get_graph_endpoint(user_id: Optional[str] = "global_user"):
     """Get the memory graph (entities and relationships)."""
     if memory is None:
@@ -867,7 +904,7 @@ async def context_handover_endpoint(req: HandoverRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/federated/search")
+@app.post("/federated/search", dependencies=[Depends(verify_token)])
 async def federated_search_endpoint(req: SearchMemoryRequest):
     """Federated search across namespaces."""
     if memory is None:
@@ -904,7 +941,7 @@ async def trigger_consolidation():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/consolidation/status")
+@app.get("/consolidation/status", dependencies=[Depends(verify_token)])
 async def consolidation_status():
     """Get consolidation daemon status."""
     if memory is None:

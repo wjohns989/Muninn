@@ -916,6 +916,19 @@ class SQLiteMetadataStore:
         )
         conn.commit()
 
+    def record_access_batch(self, memory_ids: List[str]):
+        """Update access metrics for multiple memories in a single transaction."""
+        if not memory_ids:
+            return
+        conn = self._get_conn()
+        now = time.time()
+        placeholders = ",".join("?" for _ in memory_ids)
+        conn.execute(
+            f"UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id IN ({placeholders})",
+            [now] + memory_ids
+        )
+        conn.commit()
+
     def get_for_consolidation(
         self,
         memory_type: Optional[MemoryType] = None,
