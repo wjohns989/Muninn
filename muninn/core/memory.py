@@ -12,8 +12,9 @@ Composes all subsystems:
 - Hybrid retrieval engine (multi-signal + RRF + reranking)
 - Importance scoring (multi-factor)
 - Consolidation daemon (background maintenance)
+- Bi-temporal timestamps for event vs. ingestion time
 
-API is designed to be a drop-in replacement for mem0.Memory
+API is designed to be be a drop-in replacement for mem0.Memory
 while providing significantly richer capabilities.
 """
 
@@ -40,13 +41,15 @@ from muninn.retrieval.hybrid import HybridRetriever
 from muninn.extraction.pipeline import ExtractionPipeline
 from muninn.scoring.importance import calculate_importance, calculate_novelty
 from muninn.consolidation.daemon import ConsolidationDaemon
-from muninn.core.feature_flags import get_flags
 from muninn.goal import GoalCompass
 from muninn.observability import OTelGenAITracer
 from muninn.chains import MemoryChainDetector
 from muninn.ingestion import IngestionPipeline, discover_legacy_sources as discover_legacy_sources_catalog
 from muninn.ingestion.parser import infer_source_type
 from muninn.core.ingestion_manager import IngestionManager
+from muninn.advanced.temporal_kg import TemporalKnowledgeGraph
+from muninn.advanced.cross_agent import FederationManager
+from muninn.core.feature_flags import get_flags
 
 logger = logging.getLogger("Muninn")
 
@@ -109,6 +112,8 @@ class MuninnMemory:
 
         # Managers
         self._ingestion_manager: Optional[IngestionManager] = None
+        self._temporal_kg: Optional[TemporalKnowledgeGraph] = None
+        self._federation: Optional[FederationManager] = None
 
         # Locking
         self._write_lock = asyncio.Lock()
@@ -274,6 +279,15 @@ class MuninnMemory:
 
         # Initialize ingestion manager
         self._ingestion_manager = IngestionManager(self)
+
+        # Phase 6: Advanced Features
+        if self.config.advanced.enable_temporal_kg:
+            self._temporal_kg = TemporalKnowledgeGraph(self._graph)
+            self._temporal_kg.initialize_schema()
+            logger.info("Temporal Knowledge Graph enabled")
+
+        # Federation is always available (no heavy deps), just needs init
+        self._federation = FederationManager(self)
 
         # Controlled migration for legacy records that predate user_id metadata scope.
         migration_complete = self._metadata.get_meta("user_scope_migration_complete", "0") == "1"
@@ -680,6 +694,7 @@ class MuninnMemory:
         agent_id: Optional[str] = None,
         limit: int = 100,
         namespace: Optional[str] = None,
+        project: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get all memories, optionally filtered.
@@ -694,6 +709,7 @@ class MuninnMemory:
             limit=limit,
             namespace=namespace,
             user_id=user_id,
+            project=project,
         )
 
         return [
@@ -1906,3 +1922,22 @@ class MuninnMemory:
         if self._metadata:
             return self._metadata.count()
         return 0
+
+    async def get_temporal_knowledge(
+        self,
+        timestamp: Optional[float] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Query the Temporal Knowledge Graph for facts valid at a specific time."""
+        self._check_initialized()
+        if not self._temporal_kg:
+            return []
+        
+        ts = float(timestamp) if timestamp is not None else time.time()
+        # This is a read operation, usually fast, but we can offload if needed.
+        # Kuzu reads are blocking, so offload to thread.
+        return await asyncio.to_thread(self._temporal_kg.query_valid_at, ts, limit)
+
+    async def get_federation_manager(self) -> FederationManager:
+        self._check_initialized()
+        return self._federation

@@ -10,13 +10,15 @@ Cloud hosted vs. IDE assistant).
 import hashlib
 import json
 import logging
-from typing import Dict, Any, List, Optional, Set
-from muninn.core.memory import MuninnMemory
+from typing import Dict, Any, List, Optional, Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from muninn.core.memory import MuninnMemory
 
 logger = logging.getLogger("Muninn.Federation")
 
 class FederationManager:
-    def __init__(self, memory: MuninnMemory):
+    def __init__(self, memory: "MuninnMemory"):
         self.memory = memory
 
     async def generate_manifest(self, project: str = "global") -> Dict[str, Any]:
