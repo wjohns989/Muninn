@@ -1,4 +1,3 @@
-
 import json
 import pytest
 import mcp_wrapper
@@ -21,7 +20,7 @@ def test_search_memory_fallback_triggered_when_empty_and_auto_project(monkeypatc
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
     monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
-    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     
     # Trace calls to verify logic
     calls = []
@@ -66,7 +65,7 @@ def test_search_memory_fallback_skipped_if_results_found(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
     monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
-    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     
     calls = []
 
@@ -101,7 +100,7 @@ def test_search_memory_fallback_skipped_if_project_explicitly_set(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
     monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
-    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     
     calls = []
 
@@ -133,7 +132,7 @@ def test_search_memory_fallback_disabled_via_env(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
     monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
-    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     monkeypatch.setenv("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", "false")
     
     calls = []
