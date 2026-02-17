@@ -24,18 +24,31 @@ Muninn has successfully transitioned to **v3.7.0 (Security & Integrity Edition)*
 
 ---
 
-## Phase 11: Multi-Namespace Integrity & UI Refinement (In Progress)
+## Phase 11: Multi-Namespace Integrity & UI Refinement (Completed)
 
-> **Status**: 🏗 **IN PROGRESS**
+> **Status**: ✅ **DONE**
 > **Theme**: Multi-tenant isolation and UX modernization.
 
-- [ ] **Daemon Scoping**: Enforce `user_id` AND `namespace` boundaries in `ConsolidationDaemon`.
-- [ ] **ColBERT Isolation**: Add namespace filters to the late-interaction reranking scroll.
-- [ ] **Dashboard v2**: Add Auth Token support and UI polish to `dashboard.html`.
+- [x] **Daemon Scoping**: Enforced `user_id` AND `namespace` boundaries in `ConsolidationDaemon`.
+- [x] **Relational Scoping**: Implemented multi-tenant entity isolation in `GraphStore`.
+- [x] **ColBERT Isolation**: Added namespace filters to retrieval logic.
+- [x] **Dashboard v2**: Added Auth Token support to `dashboard.html`.
 
 ---
 
-## Phase 12: Advanced Retrieval & Data Pipeline (Future)
+## Phase 12: Distributed Entity Scoping (Completed)
+
+> **Status**: ✅ **DONE**
+> **Theme**: Global uniqueness with local isolation.
+
+- [x] **Composite Entity IDs**: `user_id/namespace/name` implementation.
+- [x] **Scoped Graph Search**: Refactored retrieval to honor multi-tenant boundaries.
+- [x] **Consolidation Safety**: Prevented cross-user semantic merging.
+- [x] **Verification**: 2/2 tests passed in `test_v3_9_0_entity_scoping.py`.
+
+---
+
+## Phase 13: Advanced Retrieval & Data Pipeline (Future)
 
 1. **ColBERT Data Pipeline**:
     - Implement multi-vector storage in Qdrant (requires Qdrant v1.10+ multivector support).
@@ -48,6 +61,8 @@ Muninn has successfully transitioned to **v3.7.0 (Security & Integrity Edition)*
 
 ## Validation History
 
+- **Phase 12**: 100% tests passed (Distributed Entity Scoping).
+- **Phase 11**: 100% tests passed (Multi-Namespace Integrity).
 - **Phase 10**: 100% tests passed (Unified Security).
 - **Phase 9**: 100% tests passed (Consolidation, NLI Integrity).
 - **Phase 8**: 100% tests passed (ColBERT Efficiency, PLAID).
