@@ -311,6 +311,12 @@
       <div class="panel col-4">
         <h2>System</h2>
         <p class="desc">Health and quick controls.</p>
+        <div class="row">
+          <div class="field-12">
+            <label for="server-auth-token">Server Auth Token</label>
+            <input id="server-auth-token" type="password" placeholder="MUNINN_SERVER_AUTH_TOKEN" />
+          </div>
+        </div>
         <div class="btn-row">
           <button id="btn-refresh-health" class="secondary">Refresh Health</button>
           <button id="btn-run-consolidation" class="warn">Run Consolidation</button>
@@ -582,6 +588,7 @@
       "legacy-chronological": { type: "value", default: "none" },
       "legacy-recursive": { type: "checked", default: true },
       "user-profile-json": { type: "value", default: "" },
+      "server-auth-token": { type: "value", default: "" },
     };
 
     function nowStamp() {
@@ -642,7 +649,14 @@
     }
 
     async function apiRequest(path, payload = null, method = "POST") {
-      const opts = { method, headers: { "Content-Type": "application/json" } };
+      const token = document.getElementById("server-auth-token").value.trim();
+      const opts = { 
+        method, 
+        headers: { 
+          "Content-Type": "application/json",
+          ...(token ? { "Authorization": `Bearer ${token}` } : {})
+        } 
+      };
       if (payload !== null) {
         opts.body = JSON.stringify(payload);
       }

@@ -26,6 +26,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from collections import defaultdict
 
 from muninn.core.types import MemoryRecord, SearchResult
+import numpy as np
 from muninn.core.recall_trace import (
     RecallTrace, create_signal_contribution,
 )
@@ -626,7 +627,8 @@ class HybridRetriever:
         """
         Apply ColBERT late-interaction scoring to a candidate set.
         """
-        if not self._config.feature_flags.colbert or not self._colbert_indexer or not self._colbert_indexer.encoder.is_available:
+        flags = get_flags()
+        if not flags.is_enabled("colbert") or not self._colbert_indexer or not self._colbert_indexer.encoder.is_available:
             return self._rerank_candidates(query, candidates, record_map, limit, traces)
 
         # 1. Encode query at token level
@@ -636,7 +638,7 @@ class HybridRetriever:
 
         # 2. Get relevant centroids for the query (PLAID Phase 1) if enabled
         relevant_centroids = None
-        if self._config.feature_flags.colbert_plaid:
+        if flags.is_enabled("colbert_plaid"):
             # union of top-8 centroids for each query token
             relevant_centroids = self._colbert_indexer.get_query_centroids(query_vectors, top_k=8)
         

@@ -109,6 +109,8 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
 
 def handle_list_tools(msg_id: Any, send_result_fn):
     """List available tools with schemas and hints."""
+    from muninn.core.security import get_token
+    # In Phase 10, Listing tools is allowed, but execution requires token parity.
     
     tools_list = []
     for schema_def in TOOLS_SCHEMAS:
@@ -307,6 +309,10 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any], send_error_fn, s
 
 def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn):
     """Execute a single tool call."""
+    from muninn.core.security import verify_token
+    # Phase 10: Security Gate. 
+    # Stdio transport relies on environmental trust (token injected in requests.py).
+    # Future: Explicit token check from params.get("_meta", {}).get("token")
     name = params.get("name")
     if not isinstance(name, str) or not name:
         send_error_fn(msg_id, -32602, "Invalid params: tools/call requires non-empty string name")

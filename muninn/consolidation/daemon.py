@@ -488,8 +488,15 @@ class ConsolidationDaemon:
                 if not vec:
                     continue
                 
+                # v3.6.2 Security Fix: Enforce user-scoping in semantic search 
+                # candidates must belong to the same user as the record being audited
+                search_filter = None
+                if record.user_id:
+                    from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+                    search_filter = Filter(must=[FieldCondition(key="user_id", match=MatchValue(value=record.user_id))])
+
                 # Search Top-5 closest neighbors (limit 6 to exclude self)
-                similar = self.vectors.search(query_embedding=vec, limit=6)
+                similar = self.vectors.search(query_embedding=vec, limit=6, filter=search_filter)
                 sim_ids = [s[0] for s in similar if s[0] != record.id]
                 neighbor_map[record.id] = sim_ids
                 all_neighbor_ids.update(sim_ids)
