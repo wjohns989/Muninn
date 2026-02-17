@@ -62,8 +62,16 @@ class BM25Index:
         self._avg_dl: float = 0.0
         # Total documents
         self._n: int = 0
+        # Metadata store: id → (user_id, namespace)
+        self._metadata: Dict[str, Tuple[str, str]] = {}
 
-    def add(self, doc_id: str, text: str) -> None:
+    def add(
+        self,
+        doc_id: str,
+        text: str,
+        user_id: str = "global",
+        namespace: str = "global",
+    ) -> None:
         """Add or update a document in the index."""
         # Remove old version if exists
         if doc_id in self._docs:
@@ -72,6 +80,7 @@ class BM25Index:
         tokens = tokenize(text)
         self._docs[doc_id] = tokens
         self._doc_lengths[doc_id] = len(tokens)
+        self._metadata[doc_id] = (user_id, namespace)
 
         # Update inverted index and document frequencies
         seen_terms: Set[str] = set()
@@ -104,10 +113,18 @@ class BM25Index:
 
         del self._docs[doc_id]
         del self._doc_lengths[doc_id]
+        if doc_id in self._metadata:
+            del self._metadata[doc_id]
         self._n -= 1
         self._recompute_avg_dl()
 
-    def search(self, query: str, limit: int = 20) -> List[Tuple[str, float]]:
+    def search(
+        self,
+        query: str,
+        limit: int = 20,
+        user_id: Optional[str] = None,
+        namespaces: Optional[List[str]] = None,
+    ) -> List[Tuple[str, float]]:
         """
         Search the index using BM25 scoring.
 
@@ -123,6 +140,9 @@ class BM25Index:
 
         scores: Dict[str, float] = defaultdict(float)
 
+        # Optimization: Pre-filter potential namespaces to a set
+        ns_filter = set(namespaces) if namespaces else None
+
         for term in query_tokens:
             if term not in self._df:
                 continue
@@ -132,6 +152,14 @@ class BM25Index:
             idf = math.log((self._n - df + 0.5) / (df + 0.5) + 1.0)
 
             for doc_id in self._inverted.get(term, set()):
+                # Strict isolation check
+                if user_id or ns_filter:
+                    doc_user, doc_ns = self._metadata.get(doc_id, ("global", "global"))
+                    if user_id and doc_user != user_id:
+                        continue
+                    if ns_filter and doc_ns not in ns_filter:
+                        continue
+
                 # Term frequency in this document
                 tf = self._docs[doc_id].count(term)
                 dl = self._doc_lengths[doc_id]
@@ -151,6 +179,7 @@ class BM25Index:
         self._inverted.clear()
         self._df.clear()
         self._doc_lengths.clear()
+        self._metadata.clear()
         self._avg_dl = 0.0
         self._n = 0
 

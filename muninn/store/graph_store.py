@@ -63,6 +63,8 @@ class GraphStore:
                     id STRING,
                     summary STRING,
                     created_at DOUBLE,
+                    user_id STRING,
+                    namespace STRING,
                     PRIMARY KEY (id)
                 )
             """)
@@ -174,15 +176,21 @@ class GraphStore:
             logger.debug(f"Relation creation: {e}")
             return False
 
-    def add_memory_node(self, memory_id: str, summary: str) -> bool:
+    def add_memory_node(
+        self,
+        memory_id: str,
+        summary: str,
+        user_id: str = "global",
+        namespace: str = "global",
+    ) -> bool:
         conn = self._get_conn()
         now = time.time()
         try:
             conn.execute(
                 "MERGE (m:Memory {id: $id}) "
-                "ON CREATE SET m.summary = $summary, m.created_at = $now "
-                "ON MATCH SET m.summary = $summary",
-                {"id": memory_id, "summary": summary[:500], "now": now}
+                "ON CREATE SET m.summary = $summary, m.created_at = $now, m.user_id = $uid, m.namespace = $ns "
+                "ON MATCH SET m.summary = $summary, m.user_id = $uid, m.namespace = $ns",
+                {"id": memory_id, "summary": summary[:500], "now": now, "uid": user_id, "ns": namespace}
             )
             return True
         except Exception as e:
@@ -235,6 +243,91 @@ class GraphStore:
                 logger.debug(f"Graph search for '{entity_name}': {e}")
 
         return list(memory_ids)[:limit]
+
+    def search_memories(
+        self,
+        query: str,
+        limit: int = 20,
+        user_id: Optional[str] = None,
+        namespaces: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for memories related to keywords in query via graph traversal.
+        """
+        # Simple extraction of keywords for entity matching
+        import re
+        keywords = re.findall(r'\w+', query.lower())
+        if not keywords:
+            return []
+        
+        conn = self._get_conn()
+        results = []
+        
+        # Build strict isolation filter
+        isolation_clause = ""
+        params = {"limit": limit}
+        if user_id:
+            isolation_clause += " AND m.user_id = $uid"
+            params["uid"] = user_id
+        if namespaces:
+            # Kuzu 0.7: Check if property is IN the provided list
+            isolation_clause += " AND m.namespace IN $ns"
+            params["ns"] = namespaces
+
+        try:
+            # Strategy 1: Entity-based search (MENTIONS)
+            for kw in keywords[:5]:
+                query_str = f"""
+                MATCH (m:Memory)-[:MENTIONS]->(e:Entity)
+                WHERE e.name = $kw {isolation_clause}
+                RETURN m.id, m.summary, e.name
+                LIMIT $limit
+                """
+                params["kw"] = kw
+                res = conn.execute(query_str, params)
+                while res.has_next():
+                    row = res.get_next()
+                    results.append({
+                        "id": row[0],
+                        "summary": row[1],
+                        "match": row[2],
+                        "score": 1.0 
+                    })
+            
+            # Strategy 2: Fallback to summary keyword match (if results are sparse)
+            if len(results) < limit:
+                for kw in keywords[:3]:
+                    # Kuzu 0.7 does not have CONTAINS, but we can uses regex for simple cases 
+                    # OR just return match on the summary property if it roughly matches
+                    # Using =~ for regex matching in Kuzu
+                    query_str = f"""
+                    MATCH (m:Memory)
+                    WHERE m.summary =~ $regex {isolation_clause}
+                    RETURN m.id, m.summary
+                    LIMIT $limit
+                    """
+                    params["regex"] = f"(?i).*{kw}.*"
+                    res = conn.execute(query_str, params)
+                    while res.has_next():
+                        row = res.get_next()
+                        results.append({
+                            "id": row[0],
+                            "summary": row[1],
+                            "match": "summary",
+                    "score": 0.8
+                        })
+        except Exception as e:
+            logger.debug(f"Graph search_memories failed: {e}")
+
+        # Basic deduplication with score prioritization
+        seen = {}
+        for r in results:
+            rid = r["id"]
+            if rid not in seen or r["score"] > seen[rid]["score"]:
+                seen[rid] = r
+        
+        unique = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
+        return unique[:limit]
 
     def get_entity_centrality(self, entity_name: str) -> float:
         """Get degree centrality of an entity (normalized by max possible degree)."""
