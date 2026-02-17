@@ -337,13 +337,16 @@ class GraphStore:
         """
         Find memories related via PRECEDES/CAUSES edges around given seeds.
         Returns list of (memory_id, score) ranked by accumulated confidence.
+        Optimized to batch query all seeds at once.
         """
         if not seed_memory_ids:
             return []
         conn = self._get_conn()
         seed_set = set(seed_memory_ids)
         scores: Dict[str, float] = {}
-        max_seed_scan = max(1, min(len(seed_memory_ids), 12))
+        # Kuzu might have limits on list size in IN clause, but 12-20 is fine.
+        max_seed_scan = max(1, min(len(seed_memory_ids), 20))
+        target_seeds = seed_memory_ids[:max_seed_scan]
 
         def _fetch_rows(query: str, params: Dict[str, Any]) -> List[Tuple[Any, ...]]:
             result = conn.execute(query, params)
@@ -366,37 +369,45 @@ class GraphStore:
                 prev = scores.get(mem_id, 0.0)
                 scores[mem_id] = max(prev, score)
 
-        for seed_id in seed_memory_ids[:max_seed_scan]:
-            try:
-                # Outgoing PRECEDES / CAUSES
-                out_pre = _fetch_rows(
-                    "MATCH (a:Memory {id: $id})-[r:PRECEDES]->(b:Memory) "
-                    "RETURN b.id, r.confidence LIMIT $limit",
-                    {"id": seed_id, "limit": limit},
-                )
-                _accumulate(out_pre, 1.0)
-                out_cau = _fetch_rows(
-                    "MATCH (a:Memory {id: $id})-[r:CAUSES]->(b:Memory) "
-                    "RETURN b.id, r.confidence LIMIT $limit",
-                    {"id": seed_id, "limit": limit},
-                )
-                _accumulate(out_cau, 1.15)
+        try:
+            # Outgoing PRECEDES
+            out_pre = _fetch_rows(
+                "MATCH (a:Memory)-[r:PRECEDES]->(b:Memory) "
+                "WHERE list_contains($ids, a.id) "
+                "RETURN b.id, r.confidence LIMIT $limit",
+                {"ids": target_seeds, "limit": limit * 2},
+            )
+            _accumulate(out_pre, 1.0)
 
-                # Incoming PRECEDES / CAUSES
-                in_pre = _fetch_rows(
-                    "MATCH (a:Memory)-[r:PRECEDES]->(b:Memory {id: $id}) "
-                    "RETURN a.id, r.confidence LIMIT $limit",
-                    {"id": seed_id, "limit": limit},
-                )
-                _accumulate(in_pre, 0.9)
-                in_cau = _fetch_rows(
-                    "MATCH (a:Memory)-[r:CAUSES]->(b:Memory {id: $id}) "
-                    "RETURN a.id, r.confidence LIMIT $limit",
-                    {"id": seed_id, "limit": limit},
-                )
-                _accumulate(in_cau, 1.05)
-            except Exception as e:
-                logger.debug(f"Chain traversal for seed '{seed_id}': {e}")
+            # Outgoing CAUSES
+            out_cau = _fetch_rows(
+                "MATCH (a:Memory)-[r:CAUSES]->(b:Memory) "
+                "WHERE list_contains($ids, a.id) "
+                "RETURN b.id, r.confidence LIMIT $limit",
+                {"ids": target_seeds, "limit": limit * 2},
+            )
+            _accumulate(out_cau, 1.15)
+
+            # Incoming PRECEDES
+            in_pre = _fetch_rows(
+                "MATCH (a:Memory)-[r:PRECEDES]->(b:Memory) "
+                "WHERE list_contains($ids, b.id) "
+                "RETURN a.id, r.confidence LIMIT $limit",
+                {"ids": target_seeds, "limit": limit * 2},
+            )
+            _accumulate(in_pre, 0.9)
+
+            # Incoming CAUSES
+            in_cau = _fetch_rows(
+                "MATCH (a:Memory)-[r:CAUSES]->(b:Memory) "
+                "WHERE list_contains($ids, b.id) "
+                "RETURN a.id, r.confidence LIMIT $limit",
+                {"ids": target_seeds, "limit": limit * 2},
+            )
+            _accumulate(in_cau, 1.05)
+
+        except Exception as e:
+            logger.debug(f"Chain traversal batch failed: {e}")
 
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         return ranked[:limit]
