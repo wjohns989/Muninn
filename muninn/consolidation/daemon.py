@@ -159,7 +159,7 @@ class ConsolidationDaemon:
         - Expire working memories past TTL
         """
         t0 = time.time()
-        records = self.metadata.get_for_consolidation(batch_size=500)
+        records = self.metadata.get_for_consolidation(limit=500)
         decayed = 0
         expired = 0
         updated = 0
@@ -216,7 +216,7 @@ class ConsolidationDaemon:
         - Remove absorbed duplicates
         """
         t0 = time.time()
-        records = self.metadata.get_for_consolidation(batch_size=500)
+        records = self.metadata.get_for_consolidation(limit=500)
         episodic = [r for r in records if r.memory_type == MemoryType.EPISODIC]
 
         if not episodic:
@@ -254,7 +254,7 @@ class ConsolidationDaemon:
         - Promote episodic → semantic → procedural
         """
         t0 = time.time()
-        records = self.metadata.get_for_consolidation(batch_size=500)
+        records = self.metadata.get_for_consolidation(limit=500)
 
         candidates = find_promotion_candidates(records)
         promoted = 0
@@ -287,7 +287,7 @@ class ConsolidationDaemon:
             return {"re_embedded": 0, "reason": "no_embed_fn", "elapsed": 0.0}
 
         # Get high-importance memories for replay
-        records = self.metadata.get_for_consolidation(batch_size=100)
+        records = self.metadata.get_for_consolidation(limit=100)
         high_importance = [r for r in records if r.importance > 0.7][:20]
 
         for record in high_importance:
