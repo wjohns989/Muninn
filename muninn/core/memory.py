@@ -446,7 +446,7 @@ class MuninnMemory:
             entity_names = self._extract_entity_names(extraction)
             if entity_names:
                 scoped_metadata["entity_names"] = entity_names
-            embedding = self._embed(content)
+            embedding = await self._embed(content)
 
             record = MemoryRecord(
                 content=content,
@@ -461,10 +461,12 @@ class MuninnMemory:
             )
 
             dedup_result = None
-            if self._dedup and self._vectors.count() > 0:
+            vectors_count = await asyncio.to_thread(self._vectors.count)
+            if self._dedup and vectors_count > 0:
                 from muninn.dedup.semantic_dedup import DedupStrategy
 
-                dedup_result = self._dedup.check_duplicate(
+                dedup_result = await asyncio.to_thread(
+                    self._dedup.check_duplicate,
                     embedding=embedding,
                     content=content,
                     vector_store=self._vectors,
@@ -485,7 +487,7 @@ class MuninnMemory:
                             "dedup": dedup_result.model_dump(),
                         }
                     if dedup_result.strategy == DedupStrategy.UPDATE_EXISTING:
-                        existing = self._metadata.get(dedup_result.existing_memory_id)
+                        existing = await asyncio.to_thread(self._metadata.get, dedup_result.existing_memory_id)
                         if existing:
                             if not self._record_matches_scope(existing, namespace, user_id):
                                 logger.warning(
@@ -496,12 +498,14 @@ class MuninnMemory:
                                 )
                             else:
                                 merged_content = self._dedup.merge_content(content, existing.content)
-                                self._metadata.update(
+                                await asyncio.to_thread(
+                                    self._metadata.update,
                                     dedup_result.existing_memory_id,
                                     content=merged_content,
                                 )
-                                merged_embedding = self._embed(merged_content)
-                                self._vectors.upsert(
+                                merged_embedding = await self._embed(merged_content)
+                                await asyncio.to_thread(
+                                    self._vectors.upsert,
                                     memory_id=dedup_result.existing_memory_id,
                                     embedding=merged_embedding,
                                     metadata={
@@ -514,7 +518,7 @@ class MuninnMemory:
                                         "branch": existing.branch,
                                     },
                                 )
-                                self._bm25.add(dedup_result.existing_memory_id, merged_content)
+                                await asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content)
                                 logger.info(
                                     "Dedup UPDATE_EXISTING: merged into %s",
                                     dedup_result.existing_memory_id,
@@ -527,9 +531,10 @@ class MuninnMemory:
                                 }
 
             conflict_info = None
-            if self._conflict_detector and self._vectors.count() > 0:
+            if self._conflict_detector and vectors_count > 0:
                 try:
-                    similar_for_conflict = self._vectors.search(
+                    similar_for_conflict = await asyncio.to_thread(
+                        self._vectors.search,
                         embedding,
                         limit=5,
                         score_threshold=self.config.conflict_detection.similarity_prefilter,
@@ -537,17 +542,21 @@ class MuninnMemory:
                     )
                     if similar_for_conflict:
                         candidate_ids = [mid for mid, _score in similar_for_conflict]
+                        all_candidates = await asyncio.to_thread(self._metadata.get_by_ids, candidate_ids)
                         candidate_records = [
                             candidate
-                            for candidate in self._metadata.get_by_ids(candidate_ids)
+                            for candidate in all_candidates
                             if self._record_matches_scope(candidate, namespace, user_id)
                         ]
                         if candidate_records:
-                            conflicts = self._conflict_detector.detect_conflicts(content, candidate_records)
+                            conflicts = await asyncio.to_thread(
+                                self._conflict_detector.detect_conflicts, content, candidate_records
+                            )
                             if conflicts and self._conflict_resolver:
                                 conflicts.sort(key=lambda c: c.contradiction_score, reverse=True)
                                 conflict = conflicts[0]
-                                resolution = self._conflict_resolver.resolve(
+                                resolution = await asyncio.to_thread(
+                                    self._conflict_resolver.resolve,
                                     conflict,
                                     new_record=record,
                                     new_embedding=embedding,
@@ -573,9 +582,11 @@ class MuninnMemory:
                     logger.warning("Conflict detection failed (non-fatal): %s", e)
 
             max_similarity = 0.0
-            if self._vectors.count() > 0:
+            if vectors_count > 0:
                 try:
-                    similar = self._vectors.search(embedding, limit=5, filters=scope_filters)
+                    similar = await asyncio.to_thread(
+                        self._vectors.search, embedding, limit=5, filters=scope_filters
+                    )
                     if similar:
                         max_similarity = similar[0][1]
                 except Exception:
@@ -636,7 +647,8 @@ class MuninnMemory:
                 asyncio.to_thread(_write_bm25),
             )
 
-            chain_links_created = self._upsert_memory_chain_links(
+            chain_links_created = await asyncio.to_thread(
+                self._upsert_memory_chain_links,
                 successor_record=record,
                 successor_content=content,
                 successor_entity_names=entity_names,
@@ -814,7 +826,8 @@ class MuninnMemory:
         """
         self._check_initialized()
 
-        records = self._metadata.get_all(
+        records = await asyncio.to_thread(
+            self._metadata.get_all,
             limit=limit,
             namespace=namespace,
             user_id=user_id,
@@ -1333,7 +1346,8 @@ class MuninnMemory:
 
         ingestion = self._require_ingestion_pipeline()
 
-        report = ingestion.ingest(
+        report = await asyncio.to_thread(
+            ingestion.get_report if hasattr(ingestion, 'get_report') else ingestion.ingest,
             sources,
             recursive=recursive,
             chronological_order=chronological_order,
@@ -1596,7 +1610,7 @@ class MuninnMemory:
         """
         self._check_initialized()
 
-        record = self._metadata.get(memory_id)
+        record = await asyncio.to_thread(self._metadata.get, memory_id)
         if not record:
             return {"error": f"Memory {memory_id} not found"}
 
@@ -1662,7 +1676,8 @@ class MuninnMemory:
             asyncio.to_thread(_update_bm25),
         )
 
-        chain_links_created = self._upsert_memory_chain_links(
+        chain_links_created = await asyncio.to_thread(
+            self._upsert_memory_chain_links,
             successor_record=record,
             successor_content=data,
             successor_entity_names=entity_names,
@@ -1906,7 +1921,11 @@ class MuninnMemory:
     async def _extract(self, content: str, model_profile: Optional[str] = None) -> ExtractionResult:
         """Run extraction pipeline on content."""
         if self._extraction:
-            return self._extraction.extract(content, model_profile=model_profile)
+            return await asyncio.to_thread(
+                self._extraction.extract,
+                content,
+                model_profile=model_profile,
+            )
         return ExtractionResult()
 
     async def _extract_with_profile(
