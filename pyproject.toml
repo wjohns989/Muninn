@@ -5,6 +5,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 license-files = ["LICENSE", "NOTICE"]
 
+[tool.setuptools.packages.find]
+include = ["muninn*", "eval*", "assets*", "skills*", "models*"]
+namespaces = false
+
 [project]
 name = "muninn-mcp"
 version = "3.1.1"
