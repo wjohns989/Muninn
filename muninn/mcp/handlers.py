@@ -433,8 +433,6 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
 
 def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     git = get_git_info()
-    # Debug print
-    # print(f"DEBUG: _do_search_memory git={git}")
     filters = dict(args.get("filters") or {})
     auto_project = False
     if "project" not in filters:
@@ -451,6 +449,9 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=10)
     result = resp.json()
+
+    # Debug prints for test failure diagnosis
+    # print(f"DEBUG: auto={auto_project} success={result.get('success')} data={result.get('data')} env={env_flag('MUNINN_MCP_SEARCH_PROJECT_FALLBACK', True)}")
 
     if auto_project and result.get("success") and not result.get("data") and env_flag("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", True):
         logger.info("Retrying search without auto-project filter")

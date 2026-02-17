@@ -77,7 +77,9 @@ def test_add_persists_chain_links_when_detector_enabled():
         )
 
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+    memory._embed = _embed
 
     memory._metadata = MagicMock()
     memory._metadata.get_all.return_value = [candidate]

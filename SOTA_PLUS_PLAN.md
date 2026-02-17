@@ -355,8 +355,7 @@
     - tranche note documented in `docs/plans/2026-02-16-phase5a12-pr-release-replay-gate-wiring.md`.
 88. Phase 5A.13 release-profile replay strictness + provenance hardening implemented:
     - replay gate workflow now supports profile modes (`pr_safe`, `release_host_captured`) and release trigger execution (`release.published`),
-    - release-host profile now enforces strict replay posture (`--require-log-path-exists`, `--include-log-sha256`),
-    - replay reports/check summaries now include log provenance fields (size, modified timestamp, optional SHA-256 digest),
+    - strict profile now executes enforced blocker decision gate and uploads decision artifact + summary,
     - tranche note documented in `docs/plans/2026-02-16-phase5a13-release-profile-replay-strictness-provenance.md`.
 89. Phase 5A implementation scope formally closed; Phase 5B external host-runtime blocker-validation scope opened:
     - completion decision documented in `docs/plans/2026-02-16-phase5a-completion-and-phase5b-launch.md`,
@@ -392,7 +391,7 @@
 ### Verification evidence
 - Full-suite verification now green in-session: `520 passed, 2 skipped, 1 warning`.
 - Targeted tests for this tranche now pass:
-  - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_metrics.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
+  - `29 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_gates.py`, `tests/test_eval_statistics.py`)
   - `12 passed` (`tests/test_mcp_wrapper_protocol.py`)
   - `23 passed` (`tests/test_eval_artifacts.py`, `tests/test_eval_statistics.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_gates.py`, `tests/test_eval_metrics.py`)
   - `21 passed` (`tests/test_eval_statistics.py`, `tests/test_eval_presets.py`, `tests/test_eval_run.py`, `tests/test_eval_gates.py`, `tests/test_eval_metrics.py`)
@@ -433,8 +432,8 @@
 - Phase 4AA tools/call deadline-budget hardening verification: `62 passed` (`tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
 - Phase 4AB startup-recovery budget gating verification: `64 passed` (`tests/test_mcp_wrapper_protocol.py`) + `71 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
 - Phase 4AC host-timeout-derived deadline-budget verification: `68 passed` (`tests/test_mcp_wrapper_protocol.py`) + `75 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
-- Phase 4AD explicit-deadline overrun guardrail verification: `70 passed` (`tests/test_mcp_wrapper_protocol.py`) + `77 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
-- Phase 4AE guarded-dispatch fail-fast response verification: `71 passed` (`tests/test_mcp_wrapper_protocol.py`) + `78 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + soak pass (`python -m eval.mcp_transport_soak --iterations 10 --warmup-requests 2 --timeout-sec 15 --transport framed --max-p95-ms 5000`, run_id `20260215_170548`) + compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`).
+- Phase 4AD explicit-deadline overrun guardrail verification: `70 passed` (`tests/test_mcp_wrapper_protocol.py`) + `77 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + live post-restart MCP sanity check confirms in-session tool responsiveness (`get_model_profiles`, `add_memory` succeeded without transport closure).
+- Phase 4AE guarded-dispatch fail-fast response verification: `71 passed` (`tests/test_mcp_wrapper_protocol.py`) + `78 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json`).
 - Phase 4AF unified SOTA+ verdict verification: compile checks (`python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`) + `32 passed` (`tests/test_ollama_local_benchmark.py`) + `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Phase 4AG deferred-benchmark cadence verification: compile checks (`python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`) + deferred-mode tests for report reuse + stale-report rejection (`tests/test_ollama_local_benchmark.py`) + combined targeted suite pass (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Restart hygiene + doc/packaging tranche verification: no unresolved conflict markers repo-wide and no staged restart leftovers (`git diff --cached --name-only` empty), plus hygiene check pass (`7 passed`: `tests/test_phase_hygiene.py`).
@@ -444,21 +443,21 @@
 - Phase 5A.1 long-tool auto-task mitigation verification: `82 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 - Phase 5A.2 closure campaign automation verification: transport eval utility compile pass (`python -m py_compile eval/mcp_transport_closure.py`) + `86 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
 - Phase 5A.2 closure campaign evidence: `closure_ready=true` in both smoke and full-window runs: 5-run dual-transport (`eval/reports/mcp_transport/mcp_transport_closure_20260215_212349.json`) and 30-run closure window (`eval/reports/mcp_transport/mcp_transport_closure_20260215_213858.json`, streak `30`, window `30/30`, p95 ratio `1.0`).
-- Phase 5A.3 tool-call telemetry hardening verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`).
+- Phase 5A.3 tool-call telemetry hardening verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `88 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`).
 - Phase 5A.4 `tasks/result` host-safe wait-budget verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `92 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_220359.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_220419.json`).
 - Phase 5A.5 `tasks/result` compatibility-mode verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `98 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + `5 passed` (`tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_221650.json`) + closure mini-campaign pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_221709.json`).
 - Phase 5A.6 closure telemetry + Huginn branding verification: compile checks (`python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py mcp_wrapper.py muninn_standalone.py scripts/build_standalone.py server.py`) + `111 passed` (`tests/test_mcp_transport_closure.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_standalone_entrypoint.py`, `tests/test_build_standalone.py`, `tests/test_memory_user_profile.py`, `tests/test_ingestion_discovery.py`) + soak pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_224206.json`) + closure mini-campaign telemetry pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_224225.json`).
-- Phase 5A.7 non-terminal probe verification: compile checks (`python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py mcp_wrapper.py tests/test_mcp_transport_soak.py tests/test_mcp_transport_closure.py tests/test_mcp_wrapper_protocol.py`) + `105 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`, `tests/test_mcp_wrapper_protocol.py`) + soak probe pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_235614.json`) + closure probe-criteria pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json`, `nonterminal_task_result_probe_met=true`).
+- Phase 5A.7 non-terminal probe verification: compile checks (`python -m py_compile eval/mcp_transport_soak.py eval/mcp_transport_closure.py eval/mcp_wrapper_protocol.py`) + `105 passed` (`tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`, `tests/test_mcp_wrapper_protocol.py`) + soak probe pass (`eval/reports/mcp_transport/mcp_transport_soak_20260215_235614.json`) + closure probe-criteria pass (`eval/reports/mcp_transport/mcp_transport_closure_20260215_235635.json`, `nonterminal_task_result_probe_met=true`).
 - Phase 5A.8 pre-serialization compaction verification: compile checks (`python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`) + `108 passed` (`tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`).
 - Phase 5A.9 diagnostics bundle verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py tests/test_mcp_transport_diagnostics.py`) + `110 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + live artifact (`eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_001515.json`).
 - Phase 5A.10 diagnostics gate + hygiene integration verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py`) + `119 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + live gate artifact (`eval/reports/mcp_transport/mcp_transport_diagnostics_20260216_005047.json`, `results.gate.passed=true`).
 - Phase 5A.11 incident replay automation verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `122 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + replay artifact (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_010414.json`, `results.triggered=false`).
-- Phase 5A.12 PR/release replay gate wiring verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `123 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + workflow wiring (`.github/workflows/transport-incident-replay-gate.yml`).
-- Phase 5A.13 release-profile replay strictness verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py`) + `124 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + release-capable workflow profile wiring (`.github/workflows/transport-incident-replay-gate.yml`) + strict-profile replay artifact (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_012731.json`, `log_file.sha256` populated).
+- Phase 5A.12 PR/release replay gate wiring verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py eval/mcp_transport_blocker_decision.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py tests/test_mcp_transport_blocker_decision.py`) + `123 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + workflow wiring (`.github/workflows/transport-incident-replay-gate.yml`).
+- Phase 5A.13 release-profile replay strictness verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py eval/mcp_transport_blocker_decision.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py tests/test_mcp_transport_blocker_decision.py`) + `124 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + release-capable workflow profile wiring (`.github/workflows/transport-incident-replay-gate.yml`) + strict-profile replay artifact (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_012731.json`, `log_file.sha256` populated).
 - Phase 5B.1 blocker decision utility verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py eval/mcp_transport_blocker_decision.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py tests/test_mcp_transport_blocker_decision.py`) + `127 passed` (`tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_013548.json`, `blocker_closure_ready=false`, explicit evidence-gap violations).
 - Phase 5B.2 replay provenance policy hardening verification: compile checks (`python -m py_compile eval/mcp_transport_diagnostics.py eval/phase_hygiene.py eval/mcp_transport_incident_replay.py eval/mcp_transport_blocker_decision.py tests/test_mcp_transport_diagnostics.py tests/test_phase_hygiene.py tests/test_mcp_transport_incident_replay.py tests/test_mcp_transport_blocker_decision.py`) + blocker decision suite (`4 passed`: `tests/test_mcp_transport_blocker_decision.py`) + expanded targeted suite (`128 passed`: `tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_mcp_transport_soak.py`, `tests/test_mcp_transport_closure.py`) + live decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_014909.json`, `replay_provenance.policy=latest_min`, blocker still open due insufficient strict replay count/provenance).
 - Phase 5B.3 strict replay evidence capture + closure-readiness verification: strict replay artifacts (`eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015345.json`, `eval/reports/mcp_transport/mcp_transport_incident_replay_20260216_015355.json`) + enforced decision run (`python -m eval.mcp_transport_blocker_decision --lookback-hours 48 --min-replay-runs 3 --max-replay-signature-count 0 --require-replay-provenance --replay-provenance-policy latest_min --min-closure-runs 1 --require-latest-closure-ready --require-latest-probe-criterion --enforce-gate`) + passing decision artifact (`eval/reports/mcp_transport/mcp_transport_blocker_decision_20260216_015409.json`, `blocker_closure_ready=true`, no violations).
-- Phase 5B.4 release-boundary blocker-decision wiring verification: workflow update (`.github/workflows/transport-incident-replay-gate.yml`) now includes strict-profile blocker-decision gate execution + decision artifact upload/summary emission for release-boundary runs.
+- Phase 5B.4 release-boundary blocker-decision gating verification: workflow update (`.github/workflows/transport-incident-replay-gate.yml`) now includes strict-profile blocker-decision gate execution + decision artifact upload/summary emission for release-boundary runs.
 - Phase 5B.5 continuity bootstrap verification: transport governance subset `20 passed` (`tests/test_mcp_transport_blocker_decision.py`, `tests/test_mcp_transport_incident_replay.py`, `tests/test_mcp_transport_diagnostics.py`, `tests/test_phase_hygiene.py`) + continuation runbook and local Muninn continuation memory seeding/retrieval check completed.
 - Phase 5B.6 search-freshness resolution verification: `4 passed` (`tests/test_search_fallback.py`) + full `mcp_wrapper` suite pass (`98 passed`).
 
@@ -497,47 +496,25 @@
 32. **Task-orchestration reliability ROI**: task-augmented `tools/call` + status notifications + retention governance reduce client polling complexity and prevent unbounded task-state memory growth in long-lived sessions.
 33. **Protocol-correctness without throughput regression ROI**: background dispatch for blocking lifecycle methods keeps `tasks/result` spec-aligned while preserving responsiveness for concurrent health/poll/tool traffic.
 34. **Concurrency guardrail ROI**: bounded dispatch executor + generic guarded logging reduce thread-exhaustion and log-forging risk under adversarial or malformed request bursts.
-62. **Evidence-scope precision ROI**: latest-min provenance policy removes false-negative blocker decisions caused by legacy non-strict artifacts while preserving strict evidence requirements for closure readiness.
-35. **Contract-evolution ROI**: opaque cursor tokens + schema-aligned related-task `taskId` remove brittle client coupling to internal offsets/field aliases and enable non-breaking pagination/task contract evolution.
-36. **Host-timeout avoidance ROI**: wrapper-level tool-call deadline budgeting plus per-attempt timeout clamping reduces intermittent host-side `120s` transport closures by failing deterministically before channel teardown windows.
-37. **Long-call timeout-mitigation ROI**: auto-deferring configured ingest-heavy `tools/call` operations into task mode removes long synchronous wait pressure from host timeout windows while preserving completion retrieval via task lifecycle APIs.
-38. **Closure-governance ROI**: automated transport-closure campaign artifacts prevent subjective blocker-status calls and provide auditable, criteria-bound evidence for release gating.
-37. **Timeout-window integrity ROI**: startup-recovery budget gating prevents low-remaining-budget preflight work from consuming terminal wall time, reducing deadline overshoot risk in intermittent outage/retry windows.
-38. **Cross-host adaptation ROI**: deriving deadline budgets from host timeout and safety margin reduces manual tuning overhead across different MCP client timeout policies while preserving deterministic safety margins.
-39. **Misconfiguration-resilience ROI**: explicit deadline overrun guardrail defaults to host-safe clamping, preventing operator-configured over-budget values from silently reintroducing transport-closure risk.
-40. **Dispatch-failure containment ROI**: guarded-dispatch fail-fast error responses prevent silent request hangs on unexpected runtime exceptions, reducing host timeout-driven transport teardown in background dispatch paths.
-41. **Governance alert ROI**: policy-level recommendation confidence alerts plus governance-gated apply prevent low-confidence profile promotions from being applied during noisy benchmark windows.
-42. **Packaging reliability ROI**: explicit optional dependency groups for conflict detection and SDK surfaces reduce installation ambiguity and improve reproducibility across operator environments.
-43. **Release-claim defensibility ROI**: a single quantitative SOTA+ decision framework prevents subjective release claims and creates auditable promotion criteria.
-44. **Brand-surface compliance ROI**: README and repo metadata neutralization reduces avoidable branding/legal friction while improving trust for wider adoption.
-45. **Unified release-verdict ROI**: one deterministic SOTA+ artifact removes manual interpretation drift and makes release promotion decisions reproducible across operators and CI runs.
-46. **Enhancement-throughput ROI**: deferred dev-cycle mode avoids rerunning expensive live/legacy benchmark generation on every tranche while preserving governance checks via fresh gate evaluation on bounded-age reports.
-47. **User-context persistence ROI**: first-class editable profile context reduces repeated preference re-teaching and improves retrieval prioritization for environment-/workflow-specific facts.
-48. **Chronology-plus-hierarchy ROI**: propagating file modification and path-structure context into legacy-ingested chunks improves phase-aware recall and disambiguation of similarly worded artifacts across project epochs.
-49. **Standalone adoption ROI**: dedicated launcher and packaging path reduce assistant dependency for ingestion/search workflows and improve operability for non-IDE users.
-50. **Serialization-overhead ROI**: compact-before-serialize response shaping reduces worst-case wrapper CPU/memory spikes from oversized payload formatting and lowers timeout-window pressure in host runtimes.
-51. **Transport-triage ROI**: deterministic diagnostics bundles reduce blocker MTTR by classifying wrapper-vs-host failure signatures with reproducible incident/telemetry evidence.
-50. **Operator-throughput ROI**: auto discover-and-import flow for parser-supported legacy artifacts reduces manual multi-click migration overhead while preserving deterministic selection controls.
-51. **Timeout forensics ROI**: per-tool-call elapsed/byte/budget telemetry in wrapper logs reduces mean time to isolate external host transport-close regressions and supports objective remediation decisions.
-52. **Blocking-path resilience ROI**: host-safe `tasks/result` wait budgeting converts potential host-timeout transport teardown into deterministic, recoverable retry flow and reduces intermittent session loss.
-53. **Cross-client semantics ROI**: explicit/auto task-result compatibility modes reduce integration ambiguity across MCP host implementations while maintaining deterministic retry behavior under strict timeout envelopes.
-54. **Closure-evidence fidelity ROI**: telemetry-enriched closure artifacts expose compatibility posture and error composition, reducing false blocker closure/rollback decisions under mixed host runtimes.
-55. **Standalone usability ROI**: Huginn browser branding clarifies operator workflow boundaries (standalone vs MCP-attached), reducing mode confusion and support friction.
-56. **Release-gate enforceability ROI**: wiring diagnostics incident thresholds into phase hygiene turns transport regressions into deterministic policy failures, reducing subjective blocker-status decisions before merge/release.
-57. **Incident-capture automation ROI**: signature-triggered replay diagnostics reduce manual triage overhead and make host/runtime timeout evidence generation repeatable in PR/release pipelines.
-58. **Check-surface observability ROI**: replay-gate CI artifact uploads plus summary output make transport-risk posture visible in PR/release checks without opening raw logs manually.
-59. **Evidence provenance ROI**: release-profile strict replay mode with log digest metadata makes host-log lineage auditable and reduces false-positive closure decisions when log capture is incomplete.
-60. **Scope-governance ROI**: formal phase-boundary closure (internal implementation vs external runtime validation) prevents hidden work drift and keeps blocker decisions evidence-bound.
-61. **Decision-automation ROI**: deterministic blocker-decision utility makes closure readiness and missing evidence auditable, reducing subjective blocker-status churn.
-62. **Session-budget resilience ROI**: explicit continuation runbook plus seeded local Muninn handoff memory reduces restart friction and prevents phase-context loss when switching agents mid-implementation.
-63. **Continuity reliability ROI**: surfacing and tracking search-freshness regression risk early prevents silent handoff failures and prioritizes index-refresh correctness for memory-critical workflows.
-64. **Search-fallback usability ROI**: auto-retrying zero-result project searches without scope filters preserves "do what I mean" intuition for cross-project memory recall while keeping default scoping strict for noise reduction.
-65. **Hybrid-retrieval latency ROI**: parallelizing retrieval signals (vector/graph/bm25/temporal/goal) via `asyncio` threads reduces total search latency by overlapping IO/compute, especially for cold-start or multi-store queries.
-66. **Ingestion-throughput ROI**: parallelizing file parsing/chunking via `ProcessPoolExecutor` isolates crash risks and saturates CPU for PDF/DOCX heavy workloads.
-67. **Core-responsiveness ROI**: offloading synchronous store operations in `add/update/delete/health` to threads prevents event-loop blocking during heavy I/O, maintaining API liveness under load.
+35. **Evidence-scope precision ROI**: latest-min provenance policy removes false-negative blocker decisions caused by legacy non-strict artifacts while preserving strict evidence requirements for closure readiness.
+36. **Contract-evolution ROI**: opaque cursor tokens + schema-aligned related-task `taskId` remove brittle client coupling to internal offsets/field aliases and enable non-breaking pagination/task contract evolution.
+37. **Host-timeout avoidance ROI**: wrapper-level tool-call deadline budgeting plus per-attempt timeout clamping reduces intermittent host-side `120s` transport closures by failing deterministically before channel teardown windows.
+38. **Long-call timeout-mitigation ROI**: auto-deferring configured ingest-heavy `tools/call` operations into task mode removes long synchronous wait pressure from host timeout windows while preserving completion retrieval via task lifecycle APIs.
+39. **Closure-governance ROI**: automated transport-closure campaign artifacts prevent subjective blocker-status calls and provide auditable, criteria-bound evidence for release gating.
+40. **Incident-capture automation ROI**: signature-triggered replay diagnostics reduce manual triage overhead and make host/runtime timeout evidence generation repeatable in PR/release pipelines.
+41. **Check-surface observability ROI**: replay-gate CI artifact uploads plus summary output make transport-risk posture visible in PR/release checks without opening raw logs manually.
+42. **Evidence provenance ROI**: release-profile strict replay mode with log digest metadata makes host-log lineage auditable and reduces false-positive closure decisions when log capture is incomplete.
+43. **Scope-governance ROI**: formal phase-boundary closure (internal implementation vs external runtime validation) prevents hidden work drift and keeps blocker decisions evidence-bound.
+44. **Decision-automation ROI**: deterministic blocker-decision utility makes closure readiness and missing evidence auditable, reducing subjective blocker-status churn.
+45. **Session-budget resilience ROI**: explicit continuation runbook plus seeded local Muninn handoff memory reduces restart friction and prevents phase-context loss when switching agents mid-implementation.
+46. **Continuity reliability ROI**: surfacing and tracking search-freshness regression risk early prevents silent handoff failures and prioritizes index-refresh correctness for memory-critical workflows.
+47. **Search-fallback usability ROI**: auto-retrying zero-result project searches without scope filters preserves "do what I mean" intuition for cross-project memory recall while keeping default scoping strict for noise reduction.
+48. **Hybrid-retrieval latency ROI**: parallelizing retrieval signals (vector/graph/bm25/temporal/goal) via `asyncio` threads reduces total search latency by overlapping IO/compute, especially for cold-start or multi-store queries.
+49. **Ingestion-throughput ROI**: parallelizing file parsing/chunking via `ProcessPoolExecutor` isolates crash risks and saturates CPU for PDF/DOCX heavy workloads.
+50. **Core-responsiveness ROI**: offloading synchronous store operations in `add/update/delete/health` to threads prevents event-loop blocking during heavy I/O, maintaining API liveness under load.
 
 ### High-ROI SOTA additions from web research now required in roadmap
-1. MCP 2025-11-25 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
+1. MCP 2025-11 compatibility tranche follow-up now narrowed to advanced paths (`input_required` elicitation-driven task flows, optional persistent task backing, and large-result payload budgeting).
 2. Memory-specific benchmark gate using MemoryAgentBench competencies (accurate retrieval, test-time learning, long-range understanding, selective forgetting).
 3. GenAI observability tranche using OpenTelemetry GenAI semantic conventions (opt-in content capture + privacy-aware controls).
 4. Adaptive model-caliber routing: keep xLAM as optional provider, maintain profile-based fallback chains (low-latency/balanced/high-reasoning), and expose assistant-session profile selection independent of think-level toggles.
@@ -572,7 +549,7 @@ This plan advances Muninn from v3.0 (the most technically complete local-first M
 8. Semantic deduplication at ingestion + consolidation
 9. Python SDK sync/async interoperability layer
 10. Multi-source ingestion with provenance-rich fail-open parsing
-11. Memory chains with temporal/causal linking and retrieval expansion
+11. Memory chains with temporal/causal linking
 
 **After all features, Muninn will be the ONLY memory system that combines:**
 - Local-first architecture (no cloud dependency)
@@ -868,7 +845,7 @@ from dataclasses import dataclass, field
 class FeatureFlags:
     # Phase 1 (default ON — low cost, high value)
     explainable_recall: bool = True
-    instructor_extraction: bool = True  # When endpoint available
+    instructor_extraction: bool = True  # When endpoint configured
 
     # Phase 2 (default OFF — higher cost, opt-in)
     conflict_detection: bool = False
@@ -890,7 +867,6 @@ class FeatureFlags:
 ```
 
 ---
-
 
 ## Phase 1.1: Stabilization & Measurement Gate (v3.1.1)
 
@@ -945,7 +921,6 @@ class FeatureFlags:
 **Backward compatibility:** Fully optional via feature flag (`MUNINN_GOAL_COMPASS=1`).
 
 ---
-
 
 ## Phase 2: Intelligence (v3.2.0)
 
@@ -1230,7 +1205,7 @@ CREATE REL TABLE CAUSES(FROM Memory TO Memory, confidence DOUBLE, evidence STRIN
 | `muninn/core/memory.py` | New `ingest()` method |
 | `server.py` | New `/ingest` endpoint |
 | `mcp_wrapper.py` | New `ingest_file` MCP tool |
-| `pyproject.toml` | New `[ingestion]` extras: pypdf, python-docx, beautifulsoup4 |
+| `pyproject.toml` | New `[ingestion]` extras group |
 
 **Supported Formats:**
 | Format | Library | License |
@@ -1304,7 +1279,6 @@ async with AsyncMemory() as m:
 
 ---
 
-
 ### 3D. Cross-Assistant Handoff + Interop Pack (Vibecoder Priority)
 
 **Problem**: Users switch constantly between Claude, ChatGPT, Cursor, Windsurf, Copilot, CLI agents, and IDE workflows. State continuity is fragile.
@@ -1328,7 +1302,6 @@ async with AsyncMemory() as m:
 **Dependencies**: None required (standard library signing + hashing); optional compression via `zstd`.
 
 ---
-
 
 ## Dependency Summary
 

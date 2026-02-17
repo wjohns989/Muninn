@@ -26,7 +26,9 @@ def test_add_passes_namespace_and_user_filters_to_dedup_search():
         return ExtractionResult()
 
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+    memory._embed = _embed
     memory._vectors = MagicMock()
     memory._vectors.count.return_value = 1
 
@@ -55,7 +57,9 @@ def test_conflict_prefilter_candidates_are_scoped_to_namespace_and_user():
         return ExtractionResult()
 
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+    memory._embed = _embed
 
     memory._vectors = MagicMock()
     memory._vectors.count.return_value = 1
@@ -97,7 +101,9 @@ def test_conflict_prefilter_excludes_candidates_without_user_scope():
         return ExtractionResult()
 
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+    memory._embed = _embed
 
     memory._vectors = MagicMock()
     memory._vectors.count.return_value = 1
@@ -156,7 +162,9 @@ def test_conflict_prefilter_stays_strict_until_migration_complete():
         return ExtractionResult()
 
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+    memory._embed = _embed
 
     memory._vectors = MagicMock()
     memory._vectors.count.return_value = 1
@@ -194,7 +202,9 @@ def test_conflict_prefilter_ignores_candidates_with_none_metadata():
         return ExtractionResult()
 
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+    memory._embed = _embed
 
     memory._vectors = MagicMock()
     memory._vectors.count.return_value = 1
@@ -232,7 +242,9 @@ def test_dedup_update_existing_scope_mismatch_falls_back_to_add():
         return ExtractionResult()
 
     memory._extract = _extract
-    memory._embed = lambda _text: [0.1, 0.2, 0.3]
+    async def _embed(_text):
+        return [0.1, 0.2, 0.3]
+    memory._embed = _embed
 
     memory._vectors = MagicMock()
     memory._vectors.count.return_value = 1

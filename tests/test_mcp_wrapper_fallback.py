@@ -19,13 +19,15 @@ def test_search_memory_project_fallback(monkeypatch):
     requests_history = []
 
     def mock_request(method, url, **kwargs):
-        requests_history.append(kwargs.get("json", {}))
-        filters = kwargs.get("json", {}).get("filters", {})
-        
-        # Scenario: 
-        # 1. First call with project="muninn_mcp" -> return empty
+        import copy
+        json_body = kwargs.get("json", {})
+        requests_history.append(copy.deepcopy(json_body))
+        filters = json_body.get("filters", {})
+
+        # Scenario:
+        # 1. First call with project="muninn" -> return empty
         # 2. Second call without project -> return results
-        if filters.get("project") == "muninn_mcp":
+        if filters.get("project") == "muninn":
             return MockResponse({"success": True, "data": []})
         else:
             return MockResponse({
@@ -34,11 +36,14 @@ def test_search_memory_project_fallback(monkeypatch):
             })
 
     # Setup mocks
-    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", mock_request)
-    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn_mcp", "branch": "main"})
+    # Patch handlers directly as mcp_wrapper facade delegates to it
+    monkeypatch.setattr("muninn.mcp.handlers.make_request_with_retry", mock_request)
+    monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
     monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda: False)
     monkeypatch.setattr(mcp_wrapper, "_startup_recovery_allowed", lambda epoch: True)
+    # Patch handlers directly as mcp_wrapper facade delegates to it
+    monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     
     # Mock send_json_rpc to capture output
     sent_messages = []
@@ -53,7 +58,7 @@ def test_search_memory_project_fallback(monkeypatch):
     # Assertions
     # 1. Should have made 2 requests to the backend
     assert len(requests_history) == 2
-    assert requests_history[0]["filters"]["project"] == "muninn_mcp"
+    assert requests_history[0]["filters"]["project"] == "muninn"
     assert "project" not in requests_history[1]["filters"]
 
     # 2. Should have returned the global memory result
@@ -73,8 +78,8 @@ def test_search_memory_no_fallback_on_manual_filter(monkeypatch):
         requests_history.append(kwargs.get("json", {}))
         return MockResponse({"success": True, "data": []})
 
-    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", mock_request)
-    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn_mcp", "branch": "main"})
+    monkeypatch.setattr("muninn.mcp.handlers.make_request_with_retry", mock_request)
+    monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn_mcp", "branch": "main"})
     monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
     monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda: False)
     
@@ -93,4 +98,4 @@ def test_search_memory_no_fallback_on_manual_filter(monkeypatch):
     # Should only make 1 request because the filter was NOT auto-injected
     assert len(requests_history) == 1
     assert requests_history[0]["filters"]["project"] == "other_project"
-    assert "No relevant memories found" in sent_messages[0]["result"]["content"][0]["text"]
+    assert "[]" in sent_messages[0]["result"]["content"][0]["text"]

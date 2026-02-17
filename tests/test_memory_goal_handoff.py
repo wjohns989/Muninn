@@ -13,7 +13,9 @@ def test_add_propagates_project_and_branch_from_metadata():
         return ExtractionResult()
 
     memory._extract = _extract
-    memory._embed = lambda _text: [0.2, 0.1, 0.4]
+    async def _embed(_text):
+        return [0.2, 0.1, 0.4]
+    memory._embed = _embed
 
     memory._metadata = MagicMock()
     memory._vectors = MagicMock()
@@ -78,4 +80,3 @@ def test_import_handoff_duplicate_event_is_idempotent():
     assert result["event"] == "HANDOFF_DUPLICATE"
     assert result["checksum_verified"] is True
     assert result["imported"] == 0
-
