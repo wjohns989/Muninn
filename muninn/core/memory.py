@@ -171,6 +171,21 @@ class MuninnMemory:
             instructor_api_key=self.config.extraction.instructor_api_key,
         )
 
+        # Initialize Phase 2 engines (v3.2.0) — gated by feature flags
+        flags = get_flags()
+        self._otel = OTelGenAITracer(enabled=flags.is_enabled("otel_genai"))
+
+        # Initialize ColBERT (Phase 6)
+        if flags.is_enabled("colbert"):
+            from muninn.retrieval.colbert_index import ColBERTIndexer
+            self._colbert_indexer = ColBERTIndexer(
+                vector_store=self._vectors,
+                collection_name="muninn_colbert_tokens"
+            )
+            logger.info("ColBERT indexing enabled")
+        else:
+            self._colbert_indexer = None
+
         # Initialize hybrid retriever
         self._retriever = HybridRetriever(
             metadata_store=self._metadata,
@@ -178,6 +193,7 @@ class MuninnMemory:
             graph_store=self._graph,
             bm25_index=self._bm25,
             reranker=self._reranker,
+            colbert_indexer=self._colbert_indexer,
             embed_fn=self._embed,
             telemetry=self._otel,
             chain_signal_weight=self.config.memory_chains.retrieval_signal_weight,
@@ -193,6 +209,7 @@ class MuninnMemory:
             graph=self._graph,
             bm25=self._bm25,
             embed_fn=self._embed,
+            colbert_indexer=self._colbert_indexer,
         )
 
         # Initialize Phase 2 engines (v3.2.0) — gated by feature flags
@@ -442,7 +459,12 @@ class MuninnMemory:
             )
 
             # Handle terminal early returns (DEDUP_SKIP, CONFLICT_SKIP)
-            if processed.get("id") is None and "event" in processed and processed["event"] != "PROCESS_COMPLETE":
+            # Note: DEDUP_SIGNAL_UPDATE is handled below as it may fall through to ADD.
+            if (
+                processed.get("id") is None 
+                and "event" in processed 
+                and processed["event"] not in ("PROCESS_COMPLETE", "DEDUP_SIGNAL_UPDATE")
+            ):
                 return processed
 
             # Handle Dedup Update
@@ -451,6 +473,7 @@ class MuninnMemory:
                 embedding = processed["embedding"]
                 record = processed["record"]
                 
+                merged_successfully = False
                 async with self._write_lock:
                     existing = await asyncio.to_thread(self._metadata.get, dedup_result.existing_memory_id)
                     if existing and self._record_matches_scope(existing, namespace, user_id):
@@ -473,15 +496,18 @@ class MuninnMemory:
                             ),
                             asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content)
                         )
-                        return {
-                            "id": dedup_result.existing_memory_id,
-                            "content": merged_content,
-                            "event": "DEDUP_MERGED",
-                            "dedup": dedup_result.model_dump(),
-                        }
-                return processed # Fallback
+                        merged_successfully = True
+                
+                if merged_successfully:
+                    return {
+                        "id": dedup_result.existing_memory_id,
+                        "content": merged_content,
+                        "event": "DEDUP_MERGED",
+                        "dedup": dedup_result.model_dump(),
+                    }
+                # Fall through to normal persistence if scope mismatch
 
-            # Handle Persistence for PROCESS_COMPLETE
+            # Handle Persistence for PROCESS_COMPLETE (or Dedup Fallback)
             record = processed["record"]
             extraction = processed["extraction"]
             embedding = processed["embedding"]
@@ -527,11 +553,16 @@ class MuninnMemory:
                 def _write_bm25():
                     self._bm25.add(record.id, content)
 
+                def _write_colbert():
+                    if self._colbert_indexer:
+                        self._colbert_indexer.index_text(record.id, content)
+
                 await asyncio.gather(
                     asyncio.to_thread(_write_metadata),
                     asyncio.to_thread(_write_vectors),
                     asyncio.to_thread(_write_graph),
                     asyncio.to_thread(_write_bm25),
+                    asyncio.to_thread(_write_colbert),
                 )
 
                 chain_links_created = await asyncio.to_thread(

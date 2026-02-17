@@ -46,6 +46,7 @@ class ConsolidationDaemon:
         graph: GraphStore,
         bm25: BM25Index,
         embed_fn=None,
+        colbert_indexer=None,
     ):
         self.config = config
         self.metadata = metadata
@@ -53,10 +54,25 @@ class ConsolidationDaemon:
         self.graph = graph
         self.bm25 = bm25
         self._embed_fn = embed_fn
+        self.colbert_indexer = colbert_indexer
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._last_cycle: Optional[float] = None
         self._cycle_count = 0
+        
+        # Phase 9 integrity components (v3.6.0)
+        from muninn.conflict.detector import ConflictDetector
+        from muninn.conflict.resolver import ConflictResolver
+        self._conflict_detector = ConflictDetector(
+            contradiction_threshold=self.config.integrity_contradiction_threshold
+        )
+        self._conflict_resolver = ConflictResolver(
+            metadata_store=self.metadata,
+            vector_store=self.vectors,
+            graph_store=self.graph,
+            bm25_index=self.bm25,
+            embed_fn=self._embed_fn
+        )
 
     async def start(self) -> None:
         """Start the consolidation daemon."""
@@ -120,6 +136,18 @@ class ConsolidationDaemon:
             # Phase 5: STATISTICS
             stats_result = await self._phase_statistics()
             results["phases"]["statistics"] = stats_result
+
+            # Phase 6: MAINTENANCE (ColBERT)
+            maintenance_result = await self._phase_maintenance()
+            results["phases"]["maintenance"] = maintenance_result
+
+            # Phase 7: OPTIMIZATION (Storage)
+            optimization_result = await self._phase_optimization()
+            results["phases"]["optimization"] = optimization_result
+
+            # Phase 8: INTEGRITY (NLI Conflict Detection)
+            integrity_result = await self._phase_integrity()
+            results["phases"]["integrity"] = integrity_result
 
         except Exception as e:
             logger.error("Consolidation cycle failed: %s", e, exc_info=True)
@@ -340,6 +368,147 @@ class ConsolidationDaemon:
 
         logger.info("Phase STATISTICS: %s", stats)
         return stats
+
+    async def _phase_maintenance(self) -> dict:
+        """
+        Phase 6: MAINTENANCE (ColBERT)
+        - Monitor centroid drift
+        - Trigger re-clustering if threshold exceeded
+        """
+        if self.colbert_indexer is None:
+            return {"status": "skipped", "reason": "no_colbert_indexer", "elapsed": 0.0}
+            
+        t0 = time.time()
+        drift = 0.0
+        re_clustered = False
+        
+        try:
+            # Fetch robust sample for drift check (v3.6.1 scalability refinement)
+            sample_size = 2000
+            client = self.vectors._get_client()
+            collection = self.vectors.collection_name
+            
+            # Check if collection is large enough to warrant re-clustering
+            count = self.vectors.count()
+            if count < 500:
+                return {"status": "skipped", "reason": "too_few_points", "count": count}
+
+            points = client.scroll(
+                collection_name=collection,
+                limit=sample_size,
+                with_vectors=True
+            )[0]
+            
+            if len(points) >= 100:
+                import numpy as np
+                sample_vectors = np.array([p.vector for p in points if p.vector is not None]).astype(np.float32)
+                
+                if len(sample_vectors) > 0:
+                    drift = self.colbert_indexer.check_centroid_relevance(sample_vectors)
+                    logger.info("Phase MAINTENANCE: ColBERT drift detected: %.4f", drift)
+                    
+                    if drift > self.config.colbert_drift_threshold:
+                        logger.warning("Phase MAINTENANCE: Drift %.4f exceeds threshold %.4f. Re-clustering...", 
+                                       drift, self.config.colbert_drift_threshold)
+                        re_clustered = self.colbert_indexer.recluster_centroids(sample_vectors)
+        except Exception as e:
+            logger.error("Phase MAINTENANCE: ColBERT maintenance failed: %s", e)
+
+        elapsed = time.time() - t0
+        result = {"drift": round(drift, 4), "re-clustered": re_clustered, "elapsed": round(elapsed, 2)}
+        logger.info("Phase MAINTENANCE: %s", result)
+        return result
+
+    async def _phase_optimization(self) -> dict:
+        """
+        Phase 7: OPTIMIZATION (Storage)
+        - Tune collection settings based on size
+        - Enable/update Scalar Quantization
+        """
+        t0 = time.time()
+        optimized = False
+        
+        try:
+            count = self.vectors.count()
+            if count >= self.config.quantization_threshold_points:
+                # v3.6.1 Refinement: Skip if quantization already active
+                client = self.vectors._get_client()
+                collection_info = client.get_collection(self.vectors.collection_name)
+                if collection_info.config.quantization_config:
+                    return {"status": "skipped", "reason": "already_quantized", "elapsed": 0.0}
+
+                from qdrant_client import models
+                logger.info("Phase OPTIMIZATION: Collection size (%d) qualifies for Scalar Quantization tuning.", count)
+                optimized = await self.vectors.update_collection_quantization(
+                    quantization_config=models.ScalarQuantization(
+                        scalar=models.ScalarQuantizationConfig(
+                            type=models.ScalarType.INT8,
+                            quantile=0.99,
+                            always_ram=True
+                        )
+                    )
+                )
+        except Exception as e:
+            logger.error("Phase OPTIMIZATION: Storage optimization failed: %s", e)
+
+        elapsed = time.time() - t0
+        result = {"optimized": optimized, "elapsed": round(elapsed, 2)}
+        logger.info("Phase OPTIMIZATION: %s", result)
+        return result
+
+    async def _phase_integrity(self) -> dict:
+        """
+        Phase 8: INTEGRITY (NLI Conflict Detection)
+        - Audit high-importance recent memories for contradictions
+        - Resolve detected conflicts automatically
+        """
+        if not self._conflict_detector.is_available:
+            return {"status": "skipped", "reason": "nli_model_unavailable", "elapsed": 0.0}
+            
+        t0 = time.time()
+        audited = 0
+        conflicts_resolved = 0
+        
+        try:
+            # Audit top-K important recent memories
+            records = self.metadata.get_for_consolidation(limit=50)
+            
+            for record in records:
+                # v3.6.1 Refinement: Semantic-Driven Candidate Selection
+                # Instead of a random window, fetch the nearest neighbors globally to find contradictions.
+                vec = self.vectors.get_vector(record.id)
+                if not vec:
+                    continue
+
+                # Search Top-5 closest neighbors
+                similar_results = self.vectors.search(query_embedding=vec, limit=6) 
+                
+                # Fetch full records for NLI audit
+                candidates = []
+                for sim_id, score in similar_results:
+                    if sim_id == record.id:
+                        continue
+                    # Fetch candidate from metadata
+                    cand_record = self.metadata.get(sim_id)
+                    if cand_record:
+                        candidates.append(cand_record)
+                
+                if not candidates:
+                    continue
+
+                conflicts = self._conflict_detector.detect_conflicts(record.content, candidates)
+                for conflict in conflicts:
+                    self._conflict_resolver.resolve(conflict, new_record=record)
+                    conflicts_resolved += 1
+                audited += 1
+                
+        except Exception as e:
+            logger.error("Phase INTEGRITY: Integrity audit failed: %s", e)
+
+        elapsed = time.time() - t0
+        result = {"audited": audited, "conflicts_resolved": conflicts_resolved, "elapsed": round(elapsed, 2)}
+        logger.info("Phase INTEGRITY: %s", result)
+        return result
 
     @property
     def status(self) -> dict:

@@ -4,6 +4,18 @@ Local-first persistent memory infrastructure for coding agents and MCP-compatibl
 
 Muninn provides deterministic, explainable memory retrieval with robust transport behavior and production-grade operational controls. It is designed for long-running development workflows where continuity, auditability, and measurable quality matter.
 
+## 🚦 Status
+**Current Version:** v3.4.0 (Phase 6 Complete)
+**Stability:** Production Beta
+
+### 🆕 New in v3.4.0
+- **Temporal Knowledge Graph:** Bi-temporal fact tracking (valid_from/valid_until) with centrality scoring.
+- **Federation Manager:** Cross-agent synchronization manifests and delta calculation.
+- **ColBERT Foundation:** Wired for token-level late interaction scoring (requires Qdrant v1.10+).
+
+## 🚀 Features
+- **Local-First:** Zero cloud dependency.
+
 ## Runtime Modes
 
 - **Huginn mode**: browser-first standalone UX for direct ingestion/search/admin workflows.

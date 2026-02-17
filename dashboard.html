@@ -530,6 +530,21 @@
       </div>
 
       <div class="panel col-12">
+        <h2>Federation & Sync</h2>
+        <p class="desc">Generate synchronization manifests for cross-agent federation.</p>
+        <div class="row">
+          <div class="field-6">
+            <label for="federation-project">Project Scope</label>
+            <input id="federation-project" type="text" value="global" />
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="btn-gen-manifest" class="secondary">Generate Manifest</button>
+        </div>
+        <div class="result" id="federation-result">No manifest generated.</div>
+      </div>
+
+      <div class="panel col-12">
         <h2>Activity Log</h2>
         <p class="desc">Live browser action and API result trace.</p>
         <div class="log" id="activity-log"></div>
@@ -1102,6 +1117,31 @@
       logLine("Preferences saved.");
     });
     document.getElementById("btn-reset-preferences").addEventListener("click", resetPreferences);
+    
+    // Federation Logic
+    async function generateManifest() {
+      const project = document.getElementById("federation-project").value.trim() || "global";
+      try {
+        const result = await apiRequest(`/federation/manifest?project=${encodeURIComponent(project)}`, {}, "POST");
+        setResult("federation-result", result);
+        logLine(`Manifest generated for project '${project}'.`);
+      } catch (err) {
+        setResult("federation-result", { error: err.message });
+        logLine(`Manifest generation failed: ${err.message}`, "err");
+      }
+    }
+    
+    document.getElementById("btn-gen-manifest").addEventListener("click", async () => {
+        const project = document.getElementById("federation-project").value.trim() || "global";
+        try {
+            const result = await apiRequest(`/federation/manifest?project=${encodeURIComponent(project)}`, {}, "POST");
+            setResult("federation-result", result);
+            logLine(`Manifest generated for project '${project}'.`);
+        } catch (err) {
+            setResult("federation-result", { error: err.message });
+            logLine(`Manifest generation failed: ${err.message}`, "err");
+        }
+    });
 
     document.getElementById("search-query").addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
