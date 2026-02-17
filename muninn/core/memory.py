@@ -535,19 +535,26 @@ class MuninnMemory:
                     )
 
                 def _write_graph():
-                    self._graph.add_memory_node(record.id, extraction.summary or content[:200])
+                    self._graph.add_memory_node(
+                        record.id, 
+                        extraction.summary or content[:200],
+                        user_id=user_id,
+                        namespace=namespace
+                    )
                     for entity in extraction.entities:
-                        self._graph.add_entity(entity.name, entity.entity_type)
-                        self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
+                        self._graph.add_entity(entity.name, entity.entity_type, user_id, namespace)
+                        self._graph.link_memory_to_entity(record.id, entity.name, "mentions", user_id, namespace)
                     for relation in extraction.relations:
-                        self._graph.add_entity(relation.subject, "concept")
-                        self._graph.add_entity(relation.object, "concept")
-                        self._graph.add_relation(
+                        self._graph.add_entity(relation.subject, "concept", user_id, namespace)
+                        self._graph.add_entity(relation.object, "concept", user_id, namespace)
+                        self._graph.create_relation(
                             relation.subject,
                             relation.predicate,
                             relation.object,
                             record.id,
                             relation.confidence,
+                            user_id=user_id,
+                            namespace=namespace,
                         )
 
                 def _write_bm25():
@@ -1583,20 +1590,27 @@ class MuninnMemory:
                 )
 
             def _update_graph():
+                uid = record.metadata.get("user_id", "global")
+                ns = record.namespace
                 self._graph.delete_memory_references(record.id)
-                self._graph.add_memory_node(record.id, extraction.summary or data[:200])
+                self._graph.add_memory_node(
+                    record.id, extraction.summary or data[:200],
+                    user_id=uid, namespace=ns,
+                )
                 for entity in extraction.entities:
-                    self._graph.add_entity(entity.name, entity.entity_type)
-                    self._graph.link_memory_to_entity(record.id, entity.name, "mentions")
+                    self._graph.add_entity(entity.name, entity.entity_type, uid, ns)
+                    self._graph.link_memory_to_entity(record.id, entity.name, "mentions", uid, ns)
                 for relation in extraction.relations:
-                    self._graph.add_entity(relation.subject, "concept")
-                    self._graph.add_entity(relation.object, "concept")
-                    self._graph.add_relation(
+                    self._graph.add_entity(relation.subject, "concept", uid, ns)
+                    self._graph.add_entity(relation.object, "concept", uid, ns)
+                    self._graph.create_relation(
                         relation.subject,
                         relation.predicate,
                         relation.object,
                         record.id,
                         relation.confidence,
+                        user_id=uid,
+                        namespace=ns,
                     )
 
             def _update_bm25():

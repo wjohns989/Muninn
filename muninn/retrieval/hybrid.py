@@ -324,22 +324,34 @@ class HybridRetriever:
             logger.warning("Vector search failed: %s", e)
             return []
 
-    def _graph_search(self, query: str, limit: int) -> List[Tuple[str, float]]:
-        """Graph-based entity search. Returns list of (id, score)."""
+    def _graph_search(
+        self, 
+        query: str, 
+        limit: int,
+        user_id: Optional[str] = None,
+        namespaces: Optional[List[str]] = None
+    ) -> List[Tuple[str, float]]:
+        """Graph-based entity search. Returns list of (id, score) (scoped)."""
         try:
             # Extract potential entity names from query
-            # Simple heuristic: capitalized words and known patterns
             words = query.split()
             entity_candidates = [w for w in words if len(w) > 2]
 
             if not entity_candidates:
                 return []
 
-            # Score memories by entity-specific hits; earlier entities get a
-            # slight bonus to keep results deterministic for repeated queries.
+            # We take the first namespace if provided, or default to global
+            ns = namespaces[0] if namespaces and len(namespaces) == 1 else "global"
+            uid = user_id or "global"
+
             scores: Dict[str, float] = defaultdict(float)
-            for idx, entity_name in enumerate(entity_candidates[:5]):  # Cap to avoid expensive traversals
-                related = self.graph.find_related_memories([entity_name], limit=limit)
+            for idx, entity_name in enumerate(entity_candidates[:5]):
+                related = self.graph.find_related_memories(
+                    [entity_name], 
+                    limit=limit,
+                    user_id=uid,
+                    namespace=ns
+                )
                 if not related:
                     continue
                 query_entity_weight = 1.0 / (idx + 1.0)

@@ -45,17 +45,32 @@ class GraphStore:
         try:
             conn.execute("""
                 CREATE NODE TABLE IF NOT EXISTS Entity (
+                    id STRING,
                     name STRING,
+                    user_id STRING,
+                    namespace STRING,
                     entity_type STRING,
                     first_seen DOUBLE,
                     last_seen DOUBLE,
                     mention_count INT64 DEFAULT 1,
-                    PRIMARY KEY (name)
+                    PRIMARY KEY (id)
                 )
             """)
         except Exception as e:
             if "already exists" not in str(e).lower():
                 logger.warning(f"Entity table creation: {e}")
+            else:
+                # Check if we need to migrate the Entity table (e.g. if 'id' doesn't exist)
+                try:
+                    conn.execute("MATCH (e:Entity) RETURN e.id LIMIT 1")
+                except Exception:
+                    logger.warning("Old Entity schema detected. Transitioning table...")
+                    # Kuzu workaround: drop and recreate since it's a PK change
+                    try:
+                        conn.execute("DROP TABLE Entity")
+                        self._initialize() # Re-run to create new table
+                    except Exception as drop_err:
+                        logger.error(f"Failed to migrate Entity table: {drop_err}")
 
         try:
             conn.execute("""
@@ -130,44 +145,61 @@ class GraphStore:
 
         logger.info(f"Graph store initialized at {self.db_path}")
 
-    def add_entity(self, name: str, entity_type: str) -> bool:
+    def add_entity(
+        self, 
+        name: str, 
+        entity_type: str, 
+        user_id: str = "global", 
+        namespace: str = "global"
+    ) -> bool:
         conn = self._get_conn()
         now = time.time()
+        # Create a scoped unique ID
+        entity_id = f"{user_id}/{namespace}/{name}"
         try:
             # Try to merge (upsert)
             conn.execute(
-                "MERGE (e:Entity {name: $name}) "
-                "ON CREATE SET e.entity_type = $type, e.first_seen = $now, e.last_seen = $now, e.mention_count = 1 "
+                "MERGE (e:Entity {id: $id}) "
+                "ON CREATE SET e.name = $name, e.user_id = $uid, e.namespace = $ns, "
+                "e.entity_type = $type, e.first_seen = $now, e.last_seen = $now, e.mention_count = 1 "
                 "ON MATCH SET e.last_seen = $now, e.mention_count = e.mention_count + 1",
-                {"name": name, "type": entity_type, "now": now}
+                {
+                    "id": entity_id, "name": name, "uid": user_id, "ns": namespace,
+                    "type": entity_type, "now": now
+                }
             )
             return True
         except Exception as e:
-            logger.debug(f"Entity upsert for '{name}': {e}")
+            logger.debug(f"Entity creation: {e}")
             return False
 
-    def add_relation(
+    def create_relation(
         self,
         subject: str,
         predicate: str,
         obj: str,
         source_memory_id: Optional[str] = None,
         confidence: float = 1.0,
+        user_id: str = "global",
+        namespace: str = "global",
     ) -> bool:
         conn = self._get_conn()
         now = time.time()
+        
+        s_id = f"{user_id}/{namespace}/{subject}"
+        o_id = f"{user_id}/{namespace}/{obj}"
 
-        # Ensure both entities exist
-        self.add_entity(subject, "unknown")
-        self.add_entity(obj, "unknown")
+        # Ensure both entities exist in this scope
+        self.add_entity(subject, "unknown", user_id, namespace)
+        self.add_entity(obj, "unknown", user_id, namespace)
 
         try:
             conn.execute(
-                "MATCH (a:Entity {name: $subj}), (b:Entity {name: $obj}) "
+                "MATCH (a:Entity {id: $s_id}), (b:Entity {id: $o_id}) "
                 "CREATE (a)-[:RELATES_TO {predicate: $pred, confidence: $conf, "
                 "source_memory: $src, created_at: $now}]->(b)",
                 {
-                    "subj": subject, "obj": obj, "pred": predicate,
+                    "s_id": s_id, "o_id": o_id, "pred": predicate,
                     "conf": confidence, "src": source_memory_id or "", "now": now
                 }
             )
@@ -197,21 +229,39 @@ class GraphStore:
             logger.debug(f"Memory node creation: {e}")
             return False
 
-    def link_memory_to_entity(self, memory_id: str, entity_name: str, role: str = "mention") -> bool:
+    def link_memory_to_entity(
+        self, 
+        memory_id: str, 
+        entity_name: str, 
+        role: str = "mention",
+        user_id: str = "global",
+        namespace: str = "global"
+    ) -> bool:
         conn = self._get_conn()
+        e_id = f"{user_id}/{namespace}/{entity_name}"
+        
+        # Ensure entity exists in this scope
+        self.add_entity(entity_name, "unknown", user_id, namespace)
+        
         try:
             conn.execute(
-                "MATCH (m:Memory {id: $mid}), (e:Entity {name: $ename}) "
+                "MATCH (m:Memory {id: $mid}), (e:Entity {id: $eid}) "
                 "CREATE (m)-[:MENTIONS {role: $role}]->(e)",
-                {"mid": memory_id, "ename": entity_name, "role": role}
+                {"mid": memory_id, "eid": e_id, "role": role}
             )
             return True
         except Exception as e:
             logger.debug(f"Memory-entity link: {e}")
             return False
 
-    def find_related_memories(self, query_entities: List[str], limit: int = 20) -> List[str]:
-        """Find memory IDs related to given entity names via graph traversal."""
+    def find_related_memories(
+        self, 
+        query_entities: List[str], 
+        limit: int = 20,
+        user_id: str = "global",
+        namespace: str = "global"
+    ) -> List[str]:
+        """Find memory IDs related to given entity names via graph traversal (scoped)."""
         if not query_entities:
             return []
 
@@ -219,12 +269,13 @@ class GraphStore:
         memory_ids = set()
 
         for entity_name in query_entities:
+            e_id = f"{user_id}/{namespace}/{entity_name}"
             try:
-                # Direct mentions
+                # Direct mentions (Strictly scoped by entity ID)
                 result = conn.execute(
-                    "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {name: $name}) "
+                    "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $eid}) "
                     "RETURN m.id LIMIT $limit",
-                    {"name": entity_name, "limit": limit}
+                    {"eid": e_id, "limit": limit}
                 )
                 while result.has_next():
                     row = result.get_next()
@@ -252,97 +303,102 @@ class GraphStore:
         namespaces: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Search for memories related to keywords in query via graph traversal.
+        Integrated Graph + Summary search with multi-tenant isolation.
         """
-        # Simple extraction of keywords for entity matching
-        import re
-        keywords = re.findall(r'\w+', query.lower())
-        if not keywords:
-            return []
-        
+        from muninn.extraction.rules import extract_entities_rule_based
+        keywords_raw = extract_entities_rule_based(query)
+        if keywords_raw:
+            keywords = [e.name for e in keywords_raw]
+        else:
+            # Fallback to simple split
+            keywords = [t for t in query.lower().split() if len(t) > 3]
+
         conn = self._get_conn()
         results = []
-        
-        # Build strict isolation filter
+
+        # Build strict isolation filter for Memory lookup
         isolation_clause = ""
-        params = {"limit": limit}
+        base_params: Dict[str, Any] = {"limit": limit}
         if user_id:
             isolation_clause += " AND m.user_id = $uid"
-            params["uid"] = user_id
+            base_params["uid"] = user_id
         if namespaces:
-            # Kuzu 0.7: Check if property is IN the provided list
             isolation_clause += " AND m.namespace IN $ns"
-            params["ns"] = namespaces
+            base_params["ns"] = namespaces
 
-        try:
-            # Strategy 1: Entity-based search (MENTIONS)
-            for kw in keywords[:5]:
+        # Strategy 1: Entity-based search (MENTIONS) - SCOPED
+        ns_list = namespaces or ["global"]
+        for kw in keywords[:5]:
+            for ns in ns_list:
+                e_id = f"{user_id or 'global'}/{ns}/{kw}"
+                s1_params = {**base_params, "eid": e_id}
                 query_str = f"""
-                MATCH (m:Memory)-[:MENTIONS]->(e:Entity)
-                WHERE e.name = $kw {isolation_clause}
+                MATCH (m:Memory)-[:MENTIONS]->(e:Entity {{id: $eid}})
+                WHERE 1=1 {isolation_clause}
                 RETURN m.id, m.summary, e.name
                 LIMIT $limit
                 """
-                params["kw"] = kw
-                res = conn.execute(query_str, params)
-                while res.has_next():
-                    row = res.get_next()
-                    results.append({
-                        "id": row[0],
-                        "summary": row[1],
-                        "match": row[2],
-                        "score": 1.0 
-                    })
-            
-            # Strategy 2: Fallback to summary keyword match (if results are sparse)
-            if len(results) < limit:
-                for kw in keywords[:3]:
-                    # Kuzu 0.7 does not have CONTAINS, but we can uses regex for simple cases 
-                    # OR just return match on the summary property if it roughly matches
-                    # Using =~ for regex matching in Kuzu
-                    query_str = f"""
-                    MATCH (m:Memory)
-                    WHERE m.summary =~ $regex {isolation_clause}
-                    RETURN m.id, m.summary
-                    LIMIT $limit
-                    """
-                    params["regex"] = f"(?i).*{kw}.*"
-                    res = conn.execute(query_str, params)
+                try:
+                    res = conn.execute(query_str, s1_params)
+                    while res.has_next():
+                        row = res.get_next()
+                        results.append({
+                            "id": row[0],
+                            "summary": row[1],
+                            "match": f"entity:{row[2]}",
+                            "score": 1.0,
+                        })
+                except Exception as e:
+                    logger.debug(f"Graph entity search for '{kw}': {e}")
+
+        # Strategy 2: Fallback to summary keyword match (if results are sparse)
+        if len(results) < limit:
+            for kw in keywords[:3]:
+                s2_params = {**base_params, "regex": f"(?i).*{kw}.*"}
+                query_str = f"""
+                MATCH (m:Memory)
+                WHERE m.summary =~ $regex {isolation_clause}
+                RETURN m.id, m.summary
+                LIMIT $limit
+                """
+                try:
+                    res = conn.execute(query_str, s2_params)
                     while res.has_next():
                         row = res.get_next()
                         results.append({
                             "id": row[0],
                             "summary": row[1],
                             "match": "summary",
-                    "score": 0.8
+                            "score": 0.8,
                         })
-        except Exception as e:
-            logger.debug(f"Graph search_memories failed: {e}")
+                except Exception as e:
+                    logger.debug(f"Graph summary search for '{kw}': {e}")
 
-        # Basic deduplication with score prioritization
+        # deduplicate with score prioritization
         seen = {}
         for r in results:
             rid = r["id"]
             if rid not in seen or r["score"] > seen[rid]["score"]:
                 seen[rid] = r
-        
+
         unique = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
         return unique[:limit]
-
-    def get_entity_centrality(self, entity_name: str) -> float:
-        """Get degree centrality of an entity (normalized by max possible degree)."""
+    def get_entity_centrality(
+        self, 
+        entity_name: str, 
+        user_id: str = "global", 
+        namespace: str = "global"
+    ) -> float:
+        """Get degree centrality of an entity (normalized by max possible degree) within a scope."""
         conn = self._get_conn()
+        e_id = f"{user_id}/{namespace}/{entity_name}"
         try:
             result = conn.execute(
-                "MATCH (e:Entity {name: $name})-[r:RELATES_TO]-() RETURN COUNT(r)",
-                {"name": entity_name}
+                "MATCH (e:Entity {id: $eid})-[r:RELATES_TO]-() RETURN COUNT(r)",
+                {"eid": e_id}
             )
             if result.has_next():
                 degree = result.get_next()[0]
-                # Normalize: Use log-scaling to handle high-degree nodes without losing resolution.
-                # Normalized centrality = log(1 + degree) / log(1 + 100)
-                # This gives 1.0 at degree 100, but keeps scaling (slower) above that.
-                # w["centrality"] is 0.20, so high degree nodes get full boost.
                 return min(1.0, math.log1p(degree) / math.log1p(100))
         except Exception:
             pass
@@ -358,21 +414,40 @@ class GraphStore:
             pass
         return 0
 
-    def get_all_entities(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_all_entities(
+        self, 
+        limit: int = 100,
+        user_id: Optional[str] = None,
+        namespace: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         entities = []
+        
+        where_clause = "WHERE 1=1"
+        params = {"limit": limit}
+        if user_id:
+            where_clause += " AND e.user_id = $uid"
+            params["uid"] = user_id
+        if namespace:
+            where_clause += " AND e.namespace = $ns"
+            params["ns"] = namespace
+
         try:
-            result = conn.execute(
-                "MATCH (e:Entity) RETURN e.name, e.entity_type, e.mention_count "
-                "ORDER BY e.mention_count DESC LIMIT $limit",
-                {"limit": limit}
-            )
+            query = f"""
+                MATCH (e:Entity) 
+                {where_clause}
+                RETURN e.name, e.entity_type, e.mention_count, e.namespace
+                ORDER BY e.mention_count DESC 
+                LIMIT $limit
+            """
+            result = conn.execute(query, params)
             while result.has_next():
                 row = result.get_next()
                 entities.append({
                     "name": row[0],
                     "entity_type": row[1],
                     "mention_count": row[2],
+                    "namespace": row[3],
                 })
         except Exception as e:
             logger.debug(f"Get all entities: {e}")
