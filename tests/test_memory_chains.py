@@ -1,10 +1,11 @@
 import asyncio
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 from muninn.chains import MemoryChainDetector
 from muninn.core.memory import MuninnMemory
 from muninn.core.types import Entity, ExtractionResult, MemoryRecord, MemoryType, Provenance
+from muninn.core.ingestion_manager import IngestionManager
 
 
 def test_chain_detector_prefers_causal_link_when_markers_present():
@@ -89,6 +90,7 @@ def test_add_persists_chain_links_when_detector_enabled():
     memory._graph.add_chain_link.return_value = True
     memory._bm25 = MagicMock()
     memory._goal_compass = None
+    memory._ingestion_manager = IngestionManager(memory)
 
     result = asyncio.run(
         memory.add(

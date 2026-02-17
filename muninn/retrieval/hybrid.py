@@ -40,6 +40,12 @@ from muninn.chains import MemoryChainRetriever
 from muninn.advanced.colbert import ColBERTScorer
 from muninn.observability import OTelGenAITracer
 
+# Optional Qdrant imports for late interaction
+try:
+    from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
+except ImportError:
+    Filter = FieldCondition = MatchValue = MatchAny = None
+
 logger = logging.getLogger("Muninn.Retrieval")
 
 # RRF constant (standard value from literature)
@@ -82,6 +88,7 @@ class HybridRetriever:
         graph_store: GraphStore,
         bm25_index: BM25Index,
         reranker: Optional[Reranker] = None,
+        colbert_indexer: Optional[Any] = None,
         embed_fn=None,
         telemetry: Optional[OTelGenAITracer] = None,
         chain_signal_weight: float = 0.6,
@@ -104,10 +111,8 @@ class HybridRetriever:
         
         # ColBERT (Phase 6)
         flags = get_flags()
-        self._colbert_enabled = False # Needs AdvancedConfig propagation or flag
-        # We'll check dynamic config in search() for now or assume it's passed via flags if we add it there.
-        # Currently AdvancedConfig is in MuninnConfig but not passed here directly.
-        # Ideally MuninnMemory configures this.
+        self._colbert_enabled = flags.is_enabled("colbert")
+        self._colbert_indexer = colbert_indexer
         self._colbert_scorer = ColBERTScorer()
 
     async def search(
@@ -270,23 +275,17 @@ class HybridRetriever:
             }
 
         # --- Reranking ---
-            # Check AdvancedConfig via get_flags() or similar if possible, 
-            # but MuninnMemory controls the config.
-            # For now we rely on the reranker availability check and standard logic.
-            # Real integration requires passing config.advanced down.
-            # We'll assume if reranker is present we use it.
-            # To support ColBERT we need to know if it's enabled.
-            
-            # Let's assume we want to support switching rerankers or chaining them.
             if rerank and records:
-                # Standard Cross-Encoder
-                if self.reranker and self.reranker.is_available:
+                # ColBERT late-interaction reranking (Phase 6)
+                if self._colbert_enabled and self._colbert_indexer:
+                    results = await self._colbert_rerank(
+                        query, candidates[:limit * 2], record_map, limit, traces
+                    )
+                # Standard Cross-Encoder fallback
+                elif self.reranker and self.reranker.is_available:
                     results = self._rerank_candidates(
                         query, candidates[:limit * 2], record_map, limit, traces
                     )
-                # ColBERT hook (Future/Advanced) - requires multi-vector store integration
-                # elif self._colbert_enabled:
-                #     results = ...
                 else:
                     results = self._build_results(candidates[:limit], record_map, traces)
             else:
@@ -614,6 +613,89 @@ class HybridRetriever:
                     source="hybrid",
                     trace=trace,
                 ))
+        return results
+
+    async def _colbert_rerank(
+        self,
+        query: str,
+        candidates: List[Tuple[str, float]],
+        record_map: Dict[str, MemoryRecord],
+        limit: int,
+        traces: Optional[Dict[str, RecallTrace]] = None,
+    ) -> List[SearchResult]:
+        """
+        Apply ColBERT late-interaction scoring to a candidate set.
+        """
+        if not self._config.feature_flags.colbert or not self._colbert_indexer or not self._colbert_indexer.encoder.is_available:
+            return self._rerank_candidates(query, candidates, record_map, limit, traces)
+
+        # 1. Encode query at token level
+        query_vectors = self._colbert_indexer.encoder.encode(query)
+        if query_vectors.size == 0:
+            return self._build_results(candidates[:limit], record_map, traces)
+
+        # 2. Get relevant centroids for the query (PLAID Phase 1) if enabled
+        relevant_centroids = None
+        if self._config.feature_flags.colbert_plaid:
+            # union of top-8 centroids for each query token
+            relevant_centroids = self._colbert_indexer.get_query_centroids(query_vectors, top_k=8)
+        
+        scored_candidates = []
+        for mem_id, _fused_score in candidates:
+            if mem_id not in record_map:
+                continue
+            
+            # 3. Retrieve ONLY document tokens matching the relevant centroids
+            # This is the core PLAID-Lite optimization
+            client = self.vectors._get_client()
+            # Filter by memory_id AND optionally centroid_id in relevant_centroids
+            must_conditions = [
+                FieldCondition(key="memory_id", match=MatchValue(value=mem_id))
+            ]
+            if relevant_centroids:
+                must_conditions.append(
+                    FieldCondition(key="centroid_id", match=MatchAny(any=relevant_centroids))
+                )
+
+            results = client.scroll(
+                collection_name=self._colbert_indexer.collection_name,
+                scroll_filter=Filter(must=must_conditions),
+                limit=512,
+                with_vectors=True
+            )
+            
+            points = results[0]
+            if not points:
+                # Fallback: maybe centroids didn't match, or not indexed yet?
+                # Or we can just score it as 0
+                scored_candidates.append((mem_id, 0.0))
+                continue
+                
+            doc_vectors = np.array([p.vector for p in points])
+                
+            # 4. Compute MaxSim score on subset
+            score = self._colbert_scorer.maxsim_score(query_vectors, doc_vectors)
+            scored_candidates.append((mem_id, score))
+
+        # Sort by ColBERT score
+        ranked = sorted(scored_candidates, key=lambda x: x[1], reverse=True)[:limit]
+        
+        # Build results
+        results = []
+        for doc_id, score in ranked:
+            trace = None
+            if traces and doc_id in traces:
+                traces[doc_id].rerank_score = score
+                traces[doc_id].finalize()
+                trace = traces[doc_id]
+
+            results.append(SearchResult(
+                memory=record_map[doc_id],
+                score=score,
+                source="hybrid+colbert",
+                trace=trace,
+            ))
+            
         return results
 
     async def _get_embedding(self, text: str) -> List[float]:
