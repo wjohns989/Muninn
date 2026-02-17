@@ -37,6 +37,7 @@ from muninn.retrieval.bm25 import BM25Index
 from muninn.retrieval.reranker import Reranker
 from muninn.retrieval.weight_adapter import WeightAdapter
 from muninn.chains import MemoryChainRetriever
+from muninn.advanced.colbert import ColBERTScorer
 from muninn.observability import OTelGenAITracer
 
 logger = logging.getLogger("Muninn.Retrieval")
@@ -100,6 +101,14 @@ class HybridRetriever:
             graph_store=self.graph,
             max_seed_memories=max(1, int(chain_max_seed_memories)),
         )
+        
+        # ColBERT (Phase 6)
+        flags = get_flags()
+        self._colbert_enabled = False # Needs AdvancedConfig propagation or flag
+        # We'll check dynamic config in search() for now or assume it's passed via flags if we add it there.
+        # Currently AdvancedConfig is in MuninnConfig but not passed here directly.
+        # Ideally MuninnMemory configures this.
+        self._colbert_scorer = ColBERTScorer()
 
     async def search(
         self,
@@ -261,10 +270,25 @@ class HybridRetriever:
             }
 
         # --- Reranking ---
-            if rerank and self.reranker and self.reranker.is_available and records:
-                results = self._rerank_candidates(
-                    query, candidates[:limit * 2], record_map, limit, traces
-                )
+            # Check AdvancedConfig via get_flags() or similar if possible, 
+            # but MuninnMemory controls the config.
+            # For now we rely on the reranker availability check and standard logic.
+            # Real integration requires passing config.advanced down.
+            # We'll assume if reranker is present we use it.
+            # To support ColBERT we need to know if it's enabled.
+            
+            # Let's assume we want to support switching rerankers or chaining them.
+            if rerank and records:
+                # Standard Cross-Encoder
+                if self.reranker and self.reranker.is_available:
+                    results = self._rerank_candidates(
+                        query, candidates[:limit * 2], record_map, limit, traces
+                    )
+                # ColBERT hook (Future/Advanced) - requires multi-vector store integration
+                # elif self._colbert_enabled:
+                #     results = ...
+                else:
+                    results = self._build_results(candidates[:limit], record_map, traces)
             else:
                 results = self._build_results(candidates[:limit], record_map, traces)
 
