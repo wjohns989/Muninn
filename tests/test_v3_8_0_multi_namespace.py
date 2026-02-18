@@ -2,6 +2,7 @@ import pytest
 import asyncio
 import kuzu
 from pathlib import Path
+from unittest.mock import MagicMock
 from muninn.core.types import MemoryRecord, MemoryType
 from muninn.store.graph_store import GraphStore
 from muninn.retrieval.bm25 import BM25Index
@@ -60,12 +61,12 @@ def test_bm25_index_isolation(mock_stores):
     assert len(res_leak) == 0
 
 @pytest.mark.asyncio
-async def test_consolidation_merge_isolation(mocker):
+async def test_consolidation_merge_isolation():
     # Setup mock infrastructure
-    metadata = mocker.Mock()
-    vectors = mocker.Mock()
-    graph = mocker.Mock()
-    bm25 = mocker.Mock()
+    metadata = MagicMock()
+    vectors = MagicMock()
+    graph = MagicMock()
+    bm25 = MagicMock()
     config = ConsolidationConfig(enabled=True)
     
     daemon = ConsolidationDaemon(config, metadata, vectors, graph, bm25)
@@ -73,9 +74,6 @@ async def test_consolidation_merge_isolation(mocker):
     # Create two records for DIFFERENT users that are "similar"
     r1 = MemoryRecord(id="r1", content="user a info", user_id="user1", namespace="ns1", memory_type=MemoryType.EPISODIC, vector_id="v1")
     r2 = MemoryRecord(id="r2", content="user b info", user_id="user2", namespace="ns1", memory_type=MemoryType.EPISODIC, vector_id="v2")
-    
-    r1.persistence_layer = "local"
-    r2.persistence_layer = "local"
     
     metadata.get_for_consolidation.return_value = [r1, r2]
     metadata.get.side_effect = lambda x: r1 if x == "r1" else r2

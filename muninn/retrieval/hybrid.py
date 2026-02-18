@@ -12,6 +12,7 @@ Signals:
 5. Goal Relevance (goal-vector similarity prior)
 
 v3.1.0: Added explainable recall traces (per-signal attribution).
+v3.10.0: Added temporal query expansion (NL time-phrase parsing).
 
 Inspired by:
 - ColBERT late interaction for fine-grained matching
@@ -37,6 +38,7 @@ from muninn.store.graph_store import GraphStore
 from muninn.retrieval.bm25 import BM25Index
 from muninn.retrieval.reranker import Reranker
 from muninn.retrieval.weight_adapter import WeightAdapter
+from muninn.retrieval.temporal_parser import TimeRange, get_temporal_parser
 from muninn.chains import MemoryChainRetriever
 from muninn.advanced.colbert import ColBERTScorer
 from muninn.observability import OTelGenAITracer
@@ -155,8 +157,23 @@ class HybridRetriever:
             flags = get_flags()
             generate_traces = explain and flags.is_enabled("explainable_recall")
 
-            # Generate query embedding
-            query_embedding = await self._get_embedding(query)
+            # v3.10.0: Temporal query expansion — extract NL time-phrase before
+            # generating embeddings so the stripped query is used for all signals.
+            resolved_time_range: Optional[TimeRange] = None
+            search_query = query
+            if flags.is_enabled("temporal_query_expansion"):
+                parser = get_temporal_parser()
+                parse_result = parser.parse(query)
+                if parse_result is not None:
+                    resolved_time_range, search_query = parse_result
+                    logger.debug(
+                        "Temporal expansion: extracted %s; cleaned query=%r",
+                        resolved_time_range,
+                        search_query,
+                    )
+
+            # Generate query embedding (using cleaned query when temporal phrase stripped)
+            query_embedding = await self._get_embedding(search_query)
 
             # Scope filters are always applied to vector search. We also enforce
             # user/namespace constraints again after metadata fetch.
@@ -178,8 +195,8 @@ class HybridRetriever:
                 temporal_results,
             ) = await asyncio.gather(
                 asyncio.to_thread(self._vector_search, query_embedding, limit * 3, effective_filters),
-                asyncio.to_thread(self._graph_search, query, limit * 2, user_id=user_id, namespaces=namespaces),
-                asyncio.to_thread(self._bm25_search, query, limit * 2, user_id=user_id, namespaces=namespaces),
+                asyncio.to_thread(self._graph_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces),
+                asyncio.to_thread(self._bm25_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces),
                 asyncio.to_thread(self._goal_search, goal_embedding, limit * 2, effective_filters),
                 asyncio.to_thread(
                     self._temporal_search,
@@ -187,6 +204,7 @@ class HybridRetriever:
                     namespaces=namespaces,
                     user_id=user_id,
                     limit=limit * 2,
+                    time_range=resolved_time_range,
                 ),
             )
 
@@ -411,20 +429,43 @@ class HybridRetriever:
         namespaces: Optional[List[str]],
         user_id: Optional[str],
         limit: int,
+        time_range: Optional[TimeRange] = None,
     ) -> List[Tuple[str, float]]:
-        """Temporal/metadata search via SQLite. Returns list of (id, score)."""
+        """
+        Temporal/metadata search via SQLite. Returns list of (id, score).
+
+        When *time_range* is provided (populated by temporal query expansion),
+        records outside [time_range.start, time_range.end) are excluded before
+        scoring. This enables queries like "what did I do last week?" to
+        surface only temporally relevant memories.
+        """
         try:
             project = filters.get("project") if filters else None
-            # Pull more than needed when filtering across multiple namespaces.
+            # v3.10.0: Push temporal range filter to the SQL layer so historical
+            # queries ("in March", "last year") aren't crowded out by newer records
+            # in a fixed limit*2 slice.  When time_range is supplied, the DB returns
+            # only matching rows; otherwise we use the standard limit*2 over-fetch.
+            fetch_limit = limit if time_range is not None else limit * 2
             records = self.metadata.get_all(
-                limit=limit * 2,
+                limit=fetch_limit,
                 project=project,
                 namespace=namespaces[0] if namespaces and len(namespaces) == 1 else None,
                 user_id=user_id,
+                created_at_min=time_range.start if time_range is not None else None,
+                created_at_max=time_range.end if time_range is not None else None,
             )
             if namespaces:
                 ns = set(namespaces)
                 records = [r for r in records if r.namespace in ns]
+
+            # v3.10.0: Python-side guard as defense-in-depth (DB filter above is
+            # the primary path; this fallback is correct when using mocked metadata
+            # or a store that doesn't yet support created_at_min/max).
+            if time_range is not None:
+                records = [
+                    r for r in records
+                    if time_range.start <= r.created_at < time_range.end
+                ]
 
             # Blend recency and intrinsic importance into temporal score.
             now = time.time()
