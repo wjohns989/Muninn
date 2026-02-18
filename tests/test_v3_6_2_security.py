@@ -85,12 +85,12 @@ async def test_integrity_user_scoping():
 
     await daemon._phase_integrity()
 
-    # Verify search was called with a filter for user1
+    # Verify search was called with filters= (correct VectorStore.search API) for user1
     args, kwargs = daemon.vectors.search.call_args
-    assert "filter" in kwargs
-    assert kwargs["filter"] is not None
+    assert "filters" in kwargs
+    assert kwargs["filters"] is not None
     # Check filter content string (since it's a Qdrant model)
-    filter_repr = repr(kwargs["filter"])
+    filter_repr = repr(kwargs["filters"])
     assert "user1" in filter_repr
 
 def test_server_auth_token_enforcement():

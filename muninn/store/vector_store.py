@@ -120,16 +120,18 @@ class VectorStore:
         """
         Retrieve the embedding vector for a specific memory_id.
         Used for background integrity auditing.
+        Points are stored under UUID5(memory_id) — must convert before retrieve.
         """
         try:
             client = self._get_client()
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
             results = client.retrieve(
                 collection_name=self.collection_name,
-                ids=[memory_id],
+                ids=[point_id],
                 with_vectors=True
             )
             if results and results[0].vector:
-                # Qdrant return vectors as a dict if named, or list if unnamed
+                # Qdrant returns vectors as a dict if named, or list if unnamed
                 vec = results[0].vector
                 if isinstance(vec, dict):
                     return vec.get("default", list(vec.values())[0])
@@ -142,24 +144,30 @@ class VectorStore:
     def get_vectors(self, memory_ids: List[str]) -> Dict[str, List[float]]:
         """
         Retrieve multiple embedding vectors in a single batch.
+        Points are stored under UUID5(memory_id) — convert IDs and map back.
+        Returns dict keyed by original memory_id.
         """
         if not memory_ids:
             return {}
         try:
             client = self._get_client()
+            # Build UUID5 → original memory_id mapping
+            id_map = {str(uuid.uuid5(uuid.NAMESPACE_DNS, mid)): mid for mid in memory_ids}
             results = client.retrieve(
                 collection_name=self.collection_name,
-                ids=memory_ids,
+                ids=list(id_map.keys()),
                 with_vectors=True
             )
             vectors = {}
             for res in results:
+                point_id = str(res.id)
+                original_id = id_map.get(point_id, point_id)
                 if res.vector:
                     vec = res.vector
                     if isinstance(vec, dict):
-                        vectors[str(res.id)] = vec.get("default", list(vec.values())[0])
+                        vectors[original_id] = vec.get("default", list(vec.values())[0])
                     else:
-                        vectors[str(res.id)] = vec
+                        vectors[original_id] = vec
             return vectors
         except Exception as e:
             logger.error(f"Failed to retrieve batch vectors: {e}")
