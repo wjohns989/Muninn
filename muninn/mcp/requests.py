@@ -3,6 +3,7 @@ import logging
 import requests
 from typing import Optional, Dict, Any, Union
 from .lifecycle import is_circuit_open, mark_success, mark_failure, BackendCircuitOpenError
+from muninn.core.security import get_token
 
 logger = logging.getLogger("Muninn.mcp.requests")
 
@@ -52,6 +53,13 @@ def _make_request_with_retry_internal(
 
     effective_timeout = min(timeout, remaining) if remaining is not None else timeout
     
+    # Inject security token for unified auth (Phase 10)
+    headers = kwargs.get("headers", {})
+    token = get_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    kwargs["headers"] = headers
+
     last_err = None
     for attempt in range(max_retries + 1):
         try:

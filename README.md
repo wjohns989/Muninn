@@ -4,6 +4,19 @@ Local-first persistent memory infrastructure for coding agents and MCP-compatibl
 
 Muninn provides deterministic, explainable memory retrieval with robust transport behavior and production-grade operational controls. It is designed for long-running development workflows where continuity, auditability, and measurable quality matter.
 
+## 🚦 Status
+**Current Version:** v3.9.0 (Phase 12 Complete)
+**Stability:** Production Beta
+
+### 🆕 New in v3.9.0
+- **Distributed Entity Scoping:** Composite `user_id/namespace/name` entity IDs for multi-tenant isolation.
+- **Unified Security:** Centralized `muninn.core.security` module with FastAPI and MCP parity.
+- **Multi-Namespace Integrity:** Consolidation daemon enforces user and namespace boundaries.
+- **Federation Scoping:** All federation endpoints enforce user-level access control.
+
+## 🚀 Features
+- **Local-First:** Zero cloud dependency.
+
 ## Runtime Modes
 
 - **Huginn mode**: browser-first standalone UX for direct ingestion/search/admin workflows.

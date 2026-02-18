@@ -44,9 +44,14 @@ def find_merge_candidates(
         if record.vector_id is None:
             continue
 
-        # Search for similar vectors
+        # Search for similar vectors with isolation parameters
         try:
-            similar = vector_search_fn(record.vector_id)
+            record_user_id = (record.metadata or {}).get("user_id")
+            similar = vector_search_fn(
+                record.vector_id,
+                user_id=record_user_id,
+                namespace=record.namespace
+            )
             for other_id, score in similar:
                 if other_id == record.id:
                     continue
