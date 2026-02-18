@@ -168,7 +168,7 @@ class ColBERTIndexer:
     def index_text(self, memory_id: str, content: str):
         """Encode and index text with token pruning."""
         # Check feature flag
-        if not self.config.feature_flags.colbert or not self.encoder.is_available:
+        if not self._get_feature_flag("colbert") or not self.encoder.is_available:
             return
             
         # Get raw vectors and tokens

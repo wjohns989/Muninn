@@ -277,7 +277,8 @@ class HybridRetriever:
                 # ColBERT late-interaction reranking (Phase 6)
                 if self._colbert_enabled and self._colbert_indexer:
                     results = await self._colbert_rerank(
-                        query, candidates[:limit * 2], record_map, limit, traces
+                        query, candidates[:limit * 2], record_map, limit, traces,
+                        user_id=user_id, namespaces=namespaces,
                     )
                 # Standard Cross-Encoder fallback
                 elif self.reranker and self.reranker.is_available:
@@ -643,6 +644,8 @@ class HybridRetriever:
         record_map: Dict[str, MemoryRecord],
         limit: int,
         traces: Optional[Dict[str, RecallTrace]] = None,
+        user_id: Optional[str] = None,
+        namespaces: Optional[List[str]] = None,
     ) -> List[SearchResult]:
         """
         Apply ColBERT late-interaction scoring to a candidate set.
@@ -661,12 +664,10 @@ class HybridRetriever:
         if flags.is_enabled("colbert_plaid"):
             # union of top-8 centroids for each query token
             relevant_centroids = self._colbert_indexer.get_query_centroids(query_vectors, top_k=8)
-        
-        # 3. Security/Scoping: Resolve target namespace and user for strict isolation
-        # We use search metrics context or default to record_map items
-        target_records = list(record_map.values())
-        target_user = target_records[0].user_id if target_records else None
-        target_namespace = target_records[0].namespace if target_records else None
+
+        # 3. Security/Scoping: Use explicit user_id/namespace from search() caller
+        target_user = user_id
+        target_namespace = namespaces[0] if namespaces and len(namespaces) == 1 else None
         
         scored_candidates = []
         for mem_id, _fused_score in candidates:
@@ -705,7 +706,11 @@ class HybridRetriever:
                 continue
                 
             doc_vectors = np.array([p.vector for p in points])
-                
+
+            if doc_vectors.size == 0:
+                scored_candidates.append((mem_id, 0.0))
+                continue
+
             # 4. Compute MaxSim score on subset
             score = self._colbert_scorer.maxsim_score(query_vectors, doc_vectors)
             scored_candidates.append((mem_id, score))

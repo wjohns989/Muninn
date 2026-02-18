@@ -375,6 +375,7 @@
         </div>
       </div>
       <div class="btn-row">
+        <button id="btn-apply-token" class="primary">Apply Token</button>
         <button id="btn-refresh-health" class="secondary">Refresh Health</button>
         <button id="btn-run-consolidation" class="warn">Run Consolidation</button>
       </div>
@@ -1255,17 +1256,7 @@
       }
     }
 
-    document.getElementById("btn-gen-manifest").addEventListener("click", async () => {
-      const project = document.getElementById("federation-project").value.trim() || "global";
-      try {
-        const result = await apiRequest(`/federation/manifest?project=${encodeURIComponent(project)}`, {}, "POST");
-        setResult("federation-result", result);
-        logLine(`Manifest generated for project '${project}'.`);
-      } catch (err) {
-        setResult("federation-result", { error: err.message });
-        logLine(`Manifest generation failed: ${err.message}`, "err");
-      }
-    });
+    document.getElementById("btn-gen-manifest").addEventListener("click", generateManifest);
 
     document.getElementById("search-query").addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
