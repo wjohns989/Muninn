@@ -81,6 +81,10 @@ class FeatureFlags:
     colbert_plaid: bool = False
     colbert_int8: bool = False
 
+    # Phase 13 (v3.10.0) — Advanced Retrieval
+    colbert_multivec: bool = False           # Native Qdrant MultiVectorConfig MaxSim
+    temporal_query_expansion: bool = False   # NL time-phrase parsing in search()
+
     @classmethod
     def from_env(cls) -> "FeatureFlags":
         """
@@ -109,6 +113,9 @@ class FeatureFlags:
             colbert=_env_bool("COLBERT", "0"),
             colbert_plaid=_env_bool("COLBERT_PLAID", "0"),
             colbert_int8=_env_bool("COLBERT_INT8", "0"),
+            # Phase 13 (v3.10.0)
+            colbert_multivec=_env_bool("COLBERT_MULTIVEC", "0"),
+            temporal_query_expansion=_env_bool("TEMPORAL_QUERY_EXPANSION", "0"),
         )
         _log_active_flags(flags)
         return flags

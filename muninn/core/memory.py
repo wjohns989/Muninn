@@ -561,7 +561,7 @@ class MuninnMemory:
                     self._bm25.add(record.id, content, user_id=user_id, namespace=namespace)
 
                 def _write_colbert():
-                    if self._colbert_indexer:
+                    if getattr(self, "_colbert_indexer", None):
                         self._colbert_indexer.index_text(record.id, content)
 
                 await asyncio.gather(
