@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -20,7 +21,9 @@
       --chip: #16253b;
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
     body {
       margin: 0;
@@ -78,7 +81,9 @@
       white-space: nowrap;
     }
 
-    .chip strong { color: var(--text); }
+    .chip strong {
+      color: var(--text);
+    }
 
     .grid {
       display: grid;
@@ -106,10 +111,21 @@
       font-size: 0.88rem;
     }
 
-    .col-4 { grid-column: span 4; }
-    .col-6 { grid-column: span 6; }
-    .col-8 { grid-column: span 8; }
-    .col-12 { grid-column: span 12; }
+    .col-4 {
+      grid-column: span 4;
+    }
+
+    .col-6 {
+      grid-column: span 6;
+    }
+
+    .col-8 {
+      grid-column: span 8;
+    }
+
+    .col-12 {
+      grid-column: span 12;
+    }
 
     label {
       display: block;
@@ -125,11 +141,25 @@
       margin-bottom: 8px;
     }
 
-    .field-3 { grid-column: span 3; }
-    .field-4 { grid-column: span 4; }
-    .field-6 { grid-column: span 6; }
-    .field-8 { grid-column: span 8; }
-    .field-12 { grid-column: span 12; }
+    .field-3 {
+      grid-column: span 3;
+    }
+
+    .field-4 {
+      grid-column: span 4;
+    }
+
+    .field-6 {
+      grid-column: span 6;
+    }
+
+    .field-8 {
+      grid-column: span 8;
+    }
+
+    .field-12 {
+      grid-column: span 12;
+    }
 
     input[type="text"],
     input[type="number"],
@@ -214,7 +244,8 @@
       min-width: 960px;
     }
 
-    th, td {
+    th,
+    td {
       border-bottom: 1px solid #1f3150;
       padding: 8px;
       text-align: left;
@@ -280,261 +311,316 @@
       color: #a8c4ed;
     }
 
-    .log .ok { color: #6dd39b; }
-    .log .warn { color: #e5c17a; }
-    .log .err { color: #f08f8f; }
+    .log .ok {
+      color: #6dd39b;
+    }
+
+    .log .warn {
+      color: #e5c17a;
+    }
+
+    .log .err {
+      color: #f08f8f;
+    }
 
     @media (max-width: 1120px) {
-      .col-4, .col-6, .col-8 { grid-column: span 12; }
-      .field-3, .field-4, .field-6, .field-8 { grid-column: span 12; }
-      table { min-width: 720px; }
+
+      .col-4,
+      .col-6,
+      .col-8 {
+        grid-column: span 12;
+      }
+
+      .field-3,
+      .field-4,
+      .field-6,
+      .field-8 {
+        grid-column: span 12;
+      }
+
+      table {
+        min-width: 720px;
+      }
     }
   </style>
 </head>
+
 <body>
   <div class="app">
     <section class="hero">
       <div>
         <h1>Huginn Browser Control Center</h1>
-        <div class="sub">Standalone browser app for the Muninn memory engine. Use Muninn MCP mode when attached to an active assistant.</div>
+        <div class="sub">Standalone browser app for the Muninn memory engine. Use Muninn MCP mode when attached to an
+          active assistant.</div>
       </div>
       <div class="status-strip">
         <div class="chip"><strong>Mode:</strong> <span id="chip-mode">Huginn (browser)</span></div>
-        <div class="chip"><strong>Status:</strong> <span id="chip-status">checking</span></div>
-        <div class="chip"><strong>Backend:</strong> <span id="chip-backend">-</span></div>
-        <div class="chip"><strong>Memories:</strong> <span id="chip-count">-</span></div>
-        <div class="chip"><strong>Profile:</strong> <span id="chip-profile">balanced</span></div>
+        <div class="chip"><strong>Status:</strong> <span id="health-status">Checking...</span></div>
+        <div class="chip"><strong>Auth:</strong> <span id="auth-status">Inactive</span></div>
       </div>
-    </section>
+      <div class="chip"><strong>Backend:</strong> <span id="chip-backend">-</span></div>
+      <div class="chip"><strong>Memories:</strong> <span id="chip-count">-</span></div>
+      <div class="chip"><strong>Profile:</strong> <span id="chip-profile">balanced</span></div>
+  </div>
+  </section>
 
-    <section class="grid">
-      <div class="panel col-4">
-        <h2>System</h2>
-        <p class="desc">Health and quick controls.</p>
-        <div class="btn-row">
-          <button id="btn-refresh-health" class="secondary">Refresh Health</button>
-          <button id="btn-run-consolidation" class="warn">Run Consolidation</button>
+  <section class="grid">
+    <div class="panel col-4">
+      <h2>System</h2>
+      <p class="desc">Health and quick controls.</p>
+      <div class="row">
+        <div class="field-12">
+          <label for="server-auth-token">Server Auth Token</label>
+          <input id="server-auth-token" type="password" placeholder="MUNINN_SERVER_AUTH_TOKEN" />
         </div>
-        <div class="result" id="system-result">No actions yet.</div>
       </div>
-
-      <div class="panel col-8">
-        <h2>Memory Search</h2>
-        <p class="desc">Query memories with optional explain trace.</p>
-        <div class="row">
-          <div class="field-8">
-            <label for="search-query">Query</label>
-            <input id="search-query" type="text" placeholder="What did we decide about ingestion safety?" />
-          </div>
-          <div class="field-2">
-            <label for="search-limit">Limit</label>
-            <input id="search-limit" type="number" min="1" value="8" />
-          </div>
-          <div class="field-2 checkline">
-            <input id="search-explain" type="checkbox" />
-            <span>Explain trace</span>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button id="btn-search">Search</button>
-          <button id="btn-clear-search" class="secondary">Clear</button>
-        </div>
-        <div class="result" id="search-result">No searches yet.</div>
+      <div class="btn-row">
+        <button id="btn-apply-token" class="primary">Apply Token</button>
+        <button id="btn-refresh-health" class="secondary">Refresh Health</button>
+        <button id="btn-run-consolidation" class="warn">Run Consolidation</button>
       </div>
+      <div class="result" id="system-result">No actions yet.</div>
+    </div>
 
-      <div class="panel col-12">
-        <h2>Project Folder Contextual Ingestion</h2>
-        <p class="desc">Ingest local project paths. Use chronological ordering to preserve story flow in memory construction.</p>
-        <div class="row">
-          <div class="field-8">
-            <label for="ingest-paths">Local paths (one per line)</label>
-            <textarea id="ingest-paths" placeholder="C:\\Users\\wjohn\\muninn_mcp\nC:\\Users\\wjohn\\Documents\\project-notes"></textarea>
-          </div>
-          <div class="field-4">
-            <label for="ingest-metadata">Extra metadata (JSON object)</label>
-            <textarea id="ingest-metadata" placeholder='{"source":"browser_ui","context":"project_enrichment"}'></textarea>
-          </div>
+    <div class="panel col-8">
+      <h2>Memory Search</h2>
+      <p class="desc">Query memories with optional explain trace.</p>
+      <div class="row">
+        <div class="field-8">
+          <label for="search-query">Query</label>
+          <input id="search-query" type="text" placeholder="What did we decide about ingestion safety?" />
         </div>
-        <div class="row">
-          <div class="field-3">
-            <label for="ingest-project">Project</label>
-            <input id="ingest-project" type="text" value="global" />
-          </div>
-          <div class="field-3">
-            <label for="ingest-namespace">Namespace</label>
-            <input id="ingest-namespace" type="text" value="global" />
-          </div>
-          <div class="field-3">
-            <label for="ingest-chronological">Chronological order</label>
-            <select id="ingest-chronological">
-              <option value="none">none (path order)</option>
-              <option value="oldest_first">oldest_first</option>
-              <option value="newest_first">newest_first</option>
-            </select>
-          </div>
-          <div class="field-3 checkline">
-            <input id="ingest-recursive" type="checkbox" checked />
-            <span>Recursive</span>
-          </div>
+        <div class="field-2">
+          <label for="search-limit">Limit</label>
+          <input id="search-limit" type="number" min="1" value="8" />
         </div>
-        <div class="row">
-          <div class="field-3">
-            <label for="ingest-max-bytes">Max file bytes</label>
-            <input id="ingest-max-bytes" type="number" min="1" value="5242880" />
-          </div>
-          <div class="field-3">
-            <label for="ingest-chunk-size">Chunk size chars</label>
-            <input id="ingest-chunk-size" type="number" min="1" value="1200" />
-          </div>
-          <div class="field-3">
-            <label for="ingest-chunk-overlap">Chunk overlap chars</label>
-            <input id="ingest-chunk-overlap" type="number" min="0" value="150" />
-          </div>
-          <div class="field-3">
-            <label for="ingest-min-chunk">Min chunk chars</label>
-            <input id="ingest-min-chunk" type="number" min="1" value="120" />
-          </div>
+        <div class="field-2 checkline">
+          <input id="search-explain" type="checkbox" />
+          <span>Explain trace</span>
         </div>
-        <div class="btn-row">
-          <button id="btn-ingest-project" class="good">Ingest Project Paths</button>
-        </div>
-        <div class="result" id="project-ingest-result">No project ingestion yet.</div>
       </div>
+      <div class="btn-row">
+        <button id="btn-search">Search</button>
+        <button id="btn-clear-search" class="secondary">Clear</button>
+      </div>
+      <div class="result" id="search-result">No searches yet.</div>
+    </div>
 
-      <div class="panel col-12">
-        <h2>Legacy Assistant and MCP Memory Reingestion</h2>
-        <p class="desc">Discover local chat/memory artifacts, then select exactly what to reingest.</p>
-        <div class="row">
-          <div class="field-4">
-            <label for="legacy-roots">Additional roots (one per line, optional)</label>
-            <textarea id="legacy-roots" placeholder="C:\\Users\\wjohn\\custom-chat-archives"></textarea>
-          </div>
-          <div class="field-4">
-            <label for="legacy-providers">Provider filter (comma-separated, optional)</label>
-            <textarea id="legacy-providers" placeholder="codex_cli, claude_code, serena_memory, cursor_chat"></textarea>
-          </div>
-          <div class="field-4">
-            <label for="legacy-max-results">Max results per provider</label>
-            <input id="legacy-max-results" type="number" min="1" value="120" />
-            <div class="checkline">
-              <input id="legacy-include-unsupported" type="checkbox" />
-              <span>Include unsupported files in discovery list</span>
-            </div>
+    <div class="panel col-12">
+      <h2>Project Folder Contextual Ingestion</h2>
+      <p class="desc">Ingest local project paths. Use chronological ordering to preserve story flow in memory
+        construction.</p>
+      <div class="row">
+        <div class="field-8">
+          <label for="ingest-paths">Local paths (one per line)</label>
+          <textarea id="ingest-paths"
+            placeholder="C:\\Users\\wjohn\\muninn_mcp\nC:\\Users\\wjohn\\Documents\\project-notes"></textarea>
+        </div>
+        <div class="field-4">
+          <label for="ingest-metadata">Extra metadata (JSON object)</label>
+          <textarea id="ingest-metadata"
+            placeholder='{"source":"browser_ui","context":"project_enrichment"}'></textarea>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field-3">
+          <label for="ingest-project">Project</label>
+          <input id="ingest-project" type="text" value="global" />
+        </div>
+        <div class="field-3">
+          <label for="ingest-namespace">Namespace</label>
+          <input id="ingest-namespace" type="text" value="global" />
+        </div>
+        <div class="field-3">
+          <label for="ingest-chronological">Chronological order</label>
+          <select id="ingest-chronological">
+            <option value="none">none (path order)</option>
+            <option value="oldest_first">oldest_first</option>
+            <option value="newest_first">newest_first</option>
+          </select>
+        </div>
+        <div class="field-3 checkline">
+          <input id="ingest-recursive" type="checkbox" checked />
+          <span>Recursive</span>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field-3">
+          <label for="ingest-max-bytes">Max file bytes</label>
+          <input id="ingest-max-bytes" type="number" min="1" value="5242880" />
+        </div>
+        <div class="field-3">
+          <label for="ingest-chunk-size">Chunk size chars</label>
+          <input id="ingest-chunk-size" type="number" min="1" value="1200" />
+        </div>
+        <div class="field-3">
+          <label for="ingest-chunk-overlap">Chunk overlap chars</label>
+          <input id="ingest-chunk-overlap" type="number" min="0" value="150" />
+        </div>
+        <div class="field-3">
+          <label for="ingest-min-chunk">Min chunk chars</label>
+          <input id="ingest-min-chunk" type="number" min="1" value="120" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button id="btn-ingest-project" class="good">Ingest Project Paths</button>
+      </div>
+      <div class="result" id="project-ingest-result">No project ingestion yet.</div>
+    </div>
+
+    <div class="panel col-12">
+      <h2>Legacy Assistant and MCP Memory Reingestion</h2>
+      <p class="desc">Discover local chat/memory artifacts, then select exactly what to reingest.</p>
+      <div class="row">
+        <div class="field-4">
+          <label for="legacy-roots">Additional roots (one per line, optional)</label>
+          <textarea id="legacy-roots" placeholder="C:\\Users\\wjohn\\custom-chat-archives"></textarea>
+        </div>
+        <div class="field-4">
+          <label for="legacy-providers">Provider filter (comma-separated, optional)</label>
+          <textarea id="legacy-providers" placeholder="codex_cli, claude_code, serena_memory, cursor_chat"></textarea>
+        </div>
+        <div class="field-4">
+          <label for="legacy-max-results">Max results per provider</label>
+          <input id="legacy-max-results" type="number" min="1" value="120" />
+          <div class="checkline">
+            <input id="legacy-include-unsupported" type="checkbox" />
+            <span>Include unsupported files in discovery list</span>
           </div>
         </div>
-
-        <div class="row">
-          <div class="field-3">
-            <label for="legacy-project">Project</label>
-            <input id="legacy-project" type="text" value="global" />
-          </div>
-          <div class="field-3">
-            <label for="legacy-namespace">Namespace</label>
-            <input id="legacy-namespace" type="text" value="global" />
-          </div>
-          <div class="field-3">
-            <label for="legacy-chronological">Chronological order</label>
-            <select id="legacy-chronological">
-              <option value="none">none (path order)</option>
-              <option value="oldest_first">oldest_first</option>
-              <option value="newest_first">newest_first</option>
-            </select>
-          </div>
-          <div class="field-3 checkline">
-            <input id="legacy-recursive" type="checkbox" checked />
-            <span>Recursive import</span>
-          </div>
-        </div>
-
-        <div class="btn-row">
-          <button id="btn-discover-legacy">Discover Sources</button>
-          <button id="btn-auto-discover-import" class="good">Auto Discover + Import Supported</button>
-          <button id="btn-select-supported" class="secondary">Select Parser-Supported</button>
-          <button id="btn-clear-selection" class="secondary">Clear Selection</button>
-          <button id="btn-import-legacy" class="good">Import Selected</button>
-        </div>
-
-        <div class="table-wrap">
-          <table id="legacy-table">
-            <thead>
-              <tr>
-                <th>Select</th>
-                <th>Provider</th>
-                <th>Supported</th>
-                <th>Confidence</th>
-                <th>Type</th>
-                <th>Size</th>
-                <th>Modified (UTC)</th>
-                <th>Relative</th>
-                <th>Path</th>
-              </tr>
-            </thead>
-            <tbody id="legacy-table-body">
-              <tr><td colspan="9">No discovery run yet.</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="result" id="legacy-result">No legacy import actions yet.</div>
       </div>
 
-      <div class="panel col-12">
-        <h2>Operator Preferences</h2>
-        <p class="desc">Persist browser-side defaults for ingestion workflows and model reasoning profile.</p>
-        <div class="row">
-          <div class="field-3">
-            <label for="pref-model-profile">Model profile</label>
-            <select id="pref-model-profile">
-              <option value="low_latency">low_latency</option>
-              <option value="balanced">balanced</option>
-              <option value="high_reasoning">high_reasoning</option>
-            </select>
-          </div>
-          <div class="field-3">
-            <label for="pref-log-level">Log verbosity</label>
-            <select id="pref-log-level">
-              <option value="normal">normal</option>
-              <option value="verbose">verbose</option>
-            </select>
-          </div>
-          <div class="field-3 checkline">
-            <input id="pref-auto-save" type="checkbox" checked />
-            <span>Auto-save form preferences</span>
-          </div>
-          <div class="field-3">
-            <label for="pref-version">Preference schema</label>
-            <input id="pref-version" type="text" value="v1" readonly />
-          </div>
+      <div class="row">
+        <div class="field-3">
+          <label for="legacy-project">Project</label>
+          <input id="legacy-project" type="text" value="global" />
         </div>
-        <div class="btn-row">
-          <button id="btn-save-preferences" class="secondary">Save Preferences</button>
-          <button id="btn-reset-preferences" class="secondary">Reset Preferences</button>
+        <div class="field-3">
+          <label for="legacy-namespace">Namespace</label>
+          <input id="legacy-namespace" type="text" value="global" />
         </div>
-        <div class="result" id="preferences-result">Preferences not loaded yet.</div>
+        <div class="field-3">
+          <label for="legacy-chronological">Chronological order</label>
+          <select id="legacy-chronological">
+            <option value="none">none (path order)</option>
+            <option value="oldest_first">oldest_first</option>
+            <option value="newest_first">newest_first</option>
+          </select>
+        </div>
+        <div class="field-3 checkline">
+          <input id="legacy-recursive" type="checkbox" checked />
+          <span>Recursive import</span>
+        </div>
       </div>
 
-      <div class="panel col-12">
-        <h2>User Profile and Global Context</h2>
-        <p class="desc">Editable user context that helps Huginn/Muninn prioritize relevant memories: skills, tool paths, environments, hardware, and workflow preferences.</p>
-        <div class="row">
-          <div class="field-12">
-            <label for="user-profile-json">Profile JSON</label>
-            <textarea id="user-profile-json" placeholder='{"preferences":{"coding_style":"roi-first"},"skills":["python","typescript"],"paths":{"workspace":"C:\\Users\\wjohn\\muninn_mcp"},"hardware":{"gpu_vram_gb":16}}'></textarea>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button id="btn-load-user-profile" class="secondary">Load Profile</button>
-          <button id="btn-save-user-profile-merge">Save Profile (Merge)</button>
-          <button id="btn-save-user-profile-replace" class="warn">Replace Profile</button>
-        </div>
-        <div class="result" id="user-profile-result">User profile not loaded yet.</div>
+      <div class="btn-row">
+        <button id="btn-discover-legacy">Discover Sources</button>
+        <button id="btn-auto-discover-import" class="good">Auto Discover + Import Supported</button>
+        <button id="btn-select-supported" class="secondary">Select Parser-Supported</button>
+        <button id="btn-clear-selection" class="secondary">Clear Selection</button>
+        <button id="btn-import-legacy" class="good">Import Selected</button>
       </div>
 
-      <div class="panel col-12">
-        <h2>Activity Log</h2>
-        <p class="desc">Live browser action and API result trace.</p>
-        <div class="log" id="activity-log"></div>
+      <div class="table-wrap">
+        <table id="legacy-table">
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>Provider</th>
+              <th>Supported</th>
+              <th>Confidence</th>
+              <th>Type</th>
+              <th>Size</th>
+              <th>Modified (UTC)</th>
+              <th>Relative</th>
+              <th>Path</th>
+            </tr>
+          </thead>
+          <tbody id="legacy-table-body">
+            <tr>
+              <td colspan="9">No discovery run yet.</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-    </section>
+      <div class="result" id="legacy-result">No legacy import actions yet.</div>
+    </div>
+
+    <div class="panel col-12">
+      <h2>Operator Preferences</h2>
+      <p class="desc">Persist browser-side defaults for ingestion workflows and model reasoning profile.</p>
+      <div class="row">
+        <div class="field-3">
+          <label for="pref-model-profile">Model profile</label>
+          <select id="pref-model-profile">
+            <option value="low_latency">low_latency</option>
+            <option value="balanced">balanced</option>
+            <option value="high_reasoning">high_reasoning</option>
+          </select>
+        </div>
+        <div class="field-3">
+          <label for="pref-log-level">Log verbosity</label>
+          <select id="pref-log-level">
+            <option value="normal">normal</option>
+            <option value="verbose">verbose</option>
+          </select>
+        </div>
+        <div class="field-3 checkline">
+          <input id="pref-auto-save" type="checkbox" checked />
+          <span>Auto-save form preferences</span>
+        </div>
+        <div class="field-3">
+          <label for="pref-version">Preference schema</label>
+          <input id="pref-version" type="text" value="v1" readonly />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button id="btn-save-preferences" class="secondary">Save Preferences</button>
+        <button id="btn-reset-preferences" class="secondary">Reset Preferences</button>
+      </div>
+      <div class="result" id="preferences-result">Preferences not loaded yet.</div>
+    </div>
+
+    <div class="panel col-12">
+      <h2>User Profile and Global Context</h2>
+      <p class="desc">Editable user context that helps Huginn/Muninn prioritize relevant memories: skills, tool paths,
+        environments, hardware, and workflow preferences.</p>
+      <div class="row">
+        <div class="field-12">
+          <label for="user-profile-json">Profile JSON</label>
+          <textarea id="user-profile-json"
+            placeholder='{"preferences":{"coding_style":"roi-first"},"skills":["python","typescript"],"paths":{"workspace":"C:\\Users\\wjohn\\muninn_mcp"},"hardware":{"gpu_vram_gb":16}}'></textarea>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button id="btn-load-user-profile" class="secondary">Load Profile</button>
+        <button id="btn-save-user-profile-merge">Save Profile (Merge)</button>
+        <button id="btn-save-user-profile-replace" class="warn">Replace Profile</button>
+      </div>
+      <div class="result" id="user-profile-result">User profile not loaded yet.</div>
+    </div>
+
+    <div class="panel col-12">
+      <h2>Federation & Sync</h2>
+      <p class="desc">Generate synchronization manifests for cross-agent federation.</p>
+      <div class="row">
+        <div class="field-6">
+          <label for="federation-project">Project Scope</label>
+          <input id="federation-project" type="text" value="global" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button id="btn-gen-manifest" class="secondary">Generate Manifest</button>
+      </div>
+      <div class="result" id="federation-result">No manifest generated.</div>
+    </div>
+
+    <div class="panel col-12">
+      <h2>Activity Log</h2>
+      <p class="desc">Live browser action and API result trace.</p>
+      <div class="log" id="activity-log"></div>
+    </div>
+  </section>
   </div>
 
   <script>
@@ -567,6 +653,7 @@
       "legacy-chronological": { type: "value", default: "none" },
       "legacy-recursive": { type: "checked", default: true },
       "user-profile-json": { type: "value", default: "" },
+      "server-auth-token": { type: "value", default: "" },
     };
 
     function nowStamp() {
@@ -626,25 +713,71 @@
       return raw.length > 220 ? `${raw.slice(0, 220)}...` : raw;
     }
 
-    async function apiRequest(path, payload = null, method = "POST") {
-      const opts = { method, headers: { "Content-Type": "application/json" } };
-      if (payload !== null) {
-        opts.body = JSON.stringify(payload);
+    async function apiRequest(endpoint, payload = {}, method = "POST") {
+      const url = `${API_BASE}${endpoint}`;
+      const token = document.getElementById("server-auth-token").value.trim();
+
+      const headers = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
       }
-      const response = await fetch(`${API_BASE}${path}`, opts);
+
+      const options = {
+        method,
+        headers,
+      };
+
+      if (method !== "GET") {
+        options.body = JSON.stringify(payload);
+      }
+
+      const response = await fetch(url, options);
       let data = {};
       try {
         data = await response.json();
-      } catch (_err) {
+      } catch (err) {
         data = {};
       }
+
       if (!response.ok) {
+        if (response.status === 401) {
+          updateAuthStatus("Unauthorized", "err");
+        }
         throw new Error(summarizeServerDetail(data?.detail ?? data, response.status));
       }
-      if (data.success === false) {
-        throw new Error(summarizeServerDetail(data?.detail ?? data, response.status));
+
+      if (token) {
+        updateAuthStatus("Authenticated", "ok");
+      } else {
+        updateAuthStatus("No Token", "warn");
       }
+
       return data.data ?? data;
+    }
+
+    function updateAuthStatus(text, level) {
+      const el = document.getElementById("auth-status");
+      if (!el) return;
+      el.textContent = text;
+      el.style.color = `var(--${level})`;
+    }
+
+    async function refreshHealth() {
+      try {
+        const health = await apiRequest("/health", null, "GET");
+        document.getElementById("health-status").textContent = health.status || "unknown";
+        document.getElementById("chip-backend").textContent = health.backend || "-";
+        document.getElementById("chip-count").textContent = String(health.memory_count ?? "-");
+        setResult("system-result", health);
+        logLine("Health refreshed.");
+      } catch (err) {
+        document.getElementById("health-status").textContent = "error";
+        setResult("system-result", { error: err.message });
+        logLine(`Health check failed: ${err.message}`, "err");
+      }
     }
 
     function setResult(elId, payload) {
@@ -1084,6 +1217,13 @@
       });
     }
 
+    document.getElementById("btn-apply-token").addEventListener("click", () => {
+      savePreferences(true);
+      refreshHealth();
+      loadUserProfile();
+      logLine("Security token applied.");
+    });
+
     document.getElementById("btn-refresh-health").addEventListener("click", refreshHealth);
     document.getElementById("btn-run-consolidation").addEventListener("click", runConsolidation);
     document.getElementById("btn-search").addEventListener("click", searchMemories);
@@ -1103,6 +1243,21 @@
     });
     document.getElementById("btn-reset-preferences").addEventListener("click", resetPreferences);
 
+    // Federation Logic
+    async function generateManifest() {
+      const project = document.getElementById("federation-project").value.trim() || "global";
+      try {
+        const result = await apiRequest(`/federation/manifest?project=${encodeURIComponent(project)}`, {}, "POST");
+        setResult("federation-result", result);
+        logLine(`Manifest generated for project '${project}'.`);
+      } catch (err) {
+        setResult("federation-result", { error: err.message });
+        logLine(`Manifest generation failed: ${err.message}`, "err");
+      }
+    }
+
+    document.getElementById("btn-gen-manifest").addEventListener("click", generateManifest);
+
     document.getElementById("search-query").addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -1117,4 +1272,5 @@
     logLine("Browser control center loaded.");
   </script>
 </body>
+
 </html>

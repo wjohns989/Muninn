@@ -974,6 +974,15 @@ class SQLiteMetadataStore:
         ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def get_random(self, limit: int = 10) -> List[MemoryRecord]:
+        """Fetch a random sample of memory records."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM memories ORDER BY RANDOM() LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
     def close(self):
         if self._conn:
             self._conn.close()

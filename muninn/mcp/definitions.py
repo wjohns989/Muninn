@@ -296,6 +296,61 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                 "min_chunk_chars": {"type": "integer", "minimum": 1}
             }
         }
+    },
+    {
+        "name": "get_temporal_knowledge",
+        "description": "Query the Temporal Knowledge Graph for facts valid at a specific time.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "timestamp": {"type": "number", "description": "Epoch timestamp to query validity at (defaults to now)."},
+                "limit": {"type": "integer", "default": 50, "description": "Max facts to return."}
+            }
+        }
+    },
+    {
+        "name": "create_federation_manifest",
+        "description": "Generate a federation manifest for cross-agent synchronization.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "default": "global", "description": "Project scope for the manifest."}
+            }
+        }
+    },
+    {
+        "name": "calculate_federation_delta",
+        "description": "Calculate memory differences between local and remote manifests.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "local": {"type": "object", "description": "Local manifest."},
+                "remote": {"type": "object", "description": "Remote manifest."}
+            },
+            "required": ["local", "remote"]
+        }
+    },
+    {
+        "name": "create_federation_bundle",
+        "description": "Create a portable sync bundle for specific memory IDs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memory_ids": {"type": "array", "items": {"type": "string"}, "description": "List of memory IDs to bundle."}
+            },
+            "required": ["memory_ids"]
+        }
+    },
+    {
+        "name": "apply_federation_bundle",
+        "description": "Apply a sync bundle to the local memory store.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bundle": {"type": "object", "description": "The sync bundle to apply."}
+            },
+            "required": ["bundle"]
+        }
     }
 ]
 
@@ -303,7 +358,8 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 READ_ONLY_TOOLS = {
     "search_memory", "get_all_memories", "get_project_goal", 
     "get_user_profile", "get_model_profiles", "get_model_profile_events",
-    "export_handoff", "discover_legacy_sources"
+    "export_handoff", "discover_legacy_sources",
+    "get_temporal_knowledge", "create_federation_manifest", "calculate_federation_delta", "create_federation_bundle"
 }
 
 DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories"}
@@ -311,6 +367,5 @@ DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories"}
 IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
     "update_memory", "delete_memory", "delete_all_memories",
     "set_project_goal", "set_user_profile", "set_model_profiles",
-    "import_handoff"
+    "import_handoff", "apply_federation_bundle"
 })
-

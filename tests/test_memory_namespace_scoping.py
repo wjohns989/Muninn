@@ -1,9 +1,10 @@
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 from muninn.core.memory import MuninnMemory
-from muninn.core.types import ExtractionResult, MemoryRecord, MemoryType, Provenance
+from muninn.core.types import Entity, ExtractionResult, MemoryRecord, MemoryType, Provenance
 from muninn.dedup.semantic_dedup import DedupResult
+from muninn.core.ingestion_manager import IngestionManager
 
 
 def _record(memory_id: str, namespace: str, user_id: str):
@@ -39,6 +40,7 @@ def test_add_passes_namespace_and_user_filters_to_dedup_search():
         similarity=0.99,
     )
     memory._conflict_detector = None
+    memory._ingestion_manager = IngestionManager(memory)
 
     result = asyncio.run(memory.add("same memory", namespace="project-a", user_id="user-1"))
 
@@ -83,6 +85,7 @@ def test_conflict_prefilter_candidates_are_scoped_to_namespace_and_user():
     memory._graph = MagicMock()
     memory._bm25 = MagicMock()
     memory._dedup = None
+    memory._ingestion_manager = IngestionManager(memory)
 
     result = asyncio.run(memory.add("new memory", namespace="project-a", user_id="user-1"))
 
@@ -124,6 +127,7 @@ def test_conflict_prefilter_excludes_candidates_without_user_scope():
     memory._graph = MagicMock()
     memory._bm25 = MagicMock()
     memory._dedup = None
+    memory._ingestion_manager = IngestionManager(memory)
 
     result = asyncio.run(memory.add("new memory", namespace="project-a", user_id="user-1"))
 
@@ -185,6 +189,7 @@ def test_conflict_prefilter_stays_strict_until_migration_complete():
     memory._graph = MagicMock()
     memory._bm25 = MagicMock()
     memory._dedup = None
+    memory._ingestion_manager = IngestionManager(memory)
 
     result = asyncio.run(memory.add("new memory", namespace="project-a", user_id="user-1"))
 
@@ -225,6 +230,7 @@ def test_conflict_prefilter_ignores_candidates_with_none_metadata():
     memory._graph = MagicMock()
     memory._bm25 = MagicMock()
     memory._dedup = None
+    memory._ingestion_manager = IngestionManager(memory)
 
     result = asyncio.run(memory.add("new memory", namespace="project-a", user_id="user-1"))
 
@@ -269,6 +275,7 @@ def test_dedup_update_existing_scope_mismatch_falls_back_to_add():
     memory._conflict_detector = None
     memory._graph = MagicMock()
     memory._bm25 = MagicMock()
+    memory._ingestion_manager = IngestionManager(memory)
 
     result = asyncio.run(memory.add("new memory", namespace="project-a", user_id="user-1"))
 
@@ -289,6 +296,6 @@ def test_get_all_scoped_by_user_id_and_namespace():
 
     result = asyncio.run(memory.get_all(user_id="user-1", namespace="project-a"))
 
-    memory._metadata.get_all.assert_called_once_with(limit=100, namespace="project-a", user_id="user-1")
+    memory._metadata.get_all.assert_called_once_with(limit=100, namespace="project-a", user_id="user-1", project=None)
     assert len(result) == 1
     assert result[0]["id"] == "mem-user"
