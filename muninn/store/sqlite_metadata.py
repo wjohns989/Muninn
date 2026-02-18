@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS memories (
     namespace       TEXT DEFAULT 'global',
     provenance      TEXT DEFAULT 'auto_extracted',
 
+    -- Project isolation scope (v3.11.0)
+    -- "project" = visible only within its project; never returned cross-project
+    -- "global"  = always visible regardless of current project
+    scope           TEXT NOT NULL DEFAULT 'project',
+
     -- Embedding Reference
     vector_id       TEXT,
     embedding_model TEXT DEFAULT 'nomic-embed-text',
@@ -66,6 +71,7 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source_agent);",
     "CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(consolidated);",
+    "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);",
 ]
 
 SCHEMA_META = """
@@ -180,6 +186,8 @@ class SQLiteMetadataStore:
         conn.execute(USER_PROFILES)
         self._ensure_column_exists(conn, "retrieval_feedback", "rank", "INTEGER")
         self._ensure_column_exists(conn, "retrieval_feedback", "sampling_prob", "REAL")
+        # v3.11.0: Project isolation scope migration — add column if upgrading from older DB
+        self._ensure_column_exists(conn, "memories", "scope", "TEXT NOT NULL DEFAULT 'project'")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_feedback_scope_time ON retrieval_feedback(user_id, namespace, project, created_at DESC);"
         )
@@ -247,6 +255,9 @@ class SQLiteMetadataStore:
             d["provenance"] = Provenance(d.get("provenance", "auto_extracted"))
         except ValueError:
             d["provenance"] = Provenance.AUTO_EXTRACTED
+        # v3.11.0: normalize scope — treat NULL or unknown values as "project" (backward compat)
+        if d.get("scope") not in ("project", "global"):
+            d["scope"] = "project"
         return MemoryRecord(**d)
 
 
@@ -774,8 +785,8 @@ class SQLiteMetadataStore:
                 novelty_score, created_at, ingested_at, last_accessed, expires_at,
                 source_agent, project, branch, namespace, provenance,
                 vector_id, embedding_model, consolidated, parent_id,
-                consolidation_gen, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                consolidation_gen, metadata, scope
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.id, record.content, record.memory_type.value,
                 record.importance, record.recency_score, record.access_count,
@@ -785,7 +796,8 @@ class SQLiteMetadataStore:
                 record.namespace, record.provenance.value,
                 record.vector_id, record.embedding_model,
                 int(record.consolidated), record.parent_id,
-                record.consolidation_gen, json.dumps(record.metadata)
+                record.consolidation_gen, json.dumps(record.metadata),
+                record.scope
             )
         )
         conn.commit()
@@ -861,6 +873,7 @@ class SQLiteMetadataStore:
         user_id: Optional[str] = None,
         created_at_min: Optional[float] = None,
         created_at_max: Optional[float] = None,
+        scope: Optional[str] = None,
     ) -> List[MemoryRecord]:
         conn = self._get_conn()
         conditions = []
@@ -885,6 +898,10 @@ class SQLiteMetadataStore:
         if created_at_max is not None:
             conditions.append("created_at < ?")
             params.append(created_at_max)
+        # v3.11.0: Project isolation scope filter.
+        if scope is not None:
+            conditions.append("scope = ?")
+            params.append(scope)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
