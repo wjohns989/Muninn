@@ -441,18 +441,26 @@ class HybridRetriever:
         """
         try:
             project = filters.get("project") if filters else None
-            # Pull more than needed when filtering across multiple namespaces.
+            # v3.10.0: Push temporal range filter to the SQL layer so historical
+            # queries ("in March", "last year") aren't crowded out by newer records
+            # in a fixed limit*2 slice.  When time_range is supplied, the DB returns
+            # only matching rows; otherwise we use the standard limit*2 over-fetch.
+            fetch_limit = limit if time_range is not None else limit * 2
             records = self.metadata.get_all(
-                limit=limit * 2,
+                limit=fetch_limit,
                 project=project,
                 namespace=namespaces[0] if namespaces and len(namespaces) == 1 else None,
                 user_id=user_id,
+                created_at_min=time_range.start if time_range is not None else None,
+                created_at_max=time_range.end if time_range is not None else None,
             )
             if namespaces:
                 ns = set(namespaces)
                 records = [r for r in records if r.namespace in ns]
 
-            # v3.10.0: Apply time-range filter from temporal query expansion.
+            # v3.10.0: Python-side guard as defense-in-depth (DB filter above is
+            # the primary path; this fallback is correct when using mocked metadata
+            # or a store that doesn't yet support created_at_min/max).
             if time_range is not None:
                 records = [
                     r for r in records

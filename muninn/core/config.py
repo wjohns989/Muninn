@@ -454,7 +454,7 @@ class MuninnConfig(BaseModel):
                 enable_colbert=os.environ.get("MUNINN_COLBERT_ENABLED", "false").lower() == "true",
                 colbert_dim=int(os.environ.get("MUNINN_COLBERT_DIM", "128")),
                 enable_temporal_kg=os.environ.get("MUNINN_TEMPORAL_KG_ENABLED", "false").lower() == "true",
-                enable_colbert_multivec=os.environ.get("MUNINN_COLBERT_MULTIVEC_ENABLED", "false").lower() == "true",
+                enable_colbert_multivec=os.environ.get("MUNINN_COLBERT_MULTIVEC", "0").lower() in ("1", "true", "yes", "on"),
                 colbert_multivec_collection=os.environ.get(
                     "MUNINN_COLBERT_MULTIVEC_COLLECTION", "muninn_colbert_multivec"
                 ),

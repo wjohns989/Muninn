@@ -20,11 +20,15 @@ Design Principles:
 from __future__ import annotations
 
 import calendar
+import logging
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, List
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -284,7 +288,8 @@ class TemporalQueryParser:
     ) -> Optional[TimeRange]:
         try:
             return getattr(self, f"_handle_{handler}")(m, now, now_ts)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Temporal handler '%s' raised: %s", handler, exc)
             return None
 
     # ------------------------------------------------------------------
@@ -293,9 +298,8 @@ class TemporalQueryParser:
 
     def _handle_last_n_units(self, m: re.Match, now: datetime, now_ts: float) -> TimeRange:
         n = int(m.group("n"))
-        unit = m.group("unit").lower().rstrip("s") + "s"  # normalise to plural
-        # Look up seconds
-        sec = _UNIT_SECONDS.get(unit) or _UNIT_SECONDS.get(m.group("unit").lower(), 86400)
+        # _UNIT_PAT is built from _UNIT_SECONDS keys, so a direct lookup is safe.
+        sec = _UNIT_SECONDS[m.group("unit").lower()]
         delta = n * sec
         return TimeRange(start=now_ts - delta, end=now_ts)
 
@@ -376,19 +380,41 @@ class TemporalQueryParser:
         return TimeRange(start=_ts(start), end=end_ts)
 
     def _handle_before_last_unit(self, m: re.Match, now: datetime, now_ts: float) -> TimeRange:
-        """'before last week' → from epoch to start of last week."""
-        unit = m.group("unit2").lower()
-        sec = _UNIT_SECONDS.get(unit, 86400)
-        end_of_range = now_ts - sec
-        # Use Unix epoch as start (effectively "all history before this point")
-        return TimeRange(start=0.0, end=end_of_range)
+        """'before last week/month/year' → from epoch to start of that calendar period."""
+        unit = m.group("unit2").lower().rstrip("s")  # normalise to singular
+        if unit == "week":
+            end_dt = _start_of_week(now) - timedelta(weeks=1)
+        elif unit == "month":
+            # Start of last month = 1st of the previous calendar month
+            first_of_this_month = _start_of_month(now)
+            end_dt = _start_of_month(first_of_this_month - timedelta(days=1))
+        elif unit == "year":
+            end_dt = datetime(now.year - 1, 1, 1, tzinfo=timezone.utc)
+        elif unit == "day":
+            end_dt = _start_of_day(now) - timedelta(days=1)
+        else:
+            # For hours/minutes/seconds fall back to raw seconds arithmetic
+            sec = _UNIT_SECONDS.get(unit, 3600)
+            return TimeRange(start=0.0, end=now_ts - sec)
+        return TimeRange(start=0.0, end=_ts(end_dt))
 
     def _handle_after_last_unit(self, m: re.Match, now: datetime, now_ts: float) -> TimeRange:
-        """'after last week' → from end of last-unit until now."""
-        unit = m.group("unit3").lower()
-        sec = _UNIT_SECONDS.get(unit, 86400)
-        start = now_ts - sec
-        return TimeRange(start=start, end=now_ts)
+        """'after last week/month/year' → from end of that calendar period until now."""
+        unit = m.group("unit3").lower().rstrip("s")  # normalise to singular
+        if unit == "week":
+            # End of last week = start of this week (Monday 00:00:00)
+            start_dt = _start_of_week(now)
+        elif unit == "month":
+            # End of last month = start of this month
+            start_dt = _start_of_month(now)
+        elif unit == "year":
+            start_dt = _start_of_year(now)
+        elif unit == "day":
+            start_dt = _start_of_day(now)
+        else:
+            sec = _UNIT_SECONDS.get(unit, 3600)
+            return TimeRange(start=now_ts - sec, end=now_ts)
+        return TimeRange(start=_ts(start_dt), end=now_ts)
 
     def _handle_after_yesterday(self, m: re.Match, now: datetime, now_ts: float) -> TimeRange:
         """'after yesterday' → from start of today until now."""
@@ -421,11 +447,14 @@ class TemporalQueryParser:
 # ---------------------------------------------------------------------------
 
 _default_parser: Optional[TemporalQueryParser] = None
+_parser_lock = threading.Lock()
 
 
 def get_temporal_parser() -> TemporalQueryParser:
-    """Return a shared TemporalQueryParser instance (lazy init, thread-safe)."""
+    """Return a shared TemporalQueryParser instance (lazy init, double-checked locking)."""
     global _default_parser
     if _default_parser is None:
-        _default_parser = TemporalQueryParser()
+        with _parser_lock:
+            if _default_parser is None:
+                _default_parser = TemporalQueryParser()
     return _default_parser
