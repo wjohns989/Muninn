@@ -432,9 +432,15 @@ class MuninnMemory:
         namespace: str = "global",
         memory_type: MemoryType = MemoryType.EPISODIC,
         provenance: Provenance = Provenance.AUTO_EXTRACTED,
+        scope: str = "project",
     ) -> Dict[str, Any]:
         """
         Add a new memory. Delegation to IngestionManager.
+
+        Args:
+            scope: Isolation scope — 'project' means only visible in the same
+                   project context; 'global' means always visible across all
+                   projects (e.g. user preferences, universal rules).
         """
         self._check_initialized()
         with self._otel.span(
@@ -445,6 +451,7 @@ class MuninnMemory:
                 "muninn.namespace": namespace,
                 "muninn.user_id": user_id,
                 "muninn.project": (metadata or {}).get("project", "global"),
+                "muninn.scope": scope,
             },
         ):
             # Process via IngestionManager
@@ -456,6 +463,7 @@ class MuninnMemory:
                 namespace=namespace,
                 memory_type=memory_type,
                 provenance=provenance,
+                scope=scope,
             )
 
             # Handle terminal early returns (DEDUP_SKIP, CONFLICT_SKIP)
@@ -492,6 +500,7 @@ class MuninnMemory:
                                     "user_id": user_id,
                                     "project": existing.project,
                                     "branch": existing.branch,
+                                    "scope": existing.scope,
                                 },
                             ),
                             asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content, user_id, namespace)
@@ -531,6 +540,7 @@ class MuninnMemory:
                             "user_id": user_id,
                             "project": record.project,
                             "branch": record.branch,
+                            "scope": record.scope,
                         },
                     )
 

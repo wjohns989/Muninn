@@ -85,6 +85,9 @@ class FeatureFlags:
     colbert_multivec: bool = False           # Native Qdrant MultiVectorConfig MaxSim
     temporal_query_expansion: bool = False   # NL time-phrase parsing in search()
 
+    # Phase 14 (v3.11.0) — Project-Scoped Memory
+    project_scope_strict: bool = False       # Disable fallback retry entirely — zero cross-project leakage
+
     @classmethod
     def from_env(cls) -> "FeatureFlags":
         """
@@ -116,6 +119,8 @@ class FeatureFlags:
             # Phase 13 (v3.10.0)
             colbert_multivec=_env_bool("COLBERT_MULTIVEC", "0"),
             temporal_query_expansion=_env_bool("TEMPORAL_QUERY_EXPANSION", "0"),
+            # Phase 14 (v3.11.0)
+            project_scope_strict=_env_bool("PROJECT_SCOPE_STRICT", "0"),
         )
         _log_active_flags(flags)
         return flags

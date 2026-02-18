@@ -9,7 +9,7 @@ v3.1.0: Added RecallTrace support in SearchResult for explainable recall.
 import uuid
 import time
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Literal, Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from muninn.core.recall_trace import RecallTrace
 
@@ -51,6 +51,11 @@ class MemoryRecord(BaseModel):
     branch: Optional[str] = None
     namespace: str = "global"
     provenance: Provenance = Provenance.AUTO_EXTRACTED
+
+    # Project isolation scope (v3.11.0)
+    # "project" — visible only within its project; NEVER returned in cross-project fallback search
+    # "global"  — always visible regardless of current project (user prefs, universal rules)
+    scope: Literal["project", "global"] = "project"
 
     # Embedding reference
     vector_id: Optional[str] = None
@@ -107,6 +112,7 @@ class AddMemoryRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     infer: Optional[bool] = None
     namespace: Optional[str] = "global"
+    scope: Literal["project", "global"] = "project"
 
 
 class SearchMemoryRequest(BaseModel):

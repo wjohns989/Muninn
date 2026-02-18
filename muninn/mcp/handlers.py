@@ -430,6 +430,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "calculate_federation_delta": _do_calculate_federation_delta,
         "create_federation_bundle": _do_create_federation_bundle,
         "apply_federation_bundle": _do_apply_federation_bundle,
+        "set_project_instruction": _do_set_project_instruction,
     }
     
     handler = dispatch.get(name)
@@ -442,10 +443,42 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
     git = get_git_info()
     metadata.setdefault("project", git["project"])
     metadata.setdefault("branch", git["branch"])
-    
-    payload = {"content": args.get("content"), "metadata": metadata, "user_id": "global_user"}
+
+    # v3.11.0: Pass scope so the server persists it correctly
+    scope = args.get("scope", "project")
+    if scope not in ("project", "global"):
+        scope = "project"
+
+    payload = {"content": args.get("content"), "metadata": metadata, "user_id": "global_user", "scope": scope}
     resp = make_request_with_retry("POST", f"{SERVER_URL}/add", deadline_epoch=deadline, json=payload, timeout=10)
     return resp.json()
+
+def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    """Convenience tool: create a scope='project' memory tagged with the current git project.
+
+    The resulting memory will NEVER be returned when working in a different repo,
+    preventing cross-project instruction bleed.
+    """
+    instruction = args.get("instruction", "")
+    category = args.get("category", "project_instruction")
+    if not instruction:
+        return {"success": False, "error": "instruction is required"}
+
+    git = get_git_info()
+    metadata = inject_operator_profile_metadata(
+        {"project": git["project"], "branch": git["branch"], "category": category},
+        operation="add",
+    )
+
+    payload = {
+        "content": instruction,
+        "metadata": metadata,
+        "user_id": "global_user",
+        "scope": "project",
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/add", deadline_epoch=deadline, json=payload, timeout=10)
+    return resp.json()
+
 
 def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     git = get_git_info()
@@ -469,15 +502,27 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
     # Debug prints for test failure diagnosis
     # print(f"DEBUG: auto={auto_project} success={result.get('success')} data={result.get('data')} env={env_flag('MUNINN_MCP_SEARCH_PROJECT_FALLBACK', True)}")
 
-    if auto_project and result.get("success") and not result.get("data") and env_flag("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", True):
-        logger.info("Retrying search without auto-project filter")
-        # Copy filters to avoid mutating the original object referenced by test mocks
+    from muninn.core.feature_flags import get_flags
+    _flags = get_flags()
+    # v3.11.0: project_scope_strict disables fallback entirely — zero cross-project leakage
+    fallback_enabled = (
+        auto_project
+        and result.get("success")
+        and not result.get("data")
+        and env_flag("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", True)
+        and not _flags.project_scope_strict
+    )
+    if fallback_enabled:
+        logger.info("Retrying search without project filter (scope=global only)")
+        # Copy filters to avoid mutating the original object referenced by test mocks.
+        # Critical: add scope=global so we NEVER leak scope=project memories from other projects.
         fallback_filters = filters.copy()
         fallback_filters.pop("project")
+        fallback_filters["scope"] = "global"
         payload["filters"] = fallback_filters
         resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=10)
         result = resp.json()
-    
+
     return result
 
 def _do_get_all_memories(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
