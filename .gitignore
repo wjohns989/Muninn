@@ -65,6 +65,13 @@ Thumbs.db
 # Data directory (user-specific, stored in ~/.muninn/)
 data/
 
+# Benchmark and test runtime database artifacts (never commit these)
+temp_data/
+temp_data_*/
+temp_benchmark*/
+temp_kuzu*/
+test_kuzu_db*/
+
 # Temporary kill/service scripts
 kill_server.ps1
 service_wrapper.py
