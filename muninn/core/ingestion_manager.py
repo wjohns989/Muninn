@@ -110,11 +110,8 @@ class IngestionManager:
                         "event": "DEDUP_SKIP",
                         "dedup": dedup_result.model_dump(),
                     }
-                if dedup_result.strategy == DedupStrategy.UPDATE_EXISTING:
-                    # Implementation remains in MuninnMemory for now to avoid circular complexity,
-                    # or we could move it here if we pass more state.
-                    # For this refactor, we'll return a special status to MuninnMemory.
-                    return {"event": "DEDUP_SIGNAL_UPDATE", "dedup": dedup_result, "embedding": embedding, "record": record}
+                # Strategy: UPDATE_EXISTING will be handled after gathering all necessary ADD data
+                # to support fallback in case of scope mismatch.
 
         # 4. Conflict Detection
         conflict_info = None
@@ -187,6 +184,19 @@ class IngestionManager:
                 max_similarity=max_similarity,
                 centrality=centrality,
             )
+
+        # 6. Final Decision
+        # If we had an UPDATE_EXISTING strategy from dedup, return it now with full data.
+        if 'dedup_result' in locals() and dedup_result and dedup_result.is_duplicate:
+             return {
+                "event": "DEDUP_SIGNAL_UPDATE",
+                "dedup": dedup_result,
+                "embedding": embedding,
+                "record": record,
+                "extraction": extraction,
+                "entity_names": entity_names,
+                "conflict_info": conflict_info,
+            }
 
         return {
             "event": "PROCESS_COMPLETE",

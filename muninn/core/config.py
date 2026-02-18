@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
+from muninn.core.feature_flags import FeatureFlags
 from muninn.platform import get_data_dir
 
 logger = logging.getLogger("Muninn.Config")
@@ -226,6 +227,11 @@ class ConsolidationConfig(BaseModel):
     merge_similarity: float = 0.92
     promote_access_count: int = 5
     working_memory_ttl_hours: float = 24.0
+    
+    # Phase 9: Maintenance & Integrity (v3.6.0)
+    colbert_drift_threshold: float = 0.15
+    quantization_threshold_points: int = 10000
+    integrity_contradiction_threshold: float = 0.7
 
 
 class ServerConfig(BaseModel):
@@ -252,6 +258,7 @@ class MuninnConfig(BaseModel):
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     memory_chains: MemoryChainsConfig = Field(default_factory=MemoryChainsConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
+    feature_flags: FeatureFlags = Field(default_factory=FeatureFlags)
     server: ServerConfig = Field(default_factory=ServerConfig)
     data_dir: str = DEFAULT_DATA_DIR
 
@@ -445,6 +452,7 @@ class MuninnConfig(BaseModel):
                 colbert_dim=int(os.environ.get("MUNINN_COLBERT_DIM", "128")),
                 enable_temporal_kg=os.environ.get("MUNINN_TEMPORAL_KG_ENABLED", "false").lower() == "true",
             ),
+            feature_flags=FeatureFlags.from_env(),
             server=ServerConfig(
                 host=os.environ.get("MUNINN_HOST", "127.0.0.1"),
                 port=int(os.environ.get("MUNINN_PORT", "42069")),

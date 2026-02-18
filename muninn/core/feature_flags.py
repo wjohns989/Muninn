@@ -70,11 +70,16 @@ class FeatureFlags:
     adaptive_weights: bool = False
     retrieval_feedback: bool = False
 
-    # --- Phase 3 (v3.3.0) — default OFF ---
+    # --- Phase 3 (v3.3.0+) — default OFF ---
     memory_chains: bool = False
     multi_source_ingestion: bool = False
     python_sdk: bool = False
     otel_genai: bool = False
+    
+    # ColBERT Suite (v3.5.0+)
+    colbert: bool = False
+    colbert_plaid: bool = False
+    colbert_int8: bool = False
 
     @classmethod
     def from_env(cls) -> "FeatureFlags":
@@ -100,6 +105,10 @@ class FeatureFlags:
             multi_source_ingestion=_env_bool("MULTI_SOURCE_INGESTION", "0"),
             python_sdk=_env_bool("PYTHON_SDK", "0"),
             otel_genai=_env_bool("OTEL_GENAI", "0"),
+            # ColBERT
+            colbert=_env_bool("COLBERT", "0"),
+            colbert_plaid=_env_bool("COLBERT_PLAID", "0"),
+            colbert_int8=_env_bool("COLBERT_INT8", "0"),
         )
         _log_active_flags(flags)
         return flags

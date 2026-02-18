@@ -1,8 +1,9 @@
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.types import ExtractionResult
+from muninn.core.ingestion_manager import IngestionManager
 
 
 def test_add_propagates_project_and_branch_from_metadata():
@@ -23,6 +24,7 @@ def test_add_propagates_project_and_branch_from_metadata():
     memory._graph = MagicMock()
     memory._bm25 = MagicMock()
     memory._goal_compass = None
+    memory._ingestion_manager = IngestionManager(memory)
 
     asyncio.run(
         memory.add(

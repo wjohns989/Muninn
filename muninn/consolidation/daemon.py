@@ -46,6 +46,7 @@ class ConsolidationDaemon:
         graph: GraphStore,
         bm25: BM25Index,
         embed_fn=None,
+        colbert_indexer=None,
     ):
         self.config = config
         self.metadata = metadata
@@ -53,10 +54,25 @@ class ConsolidationDaemon:
         self.graph = graph
         self.bm25 = bm25
         self._embed_fn = embed_fn
+        self.colbert_indexer = colbert_indexer
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._last_cycle: Optional[float] = None
         self._cycle_count = 0
+        
+        # Phase 9 integrity components (v3.6.0)
+        from muninn.conflict.detector import ConflictDetector
+        from muninn.conflict.resolver import ConflictResolver
+        self._conflict_detector = ConflictDetector(
+            contradiction_threshold=self.config.integrity_contradiction_threshold
+        )
+        self._conflict_resolver = ConflictResolver(
+            metadata_store=self.metadata,
+            vector_store=self.vectors,
+            graph_store=self.graph,
+            bm25_index=self.bm25,
+            embed_fn=self._embed_fn
+        )
 
     async def start(self) -> None:
         """Start the consolidation daemon."""
@@ -121,6 +137,18 @@ class ConsolidationDaemon:
             stats_result = await self._phase_statistics()
             results["phases"]["statistics"] = stats_result
 
+            # Phase 6: MAINTENANCE (ColBERT)
+            maintenance_result = await self._phase_maintenance()
+            results["phases"]["maintenance"] = maintenance_result
+
+            # Phase 7: OPTIMIZATION (Storage)
+            optimization_result = await self._phase_optimization()
+            results["phases"]["optimization"] = optimization_result
+
+            # Phase 8: INTEGRITY (NLI Conflict Detection)
+            integrity_result = await self._phase_integrity()
+            results["phases"]["integrity"] = integrity_result
+
         except Exception as e:
             logger.error("Consolidation cycle failed: %s", e, exc_info=True)
             results["error"] = str(e)
@@ -163,11 +191,11 @@ class ConsolidationDaemon:
         decayed = 0
         expired = 0
         updated = 0
-
         for record in records:
-            # Get centrality from graph
+            # Get centrality from graph: use Memory node degree as proxy for
+            # importance (how many relations/mentions the memory has in the graph).
             try:
-                centrality = self.graph.get_entity_centrality(record.id)
+                centrality = self.graph.get_memory_node_degree(record.id)
             except Exception:
                 centrality = 0.0
 
@@ -216,30 +244,83 @@ class ConsolidationDaemon:
         - Remove absorbed duplicates
         """
         t0 = time.time()
+        # Process in batches to maintain isolation context
         records = self.metadata.get_for_consolidation(limit=500)
         episodic = [r for r in records if r.memory_type == MemoryType.EPISODIC]
 
         if not episodic:
             return {"merged": 0, "elapsed": 0.0}
 
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+
         # Find candidates using vector similarity
-        def vector_search_fn(vector_id):
+        def vector_search_fn(vector_id, user_id=None, namespace=None):
             try:
-                # Search for similar vectors to this memory's embedding
-                record = self.metadata.get(vector_id)
-                if not record:
+                # v3.8.0 Isolation: We need the actual vector to search
+                # But since merge happens in background, we rely on find_merge_candidates
+                # to respect the passed records. 
+                # Optimization: We use the daemon's vector search with strict filters.
+                vec = self.vectors.get_vectors([vector_id]).get(vector_id)
+                if not vec:
                     return []
+                
+                must_conditions = []
+                if user_id:
+                    must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=user_id)))
+                if namespace:
+                    must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=namespace)))
+                
+                search_filter = Filter(must=must_conditions) if must_conditions else None
+                
                 results = self.vectors.search(
-                    query_vector=None,  # We'd need the actual vector
+                    query_embedding=vec,
                     limit=5,
+                    filters=search_filter
                 )
                 return results
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Merge vector search failed: {e}")
                 return []
 
-        # For merge, we use a simplified approach: iterate pairs from metadata
-        # Full vector-based merge requires embedding lookup (Phase 2 optimization)
+        # Find merge candidates across the batch
+        candidates = find_merge_candidates(episodic, vector_search_fn)
         merged_count = 0
+
+        for primary_id, secondary_id, _ in candidates:
+            primary = self.metadata.get(primary_id)
+            secondary = self.metadata.get(secondary_id)
+            
+            if not primary or not secondary:
+                continue
+            
+            # CRITICAL SAFETY check: Never merge across namespaces
+            primary_uid = (primary.metadata or {}).get("user_id")
+            secondary_uid = (secondary.metadata or {}).get("user_id")
+            if primary_uid != secondary_uid or primary.namespace != secondary.namespace:
+                logger.warning(
+                    "BLOCKED cross-namespace merge attempt: %s (%s/%s) vs %s (%s/%s)",
+                    primary.id, primary_uid, primary.namespace,
+                    secondary.id, secondary_uid, secondary.namespace
+                )
+                continue
+
+            merged = merge_memories(primary, secondary)
+
+            # Update stores
+            self.metadata.update(merged)
+            self.metadata.delete(secondary.id)
+            self.vectors.delete([secondary.id])
+            self.graph.delete_memory_references(secondary.id)
+            # Graph update: primary node summary changes
+            merged_uid = (merged.metadata or {}).get("user_id")
+            self.graph.add_memory_node(
+                merged.id,
+                merged.content[:500],
+                user_id=merged_uid,
+                namespace=merged.namespace
+            )
+            
+            merged_count += 1
 
         elapsed = time.time() - t0
         result = {"merged": merged_count, "candidates_checked": len(episodic),
@@ -340,6 +421,182 @@ class ConsolidationDaemon:
 
         logger.info("Phase STATISTICS: %s", stats)
         return stats
+
+    async def _phase_maintenance(self) -> dict:
+        """
+        Phase 6: MAINTENANCE (ColBERT)
+        - Monitor centroid drift
+        - Trigger re-clustering if threshold exceeded
+        """
+        if self.colbert_indexer is None:
+            return {"status": "skipped", "reason": "no_colbert_indexer", "elapsed": 0.0}
+            
+        t0 = time.time()
+        drift = 0.0
+        re_clustered = False
+        
+        try:
+            # Fetch robust sample for drift check (v3.6.1 scalability refinement)
+            sample_size = 2000
+            client = self.vectors._get_client()
+            collection = self.vectors.collection_name
+            
+            # Check if collection is large enough to warrant re-clustering
+            count = self.vectors.count()
+            if count < 500:
+                return {"status": "skipped", "reason": "too_few_points", "count": count}
+
+            scroll_result = client.scroll(
+                collection_name=collection,
+                limit=sample_size,
+                with_vectors=True
+            )
+            points = scroll_result[0] if scroll_result else []
+            
+            if len(points) >= 100:
+                import numpy as np
+                sample_vectors = np.array([p.vector for p in points if p.vector is not None]).astype(np.float32)
+                
+                if len(sample_vectors) > 0:
+                    drift = self.colbert_indexer.check_centroid_relevance(sample_vectors)
+                    logger.info("Phase MAINTENANCE: ColBERT drift detected: %.4f", drift)
+                    
+                    if drift > self.config.colbert_drift_threshold:
+                        logger.warning("Phase MAINTENANCE: Drift %.4f exceeds threshold %.4f. Re-clustering...", 
+                                       drift, self.config.colbert_drift_threshold)
+                        re_clustered = self.colbert_indexer.recluster_centroids(sample_vectors)
+        except Exception as e:
+            logger.error("Phase MAINTENANCE: ColBERT maintenance failed: %s", e)
+
+        elapsed = time.time() - t0
+        result = {"drift": round(drift, 4), "re-clustered": re_clustered, "elapsed": round(elapsed, 2)}
+        logger.info("Phase MAINTENANCE: %s", result)
+        return result
+
+    async def _phase_optimization(self) -> dict:
+        """
+        Phase 7: OPTIMIZATION (Storage)
+        - Tune collection settings based on size
+        - Enable/update Scalar Quantization
+        """
+        t0 = time.time()
+        optimized = False
+        
+        try:
+            count = self.vectors.count()
+            if count >= self.config.quantization_threshold_points:
+                # v3.6.1 Refinement: Skip if quantization already active
+                client = self.vectors._get_client()
+                collection_info = client.get_collection(self.vectors.collection_name)
+                if collection_info.config.quantization_config:
+                    return {"status": "skipped", "reason": "already_quantized", "elapsed": 0.0}
+
+                from qdrant_client import models
+                logger.info("Phase OPTIMIZATION: Collection size (%d) qualifies for Scalar Quantization tuning.", count)
+                optimized = await self.vectors.update_collection_quantization(
+                    quantization_config=models.ScalarQuantization(
+                        scalar=models.ScalarQuantizationConfig(
+                            type=models.ScalarType.INT8,
+                            quantile=0.99,
+                            always_ram=True
+                        )
+                    )
+                )
+        except Exception as e:
+            logger.error("Phase OPTIMIZATION: Storage optimization failed: %s", e)
+
+        elapsed = time.time() - t0
+        result = {"optimized": optimized, "elapsed": round(elapsed, 2)}
+        logger.info("Phase OPTIMIZATION: %s", result)
+        return result
+
+    async def _phase_integrity(self) -> dict:
+        """
+        Phase 8: INTEGRITY (NLI Conflict Detection)
+        - Audit high-importance recent memories for contradictions
+        - Resolve detected conflicts automatically
+        """
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+        
+        if not self._conflict_detector.is_available:
+            return {"status": "skipped", "reason": "nli_model_unavailable", "elapsed": 0.0}
+            
+        t0 = time.time()
+        audited = 0
+        conflicts_resolved = 0
+        
+        try:
+            # Audit top-K important recent memories
+            records = self.metadata.get_for_consolidation(limit=50)
+            if not records:
+                return {"audited": 0, "conflicts_resolved": 0, "elapsed": round(time.time() - t0, 2)}
+
+            # v3.6.2 Phase Optimization: Batch vector and metadata retrieval
+            record_ids = [r.id for r in records]
+            vector_map = self.vectors.get_vectors(record_ids)
+            
+            # neighbor_map: record_id -> List[neighbor_id]
+            neighbor_map = {}
+            all_neighbor_ids = set()
+            
+            for record in records:
+                vec = vector_map.get(record.id)
+                if not vec:
+                    continue
+                
+                # v3.6.2/v3.8.0 Security Fix: Enforce user and namespace scoping in semantic search
+                # candidates must belong to the same user AND namespace as the record being audited
+                record_user_id = (record.metadata or {}).get("user_id")
+                must_conditions = []
+                if record_user_id:
+                    must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=record_user_id)))
+                if record.namespace:
+                    must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=record.namespace)))
+                
+                search_filter = Filter(must=must_conditions) if must_conditions else None
+
+                # Search Top-5 closest neighbors (limit 6 to exclude self)
+                similar = self.vectors.search(query_embedding=vec, limit=6, filter=search_filter)
+                sim_ids = [s[0] for s in similar if s[0] != record.id]
+                neighbor_map[record.id] = sim_ids
+                all_neighbor_ids.update(sim_ids)
+
+            # v3.6.3 Fallback: Get random samples for records with no neighbors
+            lonely_ids = [r.id for r in records if not neighbor_map.get(r.id)]
+            if lonely_ids:
+                random_pool = self.metadata.get_random(limit=20)
+                random_ids = [r.id for r in random_pool]
+                for rid in lonely_ids:
+                    # Provide up to 5 random candidates for auditing
+                    sample = [sid for sid in random_ids if sid != rid][:5]
+                    neighbor_map[rid] = sample
+                    all_neighbor_ids.update(sample)
+
+            # Batch fetch all candidate metadata
+            candidate_records = self.metadata.get_by_ids(list(all_neighbor_ids))
+            cand_map = {c.id: c for c in candidate_records}
+
+            # Final NLI Audit Loop
+            for record in records:
+                sim_ids = neighbor_map.get(record.id, [])
+                candidates = [cand_map[sid] for sid in sim_ids if sid in cand_map]
+                
+                if not candidates:
+                    continue
+
+                conflicts = self._conflict_detector.detect_conflicts(record.content, candidates)
+                for conflict in conflicts:
+                    self._conflict_resolver.resolve(conflict, new_record=record)
+                    conflicts_resolved += 1
+                audited += 1
+                
+        except Exception as e:
+            logger.error("Phase INTEGRITY: Integrity audit failed: %s", e)
+
+        elapsed = time.time() - t0
+        result = {"audited": audited, "conflicts_resolved": conflicts_resolved, "elapsed": round(elapsed, 2)}
+        logger.info("Phase INTEGRITY: %s", result)
+        return result
 
     @property
     def status(self) -> dict:
