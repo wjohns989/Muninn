@@ -494,7 +494,7 @@ class MuninnMemory:
                                     "branch": existing.branch,
                                 },
                             ),
-                            asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content)
+                            asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content, user_id, namespace)
                         )
                         merged_successfully = True
                 
@@ -1614,7 +1614,9 @@ class MuninnMemory:
                     )
 
             def _update_bm25():
-                self._bm25.add(record.id, data)
+                uid = (record.metadata or {}).get("user_id", "global")
+                ns = record.namespace or "global"
+                self._bm25.add(record.id, data, user_id=uid, namespace=ns)
 
             await asyncio.gather(
                 asyncio.to_thread(_update_metadata),

@@ -310,9 +310,14 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any], send_error_fn, s
 def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn):
     """Execute a single tool call."""
     from muninn.core.security import verify_token
-    # Phase 10: Security Gate. 
-    # Stdio transport relies on environmental trust (token injected in requests.py).
-    # Future: Explicit token check from params.get("_meta", {}).get("token")
+    # Security Gate: Stdio transport defaults to environmental trust (the MCP process
+    # is started locally by the authorized user).  When MUNINN_MCP_STRICT_AUTH=1 is
+    # set, an explicit bearer token must be present in _meta.token for defense-in-depth.
+    if env_flag("MUNINN_MCP_STRICT_AUTH", False):
+        meta = params.get("_meta") or {}
+        if not verify_token(meta.get("token")):
+            send_error_fn(msg_id, -32600, "Unauthorized: valid bearer token required in _meta.token")
+            return
     name = params.get("name")
     if not isinstance(name, str) or not name:
         send_error_fn(msg_id, -32602, "Invalid params: tools/call requires non-empty string name")

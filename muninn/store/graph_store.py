@@ -404,6 +404,26 @@ class GraphStore:
             pass
         return 0.0
 
+    def get_memory_node_degree(self, memory_id: str) -> float:
+        """Get degree centrality of a Memory node based on its relation count (normalized).
+
+        Used by the consolidation daemon to incorporate graph connectivity into
+        importance scoring when entity-level centrality is unavailable.
+        """
+        conn = self._get_conn()
+        try:
+            result = conn.execute(
+                "MATCH (m:Memory {id: $id})-[r]-() RETURN COUNT(r)",
+                {"id": memory_id}
+            )
+            if result.has_next():
+                degree = result.get_next()[0]
+                # Normalize: log scale capped at 1.0, baseline of 20 relations = 1.0
+                return min(1.0, math.log1p(degree) / math.log1p(20))
+        except Exception:
+            pass
+        return 0.0
+
     def get_entity_count(self) -> int:
         conn = self._get_conn()
         try:
