@@ -207,10 +207,13 @@ class MemoryChainsConfig(BaseModel):
 
 
 class AdvancedConfig(BaseModel):
-    """Advanced differentiating features (Phase 6)."""
+    """Advanced differentiating features (Phase 6+)."""
     enable_colbert: bool = False
     colbert_dim: int = 128
     enable_temporal_kg: bool = False
+    # Phase 13 (v3.10.0): Native ColBERT multi-vector via Qdrant MultiVectorConfig
+    enable_colbert_multivec: bool = False
+    colbert_multivec_collection: str = "muninn_colbert_multivec"
 
 
 class RerankerConfig(BaseModel):
@@ -451,6 +454,10 @@ class MuninnConfig(BaseModel):
                 enable_colbert=os.environ.get("MUNINN_COLBERT_ENABLED", "false").lower() == "true",
                 colbert_dim=int(os.environ.get("MUNINN_COLBERT_DIM", "128")),
                 enable_temporal_kg=os.environ.get("MUNINN_TEMPORAL_KG_ENABLED", "false").lower() == "true",
+                enable_colbert_multivec=os.environ.get("MUNINN_COLBERT_MULTIVEC_ENABLED", "false").lower() == "true",
+                colbert_multivec_collection=os.environ.get(
+                    "MUNINN_COLBERT_MULTIVEC_COLLECTION", "muninn_colbert_multivec"
+                ),
             ),
             feature_flags=FeatureFlags.from_env(),
             server=ServerConfig(
