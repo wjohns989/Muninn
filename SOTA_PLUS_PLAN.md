@@ -64,9 +64,9 @@ Muninn has successfully transitioned to **v3.9.0 (Entity Scoping Edition)**. Pha
 
 ---
 
-## Phase 13: Advanced Retrieval & Data Pipeline (In Progress)
+## Phase 13: Advanced Retrieval & Data Pipeline (Completed)
 
-> **Status**: 🔵 **IN PROGRESS**
+> **Status**: ✅ **DONE**
 > **Theme**: Native ColBERT multi-vector storage and temporal query expansion.
 
 - [x] **Native ColBERT Multi-Vector**: `muninn/store/multi_vector_store.py` — Qdrant `MultiVectorConfig` for native MaxSim scoring (centroid fallback for older qdrant-client).
@@ -75,7 +75,7 @@ Muninn has successfully transitioned to **v3.9.0 (Entity Scoping Edition)**. Pha
 - [x] **Feature Flags**: `colbert_multivec` and `temporal_query_expansion` flags added to `FeatureFlags`.
 - [x] **Config**: `enable_colbert_multivec` / `colbert_multivec_collection` added to `AdvancedConfig`.
 - [x] **Version**: Bumped to `3.10.0` in `muninn/version.py`.
-- [ ] **Verification**: `test_v3_10_0_multivector.py` (19 tests) + `test_v3_10_0_temporal.py` (37 tests) — pending CI run.
+- [x] **Verification**: 651 passed, 0 failed — `test_v3_10_0_multivector.py` (19/19) + `test_v3_10_0_temporal.py` (37/37). PR #42 open.
 
 ### Environment Variables (Phase 13)
 
@@ -89,7 +89,7 @@ Muninn has successfully transitioned to **v3.9.0 (Entity Scoping Edition)**. Pha
 
 ## Validation History
 
-- **Phase 13**: Implementation complete — test suite pending CI run.
+- **Phase 13**: 651 tests passed (100%), 0 failed — native ColBERT multi-vector + temporal query expansion. PR #42 open.
 - **Phase 12.1**: All PR review findings resolved (8 fixes applied).
 - **Phase 12**: 100% tests passed (Distributed Entity Scoping).
 - **Phase 11**: 100% tests passed (Multi-Namespace Integrity).
