@@ -20,7 +20,8 @@ def initialize_security(configured_token: Optional[str] = None) -> str:
     global _GLOBAL_AUTH_TOKEN
     
     # Check priority: 1. Passed arg, 2. Env Var, 3. Generation
-    env_token = os.environ.get("MUNINN_AUTH_TOKEN")
+    # Accept both MUNINN_AUTH_TOKEN and MUNINN_SERVER_AUTH_TOKEN for compatibility
+    env_token = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
     
     if configured_token:
         _GLOBAL_AUTH_TOKEN = configured_token

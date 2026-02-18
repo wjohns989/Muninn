@@ -558,7 +558,7 @@ class MuninnMemory:
                         )
 
                 def _write_bm25():
-                    self._bm25.add(record.id, content)
+                    self._bm25.add(record.id, content, user_id=user_id, namespace=namespace)
 
                 def _write_colbert():
                     if self._colbert_indexer:

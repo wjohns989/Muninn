@@ -1,14 +1,14 @@
 # Muninn SOTA+ Implementation Plan
 
-> **Version**: v3.7.0 → v3.8.0
-> **Status**: **Phase 10 (Unified Security) Implemented & Verified**
-> **Current State**: `main` contains full Phase 9 capabilities and Phase 10 unified security architecture.
+> **Version**: v3.6.1 → v3.9.0
+> **Status**: **Phase 12 (Distributed Entity Scoping) Implemented & Verified**
+> **Current State**: `feature/v3.9.0-entity-scoping` contains Phases 9-12 with all PR review fixes applied.
 
 ---
 
 ## Executive Summary
 
-Muninn has successfully transitioned to **v3.7.0 (Security & Integrity Edition)**. We have implemented a centralized security module and bridged the authentication gap between FastAPI and MCP.
+Muninn has successfully transitioned to **v3.9.0 (Entity Scoping Edition)**. Phases 9-12 implement consolidation integrity, unified security, multi-namespace isolation, and distributed entity scoping with composite IDs.
 
 ---
 
@@ -48,19 +48,36 @@ Muninn has successfully transitioned to **v3.7.0 (Security & Integrity Edition)*
 
 ---
 
-## Phase 13: Advanced Retrieval & Data Pipeline (Future)
+## Phase 12.1: PR Review Remediation (Completed)
 
-1. **ColBERT Data Pipeline**:
-    - Implement multi-vector storage in Qdrant (requires Qdrant v1.10+ multivector support).
-    - Update extraction pipeline to generate ColBERT embeddings.
+> **Status**: ✅ **DONE**
+> **Theme**: Addressing automated review findings across PRs #38, #39, #40.
 
-2. **Temporal Query Expansion**:
-    - Expose temporal queries in the MCP `search` tool via natural language parsing.
+- [x] **ColBERT Config Fix**: `colbert_index.py:171` uses safe `_get_feature_flag()` instead of broken `self.config.feature_flags`.
+- [x] **VectorStore Filter Fix**: `daemon.py:281` corrected `filter=` to `filters=` (matching VectorStore.search API).
+- [x] **BM25 Scope Propagation**: `memory.py` now passes `user_id`/`namespace` to BM25 add().
+- [x] **Auth Token Alignment**: `security.py` accepts both `MUNINN_AUTH_TOKEN` and `MUNINN_SERVER_AUTH_TOKEN`.
+- [x] **Dashboard btn-apply-token**: Added missing button element to `dashboard.html`.
+- [x] **Federation Scoping**: All `/federation/*` and `/knowledge/temporal` endpoints accept `user_id` parameter.
+- [x] **Scroll Safety**: `daemon.py` maintenance phase guards `client.scroll()` result before indexing.
+- [x] **Dashboard Dedup**: Replaced duplicate `generateManifest` listener with function call.
+
+---
+
+## Phase 13: Advanced Retrieval & Data Pipeline (Planned)
+
+> **Status**: 🟢 **PLANNED**
+> **Theme**: Native ColBERT multi-vector storage and temporal query expansion.
+
+- [ ] **Native ColBERT Multi-Vector**: Qdrant `MultiVectorConfig` for MaxSim scoring.
+- [ ] **Temporal Query Expansion**: NL time-phrase parsing for metadata-filtered retrieval.
+- [ ] **Verification**: `test_v3_10_0_multivector.py` (19 tests) + `test_v3_10_0_temporal.py` (37 tests).
 
 ---
 
 ## Validation History
 
+- **Phase 12.1**: All PR review findings resolved (8 fixes applied).
 - **Phase 12**: 100% tests passed (Distributed Entity Scoping).
 - **Phase 11**: 100% tests passed (Multi-Namespace Integrity).
 - **Phase 10**: 100% tests passed (Unified Security).

@@ -923,27 +923,34 @@ async def consolidation_status():
 # --- Phase 6 Endpoints ---
 
 @app.get("/knowledge/temporal", dependencies=[Depends(verify_token)])
-async def get_temporal_knowledge_endpoint(timestamp: Optional[float] = None, limit: int = 50):
-    """Query the Temporal Knowledge Graph."""
+async def get_temporal_knowledge_endpoint(
+    timestamp: Optional[float] = None,
+    limit: int = 50,
+    user_id: str = "global_user",
+):
+    """Query the Temporal Knowledge Graph (scoped to user)."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
-    
+
     try:
-        data = await memory.get_temporal_knowledge(timestamp=timestamp, limit=limit)
+        data = await memory.get_temporal_knowledge(timestamp=timestamp, limit=limit, user_id=user_id)
         return {"success": True, "data": data}
     except Exception as e:
         logger.error("Temporal query failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/federation/manifest", dependencies=[Depends(verify_token)])
-async def create_federation_manifest_endpoint(project: str = "global"):
-    """Generate a federation manifest for sync."""
+async def create_federation_manifest_endpoint(
+    project: str = "global",
+    user_id: str = "global_user",
+):
+    """Generate a federation manifest for sync (scoped to user)."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
-    
+
     try:
         fed = await memory.get_federation_manager()
-        manifest = await fed.generate_manifest(project=project)
+        manifest = await fed.generate_manifest(project=project, user_id=user_id)
         return {"success": True, "data": manifest}
     except Exception as e:
         logger.error("Manifest generation failed: %s", e)
@@ -964,28 +971,34 @@ async def calculate_federation_delta_endpoint(local: Dict[str, Any], remote: Dic
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/federation/bundle", dependencies=[Depends(verify_token)])
-async def create_federation_bundle_endpoint(memory_ids: List[str]):
-    """Create a sync bundle for requested memories."""
+async def create_federation_bundle_endpoint(
+    memory_ids: List[str],
+    user_id: str = "global_user",
+):
+    """Create a sync bundle for requested memories (scoped to user)."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
-    
+
     try:
         fed = await memory.get_federation_manager()
-        bundle = await fed.create_sync_bundle(memory_ids=memory_ids)
+        bundle = await fed.create_sync_bundle(memory_ids=memory_ids, user_id=user_id)
         return {"success": True, "data": bundle}
     except Exception as e:
         logger.error("Bundle creation failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/federation/apply", dependencies=[Depends(verify_token)])
-async def apply_federation_bundle_endpoint(bundle: Dict[str, Any]):
-    """Apply a sync bundle."""
+async def apply_federation_bundle_endpoint(
+    bundle: Dict[str, Any],
+    user_id: str = "global_user",
+):
+    """Apply a sync bundle (scoped to user)."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
-    
+
     try:
         fed = await memory.get_federation_manager()
-        applied = await fed.apply_sync_bundle(bundle=bundle)
+        applied = await fed.apply_sync_bundle(bundle=bundle, user_id=user_id)
         return {"success": True, "data": {"applied": applied}}
     except Exception as e:
         logger.error("Bundle apply failed: %s", e)

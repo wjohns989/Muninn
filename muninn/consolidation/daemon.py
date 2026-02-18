@@ -278,7 +278,7 @@ class ConsolidationDaemon:
                 results = self.vectors.search(
                     query_embedding=vec,
                     limit=5,
-                    filter=search_filter
+                    filters=search_filter
                 )
                 return results
             except Exception as e:
@@ -297,26 +297,29 @@ class ConsolidationDaemon:
                 continue
             
             # CRITICAL SAFETY check: Never merge across namespaces
-            if primary.user_id != secondary.user_id or primary.namespace != secondary.namespace:
+            primary_uid = (primary.metadata or {}).get("user_id")
+            secondary_uid = (secondary.metadata or {}).get("user_id")
+            if primary_uid != secondary_uid or primary.namespace != secondary.namespace:
                 logger.warning(
                     "BLOCKED cross-namespace merge attempt: %s (%s/%s) vs %s (%s/%s)",
-                    primary.id, primary.user_id, primary.namespace,
-                    secondary.id, secondary.user_id, secondary.namespace
+                    primary.id, primary_uid, primary.namespace,
+                    secondary.id, secondary_uid, secondary.namespace
                 )
                 continue
 
             merged = merge_memories(primary, secondary)
-            
+
             # Update stores
             self.metadata.update(merged)
             self.metadata.delete(secondary.id)
             self.vectors.delete([secondary.id])
             self.graph.delete_memory_references(secondary.id)
             # Graph update: primary node summary changes
+            merged_uid = (merged.metadata or {}).get("user_id")
             self.graph.add_memory_node(
-                merged.id, 
-                merged.content[:500], 
-                user_id=merged.user_id, 
+                merged.id,
+                merged.content[:500],
+                user_id=merged_uid,
                 namespace=merged.namespace
             )
             
@@ -446,11 +449,12 @@ class ConsolidationDaemon:
             if count < 500:
                 return {"status": "skipped", "reason": "too_few_points", "count": count}
 
-            points = client.scroll(
+            scroll_result = client.scroll(
                 collection_name=collection,
                 limit=sample_size,
                 with_vectors=True
-            )[0]
+            )
+            points = scroll_result[0] if scroll_result else []
             
             if len(points) >= 100:
                 import numpy as np
@@ -543,11 +547,12 @@ class ConsolidationDaemon:
                 if not vec:
                     continue
                 
-                # v3.6.2/v3.8.0 Security Fix: Enforce user and namespace scoping in semantic search 
+                # v3.6.2/v3.8.0 Security Fix: Enforce user and namespace scoping in semantic search
                 # candidates must belong to the same user AND namespace as the record being audited
+                record_user_id = (record.metadata or {}).get("user_id")
                 must_conditions = []
-                if record.user_id:
-                    must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=record.user_id)))
+                if record_user_id:
+                    must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=record_user_id)))
                 if record.namespace:
                     must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=record.namespace)))
                 
