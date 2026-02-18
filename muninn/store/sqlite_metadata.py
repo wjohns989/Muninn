@@ -859,6 +859,8 @@ class SQLiteMetadataStore:
         namespace: Optional[str] = None,
         memory_type: Optional[MemoryType] = None,
         user_id: Optional[str] = None,
+        created_at_min: Optional[float] = None,
+        created_at_max: Optional[float] = None,
     ) -> List[MemoryRecord]:
         conn = self._get_conn()
         conditions = []
@@ -876,6 +878,13 @@ class SQLiteMetadataStore:
         if user_id:
             conditions.append(self._user_id_condition())
             params.append(self._user_id_param(user_id))
+        # v3.10.0: Push temporal range filter to SQL for correct historical retrieval.
+        if created_at_min is not None:
+            conditions.append("created_at >= ?")
+            params.append(created_at_min)
+        if created_at_max is not None:
+            conditions.append("created_at < ?")
+            params.append(created_at_max)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
