@@ -1,14 +1,14 @@
 # Muninn SOTA+ Implementation Plan
 
-> **Version**: v3.6.1 → v3.9.0
-> **Status**: **Phase 12 (Distributed Entity Scoping) Implemented & Verified**
-> **Current State**: `feature/v3.9.0-entity-scoping` contains Phases 9-12 with all PR review fixes applied.
+> **Version**: v3.6.1 → v3.10.0
+> **Status**: **Phase 13 (Advanced Retrieval & Data Pipeline) In Progress**
+> **Current State**: `feature/v3.10.0-advanced-retrieval` implements native ColBERT multi-vector storage and temporal query expansion.
 
 ---
 
 ## Executive Summary
 
-Muninn has successfully transitioned to **v3.9.0 (Entity Scoping Edition)**. Phases 9-12 implement consolidation integrity, unified security, multi-namespace isolation, and distributed entity scoping with composite IDs.
+Muninn has successfully transitioned to **v3.9.0 (Entity Scoping Edition)**. Phases 9-12 implement consolidation integrity, unified security, multi-namespace isolation, and distributed entity scoping with composite IDs. Phase 13 (v3.10.0) extends the retrieval stack with native Qdrant multi-vector MaxSim and NL temporal query expansion.
 
 ---
 
@@ -64,19 +64,32 @@ Muninn has successfully transitioned to **v3.9.0 (Entity Scoping Edition)**. Pha
 
 ---
 
-## Phase 13: Advanced Retrieval & Data Pipeline (Planned)
+## Phase 13: Advanced Retrieval & Data Pipeline (Completed)
 
-> **Status**: 🟢 **PLANNED**
+> **Status**: ✅ **DONE**
 > **Theme**: Native ColBERT multi-vector storage and temporal query expansion.
 
-- [ ] **Native ColBERT Multi-Vector**: Qdrant `MultiVectorConfig` for MaxSim scoring.
-- [ ] **Temporal Query Expansion**: NL time-phrase parsing for metadata-filtered retrieval.
-- [ ] **Verification**: `test_v3_10_0_multivector.py` (19 tests) + `test_v3_10_0_temporal.py` (37 tests).
+- [x] **Native ColBERT Multi-Vector**: `muninn/store/multi_vector_store.py` — Qdrant `MultiVectorConfig` for native MaxSim scoring (centroid fallback for older qdrant-client).
+- [x] **Temporal Query Expansion**: `muninn/retrieval/temporal_parser.py` — stateless regex NL time-phrase parser covering 15+ phrase patterns.
+- [x] **HybridRetriever Integration**: `temporal_query_expansion` flag gates parsing in `search()`; parsed `TimeRange` passed to `_temporal_search()`.
+- [x] **Feature Flags**: `colbert_multivec` and `temporal_query_expansion` flags added to `FeatureFlags`.
+- [x] **Config**: `enable_colbert_multivec` / `colbert_multivec_collection` added to `AdvancedConfig`.
+- [x] **Version**: Bumped to `3.10.0` in `muninn/version.py`.
+- [x] **Verification**: 651 passed, 0 failed — `test_v3_10_0_multivector.py` (19/19) + `test_v3_10_0_temporal.py` (37/37). PR #42 open.
+
+### Environment Variables (Phase 13)
+
+| Variable | Default | Description |
+|---|---|---|
+| `MUNINN_COLBERT_MULTIVEC=1` | off | Enable native multi-vector MaxSim collection |
+| `MUNINN_COLBERT_MULTIVEC_COLLECTION` | `muninn_colbert_multivec` | Collection name |
+| `MUNINN_TEMPORAL_QUERY_EXPANSION=1` | off | Enable NL time-phrase parsing in search |
 
 ---
 
 ## Validation History
 
+- **Phase 13**: 651 tests passed (100%), 0 failed — native ColBERT multi-vector + temporal query expansion. PR #42 open.
 - **Phase 12.1**: All PR review findings resolved (8 fixes applied).
 - **Phase 12**: 100% tests passed (Distributed Entity Scoping).
 - **Phase 11**: 100% tests passed (Multi-Namespace Integrity).
