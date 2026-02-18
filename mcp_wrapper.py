@@ -377,6 +377,8 @@ def _get_task_result_max_wait_seconds() -> Optional[float]:
     return get_host_safe_tool_call_budget_seconds()
 
 def main():
+    from muninn.core.security import initialize_security
+    initialize_security()
     logger.info("Muninn MCP Modular Wrapper starting...")
     threading.Thread(target=_bootstrap_dependencies_on_launch, daemon=True).start()
     

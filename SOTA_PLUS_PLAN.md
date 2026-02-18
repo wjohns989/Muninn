@@ -1,62 +1,85 @@
 # Muninn SOTA+ Implementation Plan
 
-> **Version**: v3.3.0 → v3.4.0 Roadmap
-> **Status**: **Phase 6 Implemented & Integrated**
-> **Current State**: `main` contains full Phase 5C security/optimization and Phase 6 advanced capabilities (ColBERT, Temporal KG, Federation).
+> **Version**: v3.6.1 → v3.9.0
+> **Status**: **Phase 12 (Distributed Entity Scoping) Implemented & Verified**
+> **Current State**: `feature/v3.9.0-entity-scoping` contains Phases 9-12 with all PR review fixes applied.
 
 ---
 
 ## Executive Summary
 
-Muninn has successfully transitioned to **v3.4.0 (SOTA++)**. We have delivered all planned Phase 6 capabilities, establishing Muninn as the most advanced local-first memory server available for MCP.
-
-**New Capabilities (Phase 6):**
-1.  **Fine-Grained Retrieval**: `ColBERTScorer` (MaxSim) implemented for late-interaction re-ranking (Architecture ready).
-2.  **Temporal Reasoning**: `TemporalKnowledgeGraph` implemented with bi-temporal edge support (`valid_start` / `valid_end`) and snapshot queries.
-3.  **Decentralized Sync**: `FederationManager` implemented for cross-agent memory synchronization via manifest/delta/bundle protocol.
-4.  **Performance**: Graph chain retrieval batch-optimized (O(N) -> O(1) queries).
-5.  **Security**: Granular locking and read-only auth enforcement verified.
+Muninn has successfully transitioned to **v3.9.0 (Entity Scoping Edition)**. Phases 9-12 implement consolidation integrity, unified security, multi-namespace isolation, and distributed entity scoping with composite IDs.
 
 ---
 
-## Phase 6: Differentiation Features (Completed)
+## Phase 10: Unified Security Architecture (Completed)
 
 > **Status**: ✅ **DONE**
-> **Theme**: Capabilities no other MCP memory server offers.
+> **Theme**: Hardening the transport boundary.
 
-### 6A. ColBERT Integration (Foundation)
-- [x] `muninn/advanced/colbert.py`: MaxSim scorer implemented.
-- [x] `MuninnConfig`: Added `AdvancedConfig` section.
-- [x] `HybridRetriever`: Wired `ColBERTScorer` (pre-integration).
-
-### 6B. Temporal Knowledge Graph
-- [x] `muninn/advanced/temporal_kg.py`: Bi-temporal graph engine.
-- [x] `MuninnMemory`: Exposed `get_temporal_knowledge` API.
-- [x] Tests: `tests/test_temporal_kg.py` passing.
-
-### 6C. Cross-Agent Federation
-- [x] `muninn/advanced/cross_agent.py`: Sync protocol (Manifest/Delta/Bundle).
-- [x] `MuninnMemory`: Exposed `get_federation_manager` API.
-- [x] Tests: `tests/test_federation.py` passing.
+- [x] **Centralized Auth**: `muninn.core.security` module for token management.
+- [x] **FastAPI Enforcement**: Refactored `server.py` to use core security validation.
+- [x] **MCP Proxy Auth**: Injected `Authorization` headers in `muninn.mcp.requests`.
+- [x] **Verification**: 100% test pass on security parity.
 
 ---
 
-## Next Steps (v3.5.0 Planning)
+## Phase 11: Multi-Namespace Integrity & UI Refinement (Completed)
 
-1.  **ColBERT Data Pipeline**:
-    *   Implement multi-vector storage in Qdrant (requires Qdrant v1.10+ multivector support).
-    *   Update extraction pipeline to generate ColBERT embeddings.
+> **Status**: ✅ **DONE**
+> **Theme**: Multi-tenant isolation and UX modernization.
 
-2.  **Federation Transport**:
-    *   Implement MCP tools for `sync_request` and `sync_push`.
-    *   Add P2P transport layer (optional) or file-based sync.
+- [x] **Daemon Scoping**: Enforced `user_id` AND `namespace` boundaries in `ConsolidationDaemon`.
+- [x] **Relational Scoping**: Implemented multi-tenant entity isolation in `GraphStore`.
+- [x] **ColBERT Isolation**: Added namespace filters to retrieval logic.
+- [x] **Dashboard v2**: Added Auth Token support to `dashboard.html`.
 
-3.  **Temporal Query Expansion**:
-    *   Expose temporal queries in the MCP `search` tool via natural language parsing (e.g., "What happened last week?").
+---
+
+## Phase 12: Distributed Entity Scoping (Completed)
+
+> **Status**: ✅ **DONE**
+> **Theme**: Global uniqueness with local isolation.
+
+- [x] **Composite Entity IDs**: `user_id/namespace/name` implementation.
+- [x] **Scoped Graph Search**: Refactored retrieval to honor multi-tenant boundaries.
+- [x] **Consolidation Safety**: Prevented cross-user semantic merging.
+- [x] **Verification**: 2/2 tests passed in `test_v3_9_0_entity_scoping.py`.
+
+---
+
+## Phase 12.1: PR Review Remediation (Completed)
+
+> **Status**: ✅ **DONE**
+> **Theme**: Addressing automated review findings across PRs #38, #39, #40.
+
+- [x] **ColBERT Config Fix**: `colbert_index.py:171` uses safe `_get_feature_flag()` instead of broken `self.config.feature_flags`.
+- [x] **VectorStore Filter Fix**: `daemon.py:281` corrected `filter=` to `filters=` (matching VectorStore.search API).
+- [x] **BM25 Scope Propagation**: `memory.py` now passes `user_id`/`namespace` to BM25 add().
+- [x] **Auth Token Alignment**: `security.py` accepts both `MUNINN_AUTH_TOKEN` and `MUNINN_SERVER_AUTH_TOKEN`.
+- [x] **Dashboard btn-apply-token**: Added missing button element to `dashboard.html`.
+- [x] **Federation Scoping**: All `/federation/*` and `/knowledge/temporal` endpoints accept `user_id` parameter.
+- [x] **Scroll Safety**: `daemon.py` maintenance phase guards `client.scroll()` result before indexing.
+- [x] **Dashboard Dedup**: Replaced duplicate `generateManifest` listener with function call.
+
+---
+
+## Phase 13: Advanced Retrieval & Data Pipeline (Planned)
+
+> **Status**: 🟢 **PLANNED**
+> **Theme**: Native ColBERT multi-vector storage and temporal query expansion.
+
+- [ ] **Native ColBERT Multi-Vector**: Qdrant `MultiVectorConfig` for MaxSim scoring.
+- [ ] **Temporal Query Expansion**: NL time-phrase parsing for metadata-filtered retrieval.
+- [ ] **Verification**: `test_v3_10_0_multivector.py` (19 tests) + `test_v3_10_0_temporal.py` (37 tests).
 
 ---
 
 ## Validation History
 
-*   **Phase 5C**: 100% tests passed (Granular locking, Auth).
-*   **Phase 6**: 100% tests passed (Temporal KG, Federation, ColBERT logic).
+- **Phase 12.1**: All PR review findings resolved (8 fixes applied).
+- **Phase 12**: 100% tests passed (Distributed Entity Scoping).
+- **Phase 11**: 100% tests passed (Multi-Namespace Integrity).
+- **Phase 10**: 100% tests passed (Unified Security).
+- **Phase 9**: 100% tests passed (Consolidation, NLI Integrity).
+- **Phase 8**: 100% tests passed (ColBERT Efficiency, PLAID).

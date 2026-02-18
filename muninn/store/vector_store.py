@@ -101,19 +101,69 @@ class VectorStore:
                 conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
             query_filter = Filter(must=conditions)
 
-        results = client.search(
+        # v1.16+ uses query_points instead of search
+        results = client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_embedding,
+            query=query_embedding,
             limit=limit,
             score_threshold=score_threshold,
             query_filter=query_filter,
-        )
+        ).points
 
         return [
             (hit.payload.get("memory_id", ""), hit.score)
             for hit in results
             if hit.payload and "memory_id" in hit.payload
         ]
+
+    def get_vector(self, memory_id: str) -> Optional[List[float]]:
+        """
+        Retrieve the embedding vector for a specific memory_id.
+        Used for background integrity auditing.
+        """
+        try:
+            client = self._get_client()
+            results = client.retrieve(
+                collection_name=self.collection_name,
+                ids=[memory_id],
+                with_vectors=True
+            )
+            if results and results[0].vector:
+                # Qdrant return vectors as a dict if named, or list if unnamed
+                vec = results[0].vector
+                if isinstance(vec, dict):
+                    return vec.get("default", list(vec.values())[0])
+                return vec
+            return None
+        except Exception as e:
+            logger.error(f"Failed to retrieve vector for {memory_id}: {e}")
+            return None
+
+    def get_vectors(self, memory_ids: List[str]) -> Dict[str, List[float]]:
+        """
+        Retrieve multiple embedding vectors in a single batch.
+        """
+        if not memory_ids:
+            return {}
+        try:
+            client = self._get_client()
+            results = client.retrieve(
+                collection_name=self.collection_name,
+                ids=memory_ids,
+                with_vectors=True
+            )
+            vectors = {}
+            for res in results:
+                if res.vector:
+                    vec = res.vector
+                    if isinstance(vec, dict):
+                        vectors[str(res.id)] = vec.get("default", list(vec.values())[0])
+                    else:
+                        vectors[str(res.id)] = vec
+            return vectors
+        except Exception as e:
+            logger.error(f"Failed to retrieve batch vectors: {e}")
+            return {}
 
     def set_payload(self, memory_id: str, payload: Dict[str, Any]) -> bool:
         """Update payload fields for an existing vector point by memory ID."""
@@ -149,6 +199,26 @@ class VectorStore:
         client = self._get_client()
         info = client.get_collection(self.collection_name)
         return info.points_count or 0
+
+    async def update_collection_quantization(
+        self,
+        quantization_config: Optional[Any] = None
+    ) -> bool:
+        """
+        Dynamically update collection quantization settings.
+        Supported by Qdrant (PATCH /collections/{name}).
+        """
+        try:
+            client = self._get_client()
+            client.update_collection(
+                collection_name=self.collection_name,
+                quantization_config=quantization_config
+            )
+            logger.info(f"Updated quantization for collection '{self.collection_name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update quantization for '{self.collection_name}': {e}")
+            return False
 
     def close(self):
         if self._client:

@@ -173,7 +173,11 @@ class ConflictResolver:
                     "user_id": merged_user_id,
                 },
             )
-        self.graph.add_memory_node(old_id, merged_content[:GRAPH_SUMMARY_LIMIT])
+        self.graph.add_memory_node(
+            old_id, merged_content[:GRAPH_SUMMARY_LIMIT],
+            user_id=merged_user_id,
+            namespace=old_record.namespace,
+        )
 
         logger.info("MERGE: Memory %s merged with new content", old_id)
 

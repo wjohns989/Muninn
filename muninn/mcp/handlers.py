@@ -109,6 +109,8 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
 
 def handle_list_tools(msg_id: Any, send_result_fn):
     """List available tools with schemas and hints."""
+    from muninn.core.security import get_token
+    # In Phase 10, Listing tools is allowed, but execution requires token parity.
     
     tools_list = []
     for schema_def in TOOLS_SCHEMAS:
@@ -307,6 +309,15 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any], send_error_fn, s
 
 def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn):
     """Execute a single tool call."""
+    from muninn.core.security import verify_token
+    # Security Gate: Stdio transport defaults to environmental trust (the MCP process
+    # is started locally by the authorized user).  When MUNINN_MCP_STRICT_AUTH=1 is
+    # set, an explicit bearer token must be present in _meta.token for defense-in-depth.
+    if env_flag("MUNINN_MCP_STRICT_AUTH", False):
+        meta = params.get("_meta") or {}
+        if not verify_token(meta.get("token")):
+            send_error_fn(msg_id, -32600, "Unauthorized: valid bearer token required in _meta.token")
+            return
     name = params.get("name")
     if not isinstance(name, str) or not name:
         send_error_fn(msg_id, -32602, "Invalid params: tools/call requires non-empty string name")
@@ -414,6 +425,11 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "ingest_sources": _do_ingest_sources,
         "discover_legacy_sources": _do_discover_legacy_sources,
         "ingest_legacy_sources": _do_ingest_legacy_sources,
+        "get_temporal_knowledge": _do_get_temporal_knowledge,
+        "create_federation_manifest": _do_create_federation_manifest,
+        "calculate_federation_delta": _do_calculate_federation_delta,
+        "create_federation_bundle": _do_create_federation_bundle,
+        "apply_federation_bundle": _do_apply_federation_bundle,
     }
     
     handler = dispatch.get(name)
@@ -631,6 +647,42 @@ def _do_ingest_legacy_sources(args: Dict[str, Any], deadline: Optional[float]) -
         "min_chunk_chars": args.get("min_chunk_chars"),
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest/legacy/import", deadline_epoch=deadline, json=payload, timeout=120)
+    return resp.json()
+
+def _do_get_temporal_knowledge(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    params = {"timestamp": args.get("timestamp"), "limit": args.get("limit", 50)}
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/knowledge/temporal", deadline_epoch=deadline, params=params, timeout=10)
+    return resp.json()
+
+def _do_create_federation_manifest(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    params = {"project": args.get("project", "global")}
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/manifest", deadline_epoch=deadline, params=params, timeout=15)
+    return resp.json()
+
+def _do_calculate_federation_delta(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {
+        "local": args.get("local", {}),
+        "remote": args.get("remote", {}),
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/delta", deadline_epoch=deadline, json=payload, timeout=10)
+    return resp.json()
+
+def _do_create_federation_bundle(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = args.get("memory_ids", [])
+    # Correctly send as body list? No, server endpoint expects list in body directly if declared as List[str],
+    # but FastAPI usually wraps simple types or expects pydantic.
+    # Check server.py: `async def create_federation_bundle_endpoint(memory_ids: List[str]):`
+    # FastAPI expects a JSON body which is the list itself if not embedded in a dict key?
+    # Actually, for List[str] body, it expects `["id1", "id2"]`.
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/bundle", deadline_epoch=deadline, json=payload, timeout=30)
+    return resp.json()
+
+def _do_apply_federation_bundle(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    # server.py: `async def apply_federation_bundle_endpoint(bundle: Dict[str, Any]):`
+    # Argument name is `bundle`, but in body it's just the dict.
+    # FastAPI body logic: if it's a Pydantic model or Dict, it expects the JSON body to match.
+    payload = args.get("bundle", {})
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/apply", deadline_epoch=deadline, json=payload, timeout=30)
     return resp.json()
 
 

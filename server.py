@@ -41,6 +41,7 @@ import secrets
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
+from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
     MAX_CHUNK_OVERLAP_CHARS,
@@ -233,36 +234,14 @@ class SetModelProfilesRequest(BaseModel):
 security = HTTPBearer(auto_error=False)
 
 async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)):
-    """Verify the Bearer token against the configured server token."""
-    # If no token is configured, we might generate one or allow open access.
-    # The plan says: "If not set, generate a secure random token on startup and print to logs."
-    # We'll handle generation in lifespan.
-    
-    config = MuninnConfig.from_env()
-    expected_token = config.server.auth_token
-    
-    # If config wasn't updated in-process (e.g. if we generated one), check GLOBAL_AUTH_TOKEN
-    global GLOBAL_AUTH_TOKEN
-    if expected_token is None and GLOBAL_AUTH_TOKEN:
-        expected_token = GLOBAL_AUTH_TOKEN
-    
-    # If still None, it means we are running in insecure mode? 
-    # Or maybe we should enforce generation. 
-    # Let's enforce that if we are here, we expect a token if one is configured/generated.
-    
-    if expected_token:
-        if not credentials:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing authentication credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        if credentials.credentials != expected_token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+    """FastAPI dependency for token verification."""
+    token = credentials.credentials if credentials else None
+    if not core_verify_token(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return credentials
 
 
@@ -277,19 +256,8 @@ async def lifespan(app: FastAPI):
         # Initialize configuration from environment
         config = MuninnConfig.from_env()
 
-        # Auth Token Generation (Phase 5C.1)
-        global GLOBAL_AUTH_TOKEN
-        if config.server.auth_token:
-            GLOBAL_AUTH_TOKEN = config.server.auth_token
-            logger.info("Server authentication enabled (configured via environment)")
-        else:
-            # Generate a secure random token
-            generated_token = secrets.token_urlsafe(32)
-            GLOBAL_AUTH_TOKEN = generated_token
-            logger.warning("-" * 60)
-            logger.warning("NO AUTH TOKEN CONFIGURED. Generated temporary token:")
-            logger.warning(f"MUNINN_SERVER_AUTH_TOKEN={generated_token}")
-            logger.warning("-" * 60)
+        # Auth Token Initialization (Phase 10 / v3.7.0)
+        initialize_security(config.server.auth_token)
 
         # Initialize memory engine
         memory = MuninnMemory(config)
@@ -466,7 +434,7 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/goal/set")
+@app.post("/goal/set", dependencies=[Depends(verify_token)])
 async def set_project_goal_endpoint(req: SetProjectGoalRequest):
     """Set/update active project goal used for drift checks and retrieval prior."""
     if memory is None:
@@ -487,7 +455,7 @@ async def set_project_goal_endpoint(req: SetProjectGoalRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/profile/user/set")
+@app.post("/profile/user/set", dependencies=[Depends(verify_token)])
 async def set_user_profile_endpoint(req: SetUserProfileRequest):
     """Set/update editable user profile and global context."""
     if memory is None:
@@ -571,7 +539,7 @@ async def get_model_profiles_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/profiles/model")
+@app.post("/profiles/model", dependencies=[Depends(verify_token)])
 async def set_model_profiles_endpoint(req: SetModelProfilesRequest):
     """Update runtime extraction profile policy without server restart."""
     if memory is None:
@@ -612,7 +580,7 @@ async def get_model_profile_events_endpoint(limit: int = 25):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/handoff/export")
+@app.post("/handoff/export", dependencies=[Depends(verify_token)])
 async def export_handoff_endpoint(req: ExportHandoffRequest):
     """Export portable handoff bundle for cross-assistant continuity."""
     if memory is None:
@@ -631,7 +599,7 @@ async def export_handoff_endpoint(req: ExportHandoffRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/handoff/import")
+@app.post("/handoff/import", dependencies=[Depends(verify_token)])
 async def import_handoff_endpoint(req: ImportHandoffRequest):
     """Import portable handoff bundle (idempotent via event ledger)."""
     if memory is None:
@@ -652,7 +620,7 @@ async def import_handoff_endpoint(req: ImportHandoffRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/feedback/retrieval")
+@app.post("/feedback/retrieval", dependencies=[Depends(verify_token)])
 async def retrieval_feedback_endpoint(req: RetrievalFeedbackRequest):
     """Record retrieval feedback for adaptive weighting calibration."""
     if memory is None:
@@ -678,7 +646,7 @@ async def retrieval_feedback_endpoint(req: RetrievalFeedbackRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/ingest")
+@app.post("/ingest", dependencies=[Depends(verify_token)])
 async def ingest_sources_endpoint(req: IngestSourcesRequest):
     """Ingest multiple local sources with fail-open behavior per source/chunk."""
     if memory is None:
@@ -869,7 +837,7 @@ async def get_graph_endpoint(user_id: Optional[str] = "global_user"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/handover")
+@app.post("/handover", dependencies=[Depends(verify_token)])
 async def context_handover_endpoint(req: HandoverRequest):
     """Context handover between agents."""
     if memory is None:
@@ -925,7 +893,7 @@ async def federated_search_endpoint(req: SearchMemoryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/consolidation/run")
+@app.post("/consolidation/run", dependencies=[Depends(verify_token)])
 async def trigger_consolidation():
     """Manually trigger a consolidation cycle."""
     if memory is None:
@@ -950,6 +918,91 @@ async def consolidation_status():
     if memory._consolidation:
         return {"success": True, "data": memory._consolidation.status}
     return {"success": False, "data": {"running": False}}
+
+
+# --- Phase 6 Endpoints ---
+
+@app.get("/knowledge/temporal", dependencies=[Depends(verify_token)])
+async def get_temporal_knowledge_endpoint(
+    timestamp: Optional[float] = None,
+    limit: int = 50,
+    user_id: str = "global_user",
+):
+    """Query the Temporal Knowledge Graph (scoped to user)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        data = await memory.get_temporal_knowledge(timestamp=timestamp, limit=limit, user_id=user_id)
+        return {"success": True, "data": data}
+    except Exception as e:
+        logger.error("Temporal query failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/federation/manifest", dependencies=[Depends(verify_token)])
+async def create_federation_manifest_endpoint(
+    project: str = "global",
+    user_id: str = "global_user",
+):
+    """Generate a federation manifest for sync (scoped to user)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        fed = await memory.get_federation_manager()
+        manifest = await fed.generate_manifest(project=project, user_id=user_id)
+        return {"success": True, "data": manifest}
+    except Exception as e:
+        logger.error("Manifest generation failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/federation/delta", dependencies=[Depends(verify_token)])
+async def calculate_federation_delta_endpoint(local: Dict[str, Any], remote: Dict[str, Any]):
+    """Calculate delta between two manifests."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    
+    try:
+        fed = await memory.get_federation_manager()
+        delta = await fed.calculate_delta(local_manifest=local, remote_manifest=remote)
+        return {"success": True, "data": delta}
+    except Exception as e:
+        logger.error("Delta calculation failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/federation/bundle", dependencies=[Depends(verify_token)])
+async def create_federation_bundle_endpoint(
+    memory_ids: List[str],
+    user_id: str = "global_user",
+):
+    """Create a sync bundle for requested memories (scoped to user)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        fed = await memory.get_federation_manager()
+        bundle = await fed.create_sync_bundle(memory_ids=memory_ids, user_id=user_id)
+        return {"success": True, "data": bundle}
+    except Exception as e:
+        logger.error("Bundle creation failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/federation/apply", dependencies=[Depends(verify_token)])
+async def apply_federation_bundle_endpoint(
+    bundle: Dict[str, Any],
+    user_id: str = "global_user",
+):
+    """Apply a sync bundle (scoped to user)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        fed = await memory.get_federation_manager()
+        applied = await fed.apply_sync_bundle(bundle=bundle, user_id=user_id)
+        return {"success": True, "data": {"applied": applied}}
+    except Exception as e:
+        logger.error("Bundle apply failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Main ---
