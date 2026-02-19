@@ -1,14 +1,14 @@
 # Muninn SOTA+ Implementation Plan
 
-> **Version**: v3.6.1 → v3.11.0
-> **Status**: **Phase 14 COMPLETE — PR #43 open for review**
-> **Current State**: `feature/v3.11.0-project-scoped-memory` — Phase 14 fully implemented. 694 tests pass (43 new scope tests). PR #43 open at `https://github.com/wjohns989/Muninn/pull/43`.
+> **Version**: v3.6.1 → v3.12.0
+> **Status**: **Phase 15 IN PROGRESS — PR #44 open**
+> **Current State**: `feature/v3.12.0-operational-hardening` — Phase 14 merged (PR #43, 694 tests). Phase 15 implementing operational hardening, graph activation, and SOTA+ observability.
 
 ---
 
 ## Executive Summary
 
-Muninn has successfully transitioned through Phases 9–14. Phase 13 (v3.10.0) delivered native ColBERT multi-vector MaxSim and NL temporal query expansion (merged PR #42, 651 tests pass). Phase 14 (v3.11.0) closes the project-scoping gap: memories can now be explicitly marked as `scope="project"` (never leaks across repos) or `scope="global"` (always visible), ensuring per-project instructions stay isolated. PR #43 implements this end-to-end across all stack layers (694 tests pass, 43 new scope tests).
+Muninn has successfully transitioned through Phases 9–14. Phase 13 (v3.10.0) delivered native ColBERT multi-vector MaxSim and NL temporal query expansion (merged PR #42, 651 tests pass). Phase 14 (v3.11.0) closed the project-scoping gap: memories can be explicitly marked as `scope="project"` (never leaks across repos) or `scope="global"` (always visible), ensuring per-project instructions stay isolated. PR #43 merged (694 tests pass, 43 new scope tests). Phase 15 (v3.12.0) targets operational hardening: auth propagation in server lifecycle, graph memory chain activation, OTel observability hardening, and SOTA+ benchmark closure.
 
 ---
 
@@ -171,10 +171,69 @@ The fallback search (MUNINN_MCP_SEARCH_PROJECT_FALLBACK) must filter to `scope="
 
 ---
 
+## Phase 15: Operational Hardening & SOTA+ Observability
+
+> **Status**: 🔄 **IN PROGRESS — PR #44**
+> **Version**: v3.12.0
+> **Theme**: Operational correctness, graph activation, and SOTA+ closure.
+> **Branch**: `feature/v3.12.0-operational-hardening`
+
+### Background & Gap Analysis
+
+Phase 14 delivered strong memory isolation. Three categories of open issues remain before a credible SOTA+ verdict:
+
+1. **Auth propagation gap**: `lifecycle.py:start_server()` spawns `server.py` without passing `MUNINN_AUTH_TOKEN` to the child process. If the system env var is not set, the auto-started server generates a random token → mismatch → all MCP tool calls fail with 401. This is a silent operational breakage that only surfaces in fresh environments.
+
+2. **Graph memory chains dormant**: KuzuDB-based memory chains (`muninn/chains`) are fully implemented behind `chains` feature flag but graph store shows 0 nodes in production. The feature needs an activation-and-verification pass to confirm wire-up is correct end-to-end.
+
+3. **SOTA+ benchmark gaps**: Three benchmark suites identified in `MUNINN_COMPREHENSIVE_ROADMAP.md` remain unimplemented: LongMemEval adapter, StructMemEval adapter, and signed promotion-manifest issuance. Without these, SOTA+ claims lack external benchmark grounding.
+
+### Implementation Checklist
+
+- [ ] **Auth propagation fix** (`lifecycle.py`): `start_server()` passes `MUNINN_AUTH_TOKEN` from env (or discovers it via `get_token()`) when spawning `server.py` — ensures auto-start works in environments where only the wrapper has the token via MCP `-e` config
+- [ ] **Graph chains smoke test**: Add integration test proving `scope="project"` + chain traversal correctly wires memory-to-memory PRECEDES/CAUSES edges through the full add/search path; confirm `graph_nodes` health counter increments
+- [ ] **OTel activation validation**: With `MUNINN_OTEL_ENABLED=1`, verify trace spans are emitted for add/search/consolidation; validate GenAI semantic convention attributes match the OTel spec (span names, `gen_ai.*` attributes)
+- [ ] **LongMemEval adapter baseline**: `eval/longmemeval_adapter.py` — map LongMemEval single-session QA format to Muninn's search interface; report nDCG@10 and Recall@10 against public benchmark
+- [ ] **SOTA+ signed verdict v1**: `eval.ollama_local_benchmark sota-verdict` extended to include external benchmark evidence; verdict artifact includes commit SHA, benchmark hashes, and promotion signature
+- [ ] **Version**: `3.12.0` in `version.py` and `pyproject.toml`
+- [ ] **Verification**: Existing 694 tests still pass; new tests for auth propagation, graph smoke, OTel attribute validation
+
+### Key Correctness Properties (Targets)
+
+1. **Auto-start safety**: Fresh install with `MUNINN_AUTH_TOKEN` set in MCP config → server auto-starts with same token → zero 401s
+2. **Graph chains live**: A memory added with causal/temporal keywords produces `graph_nodes > 0` in health endpoint after consolidation
+3. **OTel trace fidelity**: Every `add_memory` produces an OTEL span with `gen_ai.operation.name`, `gen_ai.system`, `muninn.memory.id`, `muninn.memory.scope` attributes
+4. **External benchmark grounding**: LongMemEval nDCG@10 ≥ 0.60 baseline established and committed
+
+### Optimization & ROI Opportunities Identified
+
+**High ROI:**
+- **Auth propagation fix** (lifecycle.py): ~1 hour fix, prevents complete operational failure in any clean environment. Without it, every fresh deploy silently breaks the MCP bridge.
+- **Graph chains activation**: Graph memory chains unlock causal memory retrieval — the `PRECEDES`/`CAUSES` edge type enables "why did we decide this?" temporal reasoning that no other memory system provides. ROI: qualitative leap in agent continuity for long-running projects.
+
+**Medium ROI:**
+- **OTel hardening**: Enables production ops visibility without code changes; unlocks Grafana/Jaeger dashboards for memory system health monitoring.
+- **LongMemEval adapter**: External benchmark grounding is the last credibility gap before SOTA+ claims can be made publicly. Without it, the system is excellent but unverifiable against community standards.
+
+**Low ROI (future):**
+- Parser sandbox for pdf/docx (security hardening for optional binary parsers)
+- Browser UI advanced controls (preference presets, safety mode templates)
+
+### Environment Variables (Phase 15)
+
+| Variable | Default | Description |
+|---|---|---|
+| `MUNINN_OTEL_ENABLED=1` | off | Enable OpenTelemetry trace emission |
+| `MUNINN_OTEL_ENDPOINT` | `http://localhost:4318` | OTLP HTTP endpoint |
+| `MUNINN_CHAINS_ENABLED=1` | off | Enable graph memory chain detection |
+
+---
+
 ## Validation History
 
-- **Phase 14**: **694 tests passed (100%), 0 failed** — project-scoped memory strict isolation. PR #43 open. 43 new scope tests covering all 5 correctness invariants.
+- **Phase 14**: **694 tests passed (100%), 0 failed** — project-scoped memory strict isolation. PR #43 merged. 43 new scope tests covering all 5 correctness invariants.
 - **Phase 12.2**: 651 tests passed (100%), 0 failed — 5 additional PR review bugs fixed (UUID5 mismatch, filter kwarg, ColBERT collection sampling, unsafe flag access).
+- **Phase 14.1**: PR #43 review comments resolved — specific qdrant exception handling, bug count clarification, `datetime.utcnow()` deprecation fix.
 - **Phase 13**: 651 tests passed (100%), 0 failed — native ColBERT multi-vector + temporal query expansion. Merged PR #42.
 - **Phase 12.1**: All PR review findings resolved (8 fixes applied).
 - **Phase 12**: 100% tests passed (Distributed Entity Scoping).

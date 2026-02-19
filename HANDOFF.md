@@ -1,9 +1,9 @@
 # Muninn Development Handoff
 
-> **Updated**: 2026-02-18
-> **Branch**: `feature/v3.11.0-project-scoped-memory`
-> **Version**: v3.11.0
-> **Status**: Phase 14 COMPLETE — PR #43 open for review
+> **Updated**: 2026-02-19
+> **Branch**: `feature/v3.12.0-operational-hardening`
+> **Version**: v3.12.0 (Phase 15 in progress)
+> **Status**: Phase 14 MERGED (PR #43). Phase 15 branch open, PR #44 in progress.
 
 ---
 
@@ -14,7 +14,8 @@
 - **Server**: FastAPI on `http://localhost:42069`, auth token via `MUNINN_AUTH_TOKEN`
 - **MCP**: Registered as "muninn" (tools: `mcp__muninn__*`) in Claude Code user config with auth token baked in
 - **Claude Desktop**: Already correctly registered as "muninn"
-- **Phase 14 (v3.11.0)**: Project-scoped memory fully implemented, PR #43 open
+- **Phase 14 (v3.11.0)**: Project-scoped memory — **MERGED** (PR #43, 2026-02-19)
+- **Phase 15 (v3.12.0)**: Operational hardening branch open, PR #44 in progress
 
 ### Server Quick Start
 
@@ -143,11 +144,14 @@ MemoryRecord.scope: Literal["project", "global"] = "project"
 ## Open Items / Next Steps
 
 ### Immediate
-- [ ] **PR #43 review/merge** — Phase 14 project-scoped memory
-- [ ] **Restart Claude Code** to activate new MCP registration (with auth token) — MCP tools will work as `mcp__muninn__*`
+- [ ] **Restart Claude Code** to activate new MCP registration (with auth token) — MCP tools will work as `mcp__muninn__*` in next session
+- [ ] **PR #44 implementation** — Phase 15 operational hardening items (see SOTA_PLUS_PLAN.md Phase 15)
 
-### Post-Merge
-- [ ] **Phase 15 planning** — Review SOTA_PLUS_PLAN.md for next features
+### Phase 15 Priorities (v3.12.0)
+- [ ] **Auth propagation fix** in `lifecycle.py:start_server()` — pass `MUNINN_AUTH_TOKEN` to spawned server
+- [ ] **Graph chains activation** — smoke test KuzuDB memory chains end-to-end
+- [ ] **OTel activation validation** — verify GenAI spans with correct attributes
+- [ ] **LongMemEval adapter** — external benchmark grounding for SOTA+ claims
 - [ ] Evaluate: should `.muninn_token` be rotated periodically? Add rotation docs.
 - [ ] Consider: start_server() in lifecycle.py should pass `MUNINN_AUTH_TOKEN` to spawned server process (currently not done → requires token to be in system env)
 
