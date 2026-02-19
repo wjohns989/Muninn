@@ -17,6 +17,8 @@ import time
 import logging
 from typing import Optional
 
+from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
+
 from muninn.core.config import ConsolidationConfig
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 from muninn.store.vector_store import VectorStore
@@ -445,7 +447,9 @@ class ConsolidationDaemon:
             # Check if the ColBERT token collection has enough points to warrant drift check
             try:
                 colbert_count = client.count(collection_name=token_collection).count
-            except Exception:
+            except (UnexpectedResponse, ResponseHandlingException):
+                # Collection does not exist yet (HTTP 404) or qdrant is temporarily
+                # unavailable — skip drift check silently; it is not a fatal error.
                 colbert_count = 0
             if colbert_count < 100:
                 return {"status": "skipped", "reason": "too_few_colbert_tokens", "count": colbert_count}
