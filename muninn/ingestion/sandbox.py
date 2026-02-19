@@ -32,10 +32,11 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 # Maximum bytes to accept from the subprocess stdout to prevent output flooding.
 # This is a secondary defense — the subprocess itself also caps at MAX_OUTPUT_CHARS.
@@ -43,6 +44,36 @@ MAX_STDOUT_BYTES = 4 * 1024 * 1024  # 4 MB
 
 # Module path for the subprocess worker
 _WORKER_MODULE = "muninn.ingestion._parser_subprocess"
+
+# Allowlist of environment variable names that the parser subprocess may receive.
+# This prevents secrets inherited from the parent process (auth tokens, API keys,
+# database connection strings, etc.) from being accessible to a compromised child.
+_SANDBOX_ENV_ALLOWLIST: frozenset[str] = frozenset({
+    # Execution path — needed to locate Python itself and shared libraries
+    "PATH",
+    # Windows system variables — required for Win32 subsystem, DLL loading
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "USERPROFILE",
+    "TEMP", "TMP",  # temp dir (Python may write .pyc here)
+    # POSIX/macOS execution environment
+    "HOME", "USER", "LOGNAME",
+    "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+    "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH",  # shared library paths
+    # Python runtime — include only if explicitly set by the caller to customise
+    # the interpreter (e.g., virtual-env activation or custom PYTHONPATH).
+    "PYTHONPATH", "PYTHONHOME", "PYTHONDONTWRITEBYTECODE",
+    "VIRTUAL_ENV",  # some packages inspect this to find stdlib paths
+})
+
+
+def _make_sandbox_env() -> Dict[str, str]:
+    """Build a minimal environment dict for the parser subprocess.
+
+    Only variables in _SANDBOX_ENV_ALLOWLIST are forwarded.  All other
+    variables — including MUNINN_AUTH_TOKEN, OPENAI_API_KEY, database URLs,
+    and any other application secrets present in the parent process — are
+    stripped, so a compromised parser library cannot exfiltrate them.
+    """
+    return {k: v for k, v in os.environ.items() if k in _SANDBOX_ENV_ALLOWLIST}
 
 
 def sandboxed_parse_binary(
@@ -99,6 +130,7 @@ def sandboxed_parse_binary(
             cmd,
             capture_output=True,
             timeout=timeout,
+            env=_make_sandbox_env(),
         )
     except subprocess.TimeoutExpired as exc:
         # Kill is implicit after TimeoutExpired when using capture_output

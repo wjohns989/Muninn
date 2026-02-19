@@ -264,7 +264,7 @@ class TestBenchmarkRunnerDryRun:
                 adapter="structmemeval",
                 mode="selftest",
                 passed=True,
-                metrics={"exact_match": None, "token_f1": None, "mrr_at_k": None},
+                metrics={"mean_exact_match": None, "mean_token_f1": None, "mean_mrr_at_k": None},
                 dataset_path=None,
                 case_count=3,
                 elapsed_seconds=0.3,
@@ -501,7 +501,7 @@ class TestBenchmarkRunnerGates:
 
         sme = AdapterResult(
             adapter="structmemeval", mode="production", passed=True,
-            metrics={"exact_match": 0.80, "token_f1": 0.85, "mrr_at_k": 0.90},
+            metrics={"mean_exact_match": 0.80, "mean_token_f1": 0.85, "mean_mrr_at_k": 0.90},
             dataset_path=None, case_count=30, elapsed_seconds=3.0,
         )
         result = _evaluate_sme_gate(sme, min_em=0.50, require=True)
@@ -512,7 +512,7 @@ class TestBenchmarkRunnerGates:
 
         sme = AdapterResult(
             adapter="structmemeval", mode="production", passed=True,
-            metrics={"exact_match": 0.30, "token_f1": 0.40, "mrr_at_k": 0.50},
+            metrics={"mean_exact_match": 0.30, "mean_token_f1": 0.40, "mean_mrr_at_k": 0.50},
             dataset_path=None, case_count=30, elapsed_seconds=3.0,
         )
         result = _evaluate_sme_gate(sme, min_em=0.50, require=True)
@@ -674,6 +674,62 @@ class TestParserSandbox:
         with patch("subprocess.run", return_value=mock_result):
             with pytest.raises(RuntimeError):
                 sandbox.sandboxed_parse_binary(dummy, "pdf")
+
+    def test_sandbox_env_strips_sensitive_vars(self):
+        """_make_sandbox_env must exclude secrets from the child process environment."""
+        from muninn.ingestion.sandbox import _make_sandbox_env, _SANDBOX_ENV_ALLOWLIST
+        import os
+
+        sensitive_vars = {
+            "MUNINN_AUTH_TOKEN": "super-secret-token",
+            "OPENAI_API_KEY": "sk-fake-key",
+            "ANTHROPIC_API_KEY": "ant-fake-key",
+            "DATABASE_URL": "postgres://user:pass@host/db",
+            "AWS_SECRET_ACCESS_KEY": "aws-secret-key",
+        }
+
+        with patch.dict(os.environ, sensitive_vars, clear=False):
+            env = _make_sandbox_env()
+
+        # None of the injected sensitive vars should appear
+        for key in sensitive_vars:
+            assert key not in env, (
+                f"_make_sandbox_env leaked sensitive variable: {key}"
+            )
+        # Confirm the allowlist only contains benign vars
+        assert "MUNINN_AUTH_TOKEN" not in _SANDBOX_ENV_ALLOWLIST
+        assert "OPENAI_API_KEY" not in _SANDBOX_ENV_ALLOWLIST
+
+    def test_sandbox_env_preserves_path(self):
+        """_make_sandbox_env must keep PATH so the child can find system libs."""
+        from muninn.ingestion.sandbox import _make_sandbox_env
+        import os
+
+        test_path = "/usr/local/bin:/usr/bin"
+        with patch.dict(os.environ, {"PATH": test_path}, clear=False):
+            env = _make_sandbox_env()
+
+        assert "PATH" in env
+        assert env["PATH"] == test_path
+
+    def test_subprocess_call_uses_sandboxed_env(self, tmp_path):
+        """subprocess.run must be called with env= kwarg (not None) for isolation."""
+        from muninn.ingestion.sandbox import sandboxed_parse_binary
+
+        dummy = tmp_path / "doc.pdf"
+        dummy.write_bytes(b"%PDF-1.4 fake")
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"text": "clean"}).encode()
+        mock_result.stderr = b""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            sandboxed_parse_binary(dummy, "pdf")
+
+        call_kwargs = mock_run.call_args.kwargs
+        assert "env" in call_kwargs, "subprocess.run must receive explicit env= for isolation"
+        assert call_kwargs["env"] is not None
 
 
 # ===========================================================================
