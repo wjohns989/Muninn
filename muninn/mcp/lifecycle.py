@@ -90,11 +90,19 @@ def check_and_start_ollama() -> bool:
 
 def start_server() -> bool:
     from muninn.platform import spawn_detached_process, find_python_executable
+    from muninn.core.security import get_token
     python_executable = find_python_executable()
     try:
+        # Propagate the auth token to the spawned server so both processes
+        # share the same token. This is critical when MUNINN_AUTH_TOKEN is
+        # not in the system environment (e.g., injected via the MCP -e config
+        # for the wrapper only) — without it each process generates a different
+        # random token and every tool call returns HTTP 401.
+        token = os.environ.get("MUNINN_AUTH_TOKEN") or get_token()
         spawn_detached_process(
             [python_executable, str(SERVER_SCRIPT)],
             cwd=str(MUNINN_DIR),
+            env={"MUNINN_AUTH_TOKEN": token},
         )
         time.sleep(2)
         return True

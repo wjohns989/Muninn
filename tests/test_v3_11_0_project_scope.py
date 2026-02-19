@@ -546,7 +546,9 @@ class TestScopeTypeAnnotation:
 class TestVersionBump:
     def test_version_is_3_11_0(self):
         from muninn.version import __version__
-        assert __version__ == "3.11.0"
+        # Version advanced to 3.12.0 (Phase 15); assert >= 3.11.0
+        major, minor, patch_ = (int(x) for x in __version__.split("."))
+        assert (major, minor, patch_) >= (3, 11, 0), f"Expected >= 3.11.0, got {__version__}"
 
     def test_flag_count_includes_phase14(self):
         flags = FeatureFlags()
