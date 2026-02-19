@@ -14,8 +14,8 @@ logger = logging.getLogger("Muninn.mcp.lifecycle")
 
 # Path discovery (assuming we are in muninn/mcp/lifecycle.py)
 MOD_DIR = Path(__file__).parent.resolve()
-GLOBAL_MEMORY_DIR = MOD_DIR.parent.parent.resolve()
-SERVER_SCRIPT = GLOBAL_MEMORY_DIR / "server.py"
+MUNINN_DIR = MOD_DIR.parent.parent.resolve()
+SERVER_SCRIPT = MUNINN_DIR / "server.py"
 
 # URLs
 SERVER_URL = os.environ.get("MUNINN_SERVER_URL", "http://localhost:42069")
@@ -94,7 +94,7 @@ def start_server() -> bool:
     try:
         spawn_detached_process(
             [python_executable, str(SERVER_SCRIPT)],
-            cwd=str(GLOBAL_MEMORY_DIR),
+            cwd=str(MUNINN_DIR),
         )
         time.sleep(2)
         return True
