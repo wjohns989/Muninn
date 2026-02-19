@@ -216,29 +216,15 @@ def _parse_html(path: Path) -> str:
 
 
 def _parse_pdf(path: Path) -> str:
-    try:
-        from pypdf import PdfReader
-    except Exception as exc:  # pragma: no cover - optional dependency path
-        raise RuntimeError("PDF parsing requires optional dependency 'pypdf'.") from exc
-
-    reader = PdfReader(str(path))
-    pages: List[str] = []
-    for page in reader.pages:
-        extracted = page.extract_text() or ""
-        if extracted.strip():
-            pages.append(extracted.strip())
-    return "\n\n".join(pages)
+    """Parse a PDF file via the subprocess sandbox for process isolation (Phase 17)."""
+    from muninn.ingestion.sandbox import sandboxed_parse_binary
+    return sandboxed_parse_binary(path, "pdf", timeout=30.0)
 
 
 def _parse_docx(path: Path) -> str:
-    try:
-        from docx import Document
-    except Exception as exc:  # pragma: no cover - optional dependency path
-        raise RuntimeError("DOCX parsing requires optional dependency 'python-docx'.") from exc
-
-    document = Document(str(path))
-    paragraphs = [p.text.strip() for p in document.paragraphs if p.text and p.text.strip()]
-    return "\n".join(paragraphs)
+    """Parse a DOCX file via the subprocess sandbox for process isolation (Phase 17)."""
+    from muninn.ingestion.sandbox import sandboxed_parse_binary
+    return sandboxed_parse_binary(path, "docx", timeout=30.0)
 
 
 def _parse_sqlite(path: Path) -> str:
