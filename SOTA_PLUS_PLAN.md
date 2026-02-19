@@ -67,7 +67,7 @@ Muninn has successfully transitioned through Phases 9–14. Phase 13 (v3.10.0) d
 ## Phase 12.2: Additional PR Review Remediation (Completed)
 
 > **Status**: ✅ **DONE**
-> **Theme**: Fixing 4 survived bugs found via comprehensive re-audit of ALL PR comments (PRs #38–#42).
+> **Theme**: Fixing 5 survived bugs (+ 1 test correction) found via comprehensive re-audit of ALL PR comments (PRs #38–#42). The 6 checklist items below represent 5 distinct code bugs — two of which (UUID mismatch in `get_vector` and `get_vectors`) share the same root cause but required separate fixes — plus one test correction.
 
 - [x] **`get_vector()` UUID Bug** (`vector_store.py:128`): `client.retrieve()` was passed raw `memory_id` but Qdrant stores points under `UUID5(memory_id)`. All calls returned `None`. Fixed: convert to UUID5 before retrieve.
 - [x] **`get_vectors()` UUID Bug** (`vector_store.py:152`): Same root cause as above — batch retrieve used raw IDs. Fixed: build UUID5→memory_id map, convert before retrieve, map back in results.
