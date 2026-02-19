@@ -194,7 +194,7 @@ Async client:
 from muninn import AsyncMemory
 
 async def main():
-    async with AsyncMemory(base_url="http://127.0.0.1:42069") as client:
+    async with AsyncMemory(base_url="http://127.0.0.1:42069", auth_token="your-token-here") as client:
         await client.add(content="...", metadata={})
         results = await client.search("...", limit=5)
 ```
