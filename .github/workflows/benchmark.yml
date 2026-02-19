@@ -1,0 +1,209 @@
+name: Benchmark Dry-Run Gate
+
+# Runs the Muninn SOTA+ benchmark adapter selftests on every PR to main.
+# Uses --dry-run mode: no live server required. This gate prevents adapter
+# regressions (broken dataset schemas, metric computation errors, broken
+# subprocess protocol) from landing on main.
+#
+# Produces a JSON benchmark report as a downloadable artifact for every run.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_lme:
+        description: "Skip LongMemEval adapter"
+        required: false
+        type: boolean
+        default: false
+      skip_sme:
+        description: "Skip StructMemEval adapter"
+        required: false
+        type: boolean
+        default: false
+      limit:
+        description: "Cap number of cases per adapter (0 = all)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-dry-run:
+    name: Benchmark Dry-Run (no server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install .[dev]
+
+      - name: Run Benchmark Dry-Run
+        id: benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p eval/reports/benchmark
+
+          REPORT_PATH="eval/reports/benchmark/benchmark_dry_run_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.json"
+          echo "report_path=${REPORT_PATH}" >> "$GITHUB_OUTPUT"
+
+          # Build optional flags
+          EXTRA_FLAGS=""
+
+          SKIP_LME="${{ github.event.inputs.skip_lme }}"
+          if [ "${SKIP_LME}" = "true" ]; then
+            EXTRA_FLAGS="${EXTRA_FLAGS} --skip-lme"
+          fi
+
+          SKIP_SME="${{ github.event.inputs.skip_sme }}"
+          if [ "${SKIP_SME}" = "true" ]; then
+            EXTRA_FLAGS="${EXTRA_FLAGS} --skip-sme"
+          fi
+
+          LIMIT="${{ github.event.inputs.limit }}"
+          if [ -n "${LIMIT}" ] && [ "${LIMIT}" != "0" ]; then
+            EXTRA_FLAGS="${EXTRA_FLAGS} --limit ${LIMIT}"
+          fi
+
+          python -m eval.run_benchmark \
+            --dry-run \
+            --output "${REPORT_PATH}" \
+            --verbose \
+            ${EXTRA_FLAGS}
+
+          echo "Benchmark dry-run complete. Report: ${REPORT_PATH}"
+
+      - name: Parse Benchmark Report
+        id: parse
+        if: always()
+        shell: bash
+        env:
+          REPORT_PATH: ${{ steps.benchmark.outputs.report_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          report_path = os.environ.get("REPORT_PATH", "")
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          github_step_summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
+
+          if not report_path:
+              print("No report path provided", file=sys.stderr)
+              sys.exit(1)
+
+          path = Path(report_path)
+          if not path.exists():
+              print(f"Report not found: {report_path}", file=sys.stderr)
+              sys.exit(1)
+
+          report = json.loads(path.read_text(encoding="utf-8"))
+          overall = report.get("overall_passed", False)
+          mode = report.get("mode", "unknown")
+          run_id = report.get("run_id", "unknown")
+          commit_sha = report.get("commit_sha") or "unknown"
+          elapsed = report.get("elapsed_total_seconds", 0.0)
+
+          adapters = report.get("adapters", {})
+          lme = adapters.get("longmemeval") or {}
+          sme = adapters.get("structmemeval") or {}
+          gates = report.get("gates", {})
+
+          lme_passed = lme.get("passed", False) if lme else None
+          sme_passed = sme.get("passed", False) if sme else None
+          lme_cases = lme.get("case_count", 0)
+          sme_cases = sme.get("case_count", 0)
+          lme_error = lme.get("error")
+          sme_error = sme.get("error")
+
+          lme_gate = gates.get("longmemeval", {})
+          sme_gate = gates.get("structmemeval", {})
+
+          # Write to GITHUB_OUTPUT for downstream steps
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"overall_passed={str(overall).lower()}\n")
+                  f.write(f"lme_passed={str(lme_passed).lower()}\n")
+                  f.write(f"sme_passed={str(sme_passed).lower()}\n")
+
+          # Write step summary
+          summary_lines = [
+              "## Muninn Benchmark Dry-Run Report",
+              f"- **Mode**: `{mode}`",
+              f"- **Run ID**: `{run_id}`",
+              f"- **Commit**: `{commit_sha[:12]}`",
+              f"- **Elapsed**: `{elapsed:.1f}s`",
+              "",
+              "### Gate Results",
+              f"| Adapter | Cases | Passed | Gate | Reason |",
+              f"|---------|-------|--------|------|--------|",
+          ]
+
+          def fmt_passed(v):
+              if v is None:
+                  return "⏭ skipped"
+              return "✅ pass" if v else "❌ fail"
+
+          lme_gate_passed = lme_gate.get("passed", None)
+          sme_gate_passed = sme_gate.get("passed", None)
+          lme_gate_reason = lme_gate.get("reason", "n/a")
+          sme_gate_reason = sme_gate.get("reason", "n/a")
+
+          summary_lines.append(
+              f"| LongMemEval | {lme_cases} | {fmt_passed(lme_passed)} "
+              f"| {fmt_passed(lme_gate_passed)} | `{lme_gate_reason}` |"
+          )
+          summary_lines.append(
+              f"| StructMemEval | {sme_cases} | {fmt_passed(sme_passed)} "
+              f"| {fmt_passed(sme_gate_passed)} | `{sme_gate_reason}` |"
+          )
+
+          if lme_error:
+              summary_lines.append(f"\n⚠️ **LongMemEval error**: `{lme_error[:200]}`")
+          if sme_error:
+              summary_lines.append(f"\n⚠️ **StructMemEval error**: `{sme_error[:200]}`")
+
+          overall_icon = "✅" if overall else "❌"
+          summary_lines.append(f"\n### Overall: {overall_icon} {'PASS' if overall else 'FAIL'}")
+
+          summary = "\n".join(summary_lines) + "\n"
+          print(summary)
+
+          if github_step_summary:
+              with open(github_step_summary, "a", encoding="utf-8") as f:
+                  f.write(summary)
+          PY
+
+      - name: Upload Benchmark Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-dry-run-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            ${{ steps.benchmark.outputs.report_path }}
+
+      - name: Assert Overall Passed
+        if: steps.parse.outputs.overall_passed == 'false'
+        run: |
+          echo "Benchmark dry-run gate FAILED. Check the report artifact for details."
+          exit 1
