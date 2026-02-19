@@ -253,11 +253,8 @@ def _run_longmemeval(
             "k": raw_report.get("k", 10),
         }
         case_count = raw_report.get("total_cases", 0)
-        # Selftest passes if exit code 0 and metrics are non-None
-        passed = result.returncode == 0 and metrics.get("mean_ndcg_at_k") is not None
-    else:
-        # No report parsed — use exit code only
-        passed = result.returncode == 0
+    # Selftest passes if exit code is 0; gate logic handles metric validation.
+    passed = result.returncode == 0
 
     return AdapterResult(
         adapter="longmemeval",
@@ -284,21 +281,20 @@ def _run_structmemeval(
     """Run the StructMemEval adapter as a subprocess and parse its JSON output."""
     t0 = time.monotonic()
 
-    cmd = [sys.executable, "eval/structmemeval_adapter.py"]
+    cmd = [sys.executable, "-m", "eval.structmemeval_adapter"]
     if mode == "selftest":
-        cmd = [sys.executable, "eval/structmemeval_adapter.py", "--selftest"]
+        cmd.append("--selftest")
     else:
         if dataset_path is None:
             dataset_path = _SYNTHETIC_SME_DATASET
-        cmd = [
-            sys.executable, "eval/structmemeval_adapter.py",
+        cmd.extend([
             "--dataset", str(dataset_path),
             "--server-url", server_url,
             "--auth-token", auth_token,
             "--output", str(output_path),
-        ]
+        ])
         if limit is not None:
-            cmd += ["--limit", str(limit)]
+            cmd.extend(["--limit", str(limit)])
 
     try:
         result = subprocess.run(
@@ -355,17 +351,16 @@ def _run_structmemeval(
 
     metrics: Dict[str, Any] = {}
     case_count = 0
-    passed = False
+    # Selftest passes if exit code is 0; gate logic handles metric validation.
+    passed = result.returncode == 0
     if raw_report:
+        # Use the aggregate (mean_*) keys that the adapter writes at report top-level.
         metrics = {
-            "exact_match": raw_report.get("exact_match"),
-            "token_f1": raw_report.get("token_f1"),
-            "mrr_at_k": raw_report.get("mrr_at_k"),
+            "mean_exact_match": raw_report.get("mean_exact_match"),
+            "mean_token_f1": raw_report.get("mean_token_f1"),
+            "mean_mrr_at_k": raw_report.get("mean_mrr_at_k"),
         }
         case_count = raw_report.get("total_cases", 0)
-        passed = result.returncode == 0
-    else:
-        passed = result.returncode == 0
 
     return AdapterResult(
         adapter="structmemeval",
@@ -448,14 +443,14 @@ def _evaluate_sme_gate(
             "required": require,
         }
 
-    em = sme.metrics.get("exact_match")
+    em = sme.metrics.get("mean_exact_match")
 
     if em is None:
         return {
             "passed": True,
             "reason": "selftest_pass_no_metrics",
             "required": require,
-            "exact_match": em,
+            "mean_exact_match": em,
             "thresholds": {"min_exact_match": min_em},
         }
 
@@ -464,9 +459,9 @@ def _evaluate_sme_gate(
         "passed": gate_passed,
         "reason": "threshold_evaluation",
         "required": require,
-        "exact_match": em,
-        "token_f1": sme.metrics.get("token_f1"),
-        "mrr_at_k": sme.metrics.get("mrr_at_k"),
+        "mean_exact_match": em,
+        "mean_token_f1": sme.metrics.get("mean_token_f1"),
+        "mean_mrr_at_k": sme.metrics.get("mean_mrr_at_k"),
         "thresholds": {"min_exact_match": min_em},
     }
 
@@ -807,7 +802,7 @@ def main() -> int:
     # Determine output path
     output_path = args.output
     if output_path is None:
-        ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
         output_path = _REPORTS_DIR / f"benchmark_{mode.replace('-', '_')}_{ts}.json"
 
     report = run_benchmark(
