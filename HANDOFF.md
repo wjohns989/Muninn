@@ -1,22 +1,23 @@
 # Muninn Development Handoff
 
 > **Updated**: 2026-02-19
-> **Branch**: `feature/v3.13.0-sota-verdict-v1`
-> **Version**: v3.13.0 (Phase 16 COMPLETE)
-> **Status**: Phase 16 done. 788 tests pass. PR #45 ready for merge.
+> **Branch**: `feature/v3.14.0-benchmark-suite-parser-sandbox`
+> **Version**: v3.14.0 (Phase 17 COMPLETE)
+> **Status**: Phase 17 done. 848 tests pass. PR #46 ready for merge.
 
 ---
 
 ## Current State
 
 ### What's Working
-- **788 tests pass** (100% pass rate — 727 Phase 15 + 61 Phase 16)
+- **848 tests pass** (100% pass rate — 788 Phase 16 + 60 Phase 17)
 - **Server**: FastAPI on `http://localhost:42069`, auth token via `MUNINN_AUTH_TOKEN`
 - **MCP**: Registered as "muninn" (tools: `mcp__muninn__*`) in Claude Code user config with auth token baked in
 - **Claude Desktop**: Already correctly registered as "muninn"
 - **Phase 14 (v3.11.0)**: Project-scoped memory — **MERGED** (PR #43, 2026-02-19)
 - **Phase 15 (v3.12.0)**: Operational hardening — **MERGED** (PR #44, 2026-02-19)
-- **Phase 16 (v3.13.0)**: SOTA+ signed verdict v1 — **COMPLETE**, PR #45 ready for merge
+- **Phase 16 (v3.13.0)**: SOTA+ signed verdict v1 — **MERGED** (PR #45, 2026-02-19)
+- **Phase 17 (v3.14.0)**: Synthetic benchmark suite + parser security sandbox — **COMPLETE**, PR #46 ready for merge
 
 ### Server Quick Start
 
@@ -217,20 +218,109 @@ pytest tests/test_v3_12_0_operational_hardening.py -v
 pytest tests/test_ollama_local_benchmark.py -k "sota_verdict" -v
 ```
 
-**Expected**: 788 pass, 2 skipped, 0 fail
+**Expected**: 848 pass, 2 skipped, 0 fail
+
+```bash
+# Run Phase 17 tests only
+pytest tests/test_v3_14_0_benchmark_suite.py -v
+```
 
 ---
 
 ## Open Items / Next Steps
 
-### Phase 17 Candidates
-- [ ] **LongMemEval real-dataset run**: Obtain public LongMemEval JSONL and establish nDCG@10 ≥ 0.60 baseline with signed verdict artifact committed to repo
-- [ ] **Parser sandbox**: Security hardening for optional pdf/docx binary parsers
-- [ ] **Token rotation docs**: Periodic `.muninn_token` rotation procedures
-- [ ] **StructMemEval real dataset**: Publish/obtain structured factoid QA JSONL for live server evaluation
+### Phase 18 Candidates
+- [ ] **Live benchmark run + signed verdict artifact**: Run `eval/run_benchmark.py --production` against live server with synthetic datasets and commit the signed verdict artifact to `eval/reports/`
+- [ ] **Public LongMemEval JSONL**: Obtain `longmemeval_oracle.jsonl` from the paper authors (https://github.com/xiaowu0162/LongMemEval) and establish real nDCG@10 baseline
+- [ ] **GitHub Actions CI**: Add `.github/workflows/benchmark.yml` running `run_benchmark.py --dry-run` on every PR to prevent adapter regression
+- [ ] **Token rotation utility**: CLI command `python -m muninn.cli rotate-token` to replace `.muninn_token` and update MCP registrations automatically
 
 ### Known Remaining Gap
-**SOTA+ real-dataset evidence**: Both adapters (`eval/longmemeval_adapter.py`, `eval/structmemeval_adapter.py`) are production-ready and selftests pass. A real-dataset run requires obtaining the public LongMemEval JSONL dataset and running against a live Muninn server. The signed verdict artifact has not been produced against real data yet — that's Phase 17.
+**SOTA+ production-run evidence**: The synthetic benchmark datasets (`eval/data/longmemeval_synthetic_v1.jsonl`, `eval/data/structmemeval_suite_v1.jsonl`) and pipeline (`eval/run_benchmark.py`) are production-ready. The signed verdict artifact against a live Muninn server with the synthetic data has not been committed yet — that's Phase 18 P1. This requires a running Muninn server and takes ~5 minutes.
+
+---
+
+## Phase 17 (v3.14.0) Summary — 2026-02-19
+
+### Changes Delivered
+
+#### 1. Synthetic LongMemEval Dataset (`eval/data/longmemeval_synthetic_v1.jsonl`)
+30 LongMemEval-format benchmark cases covering all question types:
+- `single-session-qa` (10): Factual recall from single-session conversations
+- `multi-session-qa` (8): Cross-session memory retrieval
+- `temporal` (6): Time-anchored questions about events and versions
+- `adversarial` (3): Cases with distractor information to test retrieval precision
+- `entity-centric` (3): Entity-focused factoid questions
+All content is Muninn-domain realistic (architecture decisions, version history, feature flags).
+
+#### 2. Synthetic StructMemEval Suite (`eval/data/structmemeval_suite_v1.jsonl`)
+30 StructMemEval-format benchmark cases covering all answer types:
+- `string` (10): Text-valued facts (project names, license, framework names)
+- `number` (8): Numeric facts (port numbers, test counts, version numbers, thresholds)
+- `entity` (7): Named entities (company names, library names, database names)
+- `list` (5): Multi-value facts (scope values, question types, supported types)
+Each case has valid `relevant_memory_index` and non-empty `memories[]`.
+
+#### 3. Automated Benchmark Runner (`eval/run_benchmark.py`)
+Full CI benchmark pipeline:
+- **Dry-run mode**: Runs adapter selftests, no server required — CI-safe
+- **Production mode**: Health-checks server, runs adapters against datasets, gates results
+- **Gate evaluation**: LongMemEval (nDCG@10, Recall@10) + StructMemEval (Exact Match)
+- **Mandatory gates**: `--require-longmemeval` / `--require-structmemeval` flip gates to hard requirements
+- **JSON report**: Structured output with run_id, timestamps, commit_sha, per-adapter results, gate decisions
+- **Skip flags**: `--skip-lme` / `--skip-sme` for partial runs
+- Data classes: `AdapterResult`, `BenchmarkRunReport`
+
+**CLI usage**:
+```bash
+# Dry-run (no server needed):
+python -m eval.run_benchmark --dry-run
+
+# Production run with signed verdict:
+python -m eval.run_benchmark --production \
+  --server-url http://localhost:42069 \
+  --auth-token $(cat .muninn_token) \
+  --require-longmemeval \
+  --output eval/reports/sota_evidence_$(date +%Y%m%d).json
+```
+
+#### 4. Parser Security Sandbox (`muninn/ingestion/sandbox.py` + `_parser_subprocess.py`)
+**Architecture**: PDF and DOCX parsing now runs in a subprocess:
+```
+server.py → parser.py → sandbox.py → subprocess → _parser_subprocess.py
+                                    ↑ JSON protocol ↑
+```
+**`muninn/ingestion/_parser_subprocess.py`** (subprocess worker):
+- Entry point: `python -m muninn.ingestion._parser_subprocess <type> <path>`
+- Parses PDF (pypdf) or DOCX (python-docx) and writes `{"text": "..."}` JSON to stdout
+- Output capped at 2 MB (`MAX_OUTPUT_CHARS`)
+- Exception-safe: all errors produce `{"error": "..."}` + exit 1
+- Exit codes: 0=success, 1=parse/runtime error, 2=usage error
+
+**`muninn/ingestion/sandbox.py`** (sandbox executor):
+- `sandboxed_parse_binary(path, source_type, timeout=30.0)`
+- 4 MB stdout cap (`MAX_STDOUT_BYTES`) on parent side
+- Hard timeout enforcement via `subprocess.run(timeout=...)`
+- JSON protocol validation with structured error propagation
+- Optional `fallback_in_process=True` for constrained environments
+
+**`muninn/ingestion/parser.py`** (caller):
+```python
+def _parse_pdf(path):
+    from muninn.ingestion.sandbox import sandboxed_parse_binary
+    return sandboxed_parse_binary(path, "pdf", timeout=30.0)
+```
+
+#### 5. `tests/test_v3_14_0_benchmark_suite.py` (new, 60 tests)
+8 test classes:
+- `TestSyntheticLongMemEvalDataset` (8): dataset existence, 30-case count, field completeness, question type coverage, session structure, conversation turn validity
+- `TestSyntheticStructMemEvalDataset` (8): dataset existence, 30-case count, field completeness, answer type coverage, memory validity, index bounds
+- `TestBenchmarkRunnerImport` (5): module imports, dataclass construction, commit SHA helper
+- `TestBenchmarkRunnerDryRun` (10): report structure, overall_passed logic, JSON output schema, skip flags, production health-check failure, UUID uniqueness, ISO timestamp
+- `TestBenchmarkRunnerGates` (8): LME gate pass/fail thresholds, SME gate thresholds, null-report handling, mandatory gate impact on overall_passed
+- `TestParserSandbox` (10): import, ValueError on bad type, RuntimeError on missing file, subprocess success, error response, timeout, invalid JSON, empty stdout, disabled fallback, stdout size cap
+- `TestParserSubprocessWorker` (8): import, wrong-argc exit, unsupported-type exit, missing-file exit, PDF success JSON, DOCX success JSON, exception JSON, truncation
+- `TestVersionBump314` (2): version == 3.14.0, pyproject.toml match
 
 ---
 
@@ -245,3 +335,20 @@ pytest tests/test_ollama_local_benchmark.py -k "sota_verdict" -v
 | `pyproject.toml` | `version = "3.12.0"` → `version = "3.13.0"` |
 | `SOTA_PLUS_PLAN.md` | Phase 16 checklist items marked complete, validation history updated |
 | `HANDOFF.md` | Updated to Phase 16 complete state |
+
+## Files Changed (Phase 17)
+
+| File | Change |
+|------|--------|
+| `eval/data/longmemeval_synthetic_v1.jsonl` | New — 30 synthetic LongMemEval-format benchmark cases (5 question types) |
+| `eval/data/structmemeval_suite_v1.jsonl` | New — 30 synthetic StructMemEval-format benchmark cases (4 answer types) |
+| `eval/run_benchmark.py` | New — automated CI benchmark pipeline; dry-run + production modes; LME+SME gate evaluation; JSON report output; argparse CLI |
+| `muninn/ingestion/_parser_subprocess.py` | New — subprocess worker for sandboxed PDF/DOCX parsing; JSON protocol; 2 MB output cap |
+| `muninn/ingestion/sandbox.py` | New — sandbox executor; 30s timeout; 4 MB stdout cap; structured error propagation |
+| `muninn/ingestion/parser.py` | `_parse_pdf()` and `_parse_docx()` now route through `sandboxed_parse_binary()` |
+| `tests/test_v3_14_0_benchmark_suite.py` | New — 60 tests across 8 classes (all pass) |
+| `tests/test_v3_13_0_sota_verdict_v1.py` | Version assertion updated to `>= (3, 13, 0)` tuple comparison |
+| `muninn/version.py` | `3.13.0` → `3.14.0` |
+| `pyproject.toml` | `version = "3.13.0"` → `version = "3.14.0"` |
+| `SOTA_PLUS_PLAN.md` | Phase 17 section added; validation history updated |
+| `HANDOFF.md` | Updated to Phase 17 complete state |
