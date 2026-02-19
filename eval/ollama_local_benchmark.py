@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import hashlib
+import hmac
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -2388,17 +2389,147 @@ def _verify_all_artifacts() -> dict[str, Any]:
     return verify_all_preset_artifacts()
 
 
+# ---------------------------------------------------------------------------
+# Phase 16: Provenance, signing, and external benchmark gate helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_commit_sha(repo_root: Path) -> str | None:
+    """Return HEAD commit SHA from the given git repo root, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            sha = result.stdout.strip()
+            if len(sha) == 40:
+                return sha
+    except Exception:
+        pass
+    return None
+
+
+def _sha256_file(path: Path) -> str:
+    """Compute SHA256 hex digest of a file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _compute_hmac_signature(canonical_data: dict[str, Any], signing_key: str) -> str:
+    """
+    Compute HMAC-SHA256 over the canonical JSON serialization of *canonical_data*.
+
+    Returns a string of the form ``"hmac-sha256=<hex>"`` suitable for
+    inclusion in the verdict ``provenance.promotion_signature`` field.
+    The canonical form uses sorted keys and compact separators so the
+    output is deterministic regardless of dict insertion order.
+    """
+    payload_bytes = json.dumps(canonical_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    key_bytes = signing_key.encode("utf-8")
+    sig = hmac.new(key_bytes, payload_bytes, hashlib.sha256).hexdigest()
+    return f"hmac-sha256={sig}"
+
+
+def _evaluate_longmemeval_gate(
+    report: dict[str, Any],
+    *,
+    min_ndcg_at_10: float,
+    min_recall_at_10: float,
+) -> dict[str, Any]:
+    """
+    Evaluate whether a LongMemEval adapter report meets SOTA+ thresholds.
+
+    Accepts reports from ``eval/longmemeval_adapter.py`` which expose
+    top-level ``ndcg_at_10`` / ``recall_at_10`` (or ``mean_*`` variants
+    produced by the adapter's ``run()`` method), or standard eval cutoff
+    dicts under ``cutoffs.@10``.
+    """
+    violations: list[str] = []
+
+    # Resolve nDCG@10 — adapter emits mean_ndcg_at_10; eval.run emits cutoffs.@10.ndcg
+    ndcg_raw = (
+        report.get("ndcg_at_10")
+        or report.get("mean_ndcg_at_10")
+        or ((report.get("cutoffs") or {}).get("@10") or {}).get("ndcg")
+    )
+    recall_raw = (
+        report.get("recall_at_10")
+        or report.get("mean_recall_at_10")
+        or ((report.get("cutoffs") or {}).get("@10") or {}).get("recall")
+    )
+
+    ndcg: float | None = _to_float(ndcg_raw)
+    recall: float | None = _to_float(recall_raw)
+
+    if ndcg is None:
+        violations.append("longmemeval_ndcg_at_10_missing")
+    elif ndcg < min_ndcg_at_10:
+        violations.append(
+            f"longmemeval_ndcg_at_10_below_threshold ({ndcg:.4f} < {min_ndcg_at_10:.4f})"
+        )
+
+    if recall is None:
+        violations.append("longmemeval_recall_at_10_missing")
+    elif recall < min_recall_at_10:
+        violations.append(
+            f"longmemeval_recall_at_10_below_threshold ({recall:.4f} < {min_recall_at_10:.4f})"
+        )
+
+    return {
+        "passed": not violations,
+        "violations": violations,
+        "ndcg_at_10": ndcg,
+        "recall_at_10": recall,
+        "thresholds": {
+            "min_ndcg_at_10": min_ndcg_at_10,
+            "min_recall_at_10": min_recall_at_10,
+        },
+    }
+
+
 def cmd_sota_verdict(args: argparse.Namespace) -> int:
     candidate_eval_path = Path(args.candidate_eval_report).resolve()
     baseline_eval_path = Path(args.baseline_eval_report).resolve()
     profile_gate_path = Path(args.profile_gate_report).resolve() if args.profile_gate_report else None
+    _lme_report = getattr(args, "longmemeval_report", None)
+    longmemeval_path = Path(_lme_report).resolve() if _lme_report else None
     aux_paths = [Path(item).resolve() for item in (args.aux_benchmark_report or [])]
     transport_paths = [Path(item).resolve() for item in (args.transport_report or [])]
+    signing_key: str | None = getattr(args, "signing_key", None) or None
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     run_started = datetime.now(timezone.utc)
     run_id = run_started.strftime("%Y%m%dT%H%M%SZ")
     output_path = Path(args.output).resolve() if args.output else output_dir / f"sota_verdict_{run_id}.json"
+
+    # --- Provenance: commit SHA + per-file hashes (Phase 16) ---
+    commit_sha = _get_commit_sha(ROOT)
+    input_file_hashes: dict[str, str] = {}
+    _hash_targets: list[tuple[str, Path]] = [
+        ("candidate_eval_report", candidate_eval_path),
+        ("baseline_eval_report", baseline_eval_path),
+    ]
+    if profile_gate_path:
+        _hash_targets.append(("profile_gate_report", profile_gate_path))
+    if longmemeval_path:
+        _hash_targets.append(("longmemeval_report", longmemeval_path))
+    for p in transport_paths:
+        _hash_targets.append(("transport_report", p))
+    for p in aux_paths:
+        _hash_targets.append(("aux_benchmark_report", p))
+    for label, hpath in _hash_targets:
+        key = f"{label}:{hpath.name}"
+        try:
+            input_file_hashes[key] = _sha256_file(hpath)
+        except Exception:
+            input_file_hashes[key] = "error"
 
     candidate_eval_raw = _load_json(candidate_eval_path)
     baseline_eval_raw = _load_json(baseline_eval_path)
@@ -2534,6 +2665,33 @@ def cmd_sota_verdict(args: argparse.Namespace) -> int:
         "profile_gate": profile_gate,
     }
 
+    # --- LongMemEval external benchmark gate (Phase 16) ---
+    longmemeval_violations: list[str] = []
+    _min_ndcg = float(getattr(args, "min_longmemeval_ndcg", 0.60))
+    _min_recall = float(getattr(args, "min_longmemeval_recall", 0.65))
+    _require_lme = bool(getattr(args, "require_longmemeval", False))
+    longmemeval_gate_result: dict[str, Any] | None = None
+    if longmemeval_path is not None:
+        lme_raw = _load_json(longmemeval_path)
+        longmemeval_gate_result = _evaluate_longmemeval_gate(
+            lme_raw,
+            min_ndcg_at_10=_min_ndcg,
+            min_recall_at_10=_min_recall,
+        )
+        if not bool(longmemeval_gate_result["passed"]):
+            longmemeval_violations.extend(longmemeval_gate_result["violations"])
+    elif _require_lme:
+        longmemeval_violations.append("longmemeval_report_required_but_missing")
+    longmemeval_gate_evaluation = {
+        "passed": not longmemeval_violations,
+        "violations": longmemeval_violations,
+        "result": longmemeval_gate_result,
+        "thresholds": {
+            "min_ndcg_at_10": _min_ndcg,
+            "min_recall_at_10": _min_recall,
+        },
+    }
+
     overall_passed = all(
         [
             quality_gate["passed"],
@@ -2541,8 +2699,26 @@ def cmd_sota_verdict(args: argparse.Namespace) -> int:
             bool(statistical_gate.get("passed", False)),
             reproducibility_gate["passed"],
             profile_gate_evaluation["passed"],
+            longmemeval_gate_evaluation["passed"],
         ]
     )
+
+    # --- Provenance signature (Phase 16) ---
+    canonical_for_signing: dict[str, Any] = {
+        "run_id": run_id,
+        "passed": overall_passed,
+        "commit_sha": commit_sha,
+        "input_file_hashes": input_file_hashes,
+    }
+    promotion_signature: str | None = (
+        _compute_hmac_signature(canonical_for_signing, signing_key) if signing_key else None
+    )
+    provenance: dict[str, Any] = {
+        "commit_sha": commit_sha,
+        "input_file_hashes": input_file_hashes,
+        "promotion_signature": promotion_signature,
+        "verdict_schema_version": "1.0",
+    }
 
     payload = {
         "run_id": run_id,
@@ -2551,12 +2727,14 @@ def cmd_sota_verdict(args: argparse.Namespace) -> int:
         "finished_at_utc": datetime.now(timezone.utc).isoformat(),
         "passed": overall_passed,
         "sota_plus_verdict": "pass" if overall_passed else "fail",
+        "provenance": provenance,
         "inputs": {
             "candidate_eval_report": str(candidate_eval_path),
             "baseline_eval_report": str(baseline_eval_path),
             "profile_gate_report": str(profile_gate_path) if profile_gate_path else None,
             "transport_reports": [str(path) for path in transport_paths],
             "aux_benchmark_reports": [str(path) for path in aux_paths],
+            "longmemeval_report": str(longmemeval_path) if longmemeval_path else None,
         },
         "normalized": {
             "candidate_eval": candidate_eval,
@@ -2570,6 +2748,9 @@ def cmd_sota_verdict(args: argparse.Namespace) -> int:
             "statistical_validity": statistical_gate,
             "reproducibility_integrity": reproducibility_gate,
             "profile_policy": profile_gate_evaluation,
+            "external_benchmarks": {
+                "longmemeval": longmemeval_gate_evaluation,
+            },
         },
         "config": {
             "min_primary_improvement_pct": float(args.min_primary_improvement_pct),
@@ -2585,6 +2766,9 @@ def cmd_sota_verdict(args: argparse.Namespace) -> int:
             "min_positive_significant_metrics": int(args.min_positive_significant_metrics),
             "require_artifact_verification": bool(args.require_artifact_verification),
             "verify_artifacts": bool(args.verify_artifacts),
+            "require_longmemeval": _require_lme,
+            "min_longmemeval_ndcg": _min_ndcg,
+            "min_longmemeval_recall": _min_recall,
         },
     }
 
@@ -3251,6 +3435,44 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Require artifact verification to run and pass.",
+    )
+    # Phase 16: External benchmark gate — LongMemEval
+    verdict_parser.add_argument(
+        "--longmemeval-report",
+        default=None,
+        help="Path to LongMemEval adapter report JSON (output of eval/longmemeval_adapter.py).",
+    )
+    verdict_parser.add_argument(
+        "--min-longmemeval-ndcg",
+        default=0.60,
+        type=float,
+        help="Minimum LongMemEval nDCG@10 required for the external benchmark gate to pass.",
+    )
+    verdict_parser.add_argument(
+        "--min-longmemeval-recall",
+        default=0.65,
+        type=float,
+        help="Minimum LongMemEval Recall@10 required for the external benchmark gate to pass.",
+    )
+    verdict_parser.add_argument(
+        "--require-longmemeval",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Require a LongMemEval report to be provided and pass thresholds. "
+            "When False (default), a missing report is a no-op rather than a gate failure."
+        ),
+    )
+    # Phase 16: Provenance signing
+    verdict_parser.add_argument(
+        "--signing-key",
+        default=None,
+        help=(
+            "HMAC-SHA256 signing key for the promotion signature. "
+            "When provided, a 'hmac-sha256=<hex>' signature over the canonical verdict "
+            "payload (run_id, passed, commit_sha, input_file_hashes) is embedded in "
+            "provenance.promotion_signature."
+        ),
     )
     verdict_parser.set_defaults(func=cmd_sota_verdict)
 
