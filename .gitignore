@@ -64,6 +64,9 @@ Thumbs.db
 
 # Data directory (user-specific, stored in ~/.muninn/)
 data/
+# Phase 17+: curated benchmark datasets in eval/data/ ARE committed
+!eval/data/
+!eval/data/*.jsonl
 
 # Benchmark and test runtime database artifacts (never commit these)
 temp_data/
