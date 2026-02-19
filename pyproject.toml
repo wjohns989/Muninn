@@ -11,7 +11,7 @@ namespaces = false
 
 [project]
 name = "muninn-mcp"
-version = "3.14.0"
+version = "3.15.0"
 description = "Local-first, assistant-agnostic persistent memory for AI agents via MCP — Muninn native engine"
 readme = "README.md"
 license = {text = "Apache-2.0"}
