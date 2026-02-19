@@ -277,8 +277,73 @@ Phase 15 built the LongMemEval adapter and validated OTel/graph chains. One cred
 
 ---
 
+## Phase 17: Synthetic Benchmark Suite & Parser Security Sandbox
+
+> **Status**: ✅ **COMPLETE — PR #46 ready for merge**
+> **Version**: v3.14.0
+> **Theme**: Evidence grounding for SOTA+ and operational security hardening.
+> **Branch**: `feature/v3.14.0-benchmark-suite-parser-sandbox`
+
+### Background & Gap Analysis
+
+Phase 16 completed the SOTA+ signed verdict infrastructure — adapters, HMAC signing, LongMemEval hard gate. One credibility gap remains: **no real-dataset benchmark evidence has been produced**. Both adapters are production-ready and selftests pass, but the signed verdict has never been run against representative data. Phase 17 closes this gap by providing representative synthetic datasets and a CI-runnable pipeline. Additionally, the PDF/DOCX parsers were running in-process with no exploit containment — Phase 17 adds subprocess sandboxing.
+
+### Implementation Checklist
+
+- [x] **`eval/data/longmemeval_synthetic_v1.jsonl`**: 30 representative LongMemEval-format cases covering all question types (`single-session-qa`×10, `multi-session-qa`×8, `temporal`×6, `adversarial`×3, `entity-centric`×3). Each case has full session conversations with realistic Muninn-domain content. (2026-02-19)
+- [x] **`eval/data/structmemeval_suite_v1.jsonl`**: 30 StructMemEval-format cases covering all answer types (`string`×10, `number`×8, `entity`×7, `list`×5). Each case has well-formed memories[] and a valid `relevant_memory_index`. (2026-02-19)
+- [x] **`eval/run_benchmark.py`**: Automated CI benchmark pipeline with dry-run mode (selftests, no server), production mode (live server), per-adapter subprocess execution, gate evaluation (LongMemEval + StructMemEval), combined JSON report output, commit SHA provenance, full argparse CLI. (2026-02-19)
+- [x] **`muninn/ingestion/_parser_subprocess.py`**: Subprocess worker for sandboxed PDF/DOCX parsing. JSON-over-stdout protocol, output size capped at 2 MB, catch-all exception handling, exit codes 0/1/2. (2026-02-19)
+- [x] **`muninn/ingestion/sandbox.py`**: Sandbox executor wrapping `_parser_subprocess.py`. Timeout enforcement, 4 MB stdout cap, JSON validation, error containment, optional in-process fallback. Cross-platform (Windows/Linux/macOS). (2026-02-19)
+- [x] **`muninn/ingestion/parser.py`**: `_parse_pdf()` and `_parse_docx()` now route through `sandboxed_parse_binary()` for process isolation. (2026-02-19)
+- [x] **Version**: `3.14.0` in `version.py` and `pyproject.toml` (2026-02-19)
+- [x] **Test correction**: `tests/test_v3_13_0_sota_verdict_v1.py::TestVersionBump313::test_version_is_3_13_0` updated to `>= (3, 13, 0)` tuple comparison (consistent with prior phases)
+- [x] **Verification**: **848 tests pass** (788 existing + 60 new), 2 skipped, 0 failed — `tests/test_v3_14_0_benchmark_suite.py` (60 tests across 8 classes) (2026-02-19)
+
+### Key Correctness Properties
+
+1. **Dataset format compliance**: Both synthetic datasets fully comply with their respective adapter schemas — every case passes the JSONL parser without error
+2. **Question type coverage**: LongMemEval synthetic covers all 5 question types; StructMemEval suite covers all 4 answer types
+3. **Benchmark pipeline isolation**: `run_benchmark` dry-run mode requires no live server — safe for CI environments
+4. **Parser sandbox containment**: PDF/DOCX parser exploits are contained to a child process — the Muninn server process is protected
+5. **Timeout enforcement**: Parser subprocess is hard-killed after 30s — decompression bombs cannot block the server
+
+### Security Impact Analysis
+
+**Before Phase 17 (risk)**:
+- `_parse_pdf(path)` called `from pypdf import PdfReader; PdfReader(str(path))` in the FastAPI server process
+- A malicious PDF could exploit pypdf to: read arbitrary files, cause OOM (zip bomb), execute code in the server process
+- Same risk for DOCX via python-docx
+
+**After Phase 17 (hardened)**:
+- All binary parsing runs in a subprocess with no inherited secrets, no network access
+- Parser crash/exception produces a structured error JSON — never propagates to the server
+- 30-second hard timeout prevents resource exhaustion
+- 4 MB stdout cap on parent side + 2 MB cap on child side = dual defense against output flooding
+
+### Optimization & ROI Notes
+
+**High ROI:**
+- **Parser sandbox**: ~2 hour implementation, prevents complete server compromise from malicious document ingestion. Without this, every user processing PDFs exposes the Muninn server to pypdf/docx vulnerabilities.
+- **Synthetic benchmark datasets**: Enables the `--dry-run` CI benchmark pipeline to run without any external data. Every PR can now run `run_benchmark.py --dry-run` and verify the adapter plumbing works end-to-end.
+
+**Medium ROI:**
+- **Automated benchmark runner**: Reduces the gap from "adapters exist" to "evidence exists" by making the pipeline one command. The dry-run mode is CI-safe with zero server dependency.
+
+**Future Work (Phase 18 candidates)**:
+- Run `run_benchmark.py --production` against a live server with the synthetic datasets and commit the signed verdict artifact
+- Obtain public LongMemEval JSONL dataset for real nDCG@10 baseline
+- Add GitHub Actions workflow to run `--dry-run` on every PR
+
+### Environment Variables (Phase 17)
+
+No new environment variables. Parser sandboxing is always active for PDF/DOCX (no flag).
+
+---
+
 ## Validation History
 
+- **Phase 17**: **848 tests passed (100%), 0 failed** — synthetic benchmark datasets (30+30 cases), automated benchmark runner, parser security sandbox, version 3.14.0. 60 new tests. PR #46 ready.
 - **Phase 16**: **788 tests passed (100%), 0 failed** — SOTA+ signed verdict v1, HMAC-SHA256 provenance, LongMemEval hard gate, StructMemEval adapter. 61 new tests. PR #45 ready.
 - **Phase 15**: **727 tests passed (100%), 0 failed** — auth propagation fix, graph chains smoke, OTel GenAI hardening, LongMemEval adapter baseline. PR #44 merged.
 - **Phase 14**: **694 tests passed (100%), 0 failed** — project-scoped memory strict isolation. PR #43 merged. 43 new scope tests covering all 5 correctness invariants.
