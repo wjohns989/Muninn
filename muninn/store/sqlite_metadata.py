@@ -71,7 +71,8 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source_agent);",
     "CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(consolidated);",
-    "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);",
+    # NOTE: idx_memories_scope is NOT here — it must be created AFTER the scope column
+    # migration runs in _initialize() (see _ensure_column_exists call below).
 ]
 
 SCHEMA_META = """
@@ -187,7 +188,12 @@ class SQLiteMetadataStore:
         self._ensure_column_exists(conn, "retrieval_feedback", "rank", "INTEGER")
         self._ensure_column_exists(conn, "retrieval_feedback", "sampling_prob", "REAL")
         # v3.11.0: Project isolation scope migration — add column if upgrading from older DB
+        # IMPORTANT: idx_memories_scope must be created AFTER this call; it cannot be in
+        # CREATE_INDEXES because the column may not exist yet in pre-v3.11.0 databases.
         self._ensure_column_exists(conn, "memories", "scope", "TEXT NOT NULL DEFAULT 'project'")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_feedback_scope_time ON retrieval_feedback(user_id, namespace, project, created_at DESC);"
         )

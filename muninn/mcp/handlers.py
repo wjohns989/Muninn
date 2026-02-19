@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import quote
 
+from muninn.version import __version__ as _MUNINN_VERSION
+
 from .state import _SESSION_STATE
 from .definitions import (
     SUPPORTED_PROTOCOL_VERSIONS, TOOLS_SCHEMAS, JSON_SCHEMA_2020_12,
@@ -102,7 +104,7 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
                 },
             }
         },
-        "serverInfo": {"name": "muninn-mcp", "version": "3.1.0"},
+        "serverInfo": {"name": "muninn-mcp", "version": _MUNINN_VERSION},
         "instructions": build_initialize_instructions(startup_warnings)
     }
     send_result_fn(msg_id, result)

@@ -86,6 +86,9 @@ claudedocs/
 # User-specific scripts (hardcoded paths)
 run_muninn.bat
 
+# Auth token (contains secrets — never commit)
+.muninn_token
+
 # Agent skill configs (user-specific)
 skills/
 
