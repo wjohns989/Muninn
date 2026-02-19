@@ -1,8 +1,8 @@
 # Muninn SOTA+ Implementation Plan
 
-> **Version**: v3.6.1 → v3.12.0
-> **Status**: **Phase 15 IN PROGRESS — PR #44 open**
-> **Current State**: `feature/v3.12.0-operational-hardening` — Phase 14 merged (PR #43, 694 tests). Phase 15 implementing operational hardening, graph activation, and SOTA+ observability.
+> **Version**: v3.6.1 → v3.13.0
+> **Status**: **Phase 16 COMPLETE — PR #45 ready for merge**
+> **Current State**: `feature/v3.13.0-sota-verdict-v1` — Phase 16 done. 788 tests pass (727 + 61 new). Branch ready for PR #45.
 
 ---
 
@@ -173,7 +173,7 @@ The fallback search (MUNINN_MCP_SEARCH_PROJECT_FALLBACK) must filter to `scope="
 
 ## Phase 15: Operational Hardening & SOTA+ Observability
 
-> **Status**: 🔄 **IN PROGRESS — PR #44**
+> **Status**: ✅ **COMPLETE — PR #44 ready for merge**
 > **Version**: v3.12.0
 > **Theme**: Operational correctness, graph activation, and SOTA+ closure.
 > **Branch**: `feature/v3.12.0-operational-hardening`
@@ -190,13 +190,13 @@ Phase 14 delivered strong memory isolation. Three categories of open issues rema
 
 ### Implementation Checklist
 
-- [ ] **Auth propagation fix** (`lifecycle.py`): `start_server()` passes `MUNINN_AUTH_TOKEN` from env (or discovers it via `get_token()`) when spawning `server.py` — ensures auto-start works in environments where only the wrapper has the token via MCP `-e` config
-- [ ] **Graph chains smoke test**: Add integration test proving `scope="project"` + chain traversal correctly wires memory-to-memory PRECEDES/CAUSES edges through the full add/search path; confirm `graph_nodes` health counter increments
-- [ ] **OTel activation validation**: With `MUNINN_OTEL_ENABLED=1`, verify trace spans are emitted for add/search/consolidation; validate GenAI semantic convention attributes match the OTel spec (span names, `gen_ai.*` attributes)
-- [ ] **LongMemEval adapter baseline**: `eval/longmemeval_adapter.py` — map LongMemEval single-session QA format to Muninn's search interface; report nDCG@10 and Recall@10 against public benchmark
+- [x] **Auth propagation fix** (`lifecycle.py`): `start_server()` passes `MUNINN_AUTH_TOKEN` from env (or discovers it via `get_token()`) when spawning `server.py` — 5 unit tests prove correct behaviour (2026-02-19)
+- [x] **Graph chains smoke test**: 7 integration tests via real KuzuDB (`tmp_path`); proves PRECEDES/CAUSES edge creation, retrieval, `get_entity_count()` increment, and `MemoryChainDetector` link detection (2026-02-19)
+- [x] **OTel activation validation**: 8 tests validate GenAI semantic convention keys (`gen_ai.operation.name`, `gen_ai.system`), dot-namespaced Muninn attributes, privacy default for content, no-op when disabled (2026-02-19)
+- [x] **LongMemEval adapter baseline**: `eval/longmemeval_adapter.py` — full production adapter with JSONL parser, nDCG@10/Recall@10 metrics, MuninnHTTPClient, selftest dataset, CLI; 13 tests pass (2026-02-19)
 - [ ] **SOTA+ signed verdict v1**: `eval.ollama_local_benchmark sota-verdict` extended to include external benchmark evidence; verdict artifact includes commit SHA, benchmark hashes, and promotion signature
-- [ ] **Version**: `3.12.0` in `version.py` and `pyproject.toml`
-- [ ] **Verification**: Existing 694 tests still pass; new tests for auth propagation, graph smoke, OTel attribute validation
+- [x] **Version**: `3.12.0` in `version.py` and `pyproject.toml`
+- [x] **Verification**: 727 tests pass (694 existing + 33 new), 2 skipped, 0 failed (2026-02-19)
 
 ### Key Correctness Properties (Targets)
 
@@ -229,8 +229,58 @@ Phase 14 delivered strong memory isolation. Three categories of open issues rema
 
 ---
 
+## Phase 16: SOTA+ Signed Verdict v1 & External Benchmark Closure
+
+> **Status**: ✅ **COMPLETE — PR #45 ready for merge**
+> **Version**: v3.13.0
+> **Theme**: Credibility closure — signed verdict artifact, commit provenance, LongMemEval gate, StructMemEval adapter.
+> **Branch**: `feature/v3.13.0-sota-verdict-v1`
+
+### Background & Gap Analysis
+
+Phase 15 built the LongMemEval adapter and validated OTel/graph chains. One credibility gap remains before SOTA+ claims can be asserted publicly: the `sota-verdict` command produces an unsigned JSON artifact with no cryptographic provenance chain, no commit SHA binding the verdict to a specific codebase state, and no external benchmark gate. A verdict that doesn't embed external benchmark evidence or a tamper-detectable signature cannot be audited or reproduced independently.
+
+### Three Remaining Gaps
+
+1. **Provenance void**: Verdict JSON has `run_id` but no `commit_sha`. Any assertion "Muninn SOTA+ passed at commit X" requires the reader to trust the timestamp alone.
+
+2. **No external benchmark gate**: `sota-verdict` accepts `--aux-benchmark-report` but those are normalized and emitted, not gated. LongMemEval nDCG@10 and Recall@10 must become a hard gate in `overall_passed`.
+
+3. **No tamper-detectable signature**: The verdict is plain JSON. A replay or mutation cannot be detected. HMAC-SHA256 over a canonical payload subset (bound to `commit_sha` + `input_file_hashes`) makes the verdict self-verifying.
+
+4. **Single external benchmark**: LongMemEval covers single-session conversational QA. A second benchmark covering structured/factoid recall is needed to triangulate SOTA+ evidence.
+
+### Implementation Checklist
+
+- [x] **`cmd_sota_verdict` — Provenance block**: Inject `commit_sha` (git rev-parse HEAD), `input_file_hashes` (SHA256 of each --*-report arg), `verdict_schema_version` into payload under `provenance` key (2026-02-19)
+- [x] **`cmd_sota_verdict` — HMAC-SHA256 signing**: `--signing-key` CLI arg; sign canonical JSON subset `{run_id, passed, commit_sha, input_file_hashes}` → `provenance.promotion_signature = "hmac-sha256=<hex>"`; no-op (null) when key not provided (2026-02-19)
+- [x] **`cmd_sota_verdict` — LongMemEval gate**: `--longmemeval-report`, `--min-longmemeval-ndcg` (default 0.60), `--min-longmemeval-recall` (default 0.65), `--require-longmemeval` (default False); gate passes iff both thresholds met; contributes to `overall_passed`; all Phase 16 args use `getattr` defaults for backward compat with pre-existing SimpleNamespace tests (2026-02-19)
+- [x] **`eval/structmemeval_adapter.py`**: StructMemEval adapter for structured/factoid memory recall; JSONL format `{case_id, question, expected_answer, answer_type, memories[], relevant_memory_index}`; metrics: Exact Match, token-F1, MRR@k; 3-case selftest dataset (selftest EM=1.000, MRR@10=1.000); full CLI (2026-02-19)
+- [x] **Version**: `3.13.0` in `version.py` and `pyproject.toml` (2026-02-19)
+- [x] **Verification**: **788 tests pass** (727 existing + 61 new), 2 skipped, 0 failed — `tests/test_v3_13_0_sota_verdict_v1.py` (61 tests across 8 classes) (2026-02-19)
+
+### Key Correctness Properties (Targets)
+
+1. **Provenance binding**: Verdict JSON includes `commit_sha` from `git rev-parse HEAD`; falls back gracefully when git unavailable
+2. **Signature verifiability**: `promotion_signature` HMAC can be re-verified offline from public key + canonical payload
+3. **LongMemEval hard gate**: `overall_passed = False` if `ndcg_at_10 < min_longmemeval_ndcg` and `--require-longmemeval` is set
+4. **StructMemEval selftest**: `python eval/structmemeval_adapter.py --selftest` passes without any external server
+
+### Optimization & ROI Notes
+
+**High ROI:**
+- **Signed verdict**: Enables public assertion "commit SHA X passed SOTA+ with nDCG@10=Y" — auditable, reproducible, tamper-evident. Without this, all SOTA+ claims are opinion, not evidence.
+- **LongMemEval gate in `overall_passed`**: Currently LongMemEval evidence is computed but not gated. Making it a hard requirement forces the benchmark to be kept passing as code evolves — prevents silent regression.
+
+**Medium ROI:**
+- **StructMemEval adapter**: Structured recall (facts, numbers, entities) and conversational recall (LongMemEval) are complementary. A system that scores well on both has triangulated evidence across two distinct memory retrieval modes.
+
+---
+
 ## Validation History
 
+- **Phase 16**: **788 tests passed (100%), 0 failed** — SOTA+ signed verdict v1, HMAC-SHA256 provenance, LongMemEval hard gate, StructMemEval adapter. 61 new tests. PR #45 ready.
+- **Phase 15**: **727 tests passed (100%), 0 failed** — auth propagation fix, graph chains smoke, OTel GenAI hardening, LongMemEval adapter baseline. PR #44 merged.
 - **Phase 14**: **694 tests passed (100%), 0 failed** — project-scoped memory strict isolation. PR #43 merged. 43 new scope tests covering all 5 correctness invariants.
 - **Phase 12.2**: 651 tests passed (100%), 0 failed — 5 additional PR review bugs fixed (UUID5 mismatch, filter kwarg, ColBERT collection sampling, unsafe flag access).
 - **Phase 14.1**: PR #43 review comments resolved — specific qdrant exception handling, bug count clarification, `datetime.utcnow()` deprecation fix.
