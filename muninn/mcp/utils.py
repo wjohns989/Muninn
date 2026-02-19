@@ -71,9 +71,10 @@ def inject_operator_profile_metadata(metadata: Dict[str, Any], operation: str = 
     metadata = dict(metadata or {})
     metadata.setdefault("operator", os.environ.get("USER", os.environ.get("USERNAME", "unknown")))
     metadata.setdefault("operation", operation)
-    # Using the same utcnow pattern as legacy for compatibility if needed, 
-    # but datetime.datetime.utcnow().isoformat() is standard
-    metadata.setdefault("timestamp", datetime.datetime.utcnow().isoformat() + "Z")
+    metadata.setdefault(
+        "timestamp",
+        datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
     
     session_profile = _get_operator_model_profile_for_operation(operation)
     if session_profile:

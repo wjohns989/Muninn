@@ -8,14 +8,32 @@ SUPPORTED_MODEL_PROFILES = ("low_latency", "balanced", "high_reasoning")
 TOOLS_SCHEMAS: List[Dict[str, Any]] = [
     {
         "name": "add_memory",
-        "description": "Add a new memory to the global knowledge base. Use this to store facts, preferences, or important information that should be remembered across sessions.",
+        "description": "Add a new memory to the knowledge base. Use this to store facts, preferences, or important information that should be remembered across sessions. Use scope='global' for universal rules/preferences that should always be visible; use scope='project' (default) for project-specific information.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "The information to remember."},
-                "metadata": {"type": "object", "description": "Optional metadata tags (e.g., {'project': 'phoenix', 'category': 'api'})."}
+                "metadata": {"type": "object", "description": "Optional metadata tags (e.g., {'project': 'phoenix', 'category': 'api'})."},
+                "scope": {
+                    "type": "string",
+                    "enum": ["project", "global"],
+                    "default": "project",
+                    "description": "Isolation scope. 'project' = visible only within this project (default). 'global' = always visible across all projects (use for user preferences, universal rules)."
+                }
             },
             "required": ["content"]
+        }
+    },
+    {
+        "name": "set_project_instruction",
+        "description": "Convenience tool to create a project-scoped instruction memory. The memory is tagged with the current git project and scope='project', ensuring it NEVER appears when working in a different repository. Use for project-specific coding conventions, constraints, or guidelines.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "The project-specific instruction or convention to remember (e.g., 'Always use async/await for I/O operations in this codebase')."},
+                "category": {"type": "string", "description": "Optional category tag for the instruction (e.g., 'coding_conventions', 'architecture', 'testing')."}
+            },
+            "required": ["instruction"]
         }
     },
     {
@@ -367,5 +385,6 @@ DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories"}
 IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
     "update_memory", "delete_memory", "delete_all_memories",
     "set_project_goal", "set_user_profile", "set_model_profiles",
-    "import_handoff", "apply_federation_bundle"
+    "import_handoff", "apply_federation_bundle",
+    "set_project_instruction"
 })

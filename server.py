@@ -380,6 +380,7 @@ async def add_memory_endpoint(req: AddMemoryRequest):
                     metadata=req.metadata,
                     namespace=req.namespace or "global",
                     provenance=provenance,
+                    scope=req.scope,
                 )
                 for chunk in merged_chunks
             ]
@@ -393,6 +394,7 @@ async def add_memory_endpoint(req: AddMemoryRequest):
             metadata=req.metadata,
             namespace=req.namespace or "global",
             provenance=provenance,
+            scope=req.scope,
         )
 
         logger.info("Added memory for user %s", req.user_id)
