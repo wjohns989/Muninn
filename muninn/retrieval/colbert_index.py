@@ -205,7 +205,7 @@ class ColBERTIndexer:
 
     def _ensure_centroid_collection(self):
         """Ensure the centroid collection exists for token pruning."""
-        if not self.config.feature_flags.colbert_plaid:
+        if not self._get_feature_flag("colbert_plaid"):
             return
 
         client = self.vectors._get_client()
@@ -224,9 +224,10 @@ class ColBERTIndexer:
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE)
             )
             
-            # Initialize centroids from encoder's embeddings or random
-            # For a real PLAID implementation, we'd use KMeans on a sample.
-            # Here we'll generate 512 random normalized vectors as a baseline.
+            # Cold-start initialization: random unit-sphere vectors are standard
+            # KMeans++ seed practice when no training data exists yet.
+            # The ConsolidationDaemon's _phase_maintenance will recluster centroids
+            # using actual token vectors once the store accumulates ≥100 points.
             centroids = np.random.randn(512, dim)
             centroids = centroids / np.linalg.norm(centroids, axis=1, keepdims=True)
             
@@ -241,9 +242,6 @@ class ColBERTIndexer:
 
     def _load_centroids(self):
         """Load centroids into memory for fast local search."""
-        if not self.config.feature_flags.colbert_plaid:
-            return
-            
         if not self._get_feature_flag("colbert_plaid", False):
             return
             

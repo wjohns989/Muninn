@@ -128,7 +128,7 @@ class TestFeatureFlagsUtilities:
         assert isinstance(d, dict)
         assert d["explainable_recall"] is True
         assert d["conflict_detection"] is False
-        assert len(d) == 17  # 4 phase1 + 4 phase2 + 4 phase3 + 3 phase4 + 2 phase13
+        assert len(d) == 18  # 4 phase1 + 4 phase2 + 4 phase3 + 3 phase4 + 2 phase13 + 1 phase14
 
 
 class TestSingletonBehavior:

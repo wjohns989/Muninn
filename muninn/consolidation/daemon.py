@@ -17,6 +17,8 @@ import time
 import logging
 from typing import Optional
 
+from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
+
 from muninn.core.config import ConsolidationConfig
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 from muninn.store.vector_store import VectorStore
@@ -436,18 +438,24 @@ class ConsolidationDaemon:
         re_clustered = False
         
         try:
-            # Fetch robust sample for drift check (v3.6.1 scalability refinement)
+            # Sample from the ColBERT token collection — centroid relevance must
+            # be measured in token-embedding space, not in main memory embedding space.
             sample_size = 2000
-            client = self.vectors._get_client()
-            collection = self.vectors.collection_name
-            
-            # Check if collection is large enough to warrant re-clustering
-            count = self.vectors.count()
-            if count < 500:
-                return {"status": "skipped", "reason": "too_few_points", "count": count}
+            client = self.colbert_indexer.vectors._get_client()
+            token_collection = self.colbert_indexer.collection_name
+
+            # Check if the ColBERT token collection has enough points to warrant drift check
+            try:
+                colbert_count = client.count(collection_name=token_collection).count
+            except (UnexpectedResponse, ResponseHandlingException):
+                # Collection does not exist yet (HTTP 404) or qdrant is temporarily
+                # unavailable — skip drift check silently; it is not a fatal error.
+                colbert_count = 0
+            if colbert_count < 100:
+                return {"status": "skipped", "reason": "too_few_colbert_tokens", "count": colbert_count}
 
             scroll_result = client.scroll(
-                collection_name=collection,
+                collection_name=token_collection,
                 limit=sample_size,
                 with_vectors=True
             )
@@ -556,7 +564,7 @@ class ConsolidationDaemon:
                 search_filter = Filter(must=must_conditions) if must_conditions else None
 
                 # Search Top-5 closest neighbors (limit 6 to exclude self)
-                similar = self.vectors.search(query_embedding=vec, limit=6, filter=search_filter)
+                similar = self.vectors.search(query_embedding=vec, limit=6, filters=search_filter)
                 sim_ids = [s[0] for s in similar if s[0] != record.id]
                 neighbor_map[record.id] = sim_ids
                 all_neighbor_ids.update(sim_ids)
