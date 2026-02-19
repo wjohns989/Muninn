@@ -13,22 +13,26 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 
 ## 🚦 Status
 
-**Current Version:** v3.11.0 (Phase 14 Complete — Phase 15 In Progress)
+**Current Version:** v3.13.0 (Phase 16 Complete)
 **Stability:** Production Beta
-**Test Suite:** 694 passing, 0 failing
+**Test Suite:** 788 passing, 0 failing
 
-### What's New in v3.11.0
+### What's New in v3.13.0
 
-- **Project-Scoped Memory** (`scope="project"` | `scope="global"`): Explicit scope field on every memory prevents cross-project leakage in multi-repo agent environments. Project-specific instructions stay isolated; global rules are always visible.
-- **Strict Isolation Mode** (`MUNINN_PROJECT_SCOPE_STRICT=1`): Disables fallback search entirely — zero cross-project memory can ever surface.
-- **`set_project_instruction` MCP tool**: Convenience tool for tagging project-scoped rules and coding conventions.
-- **Schema migration hardening**: Idempotent `scope` column migration — safe upgrade from pre-v3.11.0 databases.
-- **MCP server naming**: Registered as `muninn` (tools: `mcp__muninn__*`); `serverInfo.version` now dynamically reflects the installed version.
+- **SOTA+ Signed Verdict** (`sota-verdict --signing-key`): Verdict artifacts now include `commit_sha` (from `git rev-parse HEAD`), SHA256 hashes of all input report files, and an HMAC-SHA256 `promotion_signature` bound to the canonical payload — tamper-detectable, commit-pinned, and independently reproducible.
+- **LongMemEval Hard Gate**: `--longmemeval-report` / `--min-longmemeval-ndcg` (default 0.60) / `--min-longmemeval-recall` (default 0.65) — external benchmark evidence is now a hard gate in `overall_passed`; accepts three real-world report formats.
+- **StructMemEval Adapter** (`eval/structmemeval_adapter.py`): Structured/factoid memory recall benchmark complementing LongMemEval; Exact Match, token-F1, MRR@k metrics; server-free selftest (EM=1.000, MRR@10=1.000).
+- **Auth Propagation Fix** (`lifecycle.py`): `start_server()` now correctly passes `MUNINN_AUTH_TOKEN` to the spawned server process — eliminates silent 401s on fresh installs where the env var is set in MCP config but not system-wide.
+- **Graph Memory Chains Activated**: KuzuDB chain detection, PRECEDES/CAUSES edge creation, and `MemoryChainDetector` smoke-tested end-to-end with real graph store.
+- **OTel GenAI Semantic Conventions**: Every `add_memory` and `search_memory` emits OTEL spans with `gen_ai.operation.name`, `gen_ai.system`, and Muninn-namespaced attributes; privacy-safe by default (`maybe_content()` returns `None`).
+- **LongMemEval Adapter** (`eval/longmemeval_adapter.py`): Full conversational QA recall adapter with nDCG@10 / Recall@10 metrics, stdlib-only, server-free selftest.
 
 ### Previous Milestones
 
 | Version | Phase | Key Feature |
 |---------|-------|-------------|
+| v3.12.0 | 15 | Auth propagation fix, graph chains smoke, OTel GenAI hardening, LongMemEval adapter baseline |
+| v3.11.0 | 14 | Project-scoped memory — `scope="project"/"global"` strict isolation |
 | v3.10.0 | 13 | Native ColBERT multi-vector MaxSim + NL temporal query expansion |
 | v3.9.0 | 12 | Distributed entity scoping with composite IDs |
 | v3.8.0 | 11 | Multi-namespace integrity + UI dashboard |
@@ -237,6 +241,8 @@ Key environment variables:
 | `MUNINN_MCP_SEARCH_PROJECT_FALLBACK` | off | `=1` enables global-scope fallback on empty results |
 | `MUNINN_OPERATOR_MODEL_PROFILE` | `balanced` | Default model routing profile |
 | `MUNINN_OTEL_ENABLED` | off | `=1` enables OpenTelemetry tracing |
+| `MUNINN_OTEL_ENDPOINT` | `http://localhost:4318` | OTLP HTTP endpoint for trace export |
+| `MUNINN_CHAINS_ENABLED` | off | `=1` enables graph memory chain detection (PRECEDES/CAUSES edges) |
 | `MUNINN_COLBERT_MULTIVEC` | off | `=1` enables native ColBERT multi-vector storage |
 | `MUNINN_TEMPORAL_QUERY_EXPANSION` | off | `=1` enables NL time-phrase parsing in search |
 
@@ -253,11 +259,29 @@ python -m eval.ollama_local_benchmark dev-cycle
 # Check phase hygiene gates
 python -m eval.phase_hygiene
 
-# Emit SOTA+ verdict artifact
-python -m eval.ollama_local_benchmark sota-verdict
+# Emit SOTA+ signed verdict artifact
+python -m eval.ollama_local_benchmark sota-verdict \
+  --longmemeval-report path/to/lme_report.json \
+  --min-longmemeval-ndcg 0.60 \
+  --min-longmemeval-recall 0.65 \
+  --signing-key "$SOTA_SIGNING_KEY"
+
+# Run LongMemEval adapter selftest (no server needed)
+python eval/longmemeval_adapter.py --selftest
+
+# Run StructMemEval adapter selftest (no server needed)
+python eval/structmemeval_adapter.py --selftest
+
+# Run StructMemEval against a live server
+python eval/structmemeval_adapter.py \
+  --dataset path/to/structmemeval.jsonl \
+  --server-url http://localhost:42069 \
+  --auth-token "$MUNINN_AUTH_TOKEN"
 ```
 
-Metrics tracked: `nDCG@k`, `Recall@k`, `MRR`, p50/p95 latency, significance testing (Bonferroni/BH correction), effect-size analysis.
+Metrics tracked: `nDCG@k`, `Recall@k`, `MRR@k`, Exact Match, token-F1, p50/p95 latency, significance testing (Bonferroni/BH correction), effect-size analysis.
+
+The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA256 file hashes, and HMAC-SHA256 `promotion_signature` — enabling auditable, commit-pinned SOTA+ evidence.
 
 ---
 
