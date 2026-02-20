@@ -712,6 +712,81 @@ class SQLiteMetadataStore:
 
         return multipliers
 
+    def get_memory_retrieval_utility(
+        self,
+        memory_id: str,
+        lookback_days: int = 30,
+        estimator: str = "snips",
+        propensity_floor: float = 0.05,
+        default_sampling_prob: float = 1.0,
+    ) -> float:
+        """
+        Compute the retrieval utility score for a specific memory using historical feedback.
+        Returns a score in [0.0, 1.0].
+        """
+        cutoff_ts = time.time() - (max(1, int(lookback_days)) * 86400.0)
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT outcome, rank, sampling_prob
+            FROM retrieval_feedback
+            WHERE memory_id = ? AND created_at >= ?
+            """,
+            (memory_id, cutoff_ts),
+        ).fetchall()
+        
+        if not rows:
+            return 0.0
+
+        estimator_mode = (estimator or "snips").strip().lower()
+        use_snips = estimator_mode == "snips"
+        
+        safe_propensity_floor = max(1e-4, min(1.0, float(propensity_floor)))
+        safe_default_sampling_prob = max(safe_propensity_floor, min(1.0, float(default_sampling_prob)))
+        
+        total_outcome = 0.0
+        total_weight = 0.0
+        snips_positive = 0.0
+        snips_sum_w = 0.0
+        
+        for row in rows:
+            outcome = max(0.0, min(1.0, float(row["outcome"])))
+            rank = row["rank"]
+            sampling_prob = row["sampling_prob"]
+            
+            rank_propensity = 1.0
+            if rank is not None:
+                try:
+                    rank_value = int(rank)
+                    if rank_value > 0:
+                        rank_propensity = 1.0 / math.log2(rank_value + 1.0)
+                except (TypeError, ValueError):
+                    pass
+            
+            base_prob = safe_default_sampling_prob
+            if sampling_prob is not None:
+                try:
+                    parsed_prob = float(sampling_prob)
+                    if parsed_prob > 0:
+                        base_prob = min(1.0, parsed_prob)
+                except (TypeError, ValueError):
+                    pass
+                    
+            propensity = max(safe_propensity_floor, min(1.0, base_prob * rank_propensity))
+            ipw = 1.0 / propensity
+            
+            total_outcome += outcome
+            total_weight += 1.0
+            snips_positive += outcome * ipw
+            snips_sum_w += ipw
+            
+        if use_snips and snips_sum_w > 0:
+            return max(0.0, min(1.0, snips_positive / snips_sum_w))
+        elif total_weight > 0:
+            return max(0.0, min(1.0, total_outcome / total_weight))
+            
+        return 0.0
+
     def record_user_scope_backfill_failure(self, memory_id: str, error: str) -> None:
         conn = self._get_conn()
         conn.execute(
