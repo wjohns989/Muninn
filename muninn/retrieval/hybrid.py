@@ -820,6 +820,12 @@ class HybridRetriever:
             return await result
         return result
 
+    # Synthetic filter keys handled by individual search signals (not record attributes).
+    # These are pre-filtered at the Qdrant / BM25 / graph layer and must NOT be
+    # re-evaluated here; doing so would incorrectly reject every record because no
+    # MemoryRecord has a "memory_ids" attribute and no metadata stores a list of IDs.
+    _SYNTHETIC_FILTER_KEYS = frozenset({"memory_ids", "scope"})
+
     def _record_matches_constraints(
         self,
         record: MemoryRecord,
@@ -827,7 +833,13 @@ class HybridRetriever:
         namespaces: Optional[List[str]],
         filters: Optional[Dict[str, Any]],
     ) -> bool:
-        """Apply final in-memory scope checks to prevent cross-user leakage."""
+        """Apply final in-memory scope checks to prevent cross-user leakage.
+
+        Synthetic filter keys (e.g. ``memory_ids``, ``scope``) are intentionally
+        skipped — they are already enforced by the individual search signals
+        (MatchAny in Qdrant, target_set in BM25/graph/temporal).  Re-evaluating
+        them here against record attributes would silently reject all records.
+        """
         metadata = record.metadata or {}
 
         if user_id and metadata.get("user_id") != user_id:
@@ -840,6 +852,8 @@ class HybridRetriever:
             for key, expected in filters.items():
                 if expected is None:
                     continue
+                if key in self._SYNTHETIC_FILTER_KEYS:
+                    continue  # handled by search signals; do not re-check here
                 if key == "user_id":
                     if metadata.get("user_id") != expected:
                         return False
