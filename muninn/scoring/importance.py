@@ -17,13 +17,18 @@ from muninn.core.types import MemoryRecord, Provenance
 
 logger = logging.getLogger("Muninn.Scoring")
 
-# Default weights (tunable)
+# Default weights (tunable).
+# NOTE: These sum to 1.10, not 1.00. The retrieval signal is intentionally
+# additive: it provides a bonus for memories confirmed useful by SNIPS feedback
+# without penalising memories that have never been retrieved (utility=0.0).
+# The final score is always clamped to [0.0, 1.0].
 DEFAULT_WEIGHTS = {
     "recency": 0.25,
     "frequency": 0.15,
     "centrality": 0.20,
     "novelty": 0.25,
     "provenance": 0.15,
+    "retrieval": 0.10,
 }
 
 # Recency half-life in days
@@ -74,6 +79,7 @@ def calculate_importance(
     memory: MemoryRecord,
     max_similarity: float = 0.0,
     centrality: float = 0.0,
+    retrieval_utility: float = 0.0,
     weights: Optional[dict] = None,
 ) -> float:
     """
@@ -83,6 +89,7 @@ def calculate_importance(
         memory: The memory record to score
         max_similarity: Maximum cosine similarity to existing semantic memories
         centrality: Graph degree centrality for entities in this memory
+        retrieval_utility: SNIPS feedback-derived retrieval utility [0.0, 1.0]
         weights: Optional custom weights dict
 
     Returns:
@@ -103,6 +110,7 @@ def calculate_importance(
         + w.get("centrality", DEFAULT_WEIGHTS["centrality"]) * centrality
         + w.get("novelty", DEFAULT_WEIGHTS["novelty"]) * novelty
         + w.get("provenance", DEFAULT_WEIGHTS["provenance"]) * provenance
+        + w.get("retrieval", DEFAULT_WEIGHTS["retrieval"]) * retrieval_utility
     )
 
     return min(1.0, max(0.0, importance))
@@ -110,8 +118,9 @@ def calculate_importance(
 
 def batch_update_importance(
     memories: List[MemoryRecord],
-    get_centrality: Callable[[str], float],
-    get_max_similarity: Callable[[str], float],
+    centrality_map: dict[str, float],
+    max_similarity_map: dict[str, float],
+    retrieval_utility_map: Optional[dict[str, float]] = None,
 ) -> List[tuple]:
     """
     Batch importance recalculation for consolidation cycles.
@@ -120,8 +129,14 @@ def batch_update_importance(
     """
     updates = []
     for mem in memories:
-        centrality = get_centrality(mem.id)
-        max_sim = get_max_similarity(mem.id)
-        new_importance = calculate_importance(mem, max_similarity=max_sim, centrality=centrality)
+        centrality = centrality_map.get(mem.id, 0.0)
+        max_sim = max_similarity_map.get(mem.id, 0.0)
+        ret_util = retrieval_utility_map.get(mem.id, 0.0) if retrieval_utility_map else 0.0
+        new_importance = calculate_importance(
+            mem, 
+            max_similarity=max_sim, 
+            centrality=centrality,
+            retrieval_utility=ret_util
+        )
         updates.append((mem.id, new_importance))
     return updates
