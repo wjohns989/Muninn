@@ -194,9 +194,13 @@ class ConsolidationDaemon:
         expired = 0
         updated = 0
 
-        # Batch fetch centrality for all records (P1 Performance Optimization)
+        # Batch fetch centrality and SNIPS utility for all records in two queries
+        # (avoids N+1 per-record pattern that would issue one SQL call per memory)
         record_ids = [r.id for r in records]
         centrality_map = self.graph.get_memory_node_degrees_batch(record_ids)
+        utility_map = self.metadata.get_batch_retrieval_utility(
+            record_ids, lookback_days=30, estimator="snips"
+        )
 
         for record in records:
             # Get centrality from pre-fetched map
@@ -204,13 +208,9 @@ class ConsolidationDaemon:
 
             # Get max similarity for novelty calculation
             max_sim = 0.0  # Would need vector lookup — simplified for now
-            
-            # Fetch SNIPS retrieval utility
-            ret_util = self.metadata.get_memory_retrieval_utility(
-                record.id, 
-                lookback_days=30, 
-                estimator="snips"
-            )
+
+            # SNIPS retrieval utility from pre-fetched batch map
+            ret_util = utility_map.get(record.id, 0.0)
 
             # Recalculate importance
             new_importance = calculate_importance(
