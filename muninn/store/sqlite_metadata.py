@@ -784,8 +784,92 @@ class SQLiteMetadataStore:
             return max(0.0, min(1.0, snips_positive / snips_sum_w))
         elif total_weight > 0:
             return max(0.0, min(1.0, total_outcome / total_weight))
-            
+
         return 0.0
+
+    def get_batch_retrieval_utility(
+        self,
+        memory_ids: List[str],
+        lookback_days: int = 30,
+        estimator: str = "snips",
+        propensity_floor: float = 0.05,
+        default_sampling_prob: float = 1.0,
+    ) -> Dict[str, float]:
+        """
+        Batch version of get_memory_retrieval_utility for use in consolidation cycles.
+
+        Returns a dict mapping memory_id → utility score in [0.0, 1.0].
+        Memory IDs with no feedback rows are mapped to 0.0.
+        A single SQL query is issued for all requested IDs (avoids N+1 per-record calls).
+        """
+        if not memory_ids:
+            return {}
+
+        cutoff_ts = time.time() - (max(1, int(lookback_days)) * 86400.0)
+        safe_floor = max(1e-4, min(1.0, float(propensity_floor)))
+        safe_default = max(safe_floor, min(1.0, float(default_sampling_prob)))
+        use_snips = (estimator or "snips").strip().lower() == "snips"
+
+        placeholders = ",".join("?" * len(memory_ids))
+        conn = self._get_conn()
+        rows = conn.execute(
+            f"""
+            SELECT memory_id, outcome, rank, sampling_prob
+            FROM retrieval_feedback
+            WHERE memory_id IN ({placeholders}) AND created_at >= ?
+            """,
+            (*memory_ids, cutoff_ts),
+        ).fetchall()
+
+        # Accumulate per-memory stats
+        from collections import defaultdict
+        pos_w: Dict[str, float] = defaultdict(float)
+        sum_w: Dict[str, float] = defaultdict(float)
+        plain_pos: Dict[str, float] = defaultdict(float)
+        plain_cnt: Dict[str, float] = defaultdict(float)
+
+        for row in rows:
+            mid = row["memory_id"]
+            outcome = max(0.0, min(1.0, float(row["outcome"])))
+            rank = row["rank"]
+            samp = row["sampling_prob"]
+
+            rank_prop = 1.0
+            if rank is not None:
+                try:
+                    rv = int(rank)
+                    if rv > 0:
+                        rank_prop = 1.0 / math.log2(rv + 1.0)
+                except (TypeError, ValueError):
+                    pass
+
+            base = safe_default
+            if samp is not None:
+                try:
+                    p = float(samp)
+                    if p > 0:
+                        base = min(1.0, p)
+                except (TypeError, ValueError):
+                    pass
+
+            propensity = max(safe_floor, min(1.0, base * rank_prop))
+            ipw = 1.0 / propensity
+            pos_w[mid] += outcome * ipw
+            sum_w[mid] += ipw
+            plain_pos[mid] += outcome
+            plain_cnt[mid] += 1.0
+
+        result: Dict[str, float] = {}
+        for mid in memory_ids:
+            if use_snips and sum_w.get(mid, 0.0) > 0:
+                score = pos_w[mid] / sum_w[mid]
+            elif plain_cnt.get(mid, 0.0) > 0:
+                score = plain_pos[mid] / plain_cnt[mid]
+            else:
+                score = 0.0
+            result[mid] = max(0.0, min(1.0, score))
+
+        return result
 
     def record_user_scope_backfill_failure(self, memory_id: str, error: str) -> None:
         conn = self._get_conn()
