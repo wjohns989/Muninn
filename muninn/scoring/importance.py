@@ -17,12 +17,16 @@ from muninn.core.types import MemoryRecord, Provenance
 
 logger = logging.getLogger("Muninn.Scoring")
 
-# Default weights (tunable)
+# Default weights (tunable).
+# NOTE: These sum to 1.10, not 1.00. The retrieval signal is intentionally
+# additive: it provides a bonus for memories confirmed useful by SNIPS feedback
+# without penalising memories that have never been retrieved (utility=0.0).
+# The final score is always clamped to [0.0, 1.0].
 DEFAULT_WEIGHTS = {
     "recency": 0.25,
     "frequency": 0.15,
     "centrality": 0.20,
-    "novelty": 0.15,
+    "novelty": 0.25,
     "provenance": 0.15,
     "retrieval": 0.10,
 }
