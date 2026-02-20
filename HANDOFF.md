@@ -1,16 +1,16 @@
 # Muninn Development Handoff
 
 > **Updated**: 2026-02-20
-> **Branch**: `feature/v3.17.0-legacy-discovery-ingestion`
-> **Version**: v3.17.3 (Phase 17 COMPLETE — PR #48 security-fixed, ready to merge)
-> **Status**: 990 tests pass. Phases 14–16, 18 merged. Phase 17 PR #48 security fix applied.
+> **Branch**: `feature/v3.18.0-phase19`
+> **Version**: v3.18.1 (Phase 19 IN PROGRESS)
+> **Status**: 1019 tests pass. Phases 14–18 merged to main. Phase 19 branch active.
 
 ---
 
 ## Current State
 
 ### What's Working
-- **990 tests pass** (100% pass rate)
+- **1005 tests pass** (100% pass rate)
 - **Server**: FastAPI on `http://localhost:42069`, auth token via `MUNINN_AUTH_TOKEN`
 - **MCP**: Registered as "muninn" in Claude Code user config with auth token baked in
 - **Claude Desktop**: Already correctly registered as "muninn"
@@ -44,6 +44,84 @@ C:\Users\wjohn\AppData\Local\AntigravityLabs\muninn\
 ├── qdrant_v8/           # Vector store — 73 vectors
 └── kuzu_v12/            # Graph store — activated in Phase 15
 ```
+
+---
+
+## Phase 19 (v3.18.x) Summary — 2026-02-20
+
+### v3.18.1 — Scout Re-Rank Fix + MCP Synthesis Exposure + Dashboard Endpoint Fixes
+**Files**: `muninn/retrieval/hybrid.py`, `muninn/mcp/handlers.py`, `dashboard.html`,
+          `tests/test_v3_18_1_bugfixes.py` (new), `muninn/version.py`, `pyproject.toml`
+
+#### P0 Fix — Scout Final Re-Rank (`muninn/retrieval/hybrid.py`)
+- **Root cause**: `_record_matches_constraints` iterated ALL filter keys including
+  synthetic `memory_ids` (passed by Scout's final re-rank call). Since `MemoryRecord`
+  has no `memory_ids` attribute and no metadata stores a list of all candidate IDs,
+  every record was rejected → Scout always returned empty results.
+- **Fix**: Added `_SYNTHETIC_FILTER_KEYS = frozenset({"memory_ids", "scope"})` class
+  attribute; modified `_record_matches_constraints` to `continue` (skip) for any key
+  in this set. These keys are pre-handled by Qdrant `MatchAny` / `target_set` at the
+  signal level and must not be re-evaluated post-retrieval.
+
+#### P2 Fix — MCP Hunt Synthesis Exposure (`muninn/mcp/handlers.py`)
+- **Root cause**: `_do_hunt_memory` never forwarded `synthesize: True` → server always
+  returned `synthesis: ""`. Even with synthesis, `format_tool_result_text` only reads
+  `result["data"]` and discards `result["synthesis"]`.
+- **Fix**: Added `"synthesize": True` to payload. When `synthesis` is non-empty, it is
+  injected as `{"synthesis_narrative": "..."}` at index 0 of the data list before
+  returning, making it visible to the LLM through the standard `format_tool_result_text` path.
+
+#### P2 Fix — Dashboard Endpoint Bugs (`dashboard.html`)
+- **`handleIngest()`**: Was calling `/ingest` (file/URL batch ingestion) with
+  `{content, namespace}` — wrong endpoint and wrong payload. Fixed to call `/add` with
+  `{content, namespace, user_id: "global_user"}` and updated success check to
+  `data.success && data.data` (was `data.id`).
+- **`forceConsolidation()`**: Was calling `/maintenance/consolidate` (non-existent).
+  Fixed to call `/consolidation/run` (correct endpoint).
+
+### v3.18.1 Test Suite — `tests/test_v3_18_1_bugfixes.py` (13 tests, 3 classes)
+| Class | Count | Coverage |
+|---|---|---|
+| `TestHybridSyntheticKeySkip` | 6 | _SYNTHETIC_FILTER_KEYS attr, memory_ids + scope membership, record acceptance with synthetic filter, real filter still enforced |
+| `TestMCPHuntSynthesisExposure` | 5 | synthesize=True in payload, synthesis injected to data[0], empty/absent synthesis unchanged, namespaces forwarded |
+| `TestVersionBump3181` | 2 | >= 3.18.1, pyproject match |
+
+---
+
+### v3.18.0 — Scout LLM Synthesis + Dashboard Hunt Mode
+**Files**: `muninn/retrieval/synthesis.py` (new), `server.py`, `dashboard.html`,
+          `tests/test_v3_18_0_phase19.py` (new), `muninn/version.py`, `pyproject.toml`
+
+#### Scout LLM Synthesis (`muninn/retrieval/synthesis.py`)
+- **`synthesize_hunt_results(query, results) -> str`**: new async function
+- Uses `anthropic.AsyncAnthropic` (claude-haiku-4-5) to generate 2-3 sentence
+  narrative explaining what Scout found and why it's relevant
+- **Graceful degradation**: returns `""` when SDK absent, API key unset, or call fails
+- Prompts with up to 6 snippets truncated to 120 chars each
+
+#### Server Synthesis Integration (`server.py`)
+- `HuntMemoryRequest`: added `synthesize: bool = False` field
+- `hunt_memory_endpoint`: calls `synthesize_hunt_results()` when `synthesize=True`
+- Response shape: `{"success": True, "data": [...], "synthesis": "..."}`
+- `synthesis` is always present (empty string on failure) — backward compatible
+
+#### Dashboard Hunt Mode (`dashboard.html`)
+- **Bug fix**: `handleSearch()` previously read `data.results` (undefined) and
+  `r.memory.memory_type`/`r.memory.content` (nested, non-existent fields). Fixed to
+  use `data.data` (correct) and flat field names `r.memory_type`, `r.memory`.
+- **Scout Hunt toggle**: checkbox to switch between standard `/search` and
+  `/search/hunt` (depth=2, synthesize=true)
+- **Button label**: dynamically updates to "Search" or "Hunt" based on toggle state
+- **Synthesis block**: when hunt mode returns a synthesis string, it's displayed as
+  a "Scout Discovery:" block above results using safe DOM text nodes (XSS-safe)
+- **Loading state**: mode-appropriate loading messages ("Scout is hunting..." vs generic)
+
+### Phase 19 Test Suite — `tests/test_v3_18_0_phase19.py` (15 tests, 3 classes)
+| Class | Count | Coverage |
+|---|---|---|
+| `TestScoutSynthesis` | 7 | empty results, no SDK, no API key, happy path, exception, truncation, max snippets |
+| `TestHuntEndpointSynthesize` | 6 | field presence, default false, set true, route auth, synthesis field, synthesis called |
+| `TestVersionBump318` | 2 | >= 3.18.0, pyproject match |
 
 ---
 
@@ -198,15 +276,23 @@ pytest tests/test_ingestion_discovery.py -v
   against live server; commit signed verdict to `eval/reports/`
 - [ ] **Public LongMemEval JSONL**: Obtain `longmemeval_oracle.jsonl` for real nDCG@10 baseline
 - [ ] **StructMemEval in sota-verdict**: Wire StructMemEval adapter into verdict signing
+- [x] **Scout LLM synthesis**: Implemented in `muninn/retrieval/synthesis.py` — v3.18.0
+- [x] **Dashboard live search**: Hunt mode toggle wired to `/search/hunt` — v3.18.0
 - [ ] **Scout accuracy evaluation**: Measure `hunt()` recall vs plain `search()` on benchmark data
-- [ ] **Scout LLM synthesis**: Use Claude API to synthesize discovery path explanation
-  (currently aggregation only; LLM would generate "I found X because Y linked to Z")
-- [ ] **Dashboard live search**: Wire magic search bar to `hunt_memory` endpoint
 - [ ] **Background legacy scan scheduling**: Periodic auto-scan for new legacy AI data
+- [ ] **Live benchmark run + signed verdict artifact**: Run `eval/run_benchmark.py --production`
+  against live server; commit signed verdict to `eval/reports/`
+- [ ] **Public LongMemEval JSONL**: Obtain `longmemeval_oracle.jsonl` for real nDCG@10 baseline
+- [ ] **StructMemEval in sota-verdict**: Wire StructMemEval adapter into verdict signing
+
+### Phase 19 Remaining (v3.18.x)
+- [ ] **v3.18.1 — Background legacy scan scheduling**: asyncio periodic task in server lifespan,
+  cache results, dashboard badge showing "N new sources found"
+- [ ] **v3.18.2 — Scout accuracy evaluation**: benchmark `hunt()` vs `search()` recall/precision
+- [ ] **v3.18.3 — Live benchmark + signed verdict**: production eval run + HMAC-signed artifact
 
 ### Known Remaining Gaps
 - **SOTA+ production-run evidence**: Signed verdict against live server not yet committed
-- **Scout LLM synthesis**: Step 5 is a no-op — logs elapsed time, no LLM-generated narrative
 - **HANDOFF.md phase numbering**: "Phase 17a" = v3.14.x; "Phase 17b" = v3.17.x (internal git log)
   to distinguish the benchmark suite phase from the legacy discovery phase
 
@@ -214,6 +300,12 @@ pytest tests/test_ingestion_discovery.py -v
 
 ## Validation History
 
+- **Phase 19 (v3.18.1)**: **1019 tests passed (100%), 0 failed** — P0 Scout re-rank fix
+  (_record_matches_constraints synthetic key skip), P2 MCP synthesis exposure, P2 dashboard
+  endpoint fixes (handleIngest /add, forceConsolidation /consolidation/run), 13 new regression
+  tests. v3.18.1. 2026-02-20.
+- **Phase 19 (v3.18.0)**: **1006 tests passed (100%), 0 failed** — Scout LLM synthesis,
+  dashboard hunt mode + search fix, fallback scope filter fix, 16 new tests. v3.18.0. 2026-02-20.
 - **Phase 17b (security fix)**: **990 tests passed (100%), 0 failed** — critical auth fix for
   `/ingest/legacy/discover` and `/ingest/legacy/import`; CORS hardening. v3.17.3. 2026-02-20.
 - **Phase 17b**: **990 tests passed (100%), 0 failed** — legacy discovery (aider/continue/zed),
