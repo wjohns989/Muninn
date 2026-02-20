@@ -1,23 +1,24 @@
 # Muninn Development Handoff
 
 > **Updated**: 2026-02-19
-> **Branch**: `feature/v3.14.0-benchmark-suite-parser-sandbox`
-> **Version**: v3.14.0 (Phase 17 COMPLETE)
-> **Status**: Phase 17 done. 848 tests pass. PR #46 ready for merge.
+> **Branch**: `feature/v3.15.0-phase18-ci-workflow-token-rotation`
+> **Version**: v3.15.0 (Phase 18 IN PROGRESS)
+> **Status**: Phase 18 in progress. 890 tests pass. Phase 17 merged (PR #45).
 
 ---
 
 ## Current State
 
 ### What's Working
-- **848 tests pass** (100% pass rate — 788 Phase 16 + 60 Phase 17)
+- **890 tests pass** (100% pass rate — 788 Phase 16 + 63 Phase 17 + 39 Phase 18)
 - **Server**: FastAPI on `http://localhost:42069`, auth token via `MUNINN_AUTH_TOKEN`
 - **MCP**: Registered as "muninn" (tools: `mcp__muninn__*`) in Claude Code user config with auth token baked in
 - **Claude Desktop**: Already correctly registered as "muninn"
 - **Phase 14 (v3.11.0)**: Project-scoped memory — **MERGED** (PR #43, 2026-02-19)
 - **Phase 15 (v3.12.0)**: Operational hardening — **MERGED** (PR #44, 2026-02-19)
 - **Phase 16 (v3.13.0)**: SOTA+ signed verdict v1 — **MERGED** (PR #45, 2026-02-19)
-- **Phase 17 (v3.14.0)**: Synthetic benchmark suite + parser security sandbox — **COMPLETE**, PR #46 ready for merge
+- **Phase 17 (v3.14.0)**: Synthetic benchmark suite + parser security sandbox — **MERGED** (PR #45 squash, 2026-02-19)
+- **Phase 18 (v3.15.0)**: CI benchmark workflow + token rotation utility — **IN PROGRESS**
 
 ### Server Quick Start
 
@@ -229,14 +230,19 @@ pytest tests/test_v3_14_0_benchmark_suite.py -v
 
 ## Open Items / Next Steps
 
-### Phase 18 Candidates
+### Phase 18 Deliverables (v3.15.0 — IN PROGRESS)
+- [x] **GitHub Actions CI**: `.github/workflows/benchmark.yml` — dry-run benchmark on every PR, PR/push/workflow_dispatch triggers, 15-minute timeout, report artifact upload, step summary
+- [x] **Token rotation utility**: `python -m muninn.cli rotate-token` — generates 32-byte urlsafe token, writes `.muninn_token`, patches MCP host configs (auto-detect Claude Desktop / Cursor), prints platform-specific `setx`/export instructions, supports `--dry-run` and `--token-only` flags
+- [x] **Version bump**: 3.14.0 → 3.15.0 in `muninn/version.py` and `pyproject.toml`
+- [x] **Phase 18 test suite**: `tests/test_v3_15_0_ci_token_rotation.py` — 39 tests (5 classes: CI workflow YAML structure, token rotation CLI, token file resolution, MCP config patcher, version)
+
+### Phase 19 Candidates
 - [ ] **Live benchmark run + signed verdict artifact**: Run `eval/run_benchmark.py --production` against live server with synthetic datasets and commit the signed verdict artifact to `eval/reports/`
 - [ ] **Public LongMemEval JSONL**: Obtain `longmemeval_oracle.jsonl` from the paper authors (https://github.com/xiaowu0162/LongMemEval) and establish real nDCG@10 baseline
-- [ ] **GitHub Actions CI**: Add `.github/workflows/benchmark.yml` running `run_benchmark.py --dry-run` on every PR to prevent adapter regression
-- [ ] **Token rotation utility**: CLI command `python -m muninn.cli rotate-token` to replace `.muninn_token` and update MCP registrations automatically
+- [ ] **StructMemEval wired into sota-verdict command**: The `sota-verdict` MCP tool only uses LongMemEval; StructMemEval adapter runs but is not included in verdict signing
 
 ### Known Remaining Gap
-**SOTA+ production-run evidence**: The synthetic benchmark datasets (`eval/data/longmemeval_synthetic_v1.jsonl`, `eval/data/structmemeval_suite_v1.jsonl`) and pipeline (`eval/run_benchmark.py`) are production-ready. The signed verdict artifact against a live Muninn server with the synthetic data has not been committed yet — that's Phase 18 P1. This requires a running Muninn server and takes ~5 minutes.
+**SOTA+ production-run evidence**: The synthetic benchmark datasets (`eval/data/longmemeval_synthetic_v1.jsonl`, `eval/data/structmemeval_suite_v1.jsonl`) and pipeline (`eval/run_benchmark.py`) are production-ready. The signed verdict artifact against a live Muninn server has not been committed yet — that's Phase 19 P1. This requires a running Muninn server and takes ~5 minutes.
 
 ---
 
