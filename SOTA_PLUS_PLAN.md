@@ -1,8 +1,8 @@
 # Muninn SOTA+ Implementation Plan
 
-> **Version**: v3.6.1 → v3.13.0
-> **Status**: **Phase 16 COMPLETE — PR #45 ready for merge**
-> **Current State**: `feature/v3.13.0-sota-verdict-v1` — Phase 16 done. 788 tests pass (727 + 61 new). Branch ready for PR #45.
+> **Version**: v3.6.1 → v3.18.1
+> **Status**: **Phase 19 IN PROGRESS — PR #50 open (`feature/sota-roadmap-outward`)**
+> **Current State**: v3.18.1 — Phase 19 (Scout synthesis, hunt mode) implemented. 1019 tests pass. Phases 14–18 merged to main.
 
 ---
 

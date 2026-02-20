@@ -116,7 +116,7 @@ Evaluator: Codex
 
 ## Validation Snapshot
 
-- Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
+- Full suite passes on `feature/sota-roadmap-outward` (2026-02-20): `1019 passed, 2 skipped, 4 warnings`.
 - Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and no open PR/comment backlog remained after restart.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
