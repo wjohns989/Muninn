@@ -1,3 +1,3 @@
 """Single source of truth for Muninn package version."""
 
-__version__ = "3.17.2"
+__version__ = "3.17.3"

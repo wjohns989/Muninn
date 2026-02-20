@@ -292,18 +292,21 @@ app = FastAPI(
 )
 
 # --- CORS ---
-# allow_origins=["*"] is required so the static dashboard (served from file://
-# or a different port) can reach the local API.  Per the Fetch spec, wildcard
-# origins CANNOT be combined with allow_credentials=True — browsers block such
-# responses.  The dashboard authenticates via the Authorization header (Bearer
-# token) rather than cookies, so credentials=True is unnecessary.
+# Security design: Muninn runs on localhost only and all data-mutating endpoints
+# require a Bearer token (Depends(verify_token)).  The wildcard origin is needed
+# so the static dashboard (opened as file:// or from a different local port) can
+# reach the API.  Per the Fetch spec, wildcard origins CANNOT be combined with
+# allow_credentials=True, so session cookies are not usable — this is intentional.
+# Authentication is Bearer-token only (Authorization header), which browsers do
+# NOT send automatically; no cross-site request forgery is possible.
+# allow_methods is restricted to the verbs actually used by the server.
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 DASHBOARD_HTML_PATH = Path(__file__).with_name("dashboard.html")
@@ -723,7 +726,7 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/ingest/legacy/discover")
+@app.post("/ingest/legacy/discover", dependencies=[Depends(verify_token)])
 async def discover_legacy_sources_endpoint(req: DiscoverLegacySourcesRequest):
     """Discover local legacy assistant/MCP memory artifacts available for import."""
     if memory is None:
@@ -742,7 +745,7 @@ async def discover_legacy_sources_endpoint(req: DiscoverLegacySourcesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/ingest/legacy/import")
+@app.post("/ingest/legacy/import", dependencies=[Depends(verify_token)])
 async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
     """Ingest user-selected legacy assistant/MCP sources with contextual metadata."""
     if memory is None:

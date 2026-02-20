@@ -98,7 +98,14 @@ def test_server_auth_token_enforcement():
     """Verify that sensitive endpoints in server.py have Depends(verify_token)."""
     from server import app
 
-    sensitive_paths = ["/goal/set", "/profile/user/set", "/ingest", "/consolidation/run"]
+    sensitive_paths = [
+        "/goal/set",
+        "/profile/user/set",
+        "/ingest",
+        "/consolidation/run",
+        "/ingest/legacy/discover",
+        "/ingest/legacy/import",
+    ]
 
     found_paths = []
     for route in app.routes:
