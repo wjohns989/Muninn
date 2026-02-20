@@ -37,6 +37,7 @@ async def test_colbert_logic_fix():
     # Mock scroll response with realistic point data
     mock_point = MagicMock()
     mock_point.vector = [0.2] * 128
+    mock_point.payload = {"memory_id": "mem1"}  # dict so .get() works correctly
     mock_client = MagicMock()
     mock_client.scroll.return_value = ([mock_point], None)
     mock_vectors._get_client.return_value = mock_client
