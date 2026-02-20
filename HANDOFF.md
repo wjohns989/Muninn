@@ -1,24 +1,25 @@
 # Muninn Development Handoff
 
-> **Updated**: 2026-02-19
-> **Branch**: `feature/v3.15.0-phase18-ci-workflow-token-rotation`
-> **Version**: v3.15.0 (Phase 18 IN PROGRESS)
-> **Status**: Phase 18 in progress. 890 tests pass. Phase 17 merged (PR #45).
+> **Updated**: 2026-02-20
+> **Branch**: `feature/v3.17.0-legacy-discovery-ingestion`
+> **Version**: v3.17.2 (Phase 17 IN PROGRESS — PR #48 open)
+> **Status**: 990 tests pass. Phases 14–16, 18 merged. Phase 17 PR open.
 
 ---
 
 ## Current State
 
 ### What's Working
-- **890 tests pass** (100% pass rate — 788 Phase 16 + 63 Phase 17 + 39 Phase 18)
+- **990 tests pass** (100% pass rate)
 - **Server**: FastAPI on `http://localhost:42069`, auth token via `MUNINN_AUTH_TOKEN`
-- **MCP**: Registered as "muninn" (tools: `mcp__muninn__*`) in Claude Code user config with auth token baked in
+- **MCP**: Registered as "muninn" in Claude Code user config with auth token baked in
 - **Claude Desktop**: Already correctly registered as "muninn"
-- **Phase 14 (v3.11.0)**: Project-scoped memory — **MERGED** (PR #43, 2026-02-19)
-- **Phase 15 (v3.12.0)**: Operational hardening — **MERGED** (PR #44, 2026-02-19)
-- **Phase 16 (v3.13.0)**: SOTA+ signed verdict v1 — **MERGED** (PR #45, 2026-02-19)
-- **Phase 17 (v3.14.0)**: Synthetic benchmark suite + parser security sandbox — **MERGED** (PR #45 squash, 2026-02-19)
-- **Phase 18 (v3.15.0)**: CI benchmark workflow + token rotation utility — **IN PROGRESS**
+- **Phase 14 (v3.11.0)**: Project-scoped memory — **MERGED**
+- **Phase 15 (v3.12.0)**: Operational hardening — **MERGED**
+- **Phase 16 (v3.13.0)**: SOTA+ signed verdict v1 — **MERGED**
+- **Phase 17a (v3.14.0)**: Synthetic benchmark suite + parser security sandbox — **MERGED**
+- **Phase 18 (v3.15.0)**: CI benchmark workflow + token rotation utility — **MERGED** (PRs #46, #47)
+- **Phase 17b (v3.17.x)**: Legacy discovery, dashboard overhaul, Scout — **PR #48 open**
 
 ### Server Quick Start
 
@@ -31,7 +32,7 @@ python server.py
 MUNINN_AUTH_TOKEN=$(cat .muninn_token) python server.py
 ```
 
-**Auth token** is stored in `.muninn_token` (gitignored). Also set permanently via `setx`:
+**Auth token** is stored in `.muninn_token` (gitignored).
 ```
 Token: ij0w9VmdPH5dxnE7vG-lZCXPPWhX9uU7HpBJODg0zoQ
 ```
@@ -46,104 +47,75 @@ C:\Users\wjohn\AppData\Local\AntigravityLabs\muninn\
 
 ---
 
-## Phase 16 (v3.13.0) Summary — 2026-02-19
+## Phase 17b (v3.17.x) Summary — 2026-02-20
 
-### Changes Delivered
+### v3.17.0 — Legacy Discovery Auto-Scan + Selective Ingestion UI
+**Files**: `muninn/ingestion/discovery.py`, `dashboard.html`, `muninn/core/memory.py`, tests
+- Added providers: `aider_chat`, `continue_dev`, `zed_ai` to `_provider_specs()`
+- Updated `gemini_cli` patterns to include `~/.gemini/tmp/<hash>/chats/` paths
+- Added `.zed` extension to `SUPPORTED_EXTENSIONS` (text parser)
+- Added `_require_discovery_pipeline()` to bypass `multi_source_ingestion` flag for scans
+- Fixed critical bug: legacy discovery now works in all deployments (no feature flag required)
+- UI: 8-column legacy import table with provider/parser/confidence/size/modified/path columns
+- Security: XSS prevention — `textContent` / DOM text nodes replacing `innerHTML` for server data
 
-#### 1. `cmd_sota_verdict` — Provenance Block
-**File**: `eval/ollama_local_benchmark.py`
-**Change**: Verdict JSON now includes `provenance` object:
-```json
-{
-  "provenance": {
-    "commit_sha": "<40-char hex or null>",
-    "input_file_hashes": { "bench_report": "<sha256>", ... },
-    "promotion_signature": "hmac-sha256=<hex> | null",
-    "verdict_schema_version": "1.0"
-  }
-}
-```
-`commit_sha` from `git rev-parse HEAD` (5s timeout; `null` if git unavailable).
-`input_file_hashes`: SHA256 per `--*-report` CLI arg actually provided.
+### v3.17.1 — Dashboard Overhaul + Retrieval/Consolidation Optimization
+**Files**: `dashboard.html`, `muninn/store/graph_store.py`, `muninn/consolidation/daemon.py`,
+          `muninn/retrieval/hybrid.py`, `muninn/retrieval/weight_adapter.py`,
+          `muninn/retrieval/temporal_parser.py`, `docs/plans/BRAINSTORM_UI_UX.md`
+- **Dashboard**: Complete 'Slate & Sky' redesign; sidebar nav (Overview/Ingestion/Legacy/System);
+  responsive layout; magic search bar; stats grid; graph canvas
+- **P0 Performance**: `graph_store.get_memory_node_degrees_batch()` — single batch Kuzu query
+  for all N records, eliminating N individual degree lookups (was N+1 queries in `_phase_decay`)
+- **P1 Performance**: `hybrid.py` — batch ColBERT token retrieval via `MatchAny` Qdrant scroll
+  instead of per-document fetches; entity-grounded graph search optimization
+- **Correctness**: `weight_adapter.py` — 'chain' + 'goal' added to `DEFAULT_WEIGHTS`
+  (ensures all 6 RRF signals participate in entropy-based adaptation)
+- **Windows compat**: All Unicode `→` arrows replaced with ASCII `->` to prevent console crashes
+- `temporal_parser.py`: `TimeRange.__str__` now uses `->` separator
 
-#### 2. HMAC-SHA256 Promotion Signature
-**Helpers added** (before `cmd_sota_verdict` in `eval/ollama_local_benchmark.py`):
-- `_get_commit_sha(repo_root)` — git rev-parse HEAD with timeout
-- `_sha256_file(path)` — 1 MiB chunk streaming SHA256
-- `_compute_hmac_signature(canonical_data, signing_key)` — canonical JSON (`sort_keys=True`) → HMAC-SHA256 → `"hmac-sha256=<64hex>"`
-- `_evaluate_longmemeval_gate(report, *, min_ndcg_at_10, min_recall_at_10)` — normalizes 3 LME report formats
+### v3.17.2 — Muninn Scout Agentic Discovery + hunt_memory MCP Tool
+**Files**: `muninn/retrieval/scout.py` (new), `muninn/core/memory.py`, `muninn/mcp/definitions.py`,
+          `muninn/mcp/handlers.py`, `muninn/retrieval/hybrid.py`, `muninn/store/vector_store.py`,
+          `server.py`, `dashboard.html`
+- **`MuninnScout`**: New agentic multi-hop retrieval engine
+  - `hunt(query, depth=2)`: Initial hybrid search → entity expansion via graph → chain expansion
+    (PRECEDES/CAUSES edges) → aggregate & rerank
+  - Fallback: global scope search when project search returns nothing
+  - Configurable depth: 0=no expansion, 1=single hop, 2=full multi-hop
+- **`hunt_memory` MCP tool**: POST `/search/hunt`, depth + limit + namespaces params
+- **`MuninnMemory.hunt()`**: Wrapper with OTel instrumentation, serializes `SearchResult` → dict
+- **`HuntMemoryRequest`** Pydantic model: `query`, `user_id`, `agent_id`, `limit=10`, `depth=2`,
+  `namespaces`
+- **`VectorStore.search()`**: `memory_ids` filter key → `MatchAny` Qdrant condition
+- **`HybridRetriever`**: `memory_ids` parameter plumbed through all 4 signals
+  (`_vector_search`, `_graph_search`, `_bm25_search`, `_temporal_search`)
+- **Test fixes (v3.17.2)**:
+  - `test_temporal_range_str`: updated assertion from `→` to `->` (ASCII migration)
+  - `test_colbert_logic_fix`: mock point `.payload` now set to dict so `.get("memory_id")` resolves
 
-**Canonical payload** (for signing):
-```python
-{"run_id": ..., "passed": ..., "commit_sha": ..., "input_file_hashes": {...}}
-```
-Signature is `null` when `--signing-key` not provided.
-
-#### 3. LongMemEval Hard Gate
-**New CLI args** (`verdict` subcommand):
-- `--longmemeval-report PATH` — path to LME adapter JSON output
-- `--min-longmemeval-ndcg FLOAT` — default `0.60`
-- `--min-longmemeval-recall FLOAT` — default `0.65`
-- `--require-longmemeval` / `--no-require-longmemeval` — default `False`
-- `--signing-key STR` — HMAC secret
-
-Gate is a **hard gate** in `overall_passed`:
-```python
-overall_passed = all([..., longmemeval_gate_evaluation["passed"]])
-```
-Accepts three LME report formats: `{ndcg_at_10, recall_at_10}`, `{mean_ndcg_at_10, mean_recall_at_10}`, `{cutoffs.@10.{ndcg, recall}}`.
-
-**Backward compatibility**: All Phase 16 args use `getattr(args, 'field', default)` — pre-existing `SimpleNamespace`-based tests are unaffected.
-
-#### 4. `eval/structmemeval_adapter.py` (new)
-**Architecture**:
-- Data models: `StructCase`, `CaseResult`, `AdapterReport` (dataclasses)
-- `exact_match()`, `token_f1()`, `mrr_at_k()`, `_percentile()` — inline, no external deps
-- `parse_dataset(path)` — JSONL parser with malformed-line skipping and out-of-range index rejection
-- `MuninnHTTPClient` — stdlib urllib: `add()`, `search()`, `delete_all()`
-- `StructMemEvalAdapter` — `evaluate_case()` (ingest → search → EM/F1/MRR → cleanup) + `run()`
-- `_SELFTEST_DATASET` — 3 synthetic cases (string/number/list answer types)
-- `run_selftest()` with inner `_OracleClient` (keyword-overlap, no server needed)
-- Full CLI: `--dataset`/`--selftest`, `--server-url`, `--auth-token`, `--k`, `--limit`, `--output`, `--no-cleanup`, `--verbose`
-- **Selftest result**: EM=1.000, MRR@10=1.000
-
-#### 5. `tests/test_v3_13_0_sota_verdict_v1.py` (new, 61 tests)
-8 test classes:
-- `TestProvenanceHelpers` (11): SHA256 file hashing, commit SHA retrieval, HMAC signature correctness
-- `TestLongMemEvalGate` (8): pass/fail thresholds, missing keys, three report formats, boundary values
-- `TestSotaVerdictPayload` (10): full integration via `build_parser()` + `cmd_sota_verdict`; patches `_get_commit_sha`
-- `TestStructMemEvalMetrics` (12): unit tests for EM, token-F1, MRR@k
-- `TestStructMemEvalDatasetParser` (4): JSONL parsing, malformed lines, out-of-range index
-- `TestStructMemEvalAdapter` (8): evaluate_case, run, cleanup, error capture
-- `TestStructMemEvalSelftest` (5): oracle correctness for all 3 synthetic cases
-- `TestVersionBump313` (2): version == 3.13.0, pyproject.toml match
+### v3.17.x Test Suite — `tests/test_v3_17_0_legacy_scout.py` (51 tests, 9 classes)
+| Class | Count | Coverage |
+|---|---|---|
+| `TestMuninnScout` | 7 | hunt() multi-hop, entity expansion, chain follow, depth=0, fallback |
+| `TestVectorStoreMemoryIdsFilter` | 5 | MatchAny filter construction, key, values, non-list filter |
+| `TestGraphStoreBatchCentrality` | 8 | empty, zero-default, normalization, cap=1.0, range, absent ID, exception, batch=1 query |
+| `TestDaemonPhaseDecayBatch` | 4 | batch call verified, no N+1, empty records, update call |
+| `TestHuntMemoryMCPTool` | 8 | READ_ONLY_TOOLS, TOOLS_SCHEMAS, schema props, POST endpoint, payload, defaults |
+| `TestHuntMemoryServerModel` | 4 | import, required field, defaults, custom values |
+| `TestMuninnMemoryHunt` | 5 | method exists, raises when not init, dict serialization, required keys, depth/limit passthrough |
+| `TestHybridRetrieverMemoryIds` | 6 | signatures, bm25 filter, graph filter via target_set |
+| `TestVersionBump317` | 2 | >= 3.17.0, pyproject match |
 
 ---
 
-## Phase 15 (v3.12.0) Summary — 2026-02-19
+## Phase 18 (v3.15.0) Summary — 2026-02-19
 
 ### Changes Delivered
-
-#### 1. Auth Token Propagation Fix (`lifecycle.py`)
-**File**: `muninn/mcp/lifecycle.py`
-**Symptom**: `start_server()` spawned `server.py` without `MUNINN_AUTH_TOKEN` → each process generated a random token → all MCP tool calls returned HTTP 401 in clean environments
-**Fix**: `token = os.environ.get("MUNINN_AUTH_TOKEN") or get_token()` passed via `spawn_detached_process(..., env={"MUNINN_AUTH_TOKEN": token})`
-**Tests**: 5 unit tests in `TestStartServerAuthPropagation`
-
-#### 2. Graph Memory Chains Smoke Tests
-**File**: `tests/test_v3_12_0_operational_hardening.py` — `TestGraphChainsSmoke`
-**Coverage**: 7 tests using real KuzuDB (`tmp_path`): CAUSES/PRECEDES edge creation, retrieval, `get_entity_count()`, invalid relation rejection, self-loop rejection, `MemoryChainDetector.detect_links()`
-
-#### 3. OTel GenAI Attribute Validation
-**File**: `tests/test_v3_12_0_operational_hardening.py` — `TestOTelGenAIAttributes`
-**Coverage**: 8 tests: required keys, operation name mapping, no-op when disabled, dot-namespaced keys, `maybe_content()` privacy default, `None`-value attribute skip
-
-#### 4. LongMemEval Adapter
-**File**: `eval/longmemeval_adapter.py` (new, production-grade)
-**Tests**: 13 tests in `TestLongMemEvalAdapter`
-
-#### 5. Stale Version Assertion Fix
-**File**: `tests/test_v3_11_0_project_scope.py` → `>= (3, 11, 0)` tuple comparison
+- **GitHub Actions CI**: `.github/workflows/benchmark.yml` — dry-run on PRs, 15-min timeout
+- **Token rotation**: `python -m muninn.cli rotate-token` — 32-byte urlsafe, writes `.muninn_token`,
+  auto-patches Claude Desktop / Cursor configs
+- **39 tests** in `tests/test_v3_15_0_ci_token_rotation.py`
 
 ---
 
@@ -154,38 +126,6 @@ Accepts three LME report formats: `{ndcg_at_10, recall_at_10}`, `{mean_ndcg_at_1
 Claude Code → spawns mcp_wrapper.py (with MUNINN_AUTH_TOKEN from MCP env config)
            → mcp_wrapper.py uses token in Authorization: Bearer header
            → server.py validates token from MUNINN_AUTH_TOKEN env var
-```
-
-Both processes MUST share the same token. The MCP registration `-e` flag is the reliable cross-session mechanism.
-
-### SOTA+ Verdict Payload Shape (v3.13.0)
-```json
-{
-  "muninn_version": "3.13.0",
-  "run_id": "...",
-  "overall_passed": true,
-  "provenance": {
-    "commit_sha": "abc123...",
-    "input_file_hashes": { "bench_report": "sha256:..." },
-    "promotion_signature": "hmac-sha256:...",
-    "verdict_schema_version": "1.0"
-  },
-  "gates": {
-    "quality": {...},
-    "reliability": {...},
-    "statistical": {...},
-    "reproducibility": {...},
-    "profile": {...},
-    "external_benchmarks": {
-      "longmemeval": {
-        "passed": true,
-        "ndcg_at_10": 0.72,
-        "recall_at_10": 0.68,
-        "thresholds": {"min_ndcg_at_10": 0.60, "min_recall_at_10": 0.65}
-      }
-    }
-  }
-}
 ```
 
 ### MCP Server Registration (User-Scope)
@@ -202,6 +142,22 @@ Both processes MUST share the same token. The MCP registration `-e` flag is the 
 }
 ```
 
+### Scout Architecture
+```
+MuninnMemory.hunt()
+  └─ MuninnScout.hunt(query, depth=2)
+       ├── 1. HybridRetriever.search() — broad initial results
+       ├── 2. (fallback) global scope search if empty
+       ├── 3. Graph expansion: find_related_memories(entity_names)
+       ├── 4. Chain expansion: find_chain_related_memories(seed_ids) [if memory_chains flag]
+       └── 5. Final re-rank: search(filters={"memory_ids": all_ids})
+```
+
+### hunt_memory MCP Tool
+```
+hunt_memory → _do_hunt_memory() → POST /search/hunt → MuninnMemory.hunt()
+```
+
 ---
 
 ## Test Suite
@@ -209,152 +165,53 @@ Both processes MUST share the same token. The MCP registration `-e` flag is the 
 # Run full suite
 pytest tests/ -q
 
-# Run Phase 16 tests only
-pytest tests/test_v3_13_0_sota_verdict_v1.py -v
+# Run Phase 17b tests only
+pytest tests/test_v3_17_0_legacy_scout.py -v
 
-# Run Phase 15 tests only
-pytest tests/test_v3_12_0_operational_hardening.py -v
-
-# Run just sota-verdict tests
-pytest tests/test_ollama_local_benchmark.py -k "sota_verdict" -v
+# Run legacy discovery tests
+pytest tests/test_ingestion_discovery.py -v
 ```
 
-**Expected**: 848 pass, 2 skipped, 0 fail
-
-```bash
-# Run Phase 17 tests only
-pytest tests/test_v3_14_0_benchmark_suite.py -v
-```
+**Expected**: 990 pass, 2 skipped, 0 fail
 
 ---
 
 ## Open Items / Next Steps
 
-### Phase 18 Deliverables (v3.15.0 — IN PROGRESS)
-- [x] **GitHub Actions CI**: `.github/workflows/benchmark.yml` — dry-run benchmark on every PR, PR/push/workflow_dispatch triggers, 15-minute timeout, report artifact upload, step summary
-- [x] **Token rotation utility**: `python -m muninn.cli rotate-token` — generates 32-byte urlsafe token, writes `.muninn_token`, patches MCP host configs (auto-detect Claude Desktop / Cursor), prints platform-specific `setx`/export instructions, supports `--dry-run` and `--token-only` flags
-- [x] **Version bump**: 3.14.0 → 3.15.0 in `muninn/version.py` and `pyproject.toml`
-- [x] **Phase 18 test suite**: `tests/test_v3_15_0_ci_token_rotation.py` — 39 tests (5 classes: CI workflow YAML structure, token rotation CLI, token file resolution, MCP config patcher, version)
+### Phase 17 Completion (PR #48)
+- [ ] **Merge PR #48** into main after review
 
 ### Phase 19 Candidates
-- [ ] **Live benchmark run + signed verdict artifact**: Run `eval/run_benchmark.py --production` against live server with synthetic datasets and commit the signed verdict artifact to `eval/reports/`
-- [ ] **Public LongMemEval JSONL**: Obtain `longmemeval_oracle.jsonl` from the paper authors (https://github.com/xiaowu0162/LongMemEval) and establish real nDCG@10 baseline
-- [ ] **StructMemEval wired into sota-verdict command**: The `sota-verdict` MCP tool only uses LongMemEval; StructMemEval adapter runs but is not included in verdict signing
+- [ ] **Live benchmark run + signed verdict artifact**: Run `eval/run_benchmark.py --production`
+  against live server; commit signed verdict to `eval/reports/`
+- [ ] **Public LongMemEval JSONL**: Obtain `longmemeval_oracle.jsonl` for real nDCG@10 baseline
+- [ ] **StructMemEval in sota-verdict**: Wire StructMemEval adapter into verdict signing
+- [ ] **Scout accuracy evaluation**: Measure `hunt()` recall vs plain `search()` on benchmark data
+- [ ] **Scout LLM synthesis**: Use Claude API to synthesize discovery path explanation
+  (currently aggregation only; LLM would generate "I found X because Y linked to Z")
+- [ ] **Dashboard live search**: Wire magic search bar to `hunt_memory` endpoint
+- [ ] **Background legacy scan scheduling**: Periodic auto-scan for new legacy AI data
 
-### Known Remaining Gap
-**SOTA+ production-run evidence**: The synthetic benchmark datasets (`eval/data/longmemeval_synthetic_v1.jsonl`, `eval/data/structmemeval_suite_v1.jsonl`) and pipeline (`eval/run_benchmark.py`) are production-ready. The signed verdict artifact against a live Muninn server has not been committed yet — that's Phase 19 P1. This requires a running Muninn server and takes ~5 minutes.
-
----
-
-## Phase 17 (v3.14.0) Summary — 2026-02-19
-
-### Changes Delivered
-
-#### 1. Synthetic LongMemEval Dataset (`eval/data/longmemeval_synthetic_v1.jsonl`)
-30 LongMemEval-format benchmark cases covering all question types:
-- `single-session-qa` (10): Factual recall from single-session conversations
-- `multi-session-qa` (8): Cross-session memory retrieval
-- `temporal` (6): Time-anchored questions about events and versions
-- `adversarial` (3): Cases with distractor information to test retrieval precision
-- `entity-centric` (3): Entity-focused factoid questions
-All content is Muninn-domain realistic (architecture decisions, version history, feature flags).
-
-#### 2. Synthetic StructMemEval Suite (`eval/data/structmemeval_suite_v1.jsonl`)
-30 StructMemEval-format benchmark cases covering all answer types:
-- `string` (10): Text-valued facts (project names, license, framework names)
-- `number` (8): Numeric facts (port numbers, test counts, version numbers, thresholds)
-- `entity` (7): Named entities (company names, library names, database names)
-- `list` (5): Multi-value facts (scope values, question types, supported types)
-Each case has valid `relevant_memory_index` and non-empty `memories[]`.
-
-#### 3. Automated Benchmark Runner (`eval/run_benchmark.py`)
-Full CI benchmark pipeline:
-- **Dry-run mode**: Runs adapter selftests, no server required — CI-safe
-- **Production mode**: Health-checks server, runs adapters against datasets, gates results
-- **Gate evaluation**: LongMemEval (nDCG@10, Recall@10) + StructMemEval (Exact Match)
-- **Mandatory gates**: `--require-longmemeval` / `--require-structmemeval` flip gates to hard requirements
-- **JSON report**: Structured output with run_id, timestamps, commit_sha, per-adapter results, gate decisions
-- **Skip flags**: `--skip-lme` / `--skip-sme` for partial runs
-- Data classes: `AdapterResult`, `BenchmarkRunReport`
-
-**CLI usage**:
-```bash
-# Dry-run (no server needed):
-python -m eval.run_benchmark --dry-run
-
-# Production run with signed verdict:
-python -m eval.run_benchmark --production \
-  --server-url http://localhost:42069 \
-  --auth-token $(cat .muninn_token) \
-  --require-longmemeval \
-  --output eval/reports/sota_evidence_$(date +%Y%m%d).json
-```
-
-#### 4. Parser Security Sandbox (`muninn/ingestion/sandbox.py` + `_parser_subprocess.py`)
-**Architecture**: PDF and DOCX parsing now runs in a subprocess:
-```
-server.py → parser.py → sandbox.py → subprocess → _parser_subprocess.py
-                                    ↑ JSON protocol ↑
-```
-**`muninn/ingestion/_parser_subprocess.py`** (subprocess worker):
-- Entry point: `python -m muninn.ingestion._parser_subprocess <type> <path>`
-- Parses PDF (pypdf) or DOCX (python-docx) and writes `{"text": "..."}` JSON to stdout
-- Output capped at 2 MB (`MAX_OUTPUT_CHARS`)
-- Exception-safe: all errors produce `{"error": "..."}` + exit 1
-- Exit codes: 0=success, 1=parse/runtime error, 2=usage error
-
-**`muninn/ingestion/sandbox.py`** (sandbox executor):
-- `sandboxed_parse_binary(path, source_type, timeout=30.0)`
-- 4 MB stdout cap (`MAX_STDOUT_BYTES`) on parent side
-- Hard timeout enforcement via `subprocess.run(timeout=...)`
-- JSON protocol validation with structured error propagation
-- Optional `fallback_in_process=True` for constrained environments
-
-**`muninn/ingestion/parser.py`** (caller):
-```python
-def _parse_pdf(path):
-    from muninn.ingestion.sandbox import sandboxed_parse_binary
-    return sandboxed_parse_binary(path, "pdf", timeout=30.0)
-```
-
-#### 5. `tests/test_v3_14_0_benchmark_suite.py` (new, 60 tests)
-8 test classes:
-- `TestSyntheticLongMemEvalDataset` (8): dataset existence, 30-case count, field completeness, question type coverage, session structure, conversation turn validity
-- `TestSyntheticStructMemEvalDataset` (8): dataset existence, 30-case count, field completeness, answer type coverage, memory validity, index bounds
-- `TestBenchmarkRunnerImport` (5): module imports, dataclass construction, commit SHA helper
-- `TestBenchmarkRunnerDryRun` (10): report structure, overall_passed logic, JSON output schema, skip flags, production health-check failure, UUID uniqueness, ISO timestamp
-- `TestBenchmarkRunnerGates` (8): LME gate pass/fail thresholds, SME gate thresholds, null-report handling, mandatory gate impact on overall_passed
-- `TestParserSandbox` (10): import, ValueError on bad type, RuntimeError on missing file, subprocess success, error response, timeout, invalid JSON, empty stdout, disabled fallback, stdout size cap
-- `TestParserSubprocessWorker` (8): import, wrong-argc exit, unsupported-type exit, missing-file exit, PDF success JSON, DOCX success JSON, exception JSON, truncation
-- `TestVersionBump314` (2): version == 3.14.0, pyproject.toml match
+### Known Remaining Gaps
+- **SOTA+ production-run evidence**: Signed verdict against live server not yet committed
+- **Scout LLM synthesis**: Step 5 is a no-op — logs elapsed time, no LLM-generated narrative
+- **HANDOFF.md phase numbering**: "Phase 17a" = v3.14.x; "Phase 17b" = v3.17.x (internal git log)
+  to distinguish the benchmark suite phase from the legacy discovery phase
 
 ---
 
-## Files Changed (Phase 16)
+## Validation History
 
-| File | Change |
-|------|--------|
-| `eval/ollama_local_benchmark.py` | Added `_get_commit_sha`, `_sha256_file`, `_compute_hmac_signature`, `_evaluate_longmemeval_gate` helpers; extended `cmd_sota_verdict` with provenance block, HMAC signing, LongMemEval hard gate; 5 new CLI args; all Phase 16 args use `getattr` defaults |
-| `eval/structmemeval_adapter.py` | New — production StructMemEval adapter with inline metrics, selftest oracle, MuninnHTTPClient, full CLI |
-| `tests/test_v3_13_0_sota_verdict_v1.py` | New — 61 tests across 8 classes (all pass) |
-| `muninn/version.py` | `3.12.0` → `3.13.0` |
-| `pyproject.toml` | `version = "3.12.0"` → `version = "3.13.0"` |
-| `SOTA_PLUS_PLAN.md` | Phase 16 checklist items marked complete, validation history updated |
-| `HANDOFF.md` | Updated to Phase 16 complete state |
-
-## Files Changed (Phase 17)
-
-| File | Change |
-|------|--------|
-| `eval/data/longmemeval_synthetic_v1.jsonl` | New — 30 synthetic LongMemEval-format benchmark cases (5 question types) |
-| `eval/data/structmemeval_suite_v1.jsonl` | New — 30 synthetic StructMemEval-format benchmark cases (4 answer types) |
-| `eval/run_benchmark.py` | New — automated CI benchmark pipeline; dry-run + production modes; LME+SME gate evaluation; JSON report output; argparse CLI |
-| `muninn/ingestion/_parser_subprocess.py` | New — subprocess worker for sandboxed PDF/DOCX parsing; JSON protocol; 2 MB output cap |
-| `muninn/ingestion/sandbox.py` | New — sandbox executor; 30s timeout; 4 MB stdout cap; structured error propagation |
-| `muninn/ingestion/parser.py` | `_parse_pdf()` and `_parse_docx()` now route through `sandboxed_parse_binary()` |
-| `tests/test_v3_14_0_benchmark_suite.py` | New — 60 tests across 8 classes (all pass) |
-| `tests/test_v3_13_0_sota_verdict_v1.py` | Version assertion updated to `>= (3, 13, 0)` tuple comparison |
-| `muninn/version.py` | `3.13.0` → `3.14.0` |
-| `pyproject.toml` | `version = "3.13.0"` → `version = "3.14.0"` |
-| `SOTA_PLUS_PLAN.md` | Phase 17 section added; validation history updated |
-| `HANDOFF.md` | Updated to Phase 17 complete state |
+- **Phase 17b**: **990 tests passed (100%), 0 failed** — legacy discovery (aider/continue/zed),
+  Muninn Scout + hunt_memory, dashboard overhaul, batch centrality (N+1 fix), ColBERT batch
+  optimization, MatchAny filter, 51 new tests, 2 test bug-fixes. v3.17.2. 2026-02-20.
+- **Phase 18**: **890 tests passed (100%), 0 failed** — CI benchmark workflow, token rotation CLI,
+  MCP config patcher. 39 new tests. v3.15.0. 2026-02-19.
+- **Phase 17a**: **851 tests passed (100%), 0 failed** — synthetic benchmark datasets, automated
+  benchmark runner, parser security sandbox. 63 new tests. Merged. v3.14.0. 2026-02-19.
+- **Phase 16**: **788 tests passed (100%), 0 failed** — SOTA+ signed verdict v1, HMAC-SHA256
+  provenance, LongMemEval hard gate, StructMemEval adapter. 61 new tests. v3.13.0. 2026-02-19.
+- **Phase 15**: **727 tests passed (100%), 0 failed** — auth propagation fix, graph chains smoke,
+  OTel GenAI hardening, LongMemEval adapter. Merged. v3.12.0. 2026-02-19.
+- **Phase 14**: **694 tests passed (100%), 0 failed** — project-scoped memory strict isolation.
+  43 scope tests. Merged. v3.11.0. 2026-02-19.
