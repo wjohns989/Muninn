@@ -178,6 +178,10 @@ class HybridRetriever:
             # Scope filters are always applied to vector search. We also enforce
             # user/namespace constraints again after metadata fetch.
             effective_filters = dict(filters or {})
+            
+            # v3.15.0: Support explicit memory_id list filtering (for Scout/Batch logic)
+            target_ids = effective_filters.get("memory_ids")
+            
             if user_id and "user_id" not in effective_filters:
                 effective_filters["user_id"] = user_id
             if namespaces and len(namespaces) == 1 and "namespace" not in effective_filters:
@@ -195,8 +199,8 @@ class HybridRetriever:
                 temporal_results,
             ) = await asyncio.gather(
                 asyncio.to_thread(self._vector_search, query_embedding, limit * 3, effective_filters),
-                asyncio.to_thread(self._graph_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces),
-                asyncio.to_thread(self._bm25_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces),
+                asyncio.to_thread(self._graph_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces, memory_ids=target_ids),
+                asyncio.to_thread(self._bm25_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces, memory_ids=target_ids),
                 asyncio.to_thread(self._goal_search, goal_embedding, limit * 2, effective_filters),
                 asyncio.to_thread(
                     self._temporal_search,
@@ -205,6 +209,7 @@ class HybridRetriever:
                     user_id=user_id,
                     limit=limit * 2,
                     time_range=resolved_time_range,
+                    memory_ids=target_ids,
                 ),
             )
 
@@ -344,17 +349,24 @@ class HybridRetriever:
             return []
 
     def _graph_search(
-        self, 
-        query: str, 
+        self,
+        query: str,
         limit: int,
         user_id: Optional[str] = None,
-        namespaces: Optional[List[str]] = None
+        namespaces: Optional[List[str]] = None,
+        memory_ids: Optional[List[str]] = None,
     ) -> List[Tuple[str, float]]:
         """Graph-based entity search. Returns list of (id, score) (scoped)."""
         try:
-            # Extract potential entity names from query
-            words = query.split()
-            entity_candidates = [w for w in words if len(w) > 2]
+            # v3.15.0: Use rule-based entity extraction for better graph grounding (ROI Optimization)
+            from muninn.extraction.rules import extract_entities_rule_based
+            extracted = extract_entities_rule_based(query)
+            if extracted:
+                entity_candidates = [e.name for e in extracted]
+            else:
+                # Fallback to simple split for extremely short or non-entity queries
+                words = query.split()
+                entity_candidates = [w for w in words if len(w) > 2]
 
             if not entity_candidates:
                 return []
@@ -364,9 +376,11 @@ class HybridRetriever:
             uid = user_id or "global"
 
             scores: Dict[str, float] = defaultdict(float)
+            target_set = set(memory_ids) if memory_ids else None
+
             for idx, entity_name in enumerate(entity_candidates[:5]):
                 related = self.graph.find_related_memories(
-                    [entity_name], 
+                    [entity_name],
                     limit=limit,
                     user_id=uid,
                     namespace=ns
@@ -375,6 +389,8 @@ class HybridRetriever:
                     continue
                 query_entity_weight = 1.0 / (idx + 1.0)
                 for mem_id in related:
+                    if target_set and mem_id not in target_set:
+                        continue
                     scores[mem_id] += query_entity_weight
 
             ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:limit]
@@ -389,6 +405,7 @@ class HybridRetriever:
         limit: int,
         user_id: Optional[str] = None,
         namespaces: Optional[List[str]] = None,
+        memory_ids: Optional[List[str]] = None,
     ) -> List[Tuple[str, float]]:
         """BM25 keyword search. Returns list of (id, score)."""
         try:
@@ -398,6 +415,9 @@ class HybridRetriever:
                 user_id=user_id,
                 namespaces=namespaces,
             )
+            if memory_ids:
+                target_set = set(memory_ids)
+                return [(doc_id, float(score)) for doc_id, score in results if doc_id in target_set]
             return [(doc_id, float(score)) for doc_id, score in results]
         except Exception as e:
             logger.warning("BM25 search failed: %s", e)
@@ -430,6 +450,7 @@ class HybridRetriever:
         user_id: Optional[str],
         limit: int,
         time_range: Optional[TimeRange] = None,
+        memory_ids: Optional[List[str]] = None,
     ) -> List[Tuple[str, float]]:
         """
         Temporal/metadata search via SQLite. Returns list of (id, score).
@@ -470,7 +491,11 @@ class HybridRetriever:
             # Blend recency and intrinsic importance into temporal score.
             now = time.time()
             scored: List[Tuple[str, float]] = []
+            target_set = set(memory_ids) if memory_ids else None
+
             for r in records:
+                if target_set and r.id not in target_set:
+                    continue
                 age_seconds = max(0.0, now - r.created_at)
                 recency = 1.0 / (1.0 + (age_seconds / 86400.0))
                 temporal_score = 0.7 * recency + 0.3 * float(r.importance)
@@ -709,56 +734,64 @@ class HybridRetriever:
         # 3. Security/Scoping: Use explicit user_id/namespace from search() caller
         target_user = user_id
         target_namespace = namespaces[0] if namespaces and len(namespaces) == 1 else None
-        
-        scored_candidates = []
-        for mem_id, _fused_score in candidates:
-            if mem_id not in record_map:
-                continue
-            
-            # 4. Retrieve ONLY document tokens matching the relevant centroids
-            # This is the core PLAID-Lite optimization
-            client = self.vectors._get_client()
-            # Filter by memory_id AND user/namespace for strict isolation
-            must_conditions = [
-                FieldCondition(key="memory_id", match=MatchValue(value=mem_id))
-            ]
-            if target_user:
-                must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=target_user)))
-            if target_namespace:
-                must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=target_namespace)))
-                
-            if relevant_centroids:
-                must_conditions.append(
-                    FieldCondition(key="centroid_id", match=MatchAny(any=relevant_centroids))
-                )
 
-            results = client.scroll(
-                collection_name=self._colbert_indexer.collection_name,
-                scroll_filter=Filter(must=must_conditions),
-                limit=512,
-                with_vectors=True
+        # --- Batch retrieval optimization (P0 Performance Improvement) ---
+        candidate_ids = [c[0] for c in candidates if c[0] in record_map]
+        if not candidate_ids:
+            return []
+
+        client = self.vectors._get_client()
+        # Filter by memory_id (batch) AND user/namespace for strict isolation
+        must_conditions = [
+            FieldCondition(key="memory_id", match=MatchAny(any=candidate_ids))
+        ]
+        if target_user:
+            must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=target_user)))
+        if target_namespace:
+            must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=target_namespace)))
+
+        if relevant_centroids:
+            must_conditions.append(
+                FieldCondition(key="centroid_id", match=MatchAny(any=relevant_centroids))
             )
-            
-            points = results[0]
-            if not points:
+
+        # Batch fetch document token embeddings
+        scroll_results = client.scroll(
+            collection_name=self._colbert_indexer.collection_name,
+            scroll_filter=Filter(must=must_conditions),
+            limit=2000,  # Max tokens to pull in one batch
+            with_vectors=True
+        )
+
+        points = scroll_results[0] if scroll_results else []
+
+        # Group token vectors by memory_id
+        token_groups = defaultdict(list)
+        for p in points:
+            mid = p.payload.get("memory_id")
+            if mid and p.vector is not None:
+                token_groups[mid].append(p.vector)
+
+        scored_candidates = []
+        for mem_id in candidate_ids:
+            vectors = token_groups.get(mem_id)
+            if not vectors:
                 # Fallback: maybe centroids didn't match, or not indexed yet?
-                # Or we can just score it as 0
                 scored_candidates.append((mem_id, 0.0))
                 continue
-                
-            doc_vectors = np.array([p.vector for p in points])
 
+            doc_vectors = np.array(vectors)
             if doc_vectors.size == 0:
                 scored_candidates.append((mem_id, 0.0))
                 continue
 
-            # 4. Compute MaxSim score on subset
+            # Compute MaxSim score on subset
             score = self._colbert_scorer.maxsim_score(query_vectors, doc_vectors)
             scored_candidates.append((mem_id, score))
 
         # Sort by ColBERT score
         ranked = sorted(scored_candidates, key=lambda x: x[1], reverse=True)[:limit]
-        
+
         # Build results
         results = []
         for doc_id, score in ranked:
@@ -774,7 +807,7 @@ class HybridRetriever:
                 source="hybrid+colbert",
                 trace=trace,
             ))
-            
+
         return results
 
     async def _get_embedding(self, text: str) -> List[float]:
