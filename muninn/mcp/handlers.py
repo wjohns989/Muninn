@@ -167,19 +167,12 @@ def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any]
         pass
 
     threading.Thread(
-        target=worker_fn, 
+        target=worker_fn,
         args=worker_args,
         daemon=True
     ).start()
-    
-    try:
-        from .state import _SESSION_STATE
-        with open("C:\\Users\\wjohn\\muninn_mcp\\mcp_debug.log", "a") as f:
-            f.write(f"CORE LOG: _SESSION_STATE['initialized'] is {_SESSION_STATE.get('initialized')}\n")
-            f.write(f"CORE LOG: Handling tools/call for {name} with task {task['taskId']}\n")
-            f.write(f"CORE LOG: task_snapshot: {task_snapshot}\n")
-    except Exception:
-        pass
+
+    logger.debug("Task accepted: tool=%s task_id=%s", name, task["taskId"])
 
     payload = {
         "task": task_snapshot,
@@ -190,12 +183,6 @@ def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any]
             )
         }
     }
-    try:
-        with open("C:\\Users\\wjohn\\muninn_mcp\\mcp_debug.log", "a") as f:
-            f.write(f"CORE LOG: Calling send_result_fn with payload: {payload}\n")
-    except Exception:
-        pass
-
     send_result_fn(msg_id, payload)
 
 def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any], send_notification_fn):
@@ -290,8 +277,11 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any], send_error_fn, s
         error = task.get("error")
 
     if error:
-        # Pass through the saved error
-        send_result_fn(msg_id, {"error": error})
+        # Relay task error through the JSON-RPC error channel, not the result channel.
+        # error dict contains {"code": int, "message": str} from set_task_state_locked.
+        err_code = error.get("code", -32603) if isinstance(error, dict) else -32603
+        err_msg = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+        send_error_fn(msg_id, err_code, err_msg)
         return
 
     if not isinstance(payload, dict):
@@ -500,9 +490,6 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=10)
     result = resp.json()
-
-    # Debug prints for test failure diagnosis
-    # print(f"DEBUG: auto={auto_project} success={result.get('success')} data={result.get('data')} env={env_flag('MUNINN_MCP_SEARCH_PROJECT_FALLBACK', True)}")
 
     from muninn.core.feature_flags import get_flags
     _flags = get_flags()
