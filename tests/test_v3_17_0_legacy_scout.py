@@ -184,6 +184,41 @@ class TestMuninnScout:
         # Should have been called at least twice (initial + fallback)
         assert mock_retriever.search.call_count >= 2
 
+    @pytest.mark.asyncio
+    async def test_fallback_does_not_use_broken_scope_filter(self):
+        """Fallback search must NOT pass filters={'scope': 'global'}.
+
+        'scope' is not a Qdrant payload field; using it would silently return 0
+        results, making the fallback a no-op.  The correct approach is to drop
+        the namespaces restriction (namespaces=None) so Qdrant searches all docs.
+        """
+        scout, mock_retriever = self._make_scout()
+        fallback_result = [_make_search_result("fb1", 0.5)]
+        mock_retriever.search = AsyncMock(side_effect=[[], fallback_result, fallback_result])
+        mock_retriever.metadata.get_by_ids.return_value = [_make_record("fb1")]
+
+        with patch("muninn.retrieval.scout.get_flags") as mock_flags:
+            flags = MagicMock()
+            flags.is_enabled.return_value = False
+            mock_flags.return_value = flags
+            await scout.hunt(query="rare query", limit=5, namespaces=["myproject"])
+
+        # Inspect the fallback call (second call, index 1)
+        assert mock_retriever.search.call_count >= 2
+        fallback_call = mock_retriever.search.call_args_list[1]
+        fallback_kwargs = fallback_call.kwargs
+
+        # Must NOT pass the broken scope filter
+        passed_filters = fallback_kwargs.get("filters") or {}
+        assert "scope" not in passed_filters, (
+            "Fallback search must not use filters={'scope': 'global'} — "
+            "'scope' is not a Qdrant payload field and would match nothing"
+        )
+        # Must pass namespaces=None to enable the global scope
+        assert fallback_kwargs.get("namespaces") is None, (
+            "Fallback search must use namespaces=None for unrestricted scope"
+        )
+
 
 # ===========================================================================
 # Class 2: TestVectorStoreMemoryIdsFilter — MatchAny batch filter
