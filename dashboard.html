@@ -574,9 +574,11 @@
             const namespace = document.getElementById('ingest-namespace').value || 'global';
             if (!content) return;
 
-            const data = await api('/ingest', 'POST', { content, namespace });
-            if (data.id) {
-                log(`Ingested memory: ${data.id}`);
+            // v3.18.1: Fixed endpoint from /ingest (file ingestion) to /add (single memory add)
+            const data = await api('/add', 'POST', { content, namespace, user_id: 'global_user' });
+            if (data.success && data.data) {
+                const memId = data.data.id || '(stored)';
+                log(`Ingested memory: ${memId}`);
                 document.getElementById('ingest-text').value = "";
                 updateStats();
             } else {
@@ -661,7 +663,8 @@
 
         async function forceConsolidation() {
             log("Forcing background consolidation...");
-            const data = await api('/maintenance/consolidate', 'POST');
+            // v3.18.1: Fixed endpoint from /maintenance/consolidate (non-existent) to /consolidation/run
+            const data = await api('/consolidation/run', 'POST');
             if (data.success) {
                 log("Consolidation cycle triggered successfully.");
             } else {
