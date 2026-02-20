@@ -55,6 +55,7 @@ from muninn.core.types import (
     MemoryType,
     Provenance,
 )
+from muninn.retrieval.synthesis import synthesize_hunt_results
 
 # Configure logging
 logging.basicConfig(
@@ -237,6 +238,7 @@ class HuntMemoryRequest(BaseModel):
     limit: int = 10
     depth: int = 2
     namespaces: Optional[List[str]] = None
+    synthesize: bool = False  # v3.18.0: optional LLM narration of discovery path
 
 
 # --- Security ---
@@ -465,7 +467,12 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
 
 @app.post("/search/hunt", dependencies=[Depends(verify_token)])
 async def hunt_memory_endpoint(req: HuntMemoryRequest):
-    """Perform agentic multi-hop retrieval to discover hidden context."""
+    """Perform agentic multi-hop retrieval to discover hidden context.
+
+    When ``synthesize=True`` and ANTHROPIC_API_KEY is configured, the response
+    includes a ``synthesis`` field: a brief LLM-generated narrative explaining
+    what was found and why.  Gracefully returns ``synthesis: ""`` on any failure.
+    """
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -479,7 +486,11 @@ async def hunt_memory_endpoint(req: HuntMemoryRequest):
             namespaces=req.namespaces,
         )
 
-        return {"success": True, "data": results}
+        synthesis = ""
+        if req.synthesize and results:
+            synthesis = await synthesize_hunt_results(req.query, results)
+
+        return {"success": True, "data": results, "synthesis": synthesis}
     except Exception as e:
         logger.error("Error hunting memories: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

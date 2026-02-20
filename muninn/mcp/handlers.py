@@ -522,9 +522,16 @@ def _do_hunt_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str
         "depth": args.get("depth", 2),
         "user_id": "global_user",
         "namespaces": args.get("namespaces"),
+        "synthesize": True,  # v3.18.1: always request LLM synthesis for richer tool output
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/search/hunt", deadline_epoch=deadline, json=payload, timeout=20)
-    return resp.json()
+    result = resp.json()
+    # Surface synthesis narrative: format_tool_result_text only reads result["data"],
+    # so inject synthesis as the first element of the list for LLM visibility.
+    synthesis = result.get("synthesis", "")
+    if synthesis and isinstance(result.get("data"), list):
+        result["data"] = [{"synthesis_narrative": synthesis}] + result["data"]
+    return result
 
 def _do_get_all_memories(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     params = {"user_id": "global_user", "limit": args.get("limit", 100)}
