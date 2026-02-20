@@ -56,6 +56,7 @@ def _provider_specs(home: Path, roots: Sequence[Path]) -> List[Dict[str, object]
     appdata = _env_path("APPDATA", home / "AppData" / "Roaming")
     localapp = _env_path("LOCALAPPDATA", home / "AppData" / "Local")
     xdg_config = _env_path("XDG_CONFIG_HOME", home / ".config")
+    xdg_data = _env_path("XDG_DATA_HOME", home / ".local" / "share")
     mac_app_support = home / "Library" / "Application Support"
 
     specs: List[Dict[str, object]] = [
@@ -64,24 +65,31 @@ def _provider_specs(home: Path, roots: Sequence[Path]) -> List[Dict[str, object]
             "category": "assistant_chat",
             "patterns": [
                 home / ".codex" / "history.jsonl",
+                # Sessions are stored under ~/.codex/sessions/YYYY/MM/DD/rollout-<id>.jsonl
                 home / ".codex" / "sessions" / "**" / "*.jsonl",
             ],
             "confidence": "high",
-            "notes": "Codex CLI session and history files",
+            "notes": "Codex CLI session transcripts (YYYY/MM/DD/rollout-*.jsonl) and history index",
         },
         {
             "provider": "claude_code",
             "category": "assistant_chat",
             "patterns": [home / ".claude" / "projects" / "**" / "*.jsonl"],
             "confidence": "high",
-            "notes": "Claude Code project transcripts",
+            "notes": "Claude Code project transcripts (one JSONL file per session UUID)",
         },
         {
             "provider": "gemini_cli",
             "category": "assistant_chat",
-            "patterns": [home / ".gemini" / "**" / "*.jsonl", home / ".gemini" / "**" / "*.json"],
+            "patterns": [
+                # Saved sessions: ~/.gemini/tmp/<project-hash>/chats/<uuid>.json
+                home / ".gemini" / "tmp" / "**" / "chats" / "*.json",
+                # Fallback: any other JSONL/JSON artifacts under ~/.gemini/
+                home / ".gemini" / "**" / "*.jsonl",
+                home / ".gemini" / "**" / "*.json",
+            ],
             "confidence": "medium",
-            "notes": "Gemini CLI settings/session artifacts",
+            "notes": "Gemini CLI saved sessions (tmp/<hash>/chats/) and other artifacts",
         },
         {
             "provider": "antigravity_brain",
@@ -176,7 +184,62 @@ def _provider_specs(home: Path, roots: Sequence[Path]) -> List[Dict[str, object]
                 mac_app_support / "ChatGPT" / "**" / "*.jsonl",
             ],
             "confidence": "low",
-            "notes": "ChatGPT desktop local artifacts (layout may vary)",
+            "notes": "ChatGPT desktop local artifacts (layout may vary; primary storage is cloud)",
+        },
+        # --- Aider ---
+        # Aider writes .aider.chat.history.md in the project directory where it
+        # is invoked.  We cannot enumerate every possible project directory, so
+        # we scan ~/.aider.* (rare home-dir runs) here.  Users should add
+        # project roots via the custom_roots field to pick up per-project files.
+        {
+            "provider": "aider_chat",
+            "category": "assistant_chat",
+            "patterns": [
+                home / ".aider.chat.history.md",
+                home / ".aider.input.history",
+                home / ".aider.llm.history.txt",
+            ],
+            "confidence": "high",
+            "notes": (
+                "Aider home-dir chat history. "
+                "Per-project .aider.chat.history.md files require adding project roots via custom_roots."
+            ),
+        },
+        # --- Continue.dev ---
+        # Continue.dev stores interaction event telemetry in ~/.continue/dev_data/*.jsonl.
+        # Full conversation transcripts are session-only (not persisted) as of early 2026.
+        {
+            "provider": "continue_dev",
+            "category": "assistant_chat",
+            "patterns": [
+                home / ".continue" / "dev_data" / "*.jsonl",
+            ],
+            "confidence": "medium",
+            "notes": (
+                "Continue.dev interaction telemetry (dev_data/*.jsonl). "
+                "Contains prompt/completion events, not full conversation transcripts."
+            ),
+        },
+        # --- Zed AI ---
+        # Zed has two AI history stores:
+        #   1. Text Threads (legacy): conversations/<title>.zed  – plain-text role/separator format
+        #   2. Agent Panel (current): threads/threads.db          – SQLite database
+        {
+            "provider": "zed_ai",
+            "category": "assistant_chat",
+            "patterns": [
+                # macOS
+                mac_app_support / "Zed" / "conversations" / "*.zed",
+                mac_app_support / "Zed" / "threads" / "threads.db",
+                # Linux (XDG)
+                xdg_data / "Zed" / "conversations" / "*.zed",
+                xdg_data / "Zed" / "threads" / "threads.db",
+                # Windows
+                localapp / "Zed" / "conversations" / "*.zed",
+                localapp / "Zed" / "threads" / "threads.db",
+            ],
+            "confidence": "high",
+            "notes": "Zed AI text thread conversations (.zed) and agent panel thread database",
         },
     ]
 
