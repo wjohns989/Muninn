@@ -1162,6 +1162,24 @@ class MuninnMemory:
             raise RuntimeError("Ingestion pipeline is unavailable")
         return self._ingestion
 
+    def _require_discovery_pipeline(self) -> IngestionPipeline:
+        """Return an IngestionPipeline suitable for path validation during discovery.
+
+        Unlike ``_require_ingestion_pipeline()``, this method does NOT check the
+        ``multi_source_ingestion`` feature flag.  Legacy-source discovery is a
+        read-only filesystem scan and must always be available to the UI so users
+        can see what data exists before deciding whether to enable ingestion.
+
+        When the full pipeline has been initialised (flag enabled) it is returned
+        as-is, preserving any custom allowed_roots configured at startup.  When
+        the pipeline is absent (flag disabled), a minimal pipeline is constructed
+        using the default allowed-roots (home, cwd, tempdir) for path-allow-list
+        enforcement only — no workers are started and no actual ingestion occurs.
+        """
+        if self._ingestion is not None:
+            return self._ingestion
+        return IngestionPipeline()
+
     def _normalize_discovery_roots(
         self,
         *,
@@ -1323,7 +1341,10 @@ class MuninnMemory:
         max_results_per_provider: int = 100,
     ) -> Dict[str, Any]:
         self._check_initialized()
-        ingestion = self._require_ingestion_pipeline()
+        # Discovery is read-only: use _require_discovery_pipeline() which does
+        # NOT enforce the multi_source_ingestion feature flag, so users can see
+        # what data is available even before enabling ingestion.
+        ingestion = self._require_discovery_pipeline()
         normalized_roots = self._normalize_discovery_roots(
             ingestion=ingestion,
             roots=roots,

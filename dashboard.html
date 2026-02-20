@@ -609,12 +609,16 @@
                 <tr>
                   <th>Import</th>
                   <th>Provider</th>
-                  <th>Status</th>
+                  <th>Parser</th>
+                  <th>Confidence</th>
+                  <th>Size</th>
+                  <th>Modified</th>
                   <th>Path</th>
+                  <th>Notes</th>
                 </tr>
               </thead>
               <tbody id="legacy-table-body">
-                <tr><td colspan="4" style="text-align:center; color: var(--text-muted);">No scan results yet.</td></tr>
+                <tr><td colspan="8" style="text-align:center; color: var(--text-muted);">No scan results yet. Click "Scan for Data" to discover sources.</td></tr>
               </tbody>
             </table>
           </div>
@@ -760,7 +764,12 @@
       const log = document.getElementById("activity-log");
       const div = document.createElement("div");
       div.className = `log-entry ${level}`;
-      div.innerHTML = `<span class="timestamp">[${nowStamp()}]</span> ${message}`;
+      // Build with DOM nodes so neither the timestamp nor the message can inject HTML.
+      const stamp = document.createElement("span");
+      stamp.className = "timestamp";
+      stamp.textContent = `[${nowStamp()}]`;
+      div.appendChild(stamp);
+      div.appendChild(document.createTextNode(` ${message}`));
       log.prepend(div);
     }
 
@@ -969,8 +978,17 @@
             const div = document.createElement("div");
             div.style.padding = "12px";
             div.style.borderBottom = "1px solid var(--border)";
-            div.innerHTML = `<div style="font-weight:600; margin-bottom:4px;">${item.content ? item.content.substring(0, 100) + "..." : "Memory"}</div>
-                             <div style="font-size:0.8rem; color:var(--text-muted);">Score: ${item.score?.toFixed(2)}</div>`;
+            // Use DOM text nodes — item.content may contain HTML from stored memories (Stored XSS prevention).
+            const titleDiv = document.createElement("div");
+            titleDiv.style.fontWeight = "600";
+            titleDiv.style.marginBottom = "4px";
+            titleDiv.textContent = item.content ? item.content.substring(0, 120) + "…" : "(no content)";
+            const scoreDiv = document.createElement("div");
+            scoreDiv.style.fontSize = "0.8rem";
+            scoreDiv.style.color = "var(--text-muted)";
+            scoreDiv.textContent = `Score: ${item.score != null ? Number(item.score).toFixed(3) : "—"}`;
+            div.appendChild(titleDiv);
+            div.appendChild(scoreDiv);
             resEl.appendChild(div);
           });
         } else {
@@ -1009,37 +1027,99 @@
     }
 
     async function discoverLegacySources() {
-      logLine("Scanning for legacy sources...");
+      const btnScan = document.getElementById("btn-discover-legacy");
+      const resultEl = document.getElementById("legacy-result");
+      btnScan.disabled = true;
+      btnScan.textContent = "Scanning…";
+      resultEl.innerHTML = `<span style="color:var(--text-muted);">Scanning filesystem for AI assistant data…</span>`;
+      logLine("Scanning for legacy sources…");
       try {
+        const maxResults = parseInt(document.getElementById("legacy-max-results").value || "120", 10);
+        const includeUnsupported = document.getElementById("legacy-include-unsupported").checked;
         const payload = {
           roots: parseLines(document.getElementById("legacy-roots").value),
           providers: parseLines(document.getElementById("legacy-providers").value),
-          include_unsupported: false,
-          max_results_per_provider: 50
+          include_unsupported: includeUnsupported,
+          max_results_per_provider: maxResults,
         };
         const res = await apiRequest("/ingest/legacy/discover", payload);
         legacyCatalog = res.sources || [];
         renderLegacyTable();
-        logLine(`Found ${res.total_discovered || 0} sources.`);
+        const summary = `Found ${res.total_discovered || 0} sources (${res.parser_supported || 0} importable) across ${Object.keys(res.provider_counts || {}).length} providers.`;
+        resultEl.innerHTML = `<span style="color:var(--success);">${summary}</span>`;
+        logLine(summary, "ok");
       } catch (err) {
+        resultEl.innerHTML = `<span style="color:var(--error);">Discovery failed: ${err.message}</span>`;
         logLine(`Discovery failed: ${err.message}`, "err");
+      } finally {
+        btnScan.disabled = false;
+        btnScan.textContent = "Scan for Data";
       }
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return "0 B";
+      const units = ["B", "KB", "MB", "GB"];
+      const i = Math.floor(Math.log(bytes) / Math.log(1024));
+      return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + " " + units[i];
+    }
+
+    function formatModified(isoStr) {
+      if (!isoStr) return "—";
+      try {
+        const d = new Date(isoStr);
+        const now = new Date();
+        const diffMs = now - d;
+        const diffDays = Math.floor(diffMs / 86400000);
+        if (diffDays === 0) return "Today";
+        if (diffDays === 1) return "Yesterday";
+        if (diffDays < 30) return `${diffDays}d ago`;
+        if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
+        return `${Math.floor(diffDays / 365)}yr ago`;
+      } catch { return "—"; }
+    }
+
+    function confidenceBadge(conf) {
+      const colors = { high: "var(--success)", medium: "var(--warning, #f59e0b)", low: "var(--error)", manual: "var(--primary)" };
+      const color = colors[conf] || "var(--text-muted)";
+      return `<span style="color:${color}; font-weight:600; text-transform:capitalize;">${conf || "—"}</span>`;
     }
 
     function renderLegacyTable() {
       const tbody = document.getElementById("legacy-table-body");
       tbody.innerHTML = "";
       if (!legacyCatalog.length) {
-        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color: var(--text-muted);">No sources found.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color: var(--text-muted);">No sources found. Try "Scan for Data".</td></tr>`;
         return;
       }
+      // Helper: escape HTML entities (defense-in-depth for server-provided strings).
+      function esc(s) {
+        return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+      }
+
       legacyCatalog.forEach(src => {
         const tr = document.createElement("tr");
+        const supported = !!src.parser_supported;
+        // Cells that contain only our own safe HTML (hardcoded strings, no user data).
+        const parserCell = supported
+          ? `<span style="color:var(--success)">&#10003; Supported</span>`
+          : `<span style="color:var(--error)">&#10007; Unsupported</span>`;
+        // All server-supplied string fields are escaped before embedding in HTML.
+        const escapedProvider = esc(src.provider);
+        const escapedPath     = esc(src.path);
+        const escapedNotes    = esc(src.notes);
+        const escapedIso      = esc(src.modified_at_iso);
+        const escapedId       = esc(src.source_id);
+        const escapedConf     = esc(src.confidence);
         tr.innerHTML = `
-          <td><input type="checkbox" data-id="${src.source_id}" ${src.parser_supported ? "" : "disabled"}></td>
-          <td>${src.provider}</td>
-          <td>${src.parser_supported ? '<span style="color:var(--success)">Supported</span>' : '<span style="color:var(--error)">Unsupported</span>'}</td>
-          <td style="font-family:var(--font-mono); font-size:0.8rem;">${src.path}</td>
+          <td><input type="checkbox" data-id="${escapedId}" ${supported ? "" : "disabled"} title="${supported ? "Select to import" : "Parser not supported for this file type"}"></td>
+          <td style="white-space:nowrap;">${escapedProvider || "—"}</td>
+          <td style="white-space:nowrap;">${parserCell}</td>
+          <td style="white-space:nowrap;">${confidenceBadge(escapedConf)}</td>
+          <td style="white-space:nowrap; text-align:right;">${formatBytes(src.size_bytes)}</td>
+          <td style="white-space:nowrap;" title="${escapedIso}">${formatModified(src.modified_at_iso)}</td>
+          <td style="font-family:var(--font-mono); font-size:0.75rem; max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapedPath}">${escapedPath}</td>
+          <td style="font-size:0.8rem; color:var(--text-muted); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapedNotes}">${escapedNotes || "—"}</td>
         `;
         tbody.appendChild(tr);
       });
@@ -1051,20 +1131,44 @@
 
     async function importSelectedLegacy() {
       const ids = selectedLegacyIds();
-      if (!ids.length) { alert("No sources selected."); return; }
-      
-      logLine(`Importing ${ids.length} legacy sources...`);
+      if (!ids.length) { alert("Select at least one source to import."); return; }
+
+      const btnImport = document.getElementById("btn-import-legacy");
+      const resultEl = document.getElementById("legacy-result");
+      btnImport.disabled = true;
+      btnImport.textContent = `Importing ${ids.length}…`;
+      resultEl.innerHTML = `<span style="color:var(--text-muted);">Importing ${ids.length} source(s)…</span>`;
+      logLine(`Importing ${ids.length} legacy source(s)…`);
+
+      // Read project/namespace from the hidden inputs (populated by PREF_FIELDS / loadPreferences).
+      const project   = document.getElementById("legacy-project").value   || "global";
+      const namespace = document.getElementById("legacy-namespace").value || "global";
+      const roots     = parseLines(document.getElementById("legacy-roots").value);
+      const chrono    = document.getElementById("legacy-chronological").value || "none";
+
       try {
         const res = await apiRequest("/ingest/legacy/import", {
           selected_source_ids: ids,
           user_id: "global_user",
-          project: "global",
-          metadata: { source: "browser_ui_legacy" }
+          project,
+          namespace,
+          roots,
+          chronological_order: chrono,
+          metadata: { source: "browser_ui_legacy" },
         });
-        logLine(`Imported ${res.added_memories || 0} memories.`, "ok");
+        const added   = res.added_memories   || 0;
+        const skipped = res.skipped_chunks   || 0;
+        const failed  = res.failed_chunks    || 0;
+        const summary = `Import complete: ${added} memories added, ${skipped} skipped, ${failed} failed.`;
+        resultEl.innerHTML = `<span style="color:var(--success);">${summary}</span>`;
+        logLine(summary, "ok");
         refreshHealth();
       } catch (err) {
+        resultEl.innerHTML = `<span style="color:var(--error);">Import failed: ${err.message}</span>`;
         logLine(`Import failed: ${err.message}`, "err");
+      } finally {
+        btnImport.disabled = false;
+        btnImport.textContent = "Import Selected";
       }
     }
 
