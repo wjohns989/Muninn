@@ -424,6 +424,39 @@ class GraphStore:
             pass
         return 0.0
 
+    def get_memory_node_degrees_batch(self, memory_ids: List[str]) -> Dict[str, float]:
+        """Get degree centrality for multiple Memory nodes in a single batch query.
+
+        Returns:
+            Dict[str, float] mapping memory_id to normalized degree [0.0, 1.0].
+        """
+        if not memory_ids:
+            return {}
+
+        conn = self._get_conn()
+        results = {}
+        try:
+            # We use list_contains for batch matching in Kuzu
+            query = """
+                MATCH (m:Memory)-[r]-()
+                WHERE list_contains($ids, m.id)
+                RETURN m.id, COUNT(r)
+            """
+            result = conn.execute(query, {"ids": memory_ids})
+            while result.has_next():
+                row = result.get_next()
+                mid, degree = row[0], row[1]
+                # Normalize: log scale capped at 1.0, baseline of 20 relations = 1.0
+                results[mid] = min(1.0, math.log1p(degree) / math.log1p(20))
+        except Exception as e:
+            logger.debug(f"Batch degree lookup failed: {e}")
+
+        # Ensure all requested IDs are in the output (default 0.0)
+        for mid in memory_ids:
+            if mid not in results:
+                results[mid] = 0.0
+        return results
+
     def get_entity_count(self) -> int:
         conn = self._get_conn()
         try:
