@@ -227,6 +227,20 @@
         }
         button { cursor: pointer; transition: opacity 0.2s; }
         button:hover { opacity: 0.9; }
+
+        /* Legacy Table Styles */
+        .legacy-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+            font-size: 0.85rem;
+        }
+        .legacy-table th { text-align: left; padding: 0.75rem; border-bottom: 1px solid var(--slate-700); color: var(--slate-400); }
+        .legacy-table td { padding: 0.75rem; border-bottom: 1px solid var(--glass-border); }
+        .legacy-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+        .badge-high { background: rgba(16, 185, 129, 0.2); color: var(--emerald-500); }
+        .badge-medium { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+        .badge-low { background: rgba(244, 63, 94, 0.2); color: var(--rose-500); }
     </style>
 </head>
 <body>
@@ -300,7 +314,7 @@
 
                 <div class="card">
                     <h3>Recent Activity</h3>
-                    <div id="activity-log" style="margin-top: 1rem; font-family: monospace; font-size: 0.85rem; color: var(--slate-400);">
+                    <div id="activity-log" style="margin-top: 1rem; font-family: monospace; font-size: 0.85rem; color: var(--slate-400); max-height: 200px; overflow-y: auto;">
                         Muninn Hub initialized. Waiting for telemetry...
                     </div>
                 </div>
@@ -336,7 +350,19 @@
                             <input id="ingest-url" type="text" placeholder="https://..." style="width: 100%;">
                         </div>
                     </div>
-                    <button onclick="handleDiscovery()" class="search-btn" style="position: static; margin-top: 1rem; width: 100%; background: var(--slate-800); border: 1px solid var(--glass-border);">Discover & Ingest</button>
+                    <button onclick="handleDiscovery()" id="discovery-btn" class="search-btn" style="position: static; margin-top: 1rem; width: 100%; background: var(--slate-800); border: 1px solid var(--glass-border);">Discover & Ingest</button>
+                </div>
+
+                <div class="card" id="legacy-section">
+                    <h3>Legacy Assistant Discovery</h3>
+                    <div class="help-box">
+                        <b>🕵️ Scan for Chats</b>
+                        Find chat histories from Claude, VS Code, Cursor, and more.
+                    </div>
+                    <button onclick="discoverLegacySources()" id="scan-btn" style="padding: 0.75rem 1rem; background: var(--sky-500); border: none; color: white; border-radius: 6px; font-weight: 600;">Scan Filesystem</button>
+                    <div id="legacy-results" style="margin-top: 1rem; overflow-x: auto;">
+                        <!-- Legacy items table here -->
+                    </div>
                 </div>
             </div>
 
@@ -390,9 +416,21 @@
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
             
-            document.getElementById('tab-' + tabId).classList.add('active');
-            event.currentTarget.classList.add('active');
+            const activeTab = document.getElementById('tab-' + tabId);
+            if (activeTab) activeTab.classList.add('active');
+            
+            const activeNav = document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
+            if (activeNav) activeNav.classList.add('active');
+            
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
+        }
+
+        function log(msg) {
+            const logDiv = document.getElementById('activity-log');
+            const time = new Date().toLocaleTimeString();
+            const line = document.createElement('div');
+            line.textContent = `[${time}] ${msg}`;
+            logDiv.prepend(line);
         }
 
         async function api(endpoint, method = 'GET', body = null) {
@@ -432,7 +470,7 @@
             }
 
             resultsDiv.innerHTML = "";
-            if (data.results.length === 0) {
+            if (!data.results || data.results.length === 0) {
                 resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--slate-400);">No relevant memories found.</div>';
                 return;
             }
@@ -447,10 +485,12 @@
                         <span class="result-tag">${r.memory.memory_type}</span>
                         <span>${r.memory.namespace || 'global'}</span>
                     </div>
-                    <div class="result-content">${r.memory.content}</div>
+                    <div class="result-content"></div>
                 `;
+                item.querySelector('.result-content').textContent = r.memory.content;
                 resultsDiv.appendChild(item);
             });
+            log(`Searched for: "${query}" (${data.results.length} hits)`);
         }
 
         async function handleIngest() {
@@ -460,7 +500,7 @@
 
             const data = await api('/ingest', 'POST', { content, namespace });
             if (data.id) {
-                alert('Memory stored successfully!');
+                log(`Ingested memory: ${data.id}`);
                 document.getElementById('ingest-text').value = "";
                 updateStats();
             } else {
@@ -468,9 +508,95 @@
             }
         }
 
+        async function handleDiscovery() {
+            const path = document.getElementById('ingest-path').value;
+            const url = document.getElementById('ingest-url').value;
+            const btn = document.getElementById('discovery-btn');
+            
+            if (!path && !url) return;
+            btn.disabled = true;
+            btn.textContent = "Discovering...";
+
+            const sources = [];
+            if (path) sources.push(path);
+            if (url) sources.push(url);
+
+            const data = await api('/ingest', 'POST', { sources, recursive: true });
+            btn.disabled = false;
+            btn.textContent = "Discover & Ingest";
+
+            if (data.count > 0) {
+                log(`Discovered ${data.count} memories from sources.`);
+                updateStats();
+            } else {
+                log(`Discovery failed or no new data found: ${data.error || '0 items'}`);
+            }
+        }
+
+        async function discoverLegacySources() {
+            const btn = document.getElementById('scan-btn');
+            const resDiv = document.getElementById('legacy-results');
+            btn.disabled = true;
+            btn.textContent = "Scanning...";
+            resDiv.innerHTML = "Looking for lost knowledge...";
+
+            const data = await api('/ingest/legacy/discover', 'POST', {});
+            btn.disabled = false;
+            btn.textContent = "Scan Filesystem";
+
+            if (data.error) {
+                resDiv.innerHTML = `Error: ${data.error}`;
+                return;
+            }
+
+            if (!data.sources || data.sources.length === 0) {
+                resDiv.innerHTML = "No legacy sources found.";
+                return;
+            }
+
+            let html = `<table class="legacy-table">
+                <thead><tr><th>Provider</th><th>Path</th><th>Confidence</th><th>Actions</th></tr></thead>
+                <tbody>`;
+            
+            data.sources.forEach(s => {
+                const confClass = `badge-${s.confidence}`;
+                html += `<tr>
+                    <td>${s.provider}</td>
+                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${s.path}">${s.path}</td>
+                    <td><span class="legacy-badge ${confClass}">${s.confidence}</span></td>
+                    <td><button onclick="importLegacy('${s.source_id}')" style="background: var(--slate-800); border: 1px solid var(--sky-400); color: var(--sky-400); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;">Import</button></td>
+                </tr>`;
+            });
+            html += `</tbody></table>`;
+            resDiv.innerHTML = html;
+            log(`Discovered ${data.sources.length} legacy sources.`);
+        }
+
+        async function importLegacy(sourceId) {
+            log(`Importing legacy source: ${sourceId}`);
+            const data = await api('/ingest/legacy/import', 'POST', { selected_source_ids: [sourceId] });
+            if (data.count > 0) {
+                log(`Successfully imported ${data.count} items.`);
+                updateStats();
+            } else {
+                alert(`Import failed: ${data.error}`);
+            }
+        }
+
+        async function forceConsolidation() {
+            log("Forcing background consolidation...");
+            const data = await api('/maintenance/consolidate', 'POST');
+            if (data.success) {
+                log("Consolidation cycle triggered successfully.");
+            } else {
+                log(`Consolidation failed: ${data.error}`);
+            }
+        }
+
         function applyToken() {
             AUTH_TOKEN = document.getElementById('server-token').value;
             localStorage.setItem('muninn_token', AUTH_TOKEN);
+            log("Auth token updated.");
             checkHealth();
         }
 

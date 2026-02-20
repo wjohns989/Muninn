@@ -38,6 +38,7 @@ from muninn.store.graph_store import GraphStore
 from muninn.retrieval.bm25 import BM25Index
 from muninn.retrieval.reranker import Reranker
 from muninn.retrieval.hybrid import HybridRetriever
+from muninn.retrieval.scout import MuninnScout
 from muninn.extraction.pipeline import ExtractionPipeline
 from muninn.scoring.importance import calculate_importance, calculate_novelty
 from muninn.consolidation.daemon import ConsolidationDaemon
@@ -98,6 +99,7 @@ class MuninnMemory:
         # Engines
         self._extraction: Optional[ExtractionPipeline] = None
         self._retriever: Optional[HybridRetriever] = None
+        self._scout: Optional[MuninnScout] = None
         self._reranker: Optional[Reranker] = None
         self._consolidation: Optional[ConsolidationDaemon] = None
         self._goal_compass: Optional[GoalCompass] = None
@@ -201,6 +203,9 @@ class MuninnMemory:
             chain_expansion_limit=self.config.memory_chains.retrieval_expansion_limit,
             chain_max_seed_memories=self.config.memory_chains.retrieval_seed_limit,
         )
+
+        # Initialize Scout (Phase 18+)
+        self._scout = MuninnScout(self._retriever)
 
         # Initialize consolidation daemon
         self._consolidation = ConsolidationDaemon(
@@ -729,6 +734,55 @@ class MuninnMemory:
                         item["goal_drift_warning"] = goal_alignment["reminder"]
                 output.append(item)
             self._otel.add_event("muninn.search.result", {"result_count": len(output)})
+            return output
+
+    async def hunt(
+        self,
+        query: str,
+        user_id: str = "global_user",
+        agent_id: Optional[str] = None,
+        limit: int = 10,
+        depth: int = 2,
+        namespaces: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform an agentic multi-hop search to discover hidden context.
+        """
+        self._check_initialized()
+        if self._scout is None:
+            raise RuntimeError("Scout engine not initialized")
+
+        with self._otel.span(
+            "muninn.memory.hunt",
+            {
+                "gen_ai.operation.name": "memory.hunt",
+                "gen_ai.system": "muninn",
+                "muninn.user_id": user_id,
+                "muninn.limit": limit,
+                "muninn.depth": depth,
+            },
+        ):
+            results = await self._scout.hunt(
+                query=query,
+                limit=limit,
+                user_id=user_id,
+                namespaces=namespaces,
+                depth=depth,
+            )
+
+            output = []
+            for r in results:
+                output.append({
+                    "id": r.memory.id,
+                    "memory": r.memory.content,
+                    "score": r.score,
+                    "source": r.source,
+                    "memory_type": r.memory.memory_type.value,
+                    "importance": r.memory.importance,
+                    "metadata": r.memory.metadata,
+                })
+            
+            self._otel.add_event("muninn.hunt.result", {"result_count": len(output)})
             return output
 
     async def get_all(
@@ -1644,11 +1698,16 @@ class MuninnMemory:
                 ns = record.namespace or "global"
                 self._bm25.add(record.id, data, user_id=uid, namespace=ns)
 
+            def _update_colbert():
+                if getattr(self, "_colbert_indexer", None):
+                    self._colbert_indexer.index_text(record.id, data)
+
             await asyncio.gather(
                 asyncio.to_thread(_update_metadata),
                 asyncio.to_thread(_update_vectors),
                 asyncio.to_thread(_update_graph),
                 asyncio.to_thread(_update_bm25),
+                asyncio.to_thread(_update_colbert),
             )
 
             chain_links_created = await asyncio.to_thread(
