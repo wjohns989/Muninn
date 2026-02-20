@@ -865,15 +865,19 @@ class TestVersionBump314:
 
     def test_version_module_is_314(self):
         from muninn.version import __version__
-        assert __version__ == "3.14.0", (
-            f"Expected 3.14.0, got {__version__}. "
-            "Did you forget to update muninn/version.py?"
+        parts = tuple(int(x) for x in __version__.split("."))
+        assert parts >= (3, 14, 0), (
+            f"Expected >= 3.14.0, got {__version__}."
         )
 
     def test_pyproject_toml_version_matches(self):
+        import re
         pyproject = _REPO_ROOT / "pyproject.toml"
         assert pyproject.exists()
         content = pyproject.read_text(encoding="utf-8")
-        assert 'version = "3.14.0"' in content, (
-            "pyproject.toml version not updated to 3.14.0"
+        m = re.search(r'^version\s*=\s*"([\d.]+)"', content, re.MULTILINE)
+        assert m is not None
+        from muninn.version import __version__
+        assert m.group(1) == __version__, (
+            f"pyproject.toml ({m.group(1)}) must match version.py ({__version__})"
         )
