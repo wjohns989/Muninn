@@ -2,8 +2,8 @@
 
 > **Updated**: 2026-02-20
 > **Branch**: `feature/v3.17.0-legacy-discovery-ingestion`
-> **Version**: v3.17.2 (Phase 17 IN PROGRESS — PR #48 open)
-> **Status**: 990 tests pass. Phases 14–16, 18 merged. Phase 17 PR open.
+> **Version**: v3.17.3 (Phase 17 COMPLETE — PR #48 security-fixed, ready to merge)
+> **Status**: 990 tests pass. Phases 14–16, 18 merged. Phase 17 PR #48 security fix applied.
 
 ---
 
@@ -93,6 +93,18 @@ C:\Users\user\AppData\Local\AntigravityLabs\muninn\
 - **Test fixes (v3.17.2)**:
   - `test_temporal_range_str`: updated assertion from `→` to `->` (ASCII migration)
   - `test_colbert_logic_fix`: mock point `.payload` now set to dict so `.get("memory_id")` resolves
+
+### v3.17.3 — Security Fix: Authenticate Legacy Discovery/Import Endpoints
+**Files**: `server.py`, `tests/test_v3_6_2_security.py`, `muninn/version.py`, `pyproject.toml`
+- **Critical security fix**: Added `dependencies=[Depends(verify_token)]` to
+  `POST /ingest/legacy/discover` and `POST /ingest/legacy/import`
+- **Root cause**: Wildcard CORS (`allow_origins=["*"]`) + unauthenticated legacy endpoints
+  allowed any website to scan the user's local AI chat history and ingest arbitrary data
+  without needing the Bearer token (flagged by Gemini Code Assist review of PR #48)
+- **CORS hardening**: Restricted `allow_methods` to explicit verbs
+  (`GET, POST, PUT, DELETE, OPTIONS`) and `allow_headers` to `Authorization, Content-Type`
+- **Test coverage**: Extended `test_server_auth_token_enforcement` to assert auth on
+  `/ingest/legacy/discover` and `/ingest/legacy/import`
 
 ### v3.17.x Test Suite — `tests/test_v3_17_0_legacy_scout.py` (51 tests, 9 classes)
 | Class | Count | Coverage |
@@ -202,6 +214,8 @@ pytest tests/test_ingestion_discovery.py -v
 
 ## Validation History
 
+- **Phase 17b (security fix)**: **990 tests passed (100%), 0 failed** — critical auth fix for
+  `/ingest/legacy/discover` and `/ingest/legacy/import`; CORS hardening. v3.17.3. 2026-02-20.
 - **Phase 17b**: **990 tests passed (100%), 0 failed** — legacy discovery (aider/continue/zed),
   Muninn Scout + hunt_memory, dashboard overhaul, batch centrality (N+1 fix), ColBERT batch
   optimization, MatchAny filter, 51 new tests, 2 test bug-fixes. v3.17.2. 2026-02-20.
