@@ -230,6 +230,15 @@ class SetModelProfilesRequest(BaseModel):
     source: str = "api"
 
 
+class HuntMemoryRequest(BaseModel):
+    query: str
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    limit: int = 10
+    depth: int = 2
+    namespaces: Optional[List[str]] = None
+
+
 # --- Security ---
 security = HTTPBearer(auto_error=False)
 
@@ -283,13 +292,21 @@ app = FastAPI(
 )
 
 # --- CORS ---
+# Security design: Muninn runs on localhost only and all data-mutating endpoints
+# require a Bearer token (Depends(verify_token)).  The wildcard origin is needed
+# so the static dashboard (opened as file:// or from a different local port) can
+# reach the API.  Per the Fetch spec, wildcard origins CANNOT be combined with
+# allow_credentials=True, so session cookies are not usable — this is intentional.
+# Authentication is Bearer-token only (Authorization header), which browsers do
+# NOT send automatically; no cross-site request forgery is possible.
+# allow_methods is restricted to the verbs actually used by the server.
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow local dashboard via file:// or other ports
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 DASHBOARD_HTML_PATH = Path(__file__).with_name("dashboard.html")
@@ -443,6 +460,28 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
         return {"success": True, "data": results}
     except Exception as e:
         logger.error("Error searching memories: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search/hunt", dependencies=[Depends(verify_token)])
+async def hunt_memory_endpoint(req: HuntMemoryRequest):
+    """Perform agentic multi-hop retrieval to discover hidden context."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        results = await memory.hunt(
+            query=req.query,
+            user_id=req.user_id or "global_user",
+            agent_id=req.agent_id,
+            limit=req.limit,
+            depth=req.depth,
+            namespaces=req.namespaces,
+        )
+
+        return {"success": True, "data": results}
+    except Exception as e:
+        logger.error("Error hunting memories: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -687,7 +726,7 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/ingest/legacy/discover")
+@app.post("/ingest/legacy/discover", dependencies=[Depends(verify_token)])
 async def discover_legacy_sources_endpoint(req: DiscoverLegacySourcesRequest):
     """Discover local legacy assistant/MCP memory artifacts available for import."""
     if memory is None:
@@ -706,7 +745,7 @@ async def discover_legacy_sources_endpoint(req: DiscoverLegacySourcesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/ingest/legacy/import")
+@app.post("/ingest/legacy/import", dependencies=[Depends(verify_token)])
 async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
     """Ingest user-selected legacy assistant/MCP sources with contextual metadata."""
     if memory is None:

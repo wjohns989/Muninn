@@ -757,7 +757,7 @@ def test_temporal_range_str():
     s = str(tr)
     assert "TimeRange(" in s
     assert "UTC" in s
-    assert "→" in s
+    assert "->" in s
 
 
 # ---------------------------------------------------------------------------

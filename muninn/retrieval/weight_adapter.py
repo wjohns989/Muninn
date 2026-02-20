@@ -309,10 +309,15 @@ class WeightAdapter:
             ratio = weight / base_w
             if abs(ratio - 1.0) < 0.01:
                 explanations[signal] = f"{signal}: unchanged ({weight:.3f})"
-            elif ratio > 1.0:
+            elif ratio > 1.05:
                 explanations[signal] = (
-                    f"{signal}: boosted {ratio:.1f}x → {weight:.3f} "
-                    f"(from {base_w:.3f})"
+                    f"{signal}: boosted {ratio:.1f}x -> {weight:.3f} "
+                    f"(high discriminative power)"
+                )
+            elif ratio < 0.95:
+                explanations[signal] = (
+                    f"{signal}: reduced {ratio:.1f}x -> {weight:.3f} "
+                    f"(low discriminative power)"
                 )
             else:
                 explanations[signal] = (

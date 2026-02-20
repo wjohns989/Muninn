@@ -33,6 +33,8 @@ SUPPORTED_EXTENSIONS = {
     ".sqlite": "sqlite",
     ".sqlite3": "sqlite",
     ".vscdb": "sqlite",
+    # Zed AI conversation files (plain-text role/separator format)
+    ".zed": "text",
 }
 
 CHAT_ROLE_KEYS = ("role", "speaker", "author", "sender")
