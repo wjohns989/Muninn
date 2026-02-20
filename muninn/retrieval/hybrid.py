@@ -178,6 +178,10 @@ class HybridRetriever:
             # Scope filters are always applied to vector search. We also enforce
             # user/namespace constraints again after metadata fetch.
             effective_filters = dict(filters or {})
+            
+            # v3.15.0: Support explicit memory_id list filtering (for Scout/Batch logic)
+            target_ids = effective_filters.get("memory_ids")
+            
             if user_id and "user_id" not in effective_filters:
                 effective_filters["user_id"] = user_id
             if namespaces and len(namespaces) == 1 and "namespace" not in effective_filters:
@@ -195,8 +199,8 @@ class HybridRetriever:
                 temporal_results,
             ) = await asyncio.gather(
                 asyncio.to_thread(self._vector_search, query_embedding, limit * 3, effective_filters),
-                asyncio.to_thread(self._graph_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces),
-                asyncio.to_thread(self._bm25_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces),
+                asyncio.to_thread(self._graph_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces, memory_ids=target_ids),
+                asyncio.to_thread(self._bm25_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces, memory_ids=target_ids),
                 asyncio.to_thread(self._goal_search, goal_embedding, limit * 2, effective_filters),
                 asyncio.to_thread(
                     self._temporal_search,
@@ -205,6 +209,7 @@ class HybridRetriever:
                     user_id=user_id,
                     limit=limit * 2,
                     time_range=resolved_time_range,
+                    memory_ids=target_ids,
                 ),
             )
 
@@ -348,7 +353,8 @@ class HybridRetriever:
         query: str,
         limit: int,
         user_id: Optional[str] = None,
-        namespaces: Optional[List[str]] = None
+        namespaces: Optional[List[str]] = None,
+        memory_ids: Optional[List[str]] = None,
     ) -> List[Tuple[str, float]]:
         """Graph-based entity search. Returns list of (id, score) (scoped)."""
         try:
@@ -370,9 +376,11 @@ class HybridRetriever:
             uid = user_id or "global"
 
             scores: Dict[str, float] = defaultdict(float)
+            target_set = set(memory_ids) if memory_ids else None
+
             for idx, entity_name in enumerate(entity_candidates[:5]):
                 related = self.graph.find_related_memories(
-                    [entity_name], 
+                    [entity_name],
                     limit=limit,
                     user_id=uid,
                     namespace=ns
@@ -381,6 +389,8 @@ class HybridRetriever:
                     continue
                 query_entity_weight = 1.0 / (idx + 1.0)
                 for mem_id in related:
+                    if target_set and mem_id not in target_set:
+                        continue
                     scores[mem_id] += query_entity_weight
 
             ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:limit]
@@ -395,6 +405,7 @@ class HybridRetriever:
         limit: int,
         user_id: Optional[str] = None,
         namespaces: Optional[List[str]] = None,
+        memory_ids: Optional[List[str]] = None,
     ) -> List[Tuple[str, float]]:
         """BM25 keyword search. Returns list of (id, score)."""
         try:
@@ -404,6 +415,9 @@ class HybridRetriever:
                 user_id=user_id,
                 namespaces=namespaces,
             )
+            if memory_ids:
+                target_set = set(memory_ids)
+                return [(doc_id, float(score)) for doc_id, score in results if doc_id in target_set]
             return [(doc_id, float(score)) for doc_id, score in results]
         except Exception as e:
             logger.warning("BM25 search failed: %s", e)
@@ -436,6 +450,7 @@ class HybridRetriever:
         user_id: Optional[str],
         limit: int,
         time_range: Optional[TimeRange] = None,
+        memory_ids: Optional[List[str]] = None,
     ) -> List[Tuple[str, float]]:
         """
         Temporal/metadata search via SQLite. Returns list of (id, score).
@@ -476,7 +491,11 @@ class HybridRetriever:
             # Blend recency and intrinsic importance into temporal score.
             now = time.time()
             scored: List[Tuple[str, float]] = []
+            target_set = set(memory_ids) if memory_ids else None
+
             for r in records:
+                if target_set and r.id not in target_set:
+                    continue
                 age_seconds = max(0.0, now - r.created_at)
                 recency = 1.0 / (1.0 + (age_seconds / 86400.0))
                 temporal_score = 0.7 * recency + 0.3 * float(r.importance)

@@ -51,6 +51,20 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         }
     },
     {
+        "name": "hunt_memory",
+        "description": "Agentic proactive retrieval. Analyzes the query to identify key entities and relationships, then performs a multi-hop discovery pass across the knowledge graph and vector store to surface hidden context and 'forgotten' wisdom. Best for deep-diving into complex topics or resolving ambiguities.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query or topic to hunt for."},
+                "limit": {"type": "integer", "default": 5, "description": "Max number of results (default 5)"},
+                "depth": {"type": "integer", "default": 2, "description": "Search depth for graph traversal (default 2)"},
+                "namespaces": {"type": "array", "items": {"type": "string"}, "description": "Optional namespaces to restrict the hunt."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "get_all_memories",
         "description": "Retrieve all stored memories, optionally filtered by user/agent.",
         "inputSchema": {
@@ -374,7 +388,7 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
-    "search_memory", "get_all_memories", "get_project_goal", 
+    "search_memory", "hunt_memory", "get_all_memories", "get_project_goal", 
     "get_user_profile", "get_model_profiles", "get_model_profile_events",
     "export_handoff", "discover_legacy_sources",
     "get_temporal_knowledge", "create_federation_manifest", "calculate_federation_delta", "create_federation_bundle"

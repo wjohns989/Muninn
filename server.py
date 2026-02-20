@@ -230,6 +230,15 @@ class SetModelProfilesRequest(BaseModel):
     source: str = "api"
 
 
+class HuntMemoryRequest(BaseModel):
+    query: str
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    limit: int = 10
+    depth: int = 2
+    namespaces: Optional[List[str]] = None
+
+
 # --- Security ---
 security = HTTPBearer(auto_error=False)
 
@@ -448,6 +457,28 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
         return {"success": True, "data": results}
     except Exception as e:
         logger.error("Error searching memories: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search/hunt", dependencies=[Depends(verify_token)])
+async def hunt_memory_endpoint(req: HuntMemoryRequest):
+    """Perform agentic multi-hop retrieval to discover hidden context."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        results = await memory.hunt(
+            query=req.query,
+            user_id=req.user_id or "global_user",
+            agent_id=req.agent_id,
+            limit=req.limit,
+            depth=req.depth,
+            namespaces=req.namespaces,
+        )
+
+        return {"success": True, "data": results}
+    except Exception as e:
+        logger.error("Error hunting memories: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
