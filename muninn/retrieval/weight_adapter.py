@@ -23,12 +23,18 @@ from typing import Dict, List, Tuple, Optional
 
 logger = logging.getLogger("Muninn.WeightAdapter")
 
-# Default fixed weights — identical to hybrid.py SIGNAL_WEIGHTS
+# Default fixed weights — must mirror hybrid.py SIGNAL_WEIGHTS + goal/chain defaults.
+# All six RRF signals are listed so that entropy-based adaptation applies to every
+# signal, not just the first four.  Omitting "chain" and "goal" here would cause
+# them to silently fall back to their HybridRetriever hard-coded defaults even when
+# adaptive_weights is enabled.
 DEFAULT_WEIGHTS: Dict[str, float] = {
     "vector": 1.0,
     "graph": 1.0,
     "bm25": 0.8,
     "temporal": 0.5,
+    "chain": 0.6,
+    "goal": 0.65,
 }
 
 # Query classification keywords

@@ -282,6 +282,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# --- CORS ---
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow local dashboard via file:// or other ports
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 DASHBOARD_HTML_PATH = Path(__file__).with_name("dashboard.html")
 
 

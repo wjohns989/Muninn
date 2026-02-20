@@ -47,8 +47,14 @@ def calculate_recency(created_at: float, half_life_days: float = RECENCY_HALF_LI
 
 
 def calculate_frequency(access_count: int, max_expected: int = 100) -> float:
-    """Log-scaled access frequency, normalized to [0, 1]."""
-    return math.log1p(access_count) / math.log1p(max_expected)
+    """Log-scaled access frequency, normalized to [0, 1].
+
+    Clamped so that access_count > max_expected never pushes the value above 1.0.
+    Without the clamp, the raw ratio exceeds 1.0 for power-accessed memories and
+    breaks the [0,1] component contract assumed by the weighted sum in
+    calculate_importance().
+    """
+    return min(1.0, math.log1p(access_count) / math.log1p(max_expected))
 
 
 def calculate_novelty(similarity_to_existing: float) -> float:
@@ -89,12 +95,14 @@ def calculate_importance(
     novelty = calculate_novelty(max_similarity)
     provenance = calculate_provenance_weight(memory.provenance)
 
+    # Use .get() with DEFAULT_WEIGHTS fallback so callers can supply partial
+    # custom weight dicts without raising KeyError.
     importance = (
-        w["recency"] * recency +
-        w["frequency"] * frequency +
-        w["centrality"] * centrality +
-        w["novelty"] * novelty +
-        w["provenance"] * provenance
+        w.get("recency", DEFAULT_WEIGHTS["recency"]) * recency
+        + w.get("frequency", DEFAULT_WEIGHTS["frequency"]) * frequency
+        + w.get("centrality", DEFAULT_WEIGHTS["centrality"]) * centrality
+        + w.get("novelty", DEFAULT_WEIGHTS["novelty"]) * novelty
+        + w.get("provenance", DEFAULT_WEIGHTS["provenance"]) * provenance
     )
 
     return min(1.0, max(0.0, importance))
