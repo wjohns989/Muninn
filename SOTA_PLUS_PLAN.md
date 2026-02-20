@@ -1,8 +1,8 @@
 # Muninn SOTA+ Implementation Plan
 
-> **Version**: v3.6.1 → v3.13.0
-> **Status**: **Phase 16 COMPLETE — PR #45 ready for merge**
-> **Current State**: `feature/v3.13.0-sota-verdict-v1` — Phase 16 done. 788 tests pass (727 + 61 new). Branch ready for PR #45.
+> **Version**: v3.6.1 → v3.18.1
+> **Status**: **Phase 19 IN PROGRESS — PR #50 open (`feature/sota-roadmap-outward`)**
+> **Current State**: v3.18.1 — Phase 19 (Scout synthesis, hunt mode) implemented. 1019 tests pass. Phases 14–18 merged to main.
 
 ---
 
@@ -116,6 +116,7 @@ Muninn has successfully transitioned through Phases 9–14. Phase 13 (v3.10.0) d
 ### Background & Gap Analysis
 
 Muninn already has project-scoping infrastructure:
+
 - `MemoryRecord.project: str = "global"` — every memory carries a project tag (auto-injected from git repo name in `mcp_wrapper`)
 - `sqlite_metadata.get_all()` accepts `project=` for SQL-level filtering
 - `handlers.py` auto-filters search by git project, with `MUNINN_MCP_SEARCH_PROJECT_FALLBACK=1` retry
@@ -208,14 +209,17 @@ Phase 14 delivered strong memory isolation. Three categories of open issues rema
 ### Optimization & ROI Opportunities Identified
 
 **High ROI:**
+
 - **Auth propagation fix** (lifecycle.py): ~1 hour fix, prevents complete operational failure in any clean environment. Without it, every fresh deploy silently breaks the MCP bridge.
 - **Graph chains activation**: Graph memory chains unlock causal memory retrieval — the `PRECEDES`/`CAUSES` edge type enables "why did we decide this?" temporal reasoning that no other memory system provides. ROI: qualitative leap in agent continuity for long-running projects.
 
 **Medium ROI:**
+
 - **OTel hardening**: Enables production ops visibility without code changes; unlocks Grafana/Jaeger dashboards for memory system health monitoring.
 - **LongMemEval adapter**: External benchmark grounding is the last credibility gap before SOTA+ claims can be made publicly. Without it, the system is excellent but unverifiable against community standards.
 
 **Low ROI (future):**
+
 - Parser sandbox for pdf/docx (security hardening for optional binary parsers)
 - Browser UI advanced controls (preference presets, safety mode templates)
 
@@ -269,10 +273,12 @@ Phase 15 built the LongMemEval adapter and validated OTel/graph chains. One cred
 ### Optimization & ROI Notes
 
 **High ROI:**
+
 - **Signed verdict**: Enables public assertion "commit SHA X passed SOTA+ with nDCG@10=Y" — auditable, reproducible, tamper-evident. Without this, all SOTA+ claims are opinion, not evidence.
 - **LongMemEval gate in `overall_passed`**: Currently LongMemEval evidence is computed but not gated. Making it a hard requirement forces the benchmark to be kept passing as code evolves — prevents silent regression.
 
 **Medium ROI:**
+
 - **StructMemEval adapter**: Structured recall (facts, numbers, entities) and conversational recall (LongMemEval) are complementary. A system that scores well on both has triangulated evidence across two distinct memory retrieval modes.
 
 ---
@@ -311,11 +317,13 @@ Phase 16 completed the SOTA+ signed verdict infrastructure — adapters, HMAC si
 ### Security Impact Analysis
 
 **Before Phase 17 (risk)**:
+
 - `_parse_pdf(path)` called `from pypdf import PdfReader; PdfReader(str(path))` in the FastAPI server process
 - A malicious PDF could exploit pypdf to: read arbitrary files, cause OOM (zip bomb), execute code in the server process
 - Same risk for DOCX via python-docx
 
 **After Phase 17 (hardened)**:
+
 - All binary parsing runs in a subprocess with no inherited secrets, no network access
 - Parser crash/exception produces a structured error JSON — never propagates to the server
 - 30-second hard timeout prevents resource exhaustion
@@ -324,13 +332,16 @@ Phase 16 completed the SOTA+ signed verdict infrastructure — adapters, HMAC si
 ### Optimization & ROI Notes
 
 **High ROI:**
+
 - **Parser sandbox**: ~2 hour implementation, prevents complete server compromise from malicious document ingestion. Without this, every user processing PDFs exposes the Muninn server to pypdf/docx vulnerabilities.
 - **Synthetic benchmark datasets**: Enables the `--dry-run` CI benchmark pipeline to run without any external data. Every PR can now run `run_benchmark.py --dry-run` and verify the adapter plumbing works end-to-end.
 
 **Medium ROI:**
+
 - **Automated benchmark runner**: Reduces the gap from "adapters exist" to "evidence exists" by making the pipeline one command. The dry-run mode is CI-safe with zero server dependency.
 
 **Future Work (Phase 19 candidates)**:
+
 - Run `run_benchmark.py --production` against a live server with the synthetic datasets and commit the signed verdict artifact
 - Obtain public LongMemEval JSONL dataset for real nDCG@10 baseline
 - Wire StructMemEval into `sota-verdict` MCP tool signing
@@ -346,6 +357,7 @@ No new environment variables. Parser sandboxing is always active for PDF/DOCX (n
 **Goal**: Automate adapter regression prevention on every PR and provide a safe, one-command token rotation workflow.
 
 ### Track 1 — GitHub Actions CI (`.github/workflows/benchmark.yml`)
+
 - Triggers: `pull_request` → `main`, `push` → `main`, `workflow_dispatch`
 - Job: `benchmark-dry-run` (ubuntu-latest, 15-minute timeout)
 - Steps: checkout@v4, setup-python@v5 (3.11), `pip install .[dev]`, `python -m eval.run_benchmark --dry-run --output <report>`, parse report → GitHub Step Summary table, upload-artifact@v4
@@ -354,6 +366,7 @@ No new environment variables. Parser sandboxing is always active for PDF/DOCX (n
 - Security: `permissions: contents: read` (minimal)
 
 ### Track 2 — Token Rotation CLI (`muninn/cli.py`)
+
 - Entry point: `python -m muninn.cli rotate-token`
 - Generates: `secrets.token_urlsafe(32)` (43-char URL-safe base64)
 - Writes: `.muninn_token` (or `--token-file PATH` or `$MUNINN_TOKEN_FILE`)
@@ -363,12 +376,36 @@ No new environment variables. Parser sandboxing is always active for PDF/DOCX (n
 - Resolution order: `--token-file` > `$MUNINN_TOKEN_FILE` > `./.muninn_token`
 
 ### ROI / Optimization Notes
+
 - **CI dry-run gate prevents silent adapter regressions** from landing on main. Without it, a dataset schema change or subprocess worker breakage would only be discovered during a production benchmark run (requires live server, ~5 min).
 - **Token rotation** reduces credential exposure window from "until someone manually edits the file" to "one command + server restart." Cross-platform MCP config patching eliminates the manual step of updating Claude Desktop / Cursor configs separately.
 
 ### Environment Variables (Phase 18)
 
 `MUNINN_TOKEN_FILE` — optional override for the token file path (used by `muninn.cli rotate-token`).
+
+---
+
+## Phase 19: Deterministic Outer Loops & Verification
+
+**Goal**: Integrate deterministic verification directly into the automation pipeline for increased credibility and accuracy.
+
+### Key Objectives
+
+- **Playwright MCP Integration**: Introduce end-to-end testing via browser automation to verify the UI and control center works exactly as expected without human intervention.
+- **Robust Code Verification**: Integrate multi-agent blind reviews and "Devil's Advocate" validation gates directly into the `sota-verdict` CI.
+- **Fail-Fast Loop**: Incorporate rule-based (deterministic) checks before executing LLM-based (probabilistic) reviews.
+
+---
+
+## Phase 20: Multimodal Hive Mind Operations
+
+**Goal**: Extend the core substrate far beyond text and individual contexts, creating a shared and universally applicable memory system.
+
+### Key Objectives
+
+- **Unified Multimodal Space**: Extend the unified embedding space to support cross-assistant shared multimodal memory, properly ingesting and retrieving images, audio, and sensor data context.
+- **Cross-Assistant Collaboration**: Build out the infrastructure for a true "Hive Mind" architecture, establishing low-latency memory synchronization and robust multi-agent knowledge sharing.
 
 ---
 
