@@ -2,8 +2,8 @@
 
 > **Updated**: 2026-02-20
 > **Branch**: `feature/v3.18.0-phase19`
-> **Version**: v3.18.0 (Phase 19 IN PROGRESS)
-> **Status**: 1005 tests pass. Phases 14–18 merged to main. Phase 19 branch active.
+> **Version**: v3.18.1 (Phase 19 IN PROGRESS)
+> **Status**: 1019 tests pass. Phases 14–18 merged to main. Phase 19 branch active.
 
 ---
 
@@ -47,7 +47,46 @@ C:\Users\wjohn\AppData\Local\AntigravityLabs\muninn\
 
 ---
 
-## Phase 19 (v3.18.0) Summary — 2026-02-20
+## Phase 19 (v3.18.x) Summary — 2026-02-20
+
+### v3.18.1 — Scout Re-Rank Fix + MCP Synthesis Exposure + Dashboard Endpoint Fixes
+**Files**: `muninn/retrieval/hybrid.py`, `muninn/mcp/handlers.py`, `dashboard.html`,
+          `tests/test_v3_18_1_bugfixes.py` (new), `muninn/version.py`, `pyproject.toml`
+
+#### P0 Fix — Scout Final Re-Rank (`muninn/retrieval/hybrid.py`)
+- **Root cause**: `_record_matches_constraints` iterated ALL filter keys including
+  synthetic `memory_ids` (passed by Scout's final re-rank call). Since `MemoryRecord`
+  has no `memory_ids` attribute and no metadata stores a list of all candidate IDs,
+  every record was rejected → Scout always returned empty results.
+- **Fix**: Added `_SYNTHETIC_FILTER_KEYS = frozenset({"memory_ids", "scope"})` class
+  attribute; modified `_record_matches_constraints` to `continue` (skip) for any key
+  in this set. These keys are pre-handled by Qdrant `MatchAny` / `target_set` at the
+  signal level and must not be re-evaluated post-retrieval.
+
+#### P2 Fix — MCP Hunt Synthesis Exposure (`muninn/mcp/handlers.py`)
+- **Root cause**: `_do_hunt_memory` never forwarded `synthesize: True` → server always
+  returned `synthesis: ""`. Even with synthesis, `format_tool_result_text` only reads
+  `result["data"]` and discards `result["synthesis"]`.
+- **Fix**: Added `"synthesize": True` to payload. When `synthesis` is non-empty, it is
+  injected as `{"synthesis_narrative": "..."}` at index 0 of the data list before
+  returning, making it visible to the LLM through the standard `format_tool_result_text` path.
+
+#### P2 Fix — Dashboard Endpoint Bugs (`dashboard.html`)
+- **`handleIngest()`**: Was calling `/ingest` (file/URL batch ingestion) with
+  `{content, namespace}` — wrong endpoint and wrong payload. Fixed to call `/add` with
+  `{content, namespace, user_id: "global_user"}` and updated success check to
+  `data.success && data.data` (was `data.id`).
+- **`forceConsolidation()`**: Was calling `/maintenance/consolidate` (non-existent).
+  Fixed to call `/consolidation/run` (correct endpoint).
+
+### v3.18.1 Test Suite — `tests/test_v3_18_1_bugfixes.py` (13 tests, 3 classes)
+| Class | Count | Coverage |
+|---|---|---|
+| `TestHybridSyntheticKeySkip` | 6 | _SYNTHETIC_FILTER_KEYS attr, memory_ids + scope membership, record acceptance with synthetic filter, real filter still enforced |
+| `TestMCPHuntSynthesisExposure` | 5 | synthesize=True in payload, synthesis injected to data[0], empty/absent synthesis unchanged, namespaces forwarded |
+| `TestVersionBump3181` | 2 | >= 3.18.1, pyproject match |
+
+---
 
 ### v3.18.0 — Scout LLM Synthesis + Dashboard Hunt Mode
 **Files**: `muninn/retrieval/synthesis.py` (new), `server.py`, `dashboard.html`,
@@ -261,8 +300,12 @@ pytest tests/test_ingestion_discovery.py -v
 
 ## Validation History
 
-- **Phase 19 (v3.18.0)**: **1005 tests passed (100%), 0 failed** — Scout LLM synthesis,
-  dashboard hunt mode + search fix, 15 new tests. v3.18.0. 2026-02-20.
+- **Phase 19 (v3.18.1)**: **1019 tests passed (100%), 0 failed** — P0 Scout re-rank fix
+  (_record_matches_constraints synthetic key skip), P2 MCP synthesis exposure, P2 dashboard
+  endpoint fixes (handleIngest /add, forceConsolidation /consolidation/run), 13 new regression
+  tests. v3.18.1. 2026-02-20.
+- **Phase 19 (v3.18.0)**: **1006 tests passed (100%), 0 failed** — Scout LLM synthesis,
+  dashboard hunt mode + search fix, fallback scope filter fix, 16 new tests. v3.18.0. 2026-02-20.
 - **Phase 17b (security fix)**: **990 tests passed (100%), 0 failed** — critical auth fix for
   `/ingest/legacy/discover` and `/ingest/legacy/import`; CORS hardening. v3.17.3. 2026-02-20.
 - **Phase 17b**: **990 tests passed (100%), 0 failed** — legacy discovery (aider/continue/zed),
