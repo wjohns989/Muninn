@@ -22,8 +22,9 @@ DEFAULT_WEIGHTS = {
     "recency": 0.25,
     "frequency": 0.15,
     "centrality": 0.20,
-    "novelty": 0.25,
+    "novelty": 0.15,
     "provenance": 0.15,
+    "retrieval": 0.10,
 }
 
 # Recency half-life in days
@@ -74,6 +75,7 @@ def calculate_importance(
     memory: MemoryRecord,
     max_similarity: float = 0.0,
     centrality: float = 0.0,
+    retrieval_utility: float = 0.0,
     weights: Optional[dict] = None,
 ) -> float:
     """
@@ -83,6 +85,7 @@ def calculate_importance(
         memory: The memory record to score
         max_similarity: Maximum cosine similarity to existing semantic memories
         centrality: Graph degree centrality for entities in this memory
+        retrieval_utility: SNIPS feedback-derived retrieval utility [0.0, 1.0]
         weights: Optional custom weights dict
 
     Returns:
@@ -103,6 +106,7 @@ def calculate_importance(
         + w.get("centrality", DEFAULT_WEIGHTS["centrality"]) * centrality
         + w.get("novelty", DEFAULT_WEIGHTS["novelty"]) * novelty
         + w.get("provenance", DEFAULT_WEIGHTS["provenance"]) * provenance
+        + w.get("retrieval", DEFAULT_WEIGHTS["retrieval"]) * retrieval_utility
     )
 
     return min(1.0, max(0.0, importance))
@@ -112,6 +116,7 @@ def batch_update_importance(
     memories: List[MemoryRecord],
     get_centrality: Callable[[str], float],
     get_max_similarity: Callable[[str], float],
+    get_retrieval_utility: Optional[Callable[[str], float]] = None,
 ) -> List[tuple]:
     """
     Batch importance recalculation for consolidation cycles.
@@ -122,6 +127,12 @@ def batch_update_importance(
     for mem in memories:
         centrality = get_centrality(mem.id)
         max_sim = get_max_similarity(mem.id)
-        new_importance = calculate_importance(mem, max_similarity=max_sim, centrality=centrality)
+        ret_util = get_retrieval_utility(mem.id) if get_retrieval_utility else 0.0
+        new_importance = calculate_importance(
+            mem, 
+            max_similarity=max_sim, 
+            centrality=centrality,
+            retrieval_utility=ret_util
+        )
         updates.append((mem.id, new_importance))
     return updates
