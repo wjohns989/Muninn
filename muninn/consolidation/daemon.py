@@ -204,12 +204,20 @@ class ConsolidationDaemon:
 
             # Get max similarity for novelty calculation
             max_sim = 0.0  # Would need vector lookup — simplified for now
+            
+            # Fetch SNIPS retrieval utility
+            ret_util = self.metadata.get_memory_retrieval_utility(
+                record.id, 
+                lookback_days=30, 
+                estimator="snips"
+            )
 
             # Recalculate importance
             new_importance = calculate_importance(
                 record,
                 max_similarity=max_sim,
                 centrality=centrality,
+                retrieval_utility=ret_util,
             )
 
             if new_importance != record.importance:
