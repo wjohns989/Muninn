@@ -330,10 +330,10 @@ Phase 16 completed the SOTA+ signed verdict infrastructure — adapters, HMAC si
 **Medium ROI:**
 - **Automated benchmark runner**: Reduces the gap from "adapters exist" to "evidence exists" by making the pipeline one command. The dry-run mode is CI-safe with zero server dependency.
 
-**Future Work (Phase 18 candidates)**:
+**Future Work (Phase 19 candidates)**:
 - Run `run_benchmark.py --production` against a live server with the synthetic datasets and commit the signed verdict artifact
 - Obtain public LongMemEval JSONL dataset for real nDCG@10 baseline
-- Add GitHub Actions workflow to run `--dry-run` on every PR
+- Wire StructMemEval into `sota-verdict` MCP tool signing
 
 ### Environment Variables (Phase 17)
 
@@ -341,9 +341,41 @@ No new environment variables. Parser sandboxing is always active for PDF/DOCX (n
 
 ---
 
+## Phase 18: CI Benchmark Workflow & Token Rotation (v3.15.0)
+
+**Goal**: Automate adapter regression prevention on every PR and provide a safe, one-command token rotation workflow.
+
+### Track 1 — GitHub Actions CI (`.github/workflows/benchmark.yml`)
+- Triggers: `pull_request` → `main`, `push` → `main`, `workflow_dispatch`
+- Job: `benchmark-dry-run` (ubuntu-latest, 15-minute timeout)
+- Steps: checkout@v4, setup-python@v5 (3.11), `pip install .[dev]`, `python -m eval.run_benchmark --dry-run --output <report>`, parse report → GitHub Step Summary table, upload-artifact@v4
+- Gate: exits 1 if `overall_passed=false`, blocking PR merge
+- Optional inputs: `skip_lme`, `skip_sme`, `limit` for targeted manual runs
+- Security: `permissions: contents: read` (minimal)
+
+### Track 2 — Token Rotation CLI (`muninn/cli.py`)
+- Entry point: `python -m muninn.cli rotate-token`
+- Generates: `secrets.token_urlsafe(32)` (43-char URL-safe base64)
+- Writes: `.muninn_token` (or `--token-file PATH` or `$MUNINN_TOKEN_FILE`)
+- MCP config patching: auto-detects `claude_desktop_config.json`, `~/.cursor/mcp.json`, `~/.vscode/mcp.json`; updates `MUNINN_AUTH_TOKEN` in any "muninn" server `env` block (case-insensitive name match)
+- Flags: `--dry-run` (no files written), `--token-only` (machine-readable single-line output)
+- Platform instructions: PowerShell `$env:MUNINN_AUTH_TOKEN` + `setx` on Windows; `export` + `~/.bashrc` on POSIX
+- Resolution order: `--token-file` > `$MUNINN_TOKEN_FILE` > `./.muninn_token`
+
+### ROI / Optimization Notes
+- **CI dry-run gate prevents silent adapter regressions** from landing on main. Without it, a dataset schema change or subprocess worker breakage would only be discovered during a production benchmark run (requires live server, ~5 min).
+- **Token rotation** reduces credential exposure window from "until someone manually edits the file" to "one command + server restart." Cross-platform MCP config patching eliminates the manual step of updating Claude Desktop / Cursor configs separately.
+
+### Environment Variables (Phase 18)
+
+`MUNINN_TOKEN_FILE` — optional override for the token file path (used by `muninn.cli rotate-token`).
+
+---
+
 ## Validation History
 
-- **Phase 17**: **848 tests passed (100%), 0 failed** — synthetic benchmark datasets (30+30 cases), automated benchmark runner, parser security sandbox, version 3.14.0. 60 new tests. PR #46 ready.
+- **Phase 18**: **890 tests passed (100%), 0 failed** — CI benchmark workflow, token rotation CLI, MCP config patcher, version 3.15.0. 39 new tests.
+- **Phase 17**: **851 tests passed (100%), 0 failed** (incl. PR review fixes) — synthetic benchmark datasets (30+30 cases), automated benchmark runner, parser security sandbox, env-sanitized subprocess, corrected SME metric keys, version 3.14.0. 63 new tests. Merged (PR #45).
 - **Phase 16**: **788 tests passed (100%), 0 failed** — SOTA+ signed verdict v1, HMAC-SHA256 provenance, LongMemEval hard gate, StructMemEval adapter. 61 new tests. PR #45 ready.
 - **Phase 15**: **727 tests passed (100%), 0 failed** — auth propagation fix, graph chains smoke, OTel GenAI hardening, LongMemEval adapter baseline. PR #44 merged.
 - **Phase 14**: **694 tests passed (100%), 0 failed** — project-scoped memory strict isolation. PR #43 merged. 43 new scope tests covering all 5 correctness invariants.
