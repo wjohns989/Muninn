@@ -118,9 +118,9 @@ def calculate_importance(
 
 def batch_update_importance(
     memories: List[MemoryRecord],
-    get_centrality: Callable[[str], float],
-    get_max_similarity: Callable[[str], float],
-    get_retrieval_utility: Optional[Callable[[str], float]] = None,
+    centrality_map: dict[str, float],
+    max_similarity_map: dict[str, float],
+    retrieval_utility_map: Optional[dict[str, float]] = None,
 ) -> List[tuple]:
     """
     Batch importance recalculation for consolidation cycles.
@@ -129,9 +129,9 @@ def batch_update_importance(
     """
     updates = []
     for mem in memories:
-        centrality = get_centrality(mem.id)
-        max_sim = get_max_similarity(mem.id)
-        ret_util = get_retrieval_utility(mem.id) if get_retrieval_utility else 0.0
+        centrality = centrality_map.get(mem.id, 0.0)
+        max_sim = max_similarity_map.get(mem.id, 0.0)
+        ret_util = retrieval_utility_map.get(mem.id, 0.0) if retrieval_utility_map else 0.0
         new_importance = calculate_importance(
             mem, 
             max_similarity=max_sim, 
