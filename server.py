@@ -283,11 +283,16 @@ app = FastAPI(
 )
 
 # --- CORS ---
+# allow_origins=["*"] is required so the static dashboard (served from file://
+# or a different port) can reach the local API.  Per the Fetch spec, wildcard
+# origins CANNOT be combined with allow_credentials=True — browsers block such
+# responses.  The dashboard authenticates via the Authorization header (Bearer
+# token) rather than cookies, so credentials=True is unnecessary.
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow local dashboard via file:// or other ports
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

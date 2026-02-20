@@ -126,10 +126,12 @@ def cmd_rotate_token(args: argparse.Namespace) -> int:
     # Step 1 — generate
     new_token = secrets.token_urlsafe(32)
 
-    # Step 2 — persist to token file
+    # Step 2 — persist to token file (owner-read-only on Unix)
     if not dry_run:
         try:
             token_file.write_text(new_token, encoding="utf-8")
+            if sys.platform != "win32":
+                token_file.chmod(0o600)
         except OSError as exc:
             print(f"Error: could not write token file {token_file}: {exc}", file=sys.stderr)
             return 1
@@ -180,7 +182,7 @@ def cmd_rotate_token(args: argparse.Namespace) -> int:
     print()
     if sys.platform == "win32":
         print("  PowerShell:")
-        print(f"    $env:MUNINN_AUTH_TOKEN = (Get-Content {token_file})")
+        print(f"    $env:MUNINN_AUTH_TOKEN = (Get-Content '{token_file}')")
         print(f"    python server.py")
         print()
         print("  To persist permanently (user-scope):")
@@ -188,7 +190,7 @@ def cmd_rotate_token(args: argparse.Namespace) -> int:
         print("    # Restart terminal for setx to take effect")
     else:
         print("  Bash/Zsh:")
-        print(f"    MUNINN_AUTH_TOKEN=$(cat {token_file}) python server.py")
+        print(f"    MUNINN_AUTH_TOKEN=$(cat '{token_file}') python server.py")
         print()
         print("  To persist in shell profile (~/.bashrc / ~/.zshrc):")
         print(f"    echo 'export MUNINN_AUTH_TOKEN=\"{new_token}\"' >> ~/.bashrc")
