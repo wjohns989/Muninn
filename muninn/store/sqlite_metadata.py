@@ -635,7 +635,10 @@ class SQLiteMetadataStore:
         weighted_positive: Dict[str, float] = {}
         weighted_total: Dict[str, float] = {}
         snips_positive: Dict[str, float] = {}
-        snips_total: Dict[str, float] = {}
+        # snips_sum_w  = Σ(ipw)   — SNIPS denominator and Kish ESS numerator
+        # snips_sum_w2 = Σ(ipw²)  — Kish ESS denominator
+        # (Previously there were two dicts—snips_total and snips_sum_w—that
+        # both accumulated ipw identically.  Collapsed into snips_sum_w.)
         snips_sum_w: Dict[str, float] = {}
         snips_sum_w2: Dict[str, float] = {}
         for row in rows:
@@ -680,7 +683,6 @@ class SQLiteMetadataStore:
                 weighted_total[signal_name] = weighted_total.get(signal_name, 0.0) + signal_weight
                 ipw = signal_weight / propensity
                 snips_positive[signal_name] = snips_positive.get(signal_name, 0.0) + (outcome * ipw)
-                snips_total[signal_name] = snips_total.get(signal_name, 0.0) + ipw
                 snips_sum_w[signal_name] = snips_sum_w.get(signal_name, 0.0) + ipw
                 snips_sum_w2[signal_name] = snips_sum_w2.get(signal_name, 0.0) + (ipw * ipw)
 
@@ -690,14 +692,15 @@ class SQLiteMetadataStore:
                 continue
 
             if use_snips:
-                snips_denom = snips_total.get(signal_name, 0.0)
+                # snips_sum_w is both the SNIPS denominator (Σipw) and Kish sum_w
+                snips_denom = snips_sum_w.get(signal_name, 0.0)
                 if snips_denom <= 0.0:
                     continue
-                sum_w = snips_sum_w.get(signal_name, 0.0)
                 sum_w2 = snips_sum_w2.get(signal_name, 0.0)
                 if sum_w2 <= 0.0:
                     continue
-                effective_samples = (sum_w * sum_w) / sum_w2
+                # Kish effective sample size: (Σw)² / Σw²
+                effective_samples = (snips_denom * snips_denom) / sum_w2
                 if effective_samples < safe_min_effective_samples:
                     continue
                 score = snips_positive.get(signal_name, 0.0) / snips_denom
@@ -916,15 +919,25 @@ class SQLiteMetadataStore:
         rows = conn.execute(query, params).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER is 999.  RRF fusion can
+    # produce hundreds of candidate IDs (limit*6 across signals), so we must
+    # chunk large ID lists to avoid "too many SQL variables" errors.
+    _SQLITE_MAX_VARS = 900  # conservative headroom below the 999 hard limit
+
     def get_by_ids(self, memory_ids: List[str]) -> List[MemoryRecord]:
         if not memory_ids:
             return []
         conn = self._get_conn()
-        placeholders = ",".join("?" for _ in memory_ids)
-        rows = conn.execute(
-            f"SELECT * FROM memories WHERE id IN ({placeholders})", memory_ids
-        ).fetchall()
-        return [self._row_to_record(row) for row in rows]
+        records: List[MemoryRecord] = []
+        ids = list(memory_ids)
+        for i in range(0, len(ids), self._SQLITE_MAX_VARS):
+            chunk = ids[i : i + self._SQLITE_MAX_VARS]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"SELECT * FROM memories WHERE id IN ({placeholders})", chunk
+            ).fetchall()
+            records.extend(self._row_to_record(row) for row in rows)
+        return records
 
     def count(self, project: Optional[str] = None, namespace: Optional[str] = None) -> int:
         conn = self._get_conn()
@@ -998,11 +1011,17 @@ class SQLiteMetadataStore:
         return [self._row_to_record(row) for row in rows]
 
     def search_content(self, query: str, limit: int = 20) -> List[MemoryRecord]:
-        """Simple LIKE-based text search (BM25 alternative for small datasets)."""
+        """Simple LIKE-based text search (BM25 alternative for small datasets).
+
+        LIKE metacharacters % and _ in the caller-supplied query are escaped so
+        they are treated as literals rather than wildcards.  The ESCAPE clause
+        designates backslash as the escape character.
+        """
+        safe_query = query.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM memories WHERE content LIKE ? ORDER BY importance DESC LIMIT ?",
-            (f"%{query}%", limit)
+            r"SELECT * FROM memories WHERE content LIKE ? ESCAPE '\' ORDER BY importance DESC LIMIT ?",
+            (f"%{safe_query}%", limit),
         ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
