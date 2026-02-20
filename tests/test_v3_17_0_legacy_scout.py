@@ -462,6 +462,7 @@ class TestDaemonPhaseDecayBatch:
         # Set config thresholds so we don't accidentally trigger deletes
         daemon.config.decay_threshold = -999.0
         daemon.config.working_memory_ttl_hours = 100000
+        daemon.metadata.get_batch_retrieval_utility.return_value = {}
         return daemon
 
     @pytest.mark.asyncio
