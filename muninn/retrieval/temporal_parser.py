@@ -48,10 +48,15 @@ class TimeRange:
                 f"TimeRange start ({self.start}) must be <= end ({self.end})"
             )
 
+    def __repr__(self) -> str:
+        s = datetime.fromtimestamp(self.start).strftime("%Y-%m-%d %H:%M")
+        e = datetime.fromtimestamp(self.end).strftime("%Y-%m-%d %H:%M")
+        return f"TimeRange({s} -> {e})"
+
     def __str__(self) -> str:
         s = datetime.fromtimestamp(self.start, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         e = datetime.fromtimestamp(self.end, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        return f"TimeRange({s} → {e})"
+        return f"TimeRange({s} -> {e})"
 
     def contains(self, ts: float) -> bool:
         return self.start <= ts < self.end

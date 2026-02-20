@@ -193,13 +193,14 @@ class ConsolidationDaemon:
         decayed = 0
         expired = 0
         updated = 0
+
+        # Batch fetch centrality for all records (P1 Performance Optimization)
+        record_ids = [r.id for r in records]
+        centrality_map = self.graph.get_memory_node_degrees_batch(record_ids)
+
         for record in records:
-            # Get centrality from graph: use Memory node degree as proxy for
-            # importance (how many relations/mentions the memory has in the graph).
-            try:
-                centrality = self.graph.get_memory_node_degree(record.id)
-            except Exception:
-                centrality = 0.0
+            # Get centrality from pre-fetched map
+            centrality = centrality_map.get(record.id, 0.0)
 
             # Get max similarity for novelty calculation
             max_sim = 0.0  # Would need vector lookup — simplified for now

@@ -400,6 +400,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
     dispatch = {
         "add_memory": _do_add_memory,
         "search_memory": _do_search_memory,
+        "hunt_memory": _do_hunt_memory,
         "get_all_memories": _do_get_all_memories,
         "update_memory": _do_update_memory,
         "delete_memory": _do_delete_memory,
@@ -513,6 +514,17 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
         result = resp.json()
 
     return result
+
+def _do_hunt_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {
+        "query": args.get("query"),
+        "limit": args.get("limit", 5),
+        "depth": args.get("depth", 2),
+        "user_id": "global_user",
+        "namespaces": args.get("namespaces"),
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/search/hunt", deadline_epoch=deadline, json=payload, timeout=20)
+    return resp.json()
 
 def _do_get_all_memories(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     params = {"user_id": "global_user", "limit": args.get("limit", 100)}
