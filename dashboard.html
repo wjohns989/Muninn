@@ -369,13 +369,21 @@
             <!-- TAB: SEARCH -->
             <div id="tab-search" class="tab-content">
                 <div class="help-box">
-                    <b>🔍 "Magic" Hybrid Search</b>
-                    This search doesn't just look for words. It uses <b>Vector Math</b> (concepts), <b>Graph Traversal</b> (relationships), and <b>BM25</b> (keywords) simultaneously. The best results rise to the top.
+                    <b>Hybrid Search &amp; Scout Hunt</b>
+                    <b>Standard mode</b> uses Vector Math (concepts), Graph Traversal (relationships), and BM25 (keywords) simultaneously.
+                    <b>Scout Hunt mode</b> adds multi-hop agentic discovery: entity expansion, causal chain traversal, and optional LLM narration of what was found and why.
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; padding: 0.5rem 0;">
+                    <input type="checkbox" id="hunt-mode" style="width: 1rem; height: 1rem; cursor: pointer; accent-color: var(--sky-400);">
+                    <label for="hunt-mode" style="color: var(--slate-300); font-size: 0.85rem; cursor: pointer; user-select: none;">
+                        Scout Hunt Mode (multi-hop agentic discovery + synthesis)
+                    </label>
                 </div>
 
                 <div class="search-container">
                     <input type="text" id="search-input" placeholder="Ask your memory anything..." onkeypress="if(event.key==='Enter')handleSearch()">
-                    <button onclick="handleSearch()" class="search-btn">Search</button>
+                    <button onclick="handleSearch()" class="search-btn" id="search-btn-label">Search</button>
                 </div>
 
                 <div id="search-results">
@@ -455,42 +463,110 @@
             }
         }
 
+        // Update search button label when hunt mode changes
+        document.addEventListener('DOMContentLoaded', () => {
+            const huntToggle = document.getElementById('hunt-mode');
+            if (huntToggle) {
+                huntToggle.addEventListener('change', () => {
+                    const btn = document.getElementById('search-btn-label');
+                    if (btn) btn.textContent = huntToggle.checked ? 'Hunt' : 'Search';
+                });
+            }
+        });
+
         async function handleSearch() {
-            const query = document.getElementById('search-input').value;
+            const query = document.getElementById('search-input').value.trim();
             if (!query) return;
 
+            const huntMode = document.getElementById('hunt-mode').checked;
             const resultsDiv = document.getElementById('search-results');
-            resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--slate-400);">Searching the collective consciousness...</div>';
 
-            const data = await api('/search', 'POST', { query, limit: 10, explain: true });
-            
+            // Loading state
+            resultsDiv.innerHTML = '';
+            const loadingEl = document.createElement('div');
+            loadingEl.style.cssText = 'text-align: center; padding: 2rem; color: var(--slate-400);';
+            loadingEl.textContent = huntMode
+                ? 'Scout is hunting for hidden context...'
+                : 'Searching the collective consciousness...';
+            resultsDiv.appendChild(loadingEl);
+
+            const endpoint = huntMode ? '/search/hunt' : '/search';
+            const payload = huntMode
+                ? { query, limit: 10, depth: 2, synthesize: true }
+                : { query, limit: 10, explain: true };
+
+            const data = await api(endpoint, 'POST', payload);
+            resultsDiv.innerHTML = '';
+
             if (data.error) {
-                resultsDiv.innerHTML = `<div class="result-item" style="border-color: var(--rose-500)">Error: ${data.error}</div>`;
+                const errEl = document.createElement('div');
+                errEl.className = 'result-item';
+                errEl.style.borderColor = 'var(--rose-500)';
+                errEl.textContent = 'Error: ' + data.error;
+                resultsDiv.appendChild(errEl);
                 return;
             }
 
-            resultsDiv.innerHTML = "";
-            if (!data.results || data.results.length === 0) {
-                resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--slate-400);">No relevant memories found.</div>';
+            // Both /search and /search/hunt return {"success": true, "data": [...results]}
+            const results = data.data;
+            if (!results || results.length === 0) {
+                const emptyEl = document.createElement('div');
+                emptyEl.style.cssText = 'text-align: center; padding: 2rem; color: var(--slate-400);';
+                emptyEl.textContent = 'No relevant memories found.';
+                resultsDiv.appendChild(emptyEl);
                 return;
             }
 
-            data.results.forEach(r => {
+            // Show Scout synthesis narration when available
+            if (huntMode && data.synthesis) {
+                const synthEl = document.createElement('div');
+                synthEl.className = 'help-box';
+                synthEl.style.marginBottom = '1rem';
+                const label = document.createElement('b');
+                label.textContent = 'Scout Discovery: ';
+                const text = document.createTextNode(data.synthesis);
+                synthEl.appendChild(label);
+                synthEl.appendChild(text);
+                resultsDiv.appendChild(synthEl);
+            }
+
+            // Render results — both endpoints use the same flat dict schema:
+            // { id, memory (content str), score, memory_type, importance, metadata }
+            results.forEach(r => {
                 const item = document.createElement('div');
                 item.className = 'result-item';
-                const score = Math.round(r.score * 100);
-                item.innerHTML = `
-                    <div class="result-meta">
-                        <span class="result-tag" style="color: var(--sky-400)">${score}% Match</span>
-                        <span class="result-tag">${r.memory.memory_type}</span>
-                        <span>${r.memory.namespace || 'global'}</span>
-                    </div>
-                    <div class="result-content"></div>
-                `;
-                item.querySelector('.result-content').textContent = r.memory.content;
+                const score = Math.round((r.score || 0) * 100);
+
+                const meta = document.createElement('div');
+                meta.className = 'result-meta';
+
+                const scoreTag = document.createElement('span');
+                scoreTag.className = 'result-tag';
+                scoreTag.style.color = 'var(--sky-400)';
+                scoreTag.textContent = score + '% Match';
+
+                const typeTag = document.createElement('span');
+                typeTag.className = 'result-tag';
+                typeTag.textContent = r.memory_type || 'memory';
+
+                const nsTag = document.createElement('span');
+                nsTag.textContent = (r.metadata && r.metadata.namespace) || 'global';
+
+                meta.appendChild(scoreTag);
+                meta.appendChild(typeTag);
+                meta.appendChild(nsTag);
+
+                const content = document.createElement('div');
+                content.className = 'result-content';
+                content.textContent = r.memory || '';
+
+                item.appendChild(meta);
+                item.appendChild(content);
                 resultsDiv.appendChild(item);
             });
-            log(`Searched for: "${query}" (${data.results.length} hits)`);
+
+            const modeLabel = huntMode ? 'Scout Hunt' : 'Search';
+            log(modeLabel + ' for: "' + query + '" (' + results.length + ' hits)');
         }
 
         async function handleIngest() {
