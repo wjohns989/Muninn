@@ -84,7 +84,7 @@ def promote_memory(record: MemoryRecord, new_type: MemoryType) -> MemoryRecord:
     promotion_boost = 0.05
     record.importance = min(1.0, record.importance + promotion_boost)
 
-    logger.info("Promoted memory %s: %s → %s (importance=%.3f)",
+    logger.info("Promoted memory %s: %s -> %s (importance=%.3f)",
                 record.id, old_type.value, new_type.value, record.importance)
 
     return record

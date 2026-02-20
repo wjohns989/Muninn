@@ -171,7 +171,7 @@ class MuninnMemory:
             instructor_api_key=self.config.extraction.instructor_api_key,
         )
 
-        # Initialize Phase 2 engines (v3.2.0) — gated by feature flags
+        # Read feature flags once; used for all gated subsystem initialization below.
         flags = get_flags()
         self._otel = OTelGenAITracer(enabled=flags.is_enabled("otel_genai"))
 
@@ -186,7 +186,8 @@ class MuninnMemory:
         else:
             self._colbert_indexer = None
 
-        # Initialize hybrid retriever
+        # Initialize hybrid retriever — wire the already-constructed OTel instance
+        # so the retriever always shares the same tracer without a post-hoc patch.
         self._retriever = HybridRetriever(
             metadata_store=self._metadata,
             vector_store=self._vectors,
@@ -211,12 +212,6 @@ class MuninnMemory:
             embed_fn=self._embed,
             colbert_indexer=self._colbert_indexer,
         )
-
-        # Initialize Phase 2 engines (v3.2.0) — gated by feature flags
-        flags = get_flags()
-        self._otel = OTelGenAITracer(enabled=flags.is_enabled("otel_genai"))
-        if self._retriever is not None:
-            self._retriever._telemetry = self._otel
 
         if flags.is_enabled("goal_compass"):
             self._goal_compass = GoalCompass(
