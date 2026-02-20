@@ -85,20 +85,26 @@ class VectorStore:
     def search(
         self,
         query_embedding: List[float],
-        limit: int = 10,
+        limit: int,
         score_threshold: float = 0.0,
-        filters: Optional[Dict[str, str]] = None,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[Tuple[str, float]]:
         """
         Search for similar vectors.
         Returns list of (memory_id, score) tuples.
         """
+        from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
         client = self._get_client()
         query_filter = None
         if filters:
             conditions = []
             for key, value in filters.items():
-                conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+                if value is None:
+                    continue
+                if key == "memory_ids" and isinstance(value, list):
+                    conditions.append(FieldCondition(key="memory_id", match=MatchAny(any=value)))
+                else:
+                    conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
             query_filter = Filter(must=conditions)
 
         # v1.16+ uses query_points instead of search
