@@ -1,1230 +1,557 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Muninn Control Center</title>
-  <style>
-    :root {
-      /* Slate Palette (Tailwind-ish) */
-      --bg: #0f172a;       /* slate-900 */
-      --bg-card: #1e293b;  /* slate-800 */
-      --bg-input: #334155; /* slate-700 */
-      --border: #334155;   /* slate-700 */
-      --text: #f8fafc;     /* slate-50 */
-      --text-muted: #94a3b8; /* slate-400 */
-      
-      /* Accents */
-      --primary: #38bdf8;  /* sky-400 */
-      --primary-hover: #0ea5e9; /* sky-500 */
-      --primary-dim: rgba(56, 189, 248, 0.1);
-      
-      /* States */
-      --success: #4ade80;  /* green-400 */
-      --warning: #facc15;  /* yellow-400 */
-      --error: #f87171;    /* red-400 */
-      
-      /* UI */
-      --radius: 12px;
-      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-      --font-main: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      --font-mono: "JetBrains Mono", Consolas, monospace;
-    }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Muninn Hub | Huginn Interface</title>
+    <style>
+        :root {
+            --slate-950: #020617;
+            --slate-900: #0f172a;
+            --slate-800: #1e293b;
+            --slate-700: #334155;
+            --slate-400: #94a3b8;
+            --sky-400: #38bdf8;
+            --sky-500: #0ea5e9;
+            --emerald-500: #10b981;
+            --rose-500: #f43f5e;
+            --glass: rgba(30, 41, 59, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
 
-    * { box-sizing: border-box; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: var(--slate-950);
+            color: white;
+            font-family: 'Inter', -apple-system, sans-serif;
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
 
-    body {
-      margin: 0;
-      background-color: var(--bg);
-      color: var(--text);
-      font-family: var(--font-main);
-      height: 100vh;
-      overflow: hidden; /* App-like feel */
-      display: flex;
-    }
+        /* --- Layout --- */
+        .sidebar {
+            width: 260px;
+            background: var(--slate-900);
+            border-right: 1px solid var(--glass-border);
+            display: flex;
+            flex-direction: column;
+            transition: all 0.3s ease;
+            z-index: 100;
+        }
 
-    /* --- Sidebar Navigation --- */
-    .sidebar {
-      width: 260px;
-      background-color: var(--bg-card);
-      border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      padding: 20px;
-      flex-shrink: 0;
-      transition: transform 0.3s ease;
-      z-index: 50;
-    }
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            background: radial-gradient(circle at top right, #1e293b, #020617);
+        }
 
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 32px;
-      padding: 0 8px;
-    }
+        /* --- Sidebar Navigation --- */
+        .brand {
+            padding: 2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: 800;
+            font-size: 1.25rem;
+            letter-spacing: -0.025em;
+            color: var(--sky-400);
+        }
 
-    .brand-icon {
-      width: 32px;
-      height: 32px;
-      background: var(--primary);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--bg);
-    }
+        .nav-list { list-style: none; padding: 0 1rem; flex: 1; }
+        .nav-item {
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.5rem;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: var(--slate-400);
+            transition: all 0.2s ease;
+        }
+        .nav-item:hover { background: var(--slate-800); color: white; }
+        .nav-item.active { background: var(--sky-500); color: white; }
 
-    .brand h1 {
-      font-size: 1.25rem;
-      font-weight: 700;
-      margin: 0;
-      letter-spacing: -0.025em;
-    }
-    
-    .brand h1 span { color: var(--text-muted); font-weight: 400; }
+        /* --- Header --- */
+        header {
+            padding: 1rem 2rem;
+            background: var(--glass);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
 
-    .nav-menu {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      flex: 1;
-    }
+        .status-pill {
+            background: var(--slate-800);
+            padding: 0.4rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            border: 1px solid var(--glass-border);
+        }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #444; }
+        .status-dot.online { background: var(--emerald-500); box-shadow: 0 0 8px var(--emerald-500); }
+        .status-dot.offline { background: var(--rose-500); }
 
-    .nav-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      color: var(--text-muted);
-      cursor: pointer;
-      transition: all 0.2s;
-      font-size: 0.95rem;
-      font-weight: 500;
-    }
+        /* --- Cards & UI Elements --- */
+        .container { padding: 2rem; max-width: 1200px; margin: 0 auto; width: 100%; }
+        
+        .card {
+            background: var(--slate-900);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
 
-    .nav-item:hover {
-      background-color: rgba(255, 255, 255, 0.05);
-      color: var(--text);
-    }
+        .help-box {
+            background: rgba(56, 189, 248, 0.1);
+            border-left: 4px solid var(--sky-400);
+            padding: 1rem;
+            border-radius: 0 8px 8px 0;
+            margin-bottom: 1.5rem;
+            font-size: 0.9rem;
+            color: var(--slate-400);
+            line-height: 1.5;
+        }
+        .help-box b { color: var(--sky-400); display: block; margin-bottom: 0.25rem; }
 
-    .nav-item.active {
-      background-color: var(--primary-dim);
-      color: var(--primary);
-    }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
 
-    .nav-item svg { width: 20px; height: 20px; }
+        .stat-card {
+            background: var(--slate-900);
+            border: 1px solid var(--glass-border);
+            padding: 1.5rem;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+        }
+        .stat-label { color: var(--slate-400); font-size: 0.8rem; text-transform: uppercase; }
+        .stat-value { font-size: 2rem; font-weight: 700; margin-top: 0.5rem; color: var(--sky-400); }
 
-    /* Mobile Menu Toggle */
-    .mobile-menu-toggle {
-      display: none;
-      position: absolute;
-      top: 16px;
-      left: 16px;
-      z-index: 60;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      padding: 8px;
-      border-radius: 8px;
-      color: var(--text);
-    }
+        /* --- Search Interface --- */
+        .search-container {
+            position: relative;
+            margin-bottom: 2rem;
+        }
+        #search-input {
+            width: 100%;
+            background: var(--slate-800);
+            border: 2px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 1.25rem 1.5rem;
+            color: white;
+            font-size: 1.1rem;
+            transition: all 0.2s ease;
+            padding-right: 4rem;
+        }
+        #search-input:focus {
+            outline: none;
+            border-color: var(--sky-400);
+            box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.1);
+        }
+        .search-btn {
+            position: absolute;
+            right: 0.75rem;
+            top: 0.75rem;
+            background: var(--sky-500);
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }
 
-    /* --- Main Content --- */
-    .main-content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      position: relative;
-    }
+        /* --- Results --- */
+        .result-item {
+            background: var(--slate-800);
+            padding: 1.25rem;
+            border-radius: 10px;
+            margin-bottom: 1rem;
+            border: 1px solid var(--glass-border);
+            animation: fadeIn 0.3s ease forwards;
+        }
+        .result-meta { display: flex; gap: 1rem; font-size: 0.75rem; color: var(--slate-400); margin-bottom: 0.5rem; }
+        .result-tag { background: var(--slate-700); padding: 2px 6px; border-radius: 4px; }
+        .result-content { font-size: 0.95rem; line-height: 1.6; }
 
-    .top-bar {
-      height: 64px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 32px;
-      background: rgba(15, 23, 42, 0.8);
-      backdrop-filter: blur(8px);
-    }
+        /* --- Animation --- */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
 
-    .breadcrumbs {
-      font-size: 0.9rem;
-      color: var(--text-muted);
-    }
-    .breadcrumbs span { color: var(--text); font-weight: 500; }
+        canvas#brain-pulse {
+            width: 100%;
+            height: 120px;
+            background: var(--slate-950);
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+        }
 
-    .status-indicators {
-      display: flex;
-      gap: 16px;
-      align-items: center;
-    }
+        /* --- Responsive Sidebar --- */
+        @media (max-width: 768px) {
+            .sidebar { width: 64px; }
+            .sidebar .nav-text, .sidebar .brand span { display: none; }
+            .brand { padding: 1.5rem 1rem; }
+        }
 
-    .status-badge {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 0.8rem;
-      background: var(--bg-input);
-      padding: 4px 10px;
-      border-radius: 99px;
-      border: 1px solid var(--border);
-    }
-    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
-    .status-dot.ok { background: var(--success); box-shadow: 0 0 8px rgba(74, 222, 128, 0.4); }
-    .status-dot.warn { background: var(--warning); }
-    .status-dot.err { background: var(--error); }
+        /* --- Tabs Logic --- */
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
 
-    /* --- Views & Scroll Area --- */
-    .scroll-area {
-      flex: 1;
-      overflow-y: auto;
-      padding: 32px;
-    }
-
-    .view-container {
-      max-width: 1000px;
-      margin: 0 auto;
-      display: none; /* Hidden by default */
-      animation: fadeIn 0.3s ease;
-    }
-    .view-container.active { display: block; }
-
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-    /* --- Cards & Typo --- */
-    .card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 24px;
-      margin-bottom: 24px;
-      box-shadow: var(--shadow);
-    }
-
-    h2 { margin: 0 0 8px; font-size: 1.2rem; font-weight: 600; }
-    p.desc { margin: 0 0 20px; color: var(--text-muted); font-size: 0.9rem; line-height: 1.5; }
-
-    /* --- Forms --- */
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(12, 1fr);
-      gap: 16px;
-      margin-bottom: 20px;
-    }
-    .col-12 { grid-column: span 12; }
-    .col-8 { grid-column: span 8; }
-    .col-6 { grid-column: span 6; }
-    .col-4 { grid-column: span 4; }
-    .col-3 { grid-column: span 3; }
-
-    label { display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 6px; font-weight: 500; }
-    
-    input, textarea, select {
-      width: 100%;
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-family: var(--font-main);
-      font-size: 0.9rem;
-      transition: border-color 0.2s;
-    }
-    input:focus, textarea:focus, select:focus {
-      outline: none;
-      border-color: var(--primary);
-      box-shadow: 0 0 0 2px var(--primary-dim);
-    }
-    textarea { min-height: 100px; resize: vertical; }
-
-    /* --- Buttons --- */
-    .btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
-    
-    button {
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 10px 16px;
-      border-radius: 8px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-    }
-    button:hover { background: #475569; }
-    
-    button.primary {
-      background: var(--primary);
-      color: #0f172a; /* Dark text on bright button */
-      border-color: transparent;
-    }
-    button.primary:hover { background: var(--primary-hover); }
-
-    button.success { background: rgba(74, 222, 128, 0.1); color: var(--success); border-color: rgba(74, 222, 128, 0.2); }
-    button.success:hover { background: rgba(74, 222, 128, 0.2); }
-
-    button.danger { background: rgba(248, 113, 113, 0.1); color: var(--error); border-color: rgba(248, 113, 113, 0.2); }
-    button.danger:hover { background: rgba(248, 113, 113, 0.2); }
-
-    /* --- Magic Search Bar --- */
-    .magic-search {
-      position: relative;
-      margin-bottom: 32px;
-    }
-    .magic-search input {
-      width: 100%;
-      padding: 16px 20px 16px 50px;
-      font-size: 1.1rem;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: var(--shadow);
-    }
-    .magic-search svg {
-      position: absolute;
-      left: 18px;
-      top: 50%;
-      transform: translateY(-50%);
-      color: var(--text-muted);
-      width: 24px;
-      height: 24px;
-    }
-
-    /* --- Stats Grid --- */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 16px;
-      margin-bottom: 32px;
-    }
-    .stat-card {
-      background: var(--bg-card);
-      padding: 20px;
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      position: relative;
-      overflow: hidden;
-    }
-    .stat-card::after {
-        content: "";
-        position: absolute;
-        top: 0; right: 0;
-        width: 100px; height: 100%;
-        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.03));
-    }
-    .stat-label { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px; }
-    .stat-value { font-size: 1.5rem; font-weight: 700; color: var(--text); }
-    .stat-value span { font-size: 0.9rem; color: var(--text-muted); font-weight: 400; margin-left: 4px; }
-
-    /* --- Graph Viz (Simple) --- */
-    #graph-canvas {
-        width: 100%;
-        height: 200px;
-        background: var(--bg);
-        border-radius: var(--radius);
-        border: 1px solid var(--border);
-        margin-bottom: 24px;
-        display: block;
-    }
-
-    /* --- Logs & Results --- */
-    .log-container {
-      background: #0f1115; /* Even darker for logs */
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      padding: 12px;
-      max-height: 300px;
-      overflow-y: auto;
-      color: var(--text-muted);
-    }
-    .log-entry { margin-bottom: 6px; padding-left: 12px; border-left: 2px solid transparent; }
-    .log-entry.ok { border-color: var(--success); }
-    .log-entry.warn { border-color: var(--warning); color: #fde047; }
-    .log-entry.err { border-color: var(--error); color: #fca5a5; }
-    .timestamp { color: #52525b; margin-right: 8px; user-select: none; }
-
-    /* --- Tables --- */
-    .table-container {
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      overflow-x: auto; /* Allow horizontal scroll */
-    }
-    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 600px; }
-    th { background: var(--bg-input); padding: 12px 16px; text-align: left; font-weight: 600; color: var(--text-muted); }
-    td { padding: 12px 16px; border-top: 1px solid var(--border); color: var(--text); }
-    tr:hover td { background: rgba(255, 255, 255, 0.02); }
-
-    /* --- Help Boxes --- */
-    .help-box {
-      background: rgba(56, 189, 248, 0.05);
-      border: 1px solid rgba(56, 189, 248, 0.2);
-      border-radius: 8px;
-      padding: 12px 16px;
-      margin-bottom: 20px;
-      display: flex;
-      gap: 12px;
-      align-items: start;
-    }
-    .help-icon { color: var(--primary); flex-shrink: 0; margin-top: 2px; }
-    .help-content h4 { margin: 0 0 4px; font-size: 0.95rem; color: var(--primary); }
-    .help-content p { margin: 0; font-size: 0.85rem; color: var(--text-muted); }
-
-    /* Utilities */
-    .hidden { display: none !important; }
-    .mt-4 { margin-top: 16px; }
-    .check-label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-    input[type="checkbox"] { width: auto; }
-
-    /* --- Responsive --- */
-    @media (max-width: 768px) {
-      body { flex-direction: column; height: auto; min-height: 100vh; overflow-y: auto; }
-      .sidebar { 
-        width: 100%; 
-        transform: translateX(-100%); 
-        position: fixed; 
-        height: 100vh; 
-        padding-top: 60px;
-      }
-      .sidebar.open { transform: translateX(0); }
-      .mobile-menu-toggle { display: block; }
-      
-      .top-bar { padding: 0 16px; padding-left: 60px; }
-      .scroll-area { padding: 16px; overflow: visible; }
-      
-      .form-grid { grid-template-columns: 1fr; }
-      .col-12, .col-8, .col-6, .col-4, .col-3 { grid-column: span 1; }
-      
-      .magic-search input { font-size: 1rem; }
-      .btn-group { flex-direction: column; width: 100%; }
-      button { width: 100%; justify-content: center; }
-    }
-
-  </style>
+        input, textarea {
+            background: var(--slate-800);
+            border: 1px solid var(--glass-border);
+            color: white;
+            padding: 0.75rem;
+            border-radius: 6px;
+            font-family: inherit;
+        }
+        button { cursor: pointer; transition: opacity 0.2s; }
+        button:hover { opacity: 0.9; }
+    </style>
 </head>
 <body>
 
-  <!-- Mobile Toggle -->
-  <button class="mobile-menu-toggle" onclick="toggleSidebar()">
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" width="24" height="24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
-  </button>
-
-  <!-- Sidebar -->
-  <aside class="sidebar" id="sidebar">
-    <div class="brand">
-      <div class="brand-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S13.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" /></svg>
-      </div>
-      <h1>Muninn <span>Hub</span></h1>
-    </div>
-
-    <nav class="nav-menu">
-      <div class="nav-item active" onclick="switchView('view-home', this)">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" /></svg>
-        Overview
-      </div>
-      <div class="nav-item" onclick="switchView('view-ingest', this)">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
-        Ingestion
-      </div>
-      <div class="nav-item" onclick="switchView('view-legacy', this)">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" /></svg>
-        Legacy Import
-      </div>
-      <div class="nav-item" onclick="switchView('view-system', this)">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.212 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-        System
-      </div>
+    <nav class="sidebar">
+        <div class="brand">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+            <span>MUNINN</span>
+        </div>
+        <ul class="nav-list">
+            <li class="nav-item active" onclick="showTab('overview')">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+                <span class="nav-text">Overview</span>
+            </li>
+            <li class="nav-item" onclick="showTab('ingest')">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                <span class="nav-text">Ingestion</span>
+            </li>
+            <li class="nav-item" onclick="showTab('search')">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <span class="nav-text">Search</span>
+            </li>
+            <li class="nav-item" onclick="showTab('system')">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <span class="nav-text">System</span>
+            </li>
+        </ul>
     </nav>
-  </aside>
 
-  <!-- Content -->
-  <main class="main-content">
-    <div class="top-bar">
-      <div class="breadcrumbs">
-        Muninn > <span id="current-view-title">Overview</span>
-      </div>
-      <div class="status-indicators">
-        <div class="status-badge" title="Backend Status">
-          <div class="status-dot" id="dot-health"></div>
-          <span id="label-health">Checking...</span>
+    <div class="main-content">
+        <header>
+            <div id="breadcrumb" style="color: var(--slate-400); font-size: 0.85rem; font-weight: 500;">
+                Muninn <span style="margin: 0 0.5rem">/</span> <span id="current-tab-name" style="color: white">Overview</span>
+            </div>
+            <div style="display: flex; gap: 1rem;">
+                <div class="status-pill">
+                    <div id="health-dot" class="status-dot"></div>
+                    <span>Backend</span>
+                </div>
+                <div class="status-pill">
+                    <div id="auth-dot" class="status-dot"></div>
+                    <span>Auth</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="container">
+            <!-- TAB: OVERVIEW -->
+            <div id="tab-overview" class="tab-content active">
+                <canvas id="brain-pulse"></canvas>
+                
+                <div class="help-box">
+                    <b>🧠 Welcome to the Muninn Hub</b>
+                    This is your personal memory command center. Muninn uses biological consolidation principles to ensure your AI never forgets the important stuff. The graph above shows real-time "synaptic activity" as memories are searched or consolidated.
+                </div>
+
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <span class="stat-label">Total Memories</span>
+                        <span id="stat-total" class="stat-value">0</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Knowledge Nodes</span>
+                        <span id="stat-entities" class="stat-value">0</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Active Profile</span>
+                        <span id="stat-profile" class="stat-value">Balanced</span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Recent Activity</h3>
+                    <div id="activity-log" style="margin-top: 1rem; font-family: monospace; font-size: 0.85rem; color: var(--slate-400);">
+                        Muninn Hub initialized. Waiting for telemetry...
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB: INGEST -->
+            <div id="tab-ingest" class="tab-content">
+                <div class="help-box">
+                    <b>📥 How Ingestion Works</b>
+                    Adding information to Muninn creates <b>"Working Memories"</b>. As you use them, the system promotes them to <b>"Semantic Knowledge"</b>. You can upload local files or scrape URLs directly.
+                </div>
+                
+                <div class="card">
+                    <h3>New Memory</h3>
+                    <div style="display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem;">
+                        <textarea id="ingest-text" placeholder="Type or paste information to remember..." rows="4"></textarea>
+                        <div style="display: flex; gap: 1rem;">
+                            <input id="ingest-namespace" type="text" placeholder="Namespace (e.g. project-x)" style="flex: 1;">
+                            <button onclick="handleIngest()" class="search-btn" style="position: static;">Store Memory</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>File / URL Discovery</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                        <div>
+                            <label style="display:block; margin-bottom: 0.5rem; font-size: 0.8rem; color: var(--slate-400);">Local Path</label>
+                            <input id="ingest-path" type="text" placeholder="C:\docs\..." style="width: 100%;">
+                        </div>
+                        <div>
+                            <label style="display:block; margin-bottom: 0.5rem; font-size: 0.8rem; color: var(--slate-400);">Web URL</label>
+                            <input id="ingest-url" type="text" placeholder="https://..." style="width: 100%;">
+                        </div>
+                    </div>
+                    <button onclick="handleDiscovery()" class="search-btn" style="position: static; margin-top: 1rem; width: 100%; background: var(--slate-800); border: 1px solid var(--glass-border);">Discover & Ingest</button>
+                </div>
+            </div>
+
+            <!-- TAB: SEARCH -->
+            <div id="tab-search" class="tab-content">
+                <div class="help-box">
+                    <b>🔍 "Magic" Hybrid Search</b>
+                    This search doesn't just look for words. It uses <b>Vector Math</b> (concepts), <b>Graph Traversal</b> (relationships), and <b>BM25</b> (keywords) simultaneously. The best results rise to the top.
+                </div>
+
+                <div class="search-container">
+                    <input type="text" id="search-input" placeholder="Ask your memory anything..." onkeypress="if(event.key==='Enter')handleSearch()">
+                    <button onclick="handleSearch()" class="search-btn">Search</button>
+                </div>
+
+                <div id="search-results">
+                    <!-- Results injected here -->
+                </div>
+            </div>
+
+            <!-- TAB: SYSTEM -->
+            <div id="tab-system" class="tab-content">
+                <div class="card">
+                    <h3>Security & Authentication</h3>
+                    <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
+                        <div class="help-box">
+                            <b>🔑 Server Token</b>
+                            Muninn requires a valid <code>MUNINN_AUTH_TOKEN</code>. If you don't know yours, check the <code>.muninn_token</code> file in your project folder.
+                        </div>
+                        <input id="server-token" type="password" placeholder="Enter Authentication Token">
+                        <button onclick="applyToken()" class="search-btn" style="position: static;">Apply Token</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Maintenance</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                        <button onclick="forceConsolidation()" style="padding: 1rem; background: var(--slate-800); border: 1px solid var(--glass-border); color: white; border-radius: 8px;">Force Consolidation</button>
+                        <button onclick="checkHealth()" style="padding: 1rem; background: var(--slate-800); border: 1px solid var(--glass-border); color: white; border-radius: 8px;">Re-check Health</button>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="status-badge" title="Auth Status">
-          <div class="status-dot" id="dot-auth"></div>
-          <span id="label-auth">Auth</span>
-        </div>
-      </div>
     </div>
 
-    <div class="scroll-area">
-      
-      <!-- Home View -->
-      <div id="view-home" class="view-container active">
-        <div class="magic-search">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-          <input type="text" id="search-query" placeholder="Ask your memory... (e.g., 'What did we decide about auth?')" />
-          <!-- Search Options -->
-          <div style="display: flex; gap: 16px; margin-top: 12px; padding-left: 4px;">
-            <label class="check-label">
-              <input type="checkbox" id="search-explain"> Explain trace
-            </label>
-            <div style="width: 120px;">
-              <input type="number" id="search-limit" value="5" min="1" placeholder="Limit" style="padding: 6px;">
-            </div>
-            <button id="btn-search" class="primary" style="margin-left: auto;">Search</button>
-          </div>
-        </div>
+    <script>
+        let API_BASE = window.location.protocol === 'file:' ? 'http://localhost:42069' : window.location.origin;
+        let AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
 
-        <!-- Canvas for Graph Viz -->
-        <canvas id="graph-canvas"></canvas>
-
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-label">Total Memories</div>
-            <div class="stat-value" id="stat-memories">-</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">Backend</div>
-            <div class="stat-value" id="stat-backend">-</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">Active Profile</div>
-            <div class="stat-value" id="stat-profile">Balanced</div>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Search Results</h2>
-          <div class="result" id="search-result"></div>
-        </div>
-
-        <div class="card">
-          <h2>Live Activity</h2>
-          <div class="log-container" id="activity-log"></div>
-        </div>
-      </div>
-
-      <!-- Ingest View -->
-      <div id="view-ingest" class="view-container">
-        <div class="help-box">
-          <div class="help-icon">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" width="24" height="24"><path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" /></svg>
-          </div>
-          <div class="help-content">
-            <h4>Ingest Your Data</h4>
-            <p>Feed Muninn files to build its knowledge. Paste local folder paths. Use "Recursive" to include subfolders. "Project" and "Namespace" help organize memories.</p>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Project Ingestion</h2>
-          
-          <div class="form-grid">
-            <div class="col-12">
-              <label>Local Paths (one per line)</label>
-              <textarea id="ingest-paths" placeholder="C:\Projects\MyApp\src..."></textarea>
-            </div>
-            <div class="col-6">
-              <label>Project Name</label>
-              <input type="text" id="ingest-project" value="global">
-            </div>
-            <div class="col-6">
-              <label>Namespace</label>
-              <input type="text" id="ingest-namespace" value="global">
-            </div>
-            <div class="col-4">
-               <label>Max Size (Bytes)</label>
-               <input type="number" id="ingest-max-bytes" value="5242880">
-            </div>
-            <div class="col-4">
-               <label>Order</label>
-               <select id="ingest-chronological">
-                 <option value="none">Default</option>
-                 <option value="oldest_first">Oldest First</option>
-                 <option value="newest_first">Newest First</option>
-               </select>
-            </div>
-            <div class="col-4">
-               <label style="visibility: hidden">Options</label>
-               <label class="check-label"><input type="checkbox" id="ingest-recursive" checked> Recursive</label>
-            </div>
-          </div>
-
-          <div class="btn-group">
-            <button id="btn-ingest-project" class="primary">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
-              Run Ingestion
-            </button>
-          </div>
-          <div class="result mt-4" id="project-ingest-result"></div>
-        </div>
-        
-        <!-- Hidden Metadata Fields -->
-        <input type="hidden" id="ingest-metadata" value="">
-        <input type="hidden" id="ingest-chunk-size" value="1200">
-        <input type="hidden" id="ingest-chunk-overlap" value="150">
-        <input type="hidden" id="ingest-min-chunk" value="120">
-      </div>
-
-      <!-- Legacy View -->
-      <div id="view-legacy" class="view-container">
-        <div class="help-box">
-          <div class="help-icon">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" width="24" height="24"><path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" /></svg>
-          </div>
-          <div class="help-content">
-            <h4>Legacy Import</h4>
-            <p>Migrating from Claude, Codex, or another AI? Scan your drive for existing logs and import them here. Use "Scan" then "Auto-Import" for the fastest result.</p>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Discover Legacy Data</h2>
-          
-          <div class="form-grid">
-            <div class="col-6">
-              <label>Root Paths (Optional)</label>
-              <textarea id="legacy-roots" placeholder="C:\Custom\Archives..."></textarea>
-            </div>
-            <div class="col-6">
-              <label>Providers (comma sep)</label>
-              <textarea id="legacy-providers" placeholder="claude_code, serena_memory..."></textarea>
-            </div>
-          </div>
-          
-          <div class="btn-group">
-            <button id="btn-discover-legacy" class="primary">Scan for Data</button>
-            <button id="btn-auto-discover-import" class="success">Auto-Import All</button>
-          </div>
-          
-          <div class="table-container mt-4">
-            <table id="legacy-table">
-              <thead>
-                <tr>
-                  <th>Import</th>
-                  <th>Provider</th>
-                  <th>Parser</th>
-                  <th>Confidence</th>
-                  <th>Size</th>
-                  <th>Modified</th>
-                  <th>Path</th>
-                  <th>Notes</th>
-                </tr>
-              </thead>
-              <tbody id="legacy-table-body">
-                <tr><td colspan="8" style="text-align:center; color: var(--text-muted);">No scan results yet. Click "Scan for Data" to discover sources.</td></tr>
-              </tbody>
-            </table>
-          </div>
-          
-          <div class="btn-group mt-4">
-            <button id="btn-select-supported">Select Supported</button>
-            <button id="btn-import-legacy" class="primary">Import Selected</button>
-          </div>
-          <div class="result mt-4" id="legacy-result"></div>
-        </div>
-        
-        <!-- Hidden/Default Legacy Fields -->
-        <input type="hidden" id="legacy-max-results" value="120">
-        <input type="hidden" id="legacy-include-unsupported">
-        <input type="hidden" id="legacy-project" value="global">
-        <input type="hidden" id="legacy-namespace" value="global">
-        <input type="hidden" id="legacy-chronological" value="none">
-        <input type="hidden" id="legacy-recursive" checked>
-      </div>
-
-      <!-- System View -->
-      <div id="view-system" class="view-container">
-        <div class="help-box">
-          <div class="help-icon">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" width="24" height="24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>
-          </div>
-          <div class="help-content">
-            <h4>Security & Maintenance</h4>
-            <p>Authentication token is required for all operations. Use "Force Consolidation" to trigger the background memory organizer.</p>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Authentication</h2>
-          <div class="form-grid">
-            <div class="col-12">
-              <label>Server Token (from .muninn_token)</label>
-              <input type="password" id="server-auth-token" placeholder="Paste token here...">
-            </div>
-          </div>
-          <button id="btn-apply-token" class="primary">Apply Token</button>
-        </div>
-
-        <div class="card">
-          <h2>Maintenance</h2>
-          <div class="btn-group">
-            <button id="btn-refresh-health">Check Health</button>
-            <button id="btn-run-consolidation" class="danger">Force Consolidation</button>
-          </div>
-          <div class="result mt-4" id="system-result"></div>
-        </div>
-        
-        <div class="card">
-          <h2>User Profile (JSON)</h2>
-          <textarea id="user-profile-json" style="font-family: var(--font-mono); font-size: 0.8rem;"></textarea>
-          <div class="btn-group mt-4">
-            <button id="btn-load-user-profile">Load</button>
-            <button id="btn-save-user-profile-merge" class="primary">Save (Merge)</button>
-          </div>
-          <div class="result mt-4" id="user-profile-result"></div>
-        </div>
-
-        <!-- Hidden Prefs (kept for logic) -->
-        <input type="hidden" id="pref-model-profile" value="balanced">
-        <input type="hidden" id="pref-log-level" value="normal">
-        <input type="checkbox" id="pref-auto-save" checked style="display:none">
-        <input type="hidden" id="pref-version" value="v1">
-        
-        <!-- Hidden Federation -->
-        <input type="hidden" id="federation-project" value="global">
-        <button id="btn-gen-manifest" style="display:none"></button>
-        <div id="federation-result" style="display:none"></div>
-      </div>
-
-    </div>
-  </main>
-
-  <script>
-    // --- Navigation Logic ---
-    function switchView(viewId, navEl) {
-      // Hide all views
-      document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
-      // Show target
-      document.getElementById(viewId).classList.add('active');
-      
-      // Update Nav State
-      document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-      navEl.classList.add('active');
-      
-      // Update Breadcrumb
-      document.getElementById('current-view-title').textContent = navEl.innerText.trim();
-      
-      // Mobile: Close menu on selection
-      document.getElementById('sidebar').classList.remove('open');
-    }
-
-    function toggleSidebar() {
-      document.getElementById('sidebar').classList.toggle('open');
-    }
-
-    // --- Original Logic Implementation ---
-    const API_BASE = window.location.protocol === 'file:' 
-      ? 'http://localhost:42069' 
-      : window.location.origin;
-    let legacyCatalog = [];
-    const PREFS_KEY = "muninn-control-center-preferences-v1";
-    const PREFS_VERSION = "v1";
-    
-    // Mapped fields - matching new IDs to old logic
-    const PREF_FIELDS = {
-      "pref-model-profile": { type: "value", default: "balanced" },
-      "pref-log-level": { type: "value", default: "normal" },
-      "pref-auto-save": { type: "checked", default: true },
-      "search-limit": { type: "value", default: "5" },
-      "search-explain": { type: "checked", default: false },
-      "ingest-paths": { type: "value", default: "" },
-      "ingest-metadata": { type: "value", default: "" },
-      "ingest-project": { type: "value", default: "global" },
-      "ingest-namespace": { type: "value", default: "global" },
-      "ingest-chronological": { type: "value", default: "none" },
-      "ingest-recursive": { type: "checked", default: true },
-      "ingest-max-bytes": { type: "value", default: "5242880" },
-      "ingest-chunk-size": { type: "value", default: "1200" },
-      "ingest-chunk-overlap": { type: "value", default: "150" },
-      "ingest-min-chunk": { type: "value", default: "120" },
-      "legacy-roots": { type: "value", default: "" },
-      "legacy-providers": { type: "value", default: "" },
-      "legacy-max-results": { type: "value", default: "120" },
-      "legacy-include-unsupported": { type: "checked", default: false },
-      "legacy-project": { type: "value", default: "global" },
-      "legacy-namespace": { type: "value", default: "global" },
-      "legacy-chronological": { type: "value", default: "none" },
-      "legacy-recursive": { type: "checked", default: true },
-      "user-profile-json": { type: "value", default: "" },
-      "server-auth-token": { type: "value", default: "" },
-    };
-
-    function nowStamp() {
-      return new Date().toLocaleTimeString();
-    }
-
-    function logLine(message, level = "ok") {
-      const log = document.getElementById("activity-log");
-      const div = document.createElement("div");
-      div.className = `log-entry ${level}`;
-      // Build with DOM nodes so neither the timestamp nor the message can inject HTML.
-      const stamp = document.createElement("span");
-      stamp.className = "timestamp";
-      stamp.textContent = `[${nowStamp()}]`;
-      div.appendChild(stamp);
-      div.appendChild(document.createTextNode(` ${message}`));
-      log.prepend(div);
-    }
-
-    function parseLines(text) {
-      if(!text) return [];
-      return text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-    }
-
-    function parseJsonOrEmpty(text) {
-      if (!text || !text.trim()) return {};
-      try { return JSON.parse(text); } 
-      catch (err) { throw new Error(`Invalid JSON: ${err.message}`); }
-    }
-
-    function updateAuthStatus(text, level) {
-      const el = document.getElementById("label-auth");
-      const dot = document.getElementById("dot-auth");
-      if (!el) return;
-      el.textContent = text;
-      dot.className = `status-dot ${level}`;
-    }
-
-    async function apiRequest(endpoint, payload = {}, method = "POST") {
-      const url = `${API_BASE}${endpoint}`;
-      const token = document.getElementById("server-auth-token").value.trim();
-      const headers = { "Content-Type": "application/json" };
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      try {
-        const response = await fetch(url, { method, headers, body: method !== "GET" ? JSON.stringify(payload) : null });
-        let data = {};
-        try { data = await response.json(); } catch (e) {}
-
-        if (!response.ok) {
-          if (response.status === 401) updateAuthStatus("Unauthorized", "err");
-          throw new Error(data.detail || `HTTP ${response.status}`);
+        function showTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
+            
+            document.getElementById('tab-' + tabId).classList.add('active');
+            event.currentTarget.classList.add('active');
+            document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
         }
 
-        if (token) updateAuthStatus("Authenticated", "ok");
-        else updateAuthStatus("No Token", "warn");
-        
-        return data.data ?? data;
-      } catch(err) {
-        throw err;
-      }
-    }
+        async function api(endpoint, method = 'GET', body = null) {
+            const options = {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${AUTH_TOKEN}`
+                }
+            };
+            if (body) options.body = JSON.stringify(body);
 
-    async function refreshHealth() {
-      const lbl = document.getElementById("label-health");
-      const dot = document.getElementById("dot-health");
-      try {
-        const health = await apiRequest("/health", null, "GET");
-        lbl.textContent = health.status || "OK";
-        dot.className = "status-dot ok";
-        
-        // Update Stats
-        document.getElementById("stat-backend").textContent = health.backend || "-";
-        document.getElementById("stat-memories").textContent = String(health.memory_count ?? "-");
-        
-        setResult("system-result", health);
-        logLine("System health check passed.");
-        
-        // Draw Graph
-        drawGraph(health.memory_count);
-      } catch (err) {
-        lbl.textContent = "Error";
-        dot.className = "status-dot err";
-        setResult("system-result", { error: err.message });
-        logLine(`Health check failed: ${err.message}`, "err");
-      }
-    }
+            try {
+                const res = await fetch(`${API_BASE}${endpoint}`, options);
+                if (res.status === 401) {
+                    document.getElementById('auth-dot').className = 'status-dot offline';
+                    return { error: 'Unauthorized' };
+                }
+                return await res.json();
+            } catch (e) {
+                return { error: e.message };
+            }
+        }
 
-    function setResult(elId, payload) {
-      const el = document.getElementById(elId);
-      if (!el) return;
-      el.innerHTML = "";
-      if (payload) {
-        const pre = document.createElement("pre");
-        pre.style.margin = "0";
-        pre.style.whiteSpace = "pre-wrap";
-        pre.style.fontSize = "0.8rem";
-        pre.style.color = "var(--text-muted)";
-        pre.textContent = JSON.stringify(payload, null, 2);
-        el.appendChild(pre);
-      }
-    }
+        async function handleSearch() {
+            const query = document.getElementById('search-input').value;
+            if (!query) return;
 
-    // Prefs Logic
-    function collectPreferences() {
-      const prefs = { version: PREFS_VERSION };
-      Object.entries(PREF_FIELDS).forEach(([id, cfg]) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        prefs[id] = cfg.type === "checked" ? !!el.checked : String(el.value ?? "");
-      });
-      return prefs;
-    }
+            const resultsDiv = document.getElementById('search-results');
+            resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--slate-400);">Searching the collective consciousness...</div>';
 
-    function applyPreferences(prefs) {
-      Object.entries(PREF_FIELDS).forEach(([id, cfg]) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        const value = prefs && prefs[id] !== undefined ? prefs[id] : cfg.default;
-        if (cfg.type === "checked") el.checked = Boolean(value);
-        else el.value = String(value);
-      });
-    }
+            const data = await api('/search', 'POST', { query, limit: 10, explain: true });
+            
+            if (data.error) {
+                resultsDiv.innerHTML = `<div class="result-item" style="border-color: var(--rose-500)">Error: ${data.error}</div>`;
+                return;
+            }
 
-    function loadPreferences() {
-      try {
-        const raw = window.localStorage.getItem(PREFS_KEY);
-        applyPreferences(raw ? JSON.parse(raw) : null);
-      } catch (err) {
-        applyPreferences(null);
-      }
-    }
+            resultsDiv.innerHTML = "";
+            if (data.results.length === 0) {
+                resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--slate-400);">No relevant memories found.</div>';
+                return;
+            }
 
-    function savePreferences() {
-      const prefs = collectPreferences();
-      window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-      document.getElementById("stat-profile").textContent = document.getElementById("pref-model-profile").value;
-    }
-
-    // --- Canvas Graph Visualizer ---
-    function drawGraph(nodeCount) {
-        const canvas = document.getElementById('graph-canvas');
-        if (!canvas) return;
-        
-        // Resize to parent
-        canvas.width = canvas.parentElement.clientWidth;
-        canvas.height = 200;
-        
-        const ctx = canvas.getContext('2d');
-        const nodes = [];
-        const count = Math.min(nodeCount || 20, 50); // Cap at 50 for visuals
-        
-        // Init nodes
-        for(let i=0; i<count; i++) {
-            nodes.push({
-                x: Math.random() * canvas.width,
-                y: Math.random() * canvas.height,
-                vx: (Math.random() - 0.5) * 0.5,
-                vy: (Math.random() - 0.5) * 0.5,
-                size: Math.random() * 3 + 1
+            data.results.forEach(r => {
+                const item = document.createElement('div');
+                item.className = 'result-item';
+                const score = Math.round(r.score * 100);
+                item.innerHTML = `
+                    <div class="result-meta">
+                        <span class="result-tag" style="color: var(--sky-400)">${score}% Match</span>
+                        <span class="result-tag">${r.memory.memory_type}</span>
+                        <span>${r.memory.namespace || 'global'}</span>
+                    </div>
+                    <div class="result-content">${r.memory.content}</div>
+                `;
+                resultsDiv.appendChild(item);
             });
         }
-        
+
+        async function handleIngest() {
+            const content = document.getElementById('ingest-text').value;
+            const namespace = document.getElementById('ingest-namespace').value || 'global';
+            if (!content) return;
+
+            const data = await api('/ingest', 'POST', { content, namespace });
+            if (data.id) {
+                alert('Memory stored successfully!');
+                document.getElementById('ingest-text').value = "";
+                updateStats();
+            } else {
+                alert('Error: ' + JSON.stringify(data));
+            }
+        }
+
+        function applyToken() {
+            AUTH_TOKEN = document.getElementById('server-token').value;
+            localStorage.setItem('muninn_token', AUTH_TOKEN);
+            checkHealth();
+        }
+
+        async function checkHealth() {
+            const data = await api('/health');
+            const healthDot = document.getElementById('health-dot');
+            const authDot = document.getElementById('auth-dot');
+
+            if (data.error) {
+                healthDot.className = 'status-dot offline';
+                authDot.className = 'status-dot offline';
+            } else {
+                healthDot.className = 'status-dot online';
+                authDot.className = 'status-dot online';
+                updateStats(data);
+            }
+        }
+
+        function updateStats(data) {
+            if (!data) return;
+            document.getElementById('stat-total').innerText = data.memories || 0;
+            document.getElementById('stat-entities').innerText = data.entities || 0;
+            document.getElementById('stat-profile').innerText = data.active_profile || 'Balanced';
+        }
+
+        // --- Visual Graph Animation ---
+        const canvas = document.getElementById('brain-pulse');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+
+        function initParticles() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            particles = [];
+            for(let i=0; i<30; i++) {
+                particles.push({
+                    x: Math.random() * canvas.width,
+                    y: Math.random() * canvas.height,
+                    vx: (Math.random() - 0.5) * 0.5,
+                    vy: (Math.random() - 0.5) * 0.5,
+                    r: Math.random() * 2 + 1
+                });
+            }
+        }
+
         function animate() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Update and draw nodes
-            ctx.fillStyle = '#38bdf8'; // Sky blue
-            ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)'; // Dim connection
-            
-            nodes.forEach((node, i) => {
-                node.x += node.vx;
-                node.y += node.vy;
-                
-                if(node.x < 0 || node.x > canvas.width) node.vx *= -1;
-                if(node.y < 0 || node.y > canvas.height) node.vy *= -1;
-                
-                // Draw connections
-                for(let j=i+1; j<nodes.length; j++) {
-                    const dx = nodes[j].x - node.x;
-                    const dy = nodes[j].y - node.y;
-                    const dist = Math.sqrt(dx*dx + dy*dy);
-                    if(dist < 100) {
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)';
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.5)';
+
+            particles.forEach((p, i) => {
+                p.x += p.vx; p.y += p.vy;
+                if(p.x < 0 || p.x > canvas.width) p.vx *= -1;
+                if(p.y < 0 || p.y > canvas.height) p.vy *= -1;
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+                ctx.fill();
+
+                for(let j=i+1; j<particles.length; j++) {
+                    const p2 = particles[j];
+                    const dist = Math.hypot(p.x - p2.x, p.y - p2.y);
+                    if(dist < 80) {
+                        ctx.lineWidth = (1 - dist/80);
                         ctx.beginPath();
-                        ctx.moveTo(node.x, node.y);
-                        ctx.lineTo(nodes[j].x, nodes[j].y);
+                        ctx.moveTo(p.x, p.y);
+                        ctx.lineTo(p2.x, p2.y);
                         ctx.stroke();
                     }
                 }
-                
-                // Draw node
-                ctx.beginPath();
-                ctx.arc(node.x, node.y, node.size, 0, Math.PI*2);
-                ctx.fill();
             });
-            
             requestAnimationFrame(animate);
         }
-        animate();
-    }
 
-    // Core Actions
-    async function searchMemories() {
-      const query = document.getElementById("search-query").value.trim();
-      if (!query) return;
-      
-      logLine(`Searching: "${query}"...`);
-      try {
-        const result = await apiRequest("/search", {
-          query,
-          limit: parseInt(document.getElementById("search-limit").value),
-          rerank: true,
-          explain: document.getElementById("search-explain").checked,
-          user_id: "global_user",
-        });
-        
-        const resEl = document.getElementById("search-result");
-        resEl.innerHTML = "";
-        
-        if (Array.isArray(result) && result.length > 0) {
-          result.forEach(item => {
-            const div = document.createElement("div");
-            div.style.padding = "12px";
-            div.style.borderBottom = "1px solid var(--border)";
-            // Use DOM text nodes — item.content may contain HTML from stored memories (Stored XSS prevention).
-            const titleDiv = document.createElement("div");
-            titleDiv.style.fontWeight = "600";
-            titleDiv.style.marginBottom = "4px";
-            titleDiv.textContent = item.content ? item.content.substring(0, 120) + "…" : "(no content)";
-            const scoreDiv = document.createElement("div");
-            scoreDiv.style.fontSize = "0.8rem";
-            scoreDiv.style.color = "var(--text-muted)";
-            scoreDiv.textContent = `Score: ${item.score != null ? Number(item.score).toFixed(3) : "—"}`;
-            div.appendChild(titleDiv);
-            div.appendChild(scoreDiv);
-            resEl.appendChild(div);
-          });
-        } else {
-          resEl.textContent = "No results found.";
-        }
-        logLine("Search completed.");
-      } catch (err) {
-        logLine(`Search failed: ${err.message}`, "err");
-      }
-    }
-
-    async function ingestProjectPaths() {
-      const sources = parseLines(document.getElementById("ingest-paths").value);
-      if (!sources.length) { alert("Please enter at least one path."); return; }
-      
-      logLine(`Starting ingestion for ${sources.length} paths...`);
-      try {
-        const payload = {
-          sources,
-          user_id: "global_user",
-          project: document.getElementById("ingest-project").value,
-          namespace: document.getElementById("ingest-namespace").value,
-          metadata: { source: "browser_ui", contextual_project_ingestion: true },
-          recursive: document.getElementById("ingest-recursive").checked,
-          chronological_order: document.getElementById("ingest-chronological").value,
-          max_file_size_bytes: parseInt(document.getElementById("ingest-max-bytes").value)
+        window.onload = () => {
+            initParticles();
+            animate();
+            document.getElementById('server-token').value = AUTH_TOKEN;
+            checkHealth();
+            setInterval(checkHealth, 30000);
         };
-        const res = await apiRequest("/ingest", payload);
-        setResult("project-ingest-result", res);
-        logLine(`Ingestion complete. Added ${res.added_memories || 0} memories.`, "ok");
-        refreshHealth();
-      } catch (err) {
-        setResult("project-ingest-result", { error: err.message });
-        logLine(`Ingestion error: ${err.message}`, "err");
-      }
-    }
-
-    async function discoverLegacySources() {
-      const btnScan = document.getElementById("btn-discover-legacy");
-      const resultEl = document.getElementById("legacy-result");
-      btnScan.disabled = true;
-      btnScan.textContent = "Scanning…";
-      resultEl.innerHTML = `<span style="color:var(--text-muted);">Scanning filesystem for AI assistant data…</span>`;
-      logLine("Scanning for legacy sources…");
-      try {
-        const maxResults = parseInt(document.getElementById("legacy-max-results").value || "120", 10);
-        const includeUnsupported = document.getElementById("legacy-include-unsupported").checked;
-        const payload = {
-          roots: parseLines(document.getElementById("legacy-roots").value),
-          providers: parseLines(document.getElementById("legacy-providers").value),
-          include_unsupported: includeUnsupported,
-          max_results_per_provider: maxResults,
-        };
-        const res = await apiRequest("/ingest/legacy/discover", payload);
-        legacyCatalog = res.sources || [];
-        renderLegacyTable();
-        const summary = `Found ${res.total_discovered || 0} sources (${res.parser_supported || 0} importable) across ${Object.keys(res.provider_counts || {}).length} providers.`;
-        resultEl.innerHTML = `<span style="color:var(--success);">${summary}</span>`;
-        logLine(summary, "ok");
-      } catch (err) {
-        resultEl.innerHTML = `<span style="color:var(--error);">Discovery failed: ${err.message}</span>`;
-        logLine(`Discovery failed: ${err.message}`, "err");
-      } finally {
-        btnScan.disabled = false;
-        btnScan.textContent = "Scan for Data";
-      }
-    }
-
-    function formatBytes(bytes) {
-      if (!bytes || bytes === 0) return "0 B";
-      const units = ["B", "KB", "MB", "GB"];
-      const i = Math.floor(Math.log(bytes) / Math.log(1024));
-      return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + " " + units[i];
-    }
-
-    function formatModified(isoStr) {
-      if (!isoStr) return "—";
-      try {
-        const d = new Date(isoStr);
-        const now = new Date();
-        const diffMs = now - d;
-        const diffDays = Math.floor(diffMs / 86400000);
-        if (diffDays === 0) return "Today";
-        if (diffDays === 1) return "Yesterday";
-        if (diffDays < 30) return `${diffDays}d ago`;
-        if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
-        return `${Math.floor(diffDays / 365)}yr ago`;
-      } catch { return "—"; }
-    }
-
-    function confidenceBadge(conf) {
-      const colors = { high: "var(--success)", medium: "var(--warning, #f59e0b)", low: "var(--error)", manual: "var(--primary)" };
-      const color = colors[conf] || "var(--text-muted)";
-      return `<span style="color:${color}; font-weight:600; text-transform:capitalize;">${conf || "—"}</span>`;
-    }
-
-    function renderLegacyTable() {
-      const tbody = document.getElementById("legacy-table-body");
-      tbody.innerHTML = "";
-      if (!legacyCatalog.length) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color: var(--text-muted);">No sources found. Try "Scan for Data".</td></tr>`;
-        return;
-      }
-      // Helper: escape HTML entities (defense-in-depth for server-provided strings).
-      function esc(s) {
-        return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-      }
-
-      legacyCatalog.forEach(src => {
-        const tr = document.createElement("tr");
-        const supported = !!src.parser_supported;
-        // Cells that contain only our own safe HTML (hardcoded strings, no user data).
-        const parserCell = supported
-          ? `<span style="color:var(--success)">&#10003; Supported</span>`
-          : `<span style="color:var(--error)">&#10007; Unsupported</span>`;
-        // All server-supplied string fields are escaped before embedding in HTML.
-        const escapedProvider = esc(src.provider);
-        const escapedPath     = esc(src.path);
-        const escapedNotes    = esc(src.notes);
-        const escapedIso      = esc(src.modified_at_iso);
-        const escapedId       = esc(src.source_id);
-        const escapedConf     = esc(src.confidence);
-        tr.innerHTML = `
-          <td><input type="checkbox" data-id="${escapedId}" ${supported ? "" : "disabled"} title="${supported ? "Select to import" : "Parser not supported for this file type"}"></td>
-          <td style="white-space:nowrap;">${escapedProvider || "—"}</td>
-          <td style="white-space:nowrap;">${parserCell}</td>
-          <td style="white-space:nowrap;">${confidenceBadge(escapedConf)}</td>
-          <td style="white-space:nowrap; text-align:right;">${formatBytes(src.size_bytes)}</td>
-          <td style="white-space:nowrap;" title="${escapedIso}">${formatModified(src.modified_at_iso)}</td>
-          <td style="font-family:var(--font-mono); font-size:0.75rem; max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapedPath}">${escapedPath}</td>
-          <td style="font-size:0.8rem; color:var(--text-muted); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapedNotes}">${escapedNotes || "—"}</td>
-        `;
-        tbody.appendChild(tr);
-      });
-    }
-    
-    function selectedLegacyIds() {
-      return Array.from(document.querySelectorAll('input[data-id]:checked')).map(cb => cb.getAttribute('data-id'));
-    }
-
-    async function importSelectedLegacy() {
-      const ids = selectedLegacyIds();
-      if (!ids.length) { alert("Select at least one source to import."); return; }
-
-      const btnImport = document.getElementById("btn-import-legacy");
-      const resultEl = document.getElementById("legacy-result");
-      btnImport.disabled = true;
-      btnImport.textContent = `Importing ${ids.length}…`;
-      resultEl.innerHTML = `<span style="color:var(--text-muted);">Importing ${ids.length} source(s)…</span>`;
-      logLine(`Importing ${ids.length} legacy source(s)…`);
-
-      // Read project/namespace from the hidden inputs (populated by PREF_FIELDS / loadPreferences).
-      const project   = document.getElementById("legacy-project").value   || "global";
-      const namespace = document.getElementById("legacy-namespace").value || "global";
-      const roots     = parseLines(document.getElementById("legacy-roots").value);
-      const chrono    = document.getElementById("legacy-chronological").value || "none";
-
-      try {
-        const res = await apiRequest("/ingest/legacy/import", {
-          selected_source_ids: ids,
-          user_id: "global_user",
-          project,
-          namespace,
-          roots,
-          chronological_order: chrono,
-          metadata: { source: "browser_ui_legacy" },
-        });
-        const added   = res.added_memories   || 0;
-        const skipped = res.skipped_chunks   || 0;
-        const failed  = res.failed_chunks    || 0;
-        const summary = `Import complete: ${added} memories added, ${skipped} skipped, ${failed} failed.`;
-        resultEl.innerHTML = `<span style="color:var(--success);">${summary}</span>`;
-        logLine(summary, "ok");
-        refreshHealth();
-      } catch (err) {
-        resultEl.innerHTML = `<span style="color:var(--error);">Import failed: ${err.message}</span>`;
-        logLine(`Import failed: ${err.message}`, "err");
-      } finally {
-        btnImport.disabled = false;
-        btnImport.textContent = "Import Selected";
-      }
-    }
-
-    // --- Init ---
-    window.addEventListener('DOMContentLoaded', () => {
-      loadPreferences();
-      refreshHealth();
-      
-      // Bindings
-      document.getElementById("btn-apply-token").onclick = () => { savePreferences(); refreshHealth(); };
-      document.getElementById("btn-refresh-health").onclick = refreshHealth;
-      document.getElementById("btn-run-consolidation").onclick = async () => {
-        await apiRequest("/consolidation/run");
-        logLine("Consolidation started.", "warn");
-      };
-      
-      document.getElementById("search-query").onkeydown = (e) => { if(e.key === "Enter") searchMemories(); };
-      document.getElementById("btn-search").onclick = searchMemories;
-      
-      document.getElementById("btn-ingest-project").onclick = ingestProjectPaths;
-      
-      document.getElementById("btn-discover-legacy").onclick = discoverLegacySources;
-      document.getElementById("btn-select-supported").onclick = () => {
-        document.querySelectorAll('input[data-id]:not([disabled])').forEach(cb => cb.checked = true);
-      };
-      document.getElementById("btn-import-legacy").onclick = importSelectedLegacy;
-      document.getElementById("btn-auto-discover-import").onclick = async () => {
-        await discoverLegacySources();
-        document.getElementById("btn-select-supported").click();
-        await importSelectedLegacy();
-      };
-      
-      // Load Profile
-      document.getElementById("btn-load-user-profile").onclick = async () => {
-         const res = await apiRequest("/profile/user/get", null, "GET");
-         document.getElementById("user-profile-json").value = JSON.stringify(res.profile || {}, null, 2);
-         logLine("User profile loaded.");
-      };
-      
-      document.getElementById("btn-save-user-profile-merge").onclick = async () => {
-        try {
-          const profile = JSON.parse(document.getElementById("user-profile-json").value);
-          await apiRequest("/profile/user/set", { profile, merge: true, user_id: "global_user" });
-          logLine("Profile saved (merged).", "ok");
-        } catch(e) { logLine(e.message, "err"); }
-      };
-
-      // Auto-save prefs on change
-      document.querySelectorAll("input, select").forEach(el => {
-        if(el.id.startsWith("pref-") || el.id.startsWith("ingest-") || el.id.startsWith("legacy-")) {
-          el.addEventListener("change", savePreferences);
-        }
-      });
-      
-      logLine("Muninn Hub initialized.");
-    });
-  </script>
+    </script>
 </body>
 </html>
