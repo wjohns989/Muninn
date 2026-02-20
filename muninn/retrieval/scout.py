@@ -51,12 +51,16 @@ class MuninnScout:
         )
         
         if not initial_results:
-            # Try global fallback immediately if project search failed
+            # Namespace-free fallback: if a scoped search returned nothing, retry
+            # without namespace restriction so we can surface cross-project context.
+            # NOTE: do NOT pass filters={"scope": "global"} — "scope" is not a Qdrant
+            # payload field; that filter silently returns 0 results.  Dropping the
+            # namespaces param is the correct way to broaden the search scope.
             initial_results = await self.retriever.search(
                 query=query,
                 limit=limit,
                 user_id=user_id,
-                filters={"scope": "global"},
+                namespaces=None,  # no namespace restriction
                 explain=True
             )
 
