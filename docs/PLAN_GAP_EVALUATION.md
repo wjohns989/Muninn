@@ -110,6 +110,9 @@ Evaluator: Codex
 9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls + startup-recovery budget gating + host-timeout-derived budgeting + explicit-overrun guardrails + guarded-dispatch fail-fast replies are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`, `MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC`, `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`, `MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, and `MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN` as needed). Post-restart in-session signal: `get_model_profiles` and `add_memory` MCP calls succeeded, and latest framed transport soak run passed (`run_id=20260215_170548`), but continued runtime observation is still required before closing blocker status.
 10. **Unified SOTA+ verdict automation (partially open):** one authoritative go/no-go verdict artifact is now wired (`sota-verdict`) with normalization hooks; remaining work is benchmark breadth adapters (LongMemEval/StructMemEval/Mem2Act + continuous-interaction slices), CI replay wiring, and signed promotion-manifest emission.
 11. **CI cadence split (open):** deferred benchmark mode is now available for enhancement tranches, but CI still needs explicit fast-on-PR vs full-on-schedule/release workflow wiring.
+12. **Policy-Aware Memory Governance (RL-Driven) (open):** Transition from static TTL/Rules to Reinforcement Learning (RL)-driven memory management. The system should autonomously learn when to Write, Delete, or Update memories based on retrieval reward signals, moving beyond predefined limits.
+13. **E-mem Episodic Context Reconstruction (open):** Address "destructive de-contextualization." We need to enhance the existing `PRECEDES/CAUSES` graph edges to ensure logical integrity over extended temporal interactions.
+14. **Cognitive Architecture (CoALA) Integration (open):** Introduce a modular decision-making loop bridging traditional ACT-R/SOAR cognitive structures with our memory components. This will help filter omissions and ground agent reasoning natively within the Muninn substrate.
 
 ## Validation Snapshot
 
@@ -258,9 +261,9 @@ Evaluator: Codex
    - Add benchmark datasets + replay traces + nDCG@k / Recall@k / MRR + latency percentiles.
    - Required to validate adaptive-weights and explainability claims quantitatively.
 
-2. **Policy-aware memory governance**
+2. **Policy-aware memory governance (RL-Driven)**
    - Per-memory retention TTL, PII tags, redaction/transformation policies, and auditable deletion proofs.
-   - Distinguishes enterprise/local-first deployments from generic OSS memory stores.
+   - Transition to Reinforcement Learning (RL)-driven memory management. The system should autonomously learn when to Write, Delete, or Update memories based on retrieval reward signals, moving beyond predefined limits.
 
 3. **Off-policy model upgrade over current SNIPS calibration**
    - Extend from scalar multipliers to feature-aware off-policy ranking updates (e.g., doubly robust estimators over trace features).
@@ -290,7 +293,6 @@ Evaluator: Codex
 7. Enforce single-PR workflow policy operationally: one branch/one open PR per phase, merge before next branch starts, with PR/comment checks at each phase boundary.
 8. Add explicit Phase 4I acceptance criteria: ability-score + ability-per-resource thresholds for live and legacy-ingestion benchmark suites before profile default promotion.
 
-
 ## Vibecoder-Centric Additions (Multi-Assistant Continuity)
 
 To align with the product intent (not enterprise-heavy), the highest-ROI additions are:
@@ -312,6 +314,7 @@ To align with the product intent (not enterprise-heavy), the highest-ROI additio
 ## Web Research Snapshot
 
 Research notes and implementation guidance are documented in:
+
 - `docs/WEB_RESEARCH_VIBECODER_SOTA.md`
 - `docs/plans/2026-02-14-browser-ui-model-policy-design.md`
 - `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
@@ -340,6 +343,7 @@ Research notes and implementation guidance are documented in:
 ## Model-Caliber Research Update (2026-02-14)
 
 Research-backed recommendation for SOTA+ operator profiles is to keep **caliber-based model selection** (not only think-level toggles):
+
 1. `low_latency`: low-VRAM local model (`llama3.2:3b` baseline, optional `qwen3:4b`).
 2. `balanced`: `qwen3:8b` default for quality/latency tradeoff.
 3. `high_reasoning`: `qwen3:14b` default for 16GB-class workflows; reserve `qwen3:30b/32b` (or `deepseek-r1:32b`) for explicit high-VRAM opt-in sessions.
@@ -352,6 +356,7 @@ Research-backed recommendation for SOTA+ operator profiles is to keep **caliber-
    - `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
 
 Primary references for this recommendation:
+
 - Ollama model availability/size envelopes (`qwen3`, `llama3.2`, `deepseek-r1`) and OpenAI-compatible API surface.
 - xLAM-2 paper/repository for tool-agent design goals and function-calling orientation.
 - Qwen3 technical report for current open-weight reasoning capability trajectory.
