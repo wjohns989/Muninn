@@ -49,6 +49,7 @@ class ConsolidationDaemon:
         bm25: BM25Index,
         embed_fn=None,
         colbert_indexer=None,
+        extractor=None,
     ):
         self.config = config
         self.metadata = metadata
@@ -57,6 +58,7 @@ class ConsolidationDaemon:
         self.bm25 = bm25
         self._embed_fn = embed_fn
         self.colbert_indexer = colbert_indexer
+        self.extractor = extractor
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._last_cycle: Optional[float] = None
@@ -313,6 +315,68 @@ class ConsolidationDaemon:
                     primary.id, primary_uid, primary.namespace,
                     secondary.id, secondary_uid, secondary.namespace
                 )
+                continue
+
+            # v3.22.0 Temporal Knowledge Graph & Shadowing
+            # Check for semantic contradictions using LLM synthesis
+            is_contradiction = False
+            if hasattr(self, "extractor") and self.extractor and getattr(self.extractor, "_instructor_routes_by_profile", None):
+                from muninn.extraction.temporal_synthesis import synthesize_temporal_contradiction
+                
+                # Get the first available instructor
+                instructor_ext = None
+                for route_label, ext in self.extractor._instructor_routes_by_profile.get(self.extractor.model_profile, []):
+                    if ext.is_available:
+                        instructor_ext = ext
+                        break
+                        
+                if instructor_ext:
+                    # To minimize false positives and LLM calls, only check if their content is meaningfully different
+                    if primary.content.strip() != secondary.content.strip():
+                        try:
+                            resolution = synthesize_temporal_contradiction(
+                                extractor=instructor_ext,
+                                fact_a_text=secondary.content,
+                                fact_b_text=primary.content
+                            )
+                            
+                            if resolution and resolution.contradiction_confirmed:
+                                is_contradiction = True
+                                # Shadow the older fact and keep the newer fact active.
+                                if secondary.created_at < primary.created_at:
+                                    target_to_shadow = secondary
+                                    superseding = primary
+                                else:
+                                    target_to_shadow = primary
+                                    superseding = secondary
+                                
+                                logger.info(
+                                    "Phase MERGE: Temporal contradiction detected between %s and %s. Shadowing older %s.",
+                                    primary.id, secondary.id, target_to_shadow.id
+                                )
+                                
+                                # Use temporal_kg to shadow the edges of the outdated fact
+                                if hasattr(self.graph, "shadow_memory_edges"):
+                                    self.graph.shadow_memory_edges(
+                                        memory_id=target_to_shadow.id, 
+                                        superseded_at=superseding.created_at
+                                    )
+                                
+                                # Archive the outdated episodic memory so it doesn't pollute standard Vector / BM25 queries (preserving historical record in graph)
+                                target_metadata = target_to_shadow.metadata.copy()
+                                target_metadata["temporal_shadowed_by"] = superseding.id
+                                target_metadata["superseded_at"] = time.time()
+                                target_to_shadow.importance = target_to_shadow.importance * 0.1
+                                self.metadata.update_metadata(target_to_shadow.id, target_metadata)
+                                self.metadata.update(target_to_shadow)
+                                
+                                self.vectors.delete([target_to_shadow.id])
+                                self.bm25.remove(target_to_shadow.id)
+                        except Exception as e:
+                            logger.warning(f"Temporal synthesis failed during MERGE: {e}")
+            
+            if is_contradiction:
+                # Since they contradict chronologically, we cannot merge them. The older fact is now archived.
                 continue
 
             merged = merge_memories(primary, secondary)

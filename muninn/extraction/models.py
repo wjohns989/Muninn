@@ -134,3 +134,37 @@ EXTRACTION_SYSTEM_PROMPT = (
     "5. Confidence should reflect certainty: 1.0 = explicit statement, "
     "0.5 = implied, 0.3 = uncertain.\n"
 )
+
+
+# ---------------------------------------------------------------------------
+# Temporal Knowledge Graph Synthesis (Phase 22)
+# ---------------------------------------------------------------------------
+
+class TemporalContradictionResolution(BaseModel):
+    """
+    Structured resolution of a temporal contradiction between two facts.
+    """
+    contradiction_confirmed: bool = Field(
+        description="True if Fact A and Fact B are mutually exclusive chronologically (e.g. 'Uses SQLite' vs 'Uses Postgres')."
+    )
+    superseding_fact: Optional[str] = Field(
+        default=None,
+        description="If contradiction is confirmed, the fact that is determined to be the newest/most currently valid."
+    )
+    outdated_fact: Optional[str] = Field(
+        default=None,
+        description="If contradiction is confirmed, the fact that is determined to be outdated (historical)."
+    )
+    explanation: str = Field(
+        description="A brief, 1-sentence explanation of why the superseding fact was chosen based on the text or context."
+    )
+
+
+TEMPORAL_SYNTHESIS_PROMPT = (
+    "You are a strict logical reasoning engine for a Temporal Knowledge Graph. "
+    "You will be provided with two contradictory facts, A and B, along with their source text or temporal context.\n"
+    "Your objective is to determine if they truly contradict, and if so, which one supersedes the other "
+    "chronologically. The superseding fact is the one that reflects the most recent state of reality.\n"
+    "Only flag as a contradiction if both cannot be true simultaneously (e.g. 'Project uses SQLite limit' vs 'Project uses Postgres pool'). "
+    "If they are just different facts or supplementary, set contradiction_confirmed to false."
+)
