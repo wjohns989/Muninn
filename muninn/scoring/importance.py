@@ -43,8 +43,12 @@ PROVENANCE_WEIGHTS = {
 }
 
 
-def calculate_recency(created_at: float, half_life_days: float = RECENCY_HALF_LIFE) -> float:
+def calculate_recency(created_at: float, half_life_days: float = RECENCY_HALF_LIFE, elo_rating: Optional[float] = None) -> float:
     """Exponential decay: half-life determines how fast memories fade."""
+    if elo_rating is not None:
+        from muninn.scoring.elo import elo_to_half_life_multiplier
+        half_life_days *= elo_to_half_life_multiplier(elo_rating)
+        
     age_days = (time.time() - created_at) / 86400.0
     if age_days < 0:
         return 1.0
@@ -97,7 +101,8 @@ def calculate_importance(
     """
     w = weights or DEFAULT_WEIGHTS
 
-    recency = calculate_recency(memory.created_at)
+    elo_rating = memory.metadata.get("elo_rating") if memory.metadata else None
+    recency = calculate_recency(memory.created_at, elo_rating=elo_rating)
     frequency = calculate_frequency(memory.access_count)
     novelty = calculate_novelty(max_similarity)
     provenance = calculate_provenance_weight(memory.provenance)
