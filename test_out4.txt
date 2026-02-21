@@ -1,0 +1,24 @@
+fastembed not installed ù reranker disabled
+
+--- Ingesting Initial Fact ---
+Traceback (most recent call last):
+  File "C:\Users\wjohn\muninn_mcp\verify_phase22_manual.py", line 60, in <module>
+  File "C:\Users\wjohn\miniconda3\Lib\asyncio\runners.py", line 194, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Users\wjohn\miniconda3\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\wjohn\miniconda3\Lib\asyncio\base_events.py", line 721, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\wjohn\muninn_mcp\verify_phase22_manual.py", line 21, in main
+    memory_id_1 = await memory.add_memory(
+                        ^^^^^^^^^^^^^^^^^
+AttributeError: 'MuninnMemory' object has no attribute 'add_memory'
+Exception ignored in: <function QdrantClient.__del__ at 0x000001DC0E041B20>
+Traceback (most recent call last):
+  File "C:\Users\wjohn\AppData\Roaming\Python\Python313\site-packages\qdrant_client\qdrant_client.py", line 169, in __del__
+  File "C:\Users\wjohn\AppData\Roaming\Python\Python313\site-packages\qdrant_client\qdrant_client.py", line 178, in close
+  File "C:\Users\wjohn\AppData\Roaming\Python\Python313\site-packages\qdrant_client\local\qdrant_local.py", line 85, in close
+ImportError: sys.meta_path is None, Python is likely shutting down

@@ -31,7 +31,8 @@ class TemporalKnowledgeGraph:
                     FROM Entity TO Entity,
                     start_time DOUBLE,
                     end_time DOUBLE,
-                    predicate STRING
+                    predicate STRING,
+                    source_memory STRING
                 )
             """)
         except Exception as e:
@@ -44,6 +45,7 @@ class TemporalKnowledgeGraph:
         predicate: str,
         obj: str,
         valid_start: float,
+        source_memory: str,
         valid_end: Optional[float] = None,
     ) -> bool:
         """
@@ -60,18 +62,73 @@ class TemporalKnowledgeGraph:
         try:
             conn.execute(
                 "MATCH (a:Entity {name: $subj}), (b:Entity {name: $obj}) "
-                "CREATE (a)-[:VALID_DURING {predicate: $pred, start_time: $start, end_time: $valid_until}]->(b)",
+                "CREATE (a)-[:VALID_DURING {predicate: $pred, start_time: $start, end_time: $valid_until, source_memory: $source_mem}]->(b)",
                 {
                     "subj": subject,
                     "obj": obj,
                     "pred": predicate,
                     "start": float(valid_start),
                     "valid_until": float(end),
+                    "source_mem": source_memory,
                 }
             )
             return True
         except Exception as e:
             logger.warning(f"Failed to add temporal fact: {e}")
+            return False
+
+    def shadow_edge(
+        self,
+        subject: str,
+        predicate: str,
+        obj: str,
+        superseded_at: float,
+    ) -> bool:
+        """
+        Closes the validity window of an active temporal fact, creating a "Shadow Edge".
+        This preserves the fact in history but bypasses it for current-day retrieval.
+        """
+        conn = self.graph._get_conn()
+        try:
+            # Match the active edge (where end_time is in the future or inf) and bound it to now.
+            conn.execute(
+                "MATCH (a:Entity {name: $subj})-[r:VALID_DURING {predicate: $pred}]->(b:Entity {name: $obj}) "
+                "WHERE r.end_time >= $ts "
+                "SET r.end_time = $ts",
+                {
+                    "subj": subject,
+                    "pred": predicate,
+                    "obj": obj,
+                    "ts": float(superseded_at),
+                }
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to shadow temporal edge: {e}")
+            return False
+
+    def shadow_memory_edges(
+        self,
+        memory_id: str,
+        superseded_at: float,
+    ) -> bool:
+        """
+        Closes the validity window of all active temporal facts sourced from a specific memory.
+        """
+        conn = self.graph._get_conn()
+        try:
+            conn.execute(
+                "MATCH (:Entity)-[r:VALID_DURING {source_memory: $mem_id}]->(:Entity) "
+                "WHERE r.end_time >= $ts "
+                "SET r.end_time = $ts",
+                {
+                    "mem_id": memory_id,
+                    "ts": float(superseded_at),
+                }
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to shadow memory edges: {e}")
             return False
 
     def query_valid_at(self, timestamp: float, limit: int = 50) -> List[Dict[str, Any]]:

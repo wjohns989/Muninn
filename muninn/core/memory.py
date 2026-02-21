@@ -216,6 +216,7 @@ class MuninnMemory:
             bm25=self._bm25,
             embed_fn=self._embed,
             colbert_indexer=self._colbert_indexer,
+            extractor=self._extraction,
         )
 
         if flags.is_enabled("goal_compass"):
