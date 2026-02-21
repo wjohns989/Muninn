@@ -13,36 +13,36 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 
 ## 🚦 Status
 
-**Current Version:** v3.13.0 (Phase 16 Complete)
+**Current Version:** v3.18.1 (Phase 19 In Progress)
 **Stability:** Production Beta
-**Test Suite:** 788 passing, 0 failing
+**Test Suite:** 1019 passing, 0 failing
 
-### What's New in v3.13.0
+### What's New in v3.18.1
 
-- **SOTA+ Signed Verdict** (`sota-verdict --signing-key`): Verdict artifacts now include `commit_sha` (from `git rev-parse HEAD`), SHA256 hashes of all input report files, and an HMAC-SHA256 `promotion_signature` bound to the canonical payload — tamper-detectable, commit-pinned, and independently reproducible.
-- **LongMemEval Hard Gate**: `--longmemeval-report` / `--min-longmemeval-ndcg` (default 0.60) / `--min-longmemeval-recall` (default 0.65) — external benchmark evidence is now a hard gate in `overall_passed`; accepts three real-world report formats.
-- **StructMemEval Adapter** (`eval/structmemeval_adapter.py`): Structured/factoid memory recall benchmark complementing LongMemEval; Exact Match, token-F1, MRR@k metrics; server-free selftest (EM=1.000, MRR@10=1.000).
-- **Auth Propagation Fix** (`lifecycle.py`): `start_server()` now correctly passes `MUNINN_AUTH_TOKEN` to the spawned server process — eliminates silent 401s on fresh installs where the env var is set in MCP config but not system-wide.
-- **Graph Memory Chains Activated**: KuzuDB chain detection, PRECEDES/CAUSES edge creation, and `MemoryChainDetector` smoke-tested end-to-end with real graph store.
-- **OTel GenAI Semantic Conventions**: Every `add_memory` and `search_memory` emits OTEL spans with `gen_ai.operation.name`, `gen_ai.system`, and Muninn-namespaced attributes; privacy-safe by default (`maybe_content()` returns `None`).
-- **LongMemEval Adapter** (`eval/longmemeval_adapter.py`): Full conversational QA recall adapter with nDCG@10 / Recall@10 metrics, stdlib-only, server-free selftest.
+- **Scout Synthesis & Hunt Mode**: Phase 19 brings multi-agent tracking and autonomous synthesis patterns directly into the memory system.
+- **CI Benchmark Workflow & Token Rotation**: Auto-gated PRs with LongMemEval dry-runs (`run_benchmark.py --dry-run`). `rotate-token` CLI for safe MCP token resets.
+- **Parser Security Sandbox**: Strict isolation for PDF/DOCX format ingestion. Subprocess timeouts and stdout bounds prevent any malicious document from crashing the host server.
+- **SOTA+ Signed Verdict**: Verdict artifacts now include `commit_sha` (from `git rev-parse HEAD`), SHA256 hashes of all input report files, and an HMAC-SHA256 `promotion_signature` bound to the canonical payload.
 
 ### Previous Milestones
 
 | Version | Phase | Key Feature |
 |---------|-------|-------------|
-| v3.12.0 | 15 | Auth propagation fix, graph chains smoke, OTel GenAI hardening, LongMemEval adapter baseline |
+| v3.18.1 | 19 | Scout synthesis, hunt mode (In Progress) |
+| v3.15.0 | 18 | CI Benchmark Workflow & Token Rotation |
+| v3.14.0 | 17 | Synthetic Benchmark Suite & Parser Security Sandbox |
+| v3.13.0 | 16 | SOTA+ Signed Verdict, LongMemEval Gate, StructMemEval Adapter |
+| v3.12.0 | 15 | Auth propagation fix, graph chains smoke, OTel GenAI hardening |
 | v3.11.0 | 14 | Project-scoped memory — `scope="project"/"global"` strict isolation |
 | v3.10.0 | 13 | Native ColBERT multi-vector MaxSim + NL temporal query expansion |
 | v3.9.0 | 12 | Distributed entity scoping with composite IDs |
-| v3.8.0 | 11 | Multi-namespace integrity + UI dashboard |
-| v3.7.0 | 10 | Unified security architecture |
 
 ---
 
 ## 🚀 Features
 
 ### Core Memory Engine
+
 - **Local-First**: Zero cloud dependency — all data stays on your machine
 - **5-Signal Hybrid Retrieval**: Dense vector · BM25 lexical · Graph traversal · Temporal relevance · Goal relevance
 - **Explainable Recall Traces**: Per-signal score attribution on every search result
@@ -51,12 +51,14 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 - **Bi-Temporal Records**: `created_at` (real-world event time) vs `ingested_at` (system intake time)
 
 ### Memory Lifecycle
+
 - **Consolidation Daemon**: Background process for decay, deduplication, promotion, and replay — inspired by sleep consolidation
 - **ColBERT Multi-Vector**: Native Qdrant multi-vector storage for MaxSim scoring
 - **NL Temporal Query Expansion**: Natural-language time phrases ("last week", "before the refactor") parsed into structured time ranges
 - **Goal Compass**: Retrieval signal for project objectives and constraint drift
 
 ### Operational Controls
+
 - **MCP Transport Hardening**: Framed + line JSON-RPC, timeout-window guardrails, protocol negotiation
 - **Runtime Profile Control**: `get_model_profiles` / `set_model_profiles` for dynamic model routing
 - **Profile Audit Log**: Immutable event ledger for profile policy mutations
@@ -64,6 +66,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 - **OpenTelemetry**: GenAI semantic convention tracing (feature-gated via `MUNINN_OTEL_ENABLED`)
 
 ### Multi-Assistant Interop
+
 - **Handoff Bundles**: Export/import memory checkpoints with checksum verification and idempotent replay
 - **Legacy Migration**: Discover and import memories from prior assistant sessions (JSONL chat history, SQLite state)
 - **Federation**: Multi-instance memory synchronization with delta bundles
