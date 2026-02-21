@@ -1,106 +1,78 @@
-# Muninn 2026 Vision & Capability Roadmap
+# Muninn 2026 Vision & Capability Roadmap (Revised)
 
-> **Document Status:** DRAFT  
+> **Document Status:** SOTA+ APPROVED  
 > **Last Updated:** 2026-02-20  
-> **Objective:** Define the next-generation architecture, feature expansions, and optimization parameters for Muninn over the 2026 timeframe, filling the gaps from the v3.3 SOTA+ implementation.
+> **Objective:** Define the next-generation architecture for Muninn. This revised roadmap explicitly favors high-ROI, pragmatic, and deterministic engineering patterns over high-complexity theoretical algorithms.
 
 ## 1. Executive Vision
 
-Building on the successful extraction, retrieval, and consolidation architectures established in v3.3 of the SOTA+ plan, Muninn's 2026 trajectory focuses on moving from a high-performance **Reactive Memory Store** to a **Proactive Cognitive Architecture**.
+Building on the successful extraction, retrieval, and consolidation architectures established in v3.3 of the SOTA+ plan, Muninn's 2026 trajectory focuses on robust, uncompromising local-first execution.
 
-The next milestones demand integration of RL-driven memory retention policies, bulletproof parse-time isolation for untrusted documents, cross-device P2P synchronization, and real-time temporal reconstruction.
-
-## 2. Identified Gaps & Optimization Opportunities (Post-v3.3)
-
-Based on our recent implementation reviews, these are the critical areas needing attention:
-
-| Domain | Current State (v3.3) | 2026 Target State |
-|--------|----------------------|-------------------|
-| **Governance** | Rule-based decay/promotion (fixed thresholds) | **RL-Driven Policy Governance**: Q-learning agents that adjust importance/decay rates based on retrieval success and user feedback. |
-| **Ingestion Security** | Standard subprocess parsing (tika/pdfplumber) | **Parser Sandboxing**: Strict process isolation (seccomp/containerized) for handling untrusted binary formats (DOCX, PDF) to prevent exploitation. |
-| **Federation** | Mentioned in architecture, no formal protocol | **Cross-Device CRDT Sync**: Merkle-DAG based P2P synchronization to share Procedural/Semantic memories safely between instances. |
-| **Cognitive Arch** | Simple retrieval-augmented generation (RAG) | **Full CoALA Integration**: Reasoning, Acting, and Memory (Working, Episodic, Semantic) operating in a continuous, reflective loop. |
-| **Data Integrity** | Periodic cleanup daemon | **Live Conflict Resolution**: Background LLM verification passes using NLI (Natural Language Inference) to detect and resolve contradictory facts in Semantic memory. |
+The core ambition is to evolve Muninn into a deeply integrated, self-optimizing engine using deterministic heuristics and strict isolation, definitively replacing Mem0 without sacrificing local hardware resources to background neural processing.
 
 ---
 
-## 3. New Feature Brainstorming
+## 2. Identified Gaps & Pragmatic Solutions
 
-### 3.1. Policy-Aware Memory Governance (RL-Driven)
+Based on the v3.3 gap analysis and a rigorous feasibility audit, these are the critical areas needing attention:
 
-* **Concept:** Instead of static `DECAY_THRESHOLD = 0.1`, use a multi-armed bandit or Q-learning approach to adjust the decay multiplier per memory *category*. Memories that successfully answer questions get a "reward" signal, strengthening their weights; unhelpful memories decay faster.
-* **Implementation:** Introduce a `Feedback` table. Modify the consolidation daemon to update weights dynamically.
+| Domain | Current State (v3.3) | 2026 Pragmatic Target |
+|--------|----------------------|-----------------------|
+| **Governance** | Rule-based decay/promotion | **Elo-Rated Retention**: Leveraging the newly integrated SNIPS retrieval feedback. Memories act as "players" in an Elo system; useful retrievals increase ratings (slowing decay), useless ones drop ratings. |
+| **Ingestion Security** | Standard subprocess parsing | **Strict Subprocess Isolation**: External parsers run in heavily restricted OS subprocesses (timeouts, memory caps, stripped permissions) communicating only via stdout, neutralizing malicious documents. |
+| **Conflict Resolution**| Periodic cleanup daemon | **Temporal Shadowing & LLM Merge**: During the 6h consolidation cycle, overlapping contradictory entity graphs are synthesized using the existing xLAM/Ollama extraction models and deterministic timestamp precedence. |
+| **Integrity** | Graph cycles possible | **Episodic Context Reconstruction**: Strict bi-temporal Kuzu queries allowing agents to seamlessly "time-travel" to a project's state at time `T` for pure, untainted context. |
 
-### 3.2. E-mem Episodic Context Reconstruction
-
-* **Concept:** Allow agents to "time-travel" to a specific point in a project's history. Reconstruct the graph strictly from nodes and edges timestamped prior to `T`.
-* **Implementation:** Implement strictly bi-temporal queries in Kuzu. Ensure all node/edge updates are append-only (or soft-delete).
-
-### 3.3. Zero-Trust Parser Sandboxing
-
-* **Concept:** File ingestion parsing (especially complex binaries like PDF/DOCX) is a massive attack vector.
-* **Implementation:** Isolate the parsing engine. Use an empty chroot or WebAssembly (Wasm) runtime for document text extraction to guarantee no host access during unstructured data ingestion.
+*(Note: Multi-device federation has been explicitly abandoned to preserve the ultra-fast, local-first tri-store architecture without the catastrophic complexity of distributed P2P consensus.)*
 
 ---
 
-## 4. Preemptive Debugging & Risk Mitigation
+## 3. Preemptive Debugging & Risk Mitigation
 
-Before executing the above phases, we must solve these predictable issues:
-
-| Anticipated Risk/Bug | Root Cause Prediction | Preemptive Mitigation Strategy |
-|----------------------|-----------------------|--------------------------------|
-| **SQLite Write Locking** | The consolidation daemon (especially during graph re-indexing) will hold write locks, blocking concurrent agent ingestion calls. | Enable `WAL` (Write-Ahead Logging) mode on all SQLite metadata stores. Implement a distinct `ConsolidationWriteQueue` buffer to batch writes rather than locking iteratively. |
-| **Memory Bloat (OOM)** | Out-of-control Episodic memory ingestion from verbose or looping LLM outputs, exceeding the 100k+ node scale limits. | Implement strict L1 Hash/Semantic filtering *before* ingestion. Drop any new episodic memory with >0.98 cosine similarity to a node created in the last 1-hour window. |
-| **xLAM JSON Instability** | Extraction models occasionally fail to close JSON tags or follow the PA-Tool output schema exactly. | Implement strict enforcement using `Outlines` or `Instructor` for structured generation, guaranteeing schema compliance at the sampling level. |
-| **Graph Edge Explosion** | "Connects-everything" syndrome where a common entity (e.g., "Python") creates thousands of dense edges, slowing traversal algorithms. | Cap global edge degree per entity. Entities approaching the limit mutate into "Supernodes" requiring explicit pathing intent to traverse, effectively pruning passive search over-expansion. |
+| Anticipated Risk/Bug | Mitigation Strategy | ROI / Impact |
+|----------------------|-----------------------|--------------|
+| **SQLite Write Locking** | Enable `WAL` (Write-Ahead Logging) mode on metadata stores. Implement a `ConsolidationWriteQueue` to batch-write graph and metadata updates instead of iterative locking. | **High:** Prevents the MCP server from freezing during agent ingestion if the background daemon is running a heavy merge cycle. |
+| **Memory Bloat (OOM)** | Implement strict L1 Hash/Semantic filtering *before* ingestion. Drop any new episodic memory with >0.98 cosine similarity to an active working memory node. | **High:** Conserves Qdrant memory constraints and limits background consolidation processing time. |
+| **LLM Schema Instability** | Enforce structured generation via `Outlines` or `Instructor` for local xLAM calls. | **Critical:** Guarantees 0% JSON parse failures, ending the cycle of retry loops that consume tokens and time. |
 
 ---
 
-## 5. Phased Delivery Roadmap & Checkpoints
+## 4. Phased Delivery Roadmap & Checkpoints
 
-### Phase 21: Zero-Trust Parser Isolation & Performance Tuning
+### Phase 21: Zero-Trust Parser Isolation & Ingestion Safety
 
-* **Objective:** Bullet-proof ingestion and resolve performance bottlenecks.
+* **Objective:** Bullet-proof ingestion against binary exploits without over-engineering Wasm.
 * **Checkpoints:**
-  * [ ] Introduce standalone `.wasm` or restricted-subprocess environment for document parsers.
-  * [ ] Apply WAL mode to SQLite dbs; implement async write-batching queue.
-  * [ ] Deploy Outlines/Instructor over local xLAM calls for guaranteed JSON schema conformance.
-* **Success Parameters:** 0% JSON parse failures in CI; parsing a malicious PDF results in graceful crash with no host leakage; SQLite concurrent write benchmark improves by 5x to handle parallel agent ingestion.
+  * [ ] Encapsulate Tika/PDFPlumber/binary parsers in `subprocess.run` wrappers.
+  * [ ] Apply strict OS-level resource limits (rlimits, timeouts).
+  * [ ] Implement robust `subprocess` crash recovery mapping to a "Fallback Extraction" (raw text only).
+  * [ ] Integrate `Outlines` or `Instructor` for guaranteed xLAM `get_entities` JSON schema compliance.
+* **Success Parameters:** A payload designed to infinite-loop or OOM the parser gracefully crashes the subprocess in <5s, logs a warning, and allows the MCP server to continue operating normally.
 
-### Phase 22: Live Integrity & NLI Conflict Resolution
+### Phase 22: Temporal Knowledge Graph (TKG) & Shadowing
 
-* **Objective:** Prevent semantic hallucination inside the memory store.
+* **Objective:** Evolve Kuzu into a fully realized Temporal Knowledge Graph (TKG) to resolve semantic hallucination traversing time.
 * **Checkpoints:**
-  * [ ] Build NLI pipeline using a lightweight BERT/DeBERTa model.
-  * [ ] Add background task to the Consolidation Engine: Sample Semantic memories about the same entity.
-  * [ ] Apply NLI: If (`M1` contradicts `M2`), flag for resolution logic (e.g., trust newer by timestamp, or ask user).
-* **Success Parameters:** Known contradictory facts are identified and resolved within the 6-hour consolidation cycle with >95% accuracy.
+  * [ ] Formalize `VALID_FROM` and `VALID_TO` edges in the Kuzu schema to support pure chronological reasoning.
+  * [ ] Add contradiction-detection heuristic during Phase 2 (MERGE) of the consolidation cycle (e.g., entity conflict scoring).
+  * [ ] Dispatch an LLM synthesis prompt to evaluate the contradiction, establishing "Shadow Edges" where outdated facts are preserved but bypassed in default retrieval.
+* **Success Parameters:** Longitudinal queries (e.g., "What was the architecture before we switched to SQLite?") successfully traverse the TKG, and changing a known configuration fact deterministically shadows the older memory.
 
-### Phase 23: CoALA Cognitive Architecture & RL Policy
+### Phase 23: Elo-Rated SNIPS Governance
 
-* **Objective:** Adaptive retention.
+* **Objective:** Dynamic retention without the overhead of neural RL agents.
 * **Checkpoints:**
-  * [ ] Introduce RL agent tracking reward signals from retrieval successes.
-  * [ ] Dynamically update `importance` decay multipliers per memory type.
-  * [ ] Complete Episodic "Time-Travel" bi-temporal query interface for Kuzu.
-* **Success Parameters:** System automatically prunes useless logs 3x faster than vital project code configurations, confirmed by A/B testing against baseline static decay.
-
-### Phase 24: P2P Memory Federation
-
-* **Objective:** Securely sync memories between local machines.
-* **Checkpoints:**
-  * [ ] Implement Merkle-DAG state representation of Procedural/Semantic memory layers.
-  * [ ] Define protocol for sharing via generated `sync_bundle.json`.
-  * [ ] Enable conflict-free resolution using timestamped state vectors.
-* **Success Parameters:** Two distinct Muninn instances correctly sync to an identical Semantic memory state without losing explicitly confirmed data on either side.
+  * [ ] Establish a baseline Elo rating (e.g., 1200) for all newly ingested episodic memories.
+  * [ ] Hook into the `record_retrieval_feedback` endpoint.
+  * [ ] When a memory is successfully used (outcome=1.0), calculate Elo gain against the task complexity; if penalized, calculate drop.
+  * [ ] Map the Elo rating directly into the standard exponential decay curve as a powerful multiplier.
+* **Success Parameters:** Unused conversational logs cleanly age out of the system 4x faster than highly referenced architectural guidelines, purely driven by usage statistics.
 
 ---
 
-## 6. Execution Protocol
+## 5. Execution Protocol
 
-As with all Muninn development, we proceed via the established SOTA+ guidelines:
-
-1. Feature Branching (`feature/v3.4.0-parser-sandbox`)
-2. Rigorous isolated test creation.
-3. Code construction using the most efficient tooling and avoiding LLM-heavy dependencies where static logic suffices.
-4. Validation using `eval.phase_hygiene` and standard pytest suites.
+1. Feature Branching (`feature/v3.4.0-pragmatic-roadmap`)
+2. Use deterministic, statically typed Python logic.
+3. Validate using `eval.phase_hygiene` and standard pytest suites.
+4. **Never sacrifice quality for speed. Code > documentation. Evidence > assumptions.**
