@@ -1,0 +1,317 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.0, pytest-9.0.2, pluggy-1.6.0
+SuperClaude: 4.1.9
+rootdir: C:\Users\user\muninn_mcp
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.12.1, langsmith-0.6.4, asyncio-1.3.0, hydra-core-1.3.2, cov-7.0.0, superclaude-4.1.9, typeguard-4.4.4
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1021 items
+
+tests\test_bm25.py ...............                                       [  1%]
+tests\test_build_standalone.py ..                                        [  1%]
+tests\test_colbert_scorer.py ...                                         [  1%]
+tests\test_config.py ................................                    [  5%]
+tests\test_conflict_detection.py ...............................         [  8%]
+tests\test_delete_all_scoping.py .......                                 [  8%]
+tests\test_eval_artifacts.py ...                                         [  9%]
+tests\test_eval_gates.py .....                                           [  9%]
+tests\test_eval_metrics.py .........                                     [ 10%]
+tests\test_eval_presets.py ...                                           [ 10%]
+tests\test_eval_run.py ......                                            [ 11%]
+tests\test_eval_statistics.py .....                                      [ 11%]
+tests\test_extraction_models.py ..............                           [ 13%]
+tests\test_extraction_pipeline.py .....                                  [ 13%]
+tests\test_extraction_rules.py ..........                                [ 14%]
+tests\test_feature_flags.py .................                            [ 16%]
+tests\test_federation.py ...                                             [ 16%]
+tests\test_goal_compass.py .                                             [ 16%]
+tests\test_hybrid_performance.py .                                       [ 16%]
+tests\test_hybrid_retriever.py ......                                    [ 17%]
+tests\test_ingestion_discovery.py ..............                         [ 18%]
+tests\test_ingestion_parser.py ....                                      [ 19%]
+tests\test_ingestion_pipeline.py ........                                [ 19%]
+tests\test_instructor_extractor.py .........                             [ 20%]
+tests\test_mcp_transport_blocker_decision.py ....                        [ 21%]
+tests\test_mcp_transport_closure.py .....                                [ 21%]
+tests\test_mcp_transport_diagnostics.py ...                              [ 22%]
+tests\test_mcp_transport_incident_replay.py .....                        [ 22%]
+tests\test_mcp_transport_soak.py .....                                   [ 23%]
+tests\test_mcp_wrapper_fallback.py ..                                    [ 23%]
+tests\test_mcp_wrapper_protocol.py ..................................... [ 26%]
+..............................................................           [ 32%]
+tests\test_memory_chains.py ..                                           [ 33%]
+tests\test_memory_feedback.py ....                                       [ 33%]
+tests\test_memory_goal_handoff.py ..                                     [ 33%]
+tests\test_memory_ingestion.py .........                                 [ 34%]
+tests\test_memory_namespace_scoping.py ........                          [ 35%]
+tests\test_memory_profiles.py ...                                        [ 35%]
+tests\test_memory_update_path.py ..                                      [ 35%]
+tests\test_memory_user_profile.py ...                                    [ 36%]
+tests\test_ollama_local_benchmark.py ..................................  [ 39%]
+tests\test_otel_genai.py ....                                            [ 39%]
+tests\test_phase_hygiene.py ........                                     [ 40%]
+tests\test_platform.py ..............s.........s.                        [ 43%]
+tests\test_recall_trace.py .......................                       [ 45%]
+tests\test_scoring.py ......                                             [ 46%]
+tests\test_sdk_client.py ......................                          [ 48%]
+tests\test_search_fallback.py ....                                       [ 48%]
+tests\test_semantic_dedup.py ......................................      [ 52%]
+tests\test_sqlite_feedback.py ....                                       [ 52%]
+tests\test_sqlite_goal_handoff.py ...                                    [ 52%]
+tests\test_sqlite_metadata_migration.py ....                             [ 53%]
+tests\test_sqlite_profile_policy_events.py .                             [ 53%]
+tests\test_standalone_entrypoint.py ....                                 [ 53%]
+tests\test_temporal_kg.py ..                                             [ 54%]
+tests\test_types.py ...............                                      [ 55%]
+tests\test_v3_10_0_multivector.py ...................                    [ 57%]
+tests\test_v3_10_0_temporal.py .....................................     [ 61%]
+tests\test_v3_11_0_project_scope.py .................................... [ 64%]
+.......                                                                  [ 65%]
+tests\test_v3_12_0_operational_hardening.py ............................ [ 67%]
+.....                                                                    [ 68%]
+tests\test_v3_13_0_sota_verdict_v1.py .................................. [ 71%]
+...........................                                              [ 74%]
+tests\test_v3_14_0_benchmark_suite.py .................................. [ 77%]
+.............................                                            [ 80%]
+tests\test_v3_15_0_ci_token_rotation.py ................................ [ 83%]
+.......                                                                  [ 84%]
+tests\test_v3_15_0_kaizen_fixes.py ....................................  [ 87%]
+tests\test_v3_17_0_legacy_scout.py .......................FF.F.......... [ 91%]
+................                                                         [ 93%]
+tests\test_v3_18_0_phase19.py ...............                            [ 94%]
+tests\test_v3_18_1_bugfixes.py .............                             [ 95%]
+tests\test_v3_6_2_security.py ...                                        [ 96%]
+tests\test_v3_7_0_unified_security.py ....                               [ 96%]
+tests\test_v3_8_0_multi_namespace.py ...                                 [ 96%]
+tests\test_v3_9_0_entity_scoping.py ..                                   [ 97%]
+tests\test_version_consistency.py .                                      [ 97%]
+tests\test_weight_adapter.py .............................               [100%]
+
+================================== FAILURES ===================================
+______ TestDaemonPhaseDecayBatch.test_phase_decay_calls_batch_centrality ______
+
+self = <tests.test_v3_17_0_legacy_scout.TestDaemonPhaseDecayBatch object at 0x000001ACFD250690>
+
+    @pytest.mark.asyncio
+    async def test_phase_decay_calls_batch_centrality(self):
+        """_phase_decay() calls get_memory_node_degrees_batch (true batch, not per-ID)."""
+        daemon = self._make_daemon()
+        records = [_make_record(f"m{i}") for i in range(5)]
+        daemon.metadata.get_for_consolidation.return_value = records
+        daemon.graph.get_memory_node_degrees_batch.return_value = {r.id: 0.1 for r in records}
+    
+>       await daemon._phase_decay()
+
+tests\test_v3_17_0_legacy_scout.py:475: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+muninn\consolidation\daemon.py:216: in _phase_decay
+    new_importance = calculate_importance(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+memory = MemoryRecord(id='m0', content='test', memory_type=<MemoryType.EPISODIC: 'episodic'>, importance=0.5, recency_score=1.0...ctor_id=None, embedding_model='nomic-embed-text', consolidated=False, parent_id=None, consolidation_gen=0, metadata={})
+max_similarity = 0.0, centrality = 0.1
+retrieval_utility = <MagicMock name='mock.get_memory_retrieval_utility()' id='1841485946496'>
+weights = None
+
+    def calculate_importance(
+        memory: MemoryRecord,
+        max_similarity: float = 0.0,
+        centrality: float = 0.0,
+        retrieval_utility: float = 0.0,
+        weights: Optional[dict] = None,
+    ) -> float:
+        """
+        Composite importance score combining multiple signals.
+    
+        Args:
+            memory: The memory record to score
+            max_similarity: Maximum cosine similarity to existing semantic memories
+            centrality: Graph degree centrality for entities in this memory
+            retrieval_utility: SNIPS feedback-derived retrieval utility [0.0, 1.0]
+            weights: Optional custom weights dict
+    
+        Returns:
+            importance score in [0.0, 1.0]
+        """
+        w = weights or DEFAULT_WEIGHTS
+    
+        recency = calculate_recency(memory.created_at)
+        frequency = calculate_frequency(memory.access_count)
+        novelty = calculate_novelty(max_similarity)
+        provenance = calculate_provenance_weight(memory.provenance)
+    
+        # Use .get() with DEFAULT_WEIGHTS fallback so callers can supply partial
+        # custom weight dicts without raising KeyError.
+        importance = (
+            w.get("recency", DEFAULT_WEIGHTS["recency"]) * recency
+            + w.get("frequency", DEFAULT_WEIGHTS["frequency"]) * frequency
+            + w.get("centrality", DEFAULT_WEIGHTS["centrality"]) * centrality
+            + w.get("novelty", DEFAULT_WEIGHTS["novelty"]) * novelty
+            + w.get("provenance", DEFAULT_WEIGHTS["provenance"]) * provenance
+            + w.get("retrieval", DEFAULT_WEIGHTS["retrieval"]) * retrieval_utility
+        )
+    
+>       return min(1.0, max(0.0, importance))
+                        ^^^^^^^^^^^^^^^^^^^^
+E       TypeError: '>' not supported between instances of 'MagicMock' and 'float'
+
+muninn\scoring\importance.py:112: TypeError
+____ TestDaemonPhaseDecayBatch.test_phase_decay_no_per_record_degree_query ____
+
+self = <tests.test_v3_17_0_legacy_scout.TestDaemonPhaseDecayBatch object at 0x000001ACFD2507D0>
+
+    @pytest.mark.asyncio
+    async def test_phase_decay_no_per_record_degree_query(self):
+        """_phase_decay() must not call any single-ID graph degree lookup per record."""
+        daemon = self._make_daemon()
+        records = [_make_record(f"r{i}") for i in range(3)]
+        daemon.metadata.get_for_consolidation.return_value = records
+        daemon.graph.get_memory_node_degrees_batch.return_value = {r.id: 0.0 for r in records}
+    
+>       await daemon._phase_decay()
+
+tests\test_v3_17_0_legacy_scout.py:489: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+muninn\consolidation\daemon.py:216: in _phase_decay
+    new_importance = calculate_importance(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+memory = MemoryRecord(id='r0', content='test', memory_type=<MemoryType.EPISODIC: 'episodic'>, importance=0.5, recency_score=1.0...ctor_id=None, embedding_model='nomic-embed-text', consolidated=False, parent_id=None, consolidation_gen=0, metadata={})
+max_similarity = 0.0, centrality = 0.0
+retrieval_utility = <MagicMock name='mock.get_memory_retrieval_utility()' id='1842646560656'>
+weights = None
+
+    def calculate_importance(
+        memory: MemoryRecord,
+        max_similarity: float = 0.0,
+        centrality: float = 0.0,
+        retrieval_utility: float = 0.0,
+        weights: Optional[dict] = None,
+    ) -> float:
+        """
+        Composite importance score combining multiple signals.
+    
+        Args:
+            memory: The memory record to score
+            max_similarity: Maximum cosine similarity to existing semantic memories
+            centrality: Graph degree centrality for entities in this memory
+            retrieval_utility: SNIPS feedback-derived retrieval utility [0.0, 1.0]
+            weights: Optional custom weights dict
+    
+        Returns:
+            importance score in [0.0, 1.0]
+        """
+        w = weights or DEFAULT_WEIGHTS
+    
+        recency = calculate_recency(memory.created_at)
+        frequency = calculate_frequency(memory.access_count)
+        novelty = calculate_novelty(max_similarity)
+        provenance = calculate_provenance_weight(memory.provenance)
+    
+        # Use .get() with DEFAULT_WEIGHTS fallback so callers can supply partial
+        # custom weight dicts without raising KeyError.
+        importance = (
+            w.get("recency", DEFAULT_WEIGHTS["recency"]) * recency
+            + w.get("frequency", DEFAULT_WEIGHTS["frequency"]) * frequency
+            + w.get("centrality", DEFAULT_WEIGHTS["centrality"]) * centrality
+            + w.get("novelty", DEFAULT_WEIGHTS["novelty"]) * novelty
+            + w.get("provenance", DEFAULT_WEIGHTS["provenance"]) * provenance
+            + w.get("retrieval", DEFAULT_WEIGHTS["retrieval"]) * retrieval_utility
+        )
+    
+>       return min(1.0, max(0.0, importance))
+                        ^^^^^^^^^^^^^^^^^^^^
+E       TypeError: '>' not supported between instances of 'MagicMock' and 'float'
+
+muninn\scoring\importance.py:112: TypeError
+___ TestDaemonPhaseDecayBatch.test_phase_decay_updates_records_via_metadata ___
+
+self = <tests.test_v3_17_0_legacy_scout.TestDaemonPhaseDecayBatch object at 0x000001ACFD25C510>
+
+    @pytest.mark.asyncio
+    async def test_phase_decay_updates_records_via_metadata(self):
+        """_phase_decay() calls metadata.update() for records with changed importance."""
+        daemon = self._make_daemon()
+        record = _make_record("target")
+        record.importance = 0.99  # Will change because recalculate_importance differs
+        daemon.metadata.get_for_consolidation.return_value = [record]
+        daemon.graph.get_memory_node_degrees_batch.return_value = {"target": 0.5}
+    
+>       await daemon._phase_decay()
+
+tests\test_v3_17_0_legacy_scout.py:516: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+muninn\consolidation\daemon.py:216: in _phase_decay
+    new_importance = calculate_importance(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+memory = MemoryRecord(id='target', content='test', memory_type=<MemoryType.EPISODIC: 'episodic'>, importance=0.99, recency_scor...ctor_id=None, embedding_model='nomic-embed-text', consolidated=False, parent_id=None, consolidation_gen=0, metadata={})
+max_similarity = 0.0, centrality = 0.5
+retrieval_utility = <MagicMock name='mock.get_memory_retrieval_utility()' id='1841485949184'>
+weights = None
+
+    def calculate_importance(
+        memory: MemoryRecord,
+        max_similarity: float = 0.0,
+        centrality: float = 0.0,
+        retrieval_utility: float = 0.0,
+        weights: Optional[dict] = None,
+    ) -> float:
+        """
+        Composite importance score combining multiple signals.
+    
+        Args:
+            memory: The memory record to score
+            max_similarity: Maximum cosine similarity to existing semantic memories
+            centrality: Graph degree centrality for entities in this memory
+            retrieval_utility: SNIPS feedback-derived retrieval utility [0.0, 1.0]
+            weights: Optional custom weights dict
+    
+        Returns:
+            importance score in [0.0, 1.0]
+        """
+        w = weights or DEFAULT_WEIGHTS
+    
+        recency = calculate_recency(memory.created_at)
+        frequency = calculate_frequency(memory.access_count)
+        novelty = calculate_novelty(max_similarity)
+        provenance = calculate_provenance_weight(memory.provenance)
+    
+        # Use .get() with DEFAULT_WEIGHTS fallback so callers can supply partial
+        # custom weight dicts without raising KeyError.
+        importance = (
+            w.get("recency", DEFAULT_WEIGHTS["recency"]) * recency
+            + w.get("frequency", DEFAULT_WEIGHTS["frequency"]) * frequency
+            + w.get("centrality", DEFAULT_WEIGHTS["centrality"]) * centrality
+            + w.get("novelty", DEFAULT_WEIGHTS["novelty"]) * novelty
+            + w.get("provenance", DEFAULT_WEIGHTS["provenance"]) * provenance
+            + w.get("retrieval", DEFAULT_WEIGHTS["retrieval"]) * retrieval_utility
+        )
+    
+>       return min(1.0, max(0.0, importance))
+                        ^^^^^^^^^^^^^^^^^^^^
+E       TypeError: '>' not supported between instances of 'MagicMock' and 'float'
+
+muninn\scoring\importance.py:112: TypeError
+============================== warnings summary ===============================
+..\AppData\Roaming\Python\Python313\site-packages\huggingface_hub\constants.py:244
+  C:\Users\user\AppData\Roaming\Python\Python313\site-packages\huggingface_hub\constants.py:244: DeprecationWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+    warnings.warn(
+
+..\miniconda3\Lib\site-packages\superclaude\pytest_plugin.py:216
+  C:\Users\user\miniconda3\Lib\site-packages\superclaude\pytest_plugin.py:216: PytestUnknownMarkWarning: Unknown pytest.mark.performance - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    item.add_marker(pytest.mark.performance)
+
+tests/test_v3_17_0_legacy_scout.py::TestDaemonPhaseDecayBatch::test_phase_decay_calls_batch_centrality
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+tests/test_v3_17_0_legacy_scout.py::TestDaemonPhaseDecayBatch::test_phase_decay_calls_batch_centrality
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_v3_17_0_legacy_scout.py::TestDaemonPhaseDecayBatch::test_phase_decay_calls_batch_centrality
+FAILED tests/test_v3_17_0_legacy_scout.py::TestDaemonPhaseDecayBatch::test_phase_decay_no_per_record_degree_query
+FAILED tests/test_v3_17_0_legacy_scout.py::TestDaemonPhaseDecayBatch::test_phase_decay_updates_records_via_metadata
+====== 3 failed, 1016 passed, 2 skipped, 4 warnings in 61.87s (0:01:01) =======
