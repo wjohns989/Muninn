@@ -10,23 +10,34 @@
         rel="stylesheet">
     <style>
         :root {
-            --slate-950: #050508;
-            --slate-900: #0a0e17;
-            --slate-800: #121c2d;
-            --slate-700: #1a2a44;
-            --slate-400: #8aa4c8;
-            --slate-300: #b0c4de;
-            --sky-400: #00f0ff;
-            --sky-500: #06b6d4;
+            /* Stormy Void / Dark Electric Purple Palette */
+            --slate-950: #080614;
+            /* Deepest Void */
+            --slate-900: #100b21;
+            /* Dark Base */
+            --slate-800: #1a103c;
+            /* Card Backgrounds */
+            --slate-700: #2a1b54;
+            /* Borders / Hover */
+            --slate-400: #9f8bc4;
+            /* Muted Text */
+            --slate-300: #c2b5db;
+            /* Secondary Text */
+            --sky-400: #b200ff;
+            /* Electric Purple Glows */
+            --sky-500: #8a2be2;
+            /* Primary Actions (Blue Violet) */
             --gold-500: #ffd700;
+            /* High Contrast Runic Accents */
             --glow-gold: 0 0 20px rgba(255, 215, 0, 0.4);
-            --sky-600: #0284c7;
+            --sky-600: #6a1b9a;
+            /* Deep Action Hover */
             --emerald-500: #10b981;
             --rose-500: #f43f5e;
-            --glass: rgba(30, 41, 59, 0.7);
-            --glass-strong: rgba(15, 23, 42, 0.85);
-            --glass-border: rgba(255, 255, 255, 0.1);
-            --glow: 0 0 20px rgba(14, 165, 233, 0.3);
+            --glass: rgba(26, 16, 60, 0.7);
+            --glass-strong: rgba(16, 11, 33, 0.85);
+            --glass-border: rgba(138, 43, 226, 0.2);
+            --glow: 0 0 20px rgba(138, 43, 226, 0.4);
         }
 
         * {
@@ -52,11 +63,12 @@
             left: 50%;
             transform: translate(-50%, -50%);
             font-size: 25vw;
-            color: rgba(0, 240, 255, 0.02);
+            color: rgba(138, 43, 226, 0.03);
+            /* Ghostly violet */
             font-family: 'Cinzel Decorative', serif;
             z-index: 1;
             pointer-events: none;
-            text-shadow: 0 0 80px rgba(0, 240, 255, 0.05);
+            text-shadow: 0 0 80px rgba(138, 43, 226, 0.08);
             white-space: nowrap;
             letter-spacing: 0.1em;
         }
@@ -122,7 +134,7 @@
         }
 
         .nav-item:hover {
-            background: rgba(56, 189, 248, 0.1);
+            background: rgba(138, 43, 226, 0.15);
             color: var(--sky-400);
             transform: translateX(4px);
         }
@@ -130,7 +142,7 @@
         .nav-item.active {
             background: var(--sky-500);
             color: white;
-            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
+            box-shadow: 0 4px 12px rgba(138, 43, 226, 0.4);
         }
 
         /* --- Header --- */
@@ -213,8 +225,9 @@
         }
 
         .help-box {
-            background: rgba(56, 189, 248, 0.05);
-            border: 1px solid rgba(56, 189, 248, 0.2);
+            background: rgba(138, 43, 226, 0.08);
+            /* Violet tint */
+            border: 1px solid rgba(138, 43, 226, 0.3);
             border-left: 4px solid var(--sky-400);
             padding: 1.25rem;
             border-radius: 8px;
@@ -222,6 +235,7 @@
             font-size: 0.95rem;
             color: var(--slate-300);
             line-height: 1.6;
+            position: relative;
         }
 
         .help-box b {
@@ -229,6 +243,7 @@
             display: block;
             margin-bottom: 0.5rem;
             font-size: 1.05rem;
+            text-shadow: var(--glow);
         }
 
         .stat-grid {
@@ -294,7 +309,7 @@
         .input-base:focus {
             outline: none;
             border-color: var(--sky-400);
-            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+            box-shadow: 0 0 0 3px rgba(138, 43, 226, 0.25);
             background: var(--slate-800);
         }
 
@@ -308,16 +323,20 @@
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s ease;
-            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.2);
+            box-shadow: 0 4px 12px rgba(138, 43, 226, 0.3);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
         }
 
-        .btn-primary:hover {
+        .btn-primary:hover:not(:disabled) {
             transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(14, 165, 233, 0.4);
+            box-shadow: 0 6px 16px rgba(138, 43, 226, 0.5);
             background: linear-gradient(to right, var(--sky-400), var(--sky-500));
         }
 
-        .btn-primary:active {
+        .btn-primary:active:not(:disabled) {
             transform: translateY(0);
         }
 
@@ -348,6 +367,29 @@
             right: 0.5rem;
             top: 0.5rem;
             bottom: 0.5rem;
+        }
+
+        .search-clear-btn {
+            position: absolute;
+            right: 8.5rem;
+            top: 50%;
+            transform: translateY(-50%);
+            background: transparent;
+            border: none;
+            color: var(--slate-400);
+            cursor: pointer;
+            padding: 0.5rem;
+            display: none;
+            /* hidden by default */
+            transition: color 0.2s ease;
+        }
+
+        .search-clear-btn:hover {
+            color: white;
+        }
+
+        #search-input:not(:placeholder-shown)+.search-clear-btn {
+            display: flex;
         }
 
         /* --- Skeletons --- */
@@ -570,10 +612,122 @@
             color: var(--rose-500);
             border: 1px solid rgba(244, 63, 94, 0.3);
         }
+
+        /* --- Toast Notifications --- */
+        #toast-container {
+            position: fixed;
+            top: 2rem;
+            right: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            z-index: 9999;
+            pointer-events: none;
+        }
+
+        .toast {
+            background: var(--glass-strong);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--sky-500);
+            border-left: 4px solid var(--sky-400);
+            color: white;
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            pointer-events: auto;
+            animation: slideInRight 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+            max-width: 400px;
+        }
+
+        .toast.toast-error {
+            border-color: var(--rose-500);
+            border-left-color: var(--rose-500);
+        }
+
+        .toast.toast-success {
+            border-color: var(--emerald-500);
+            border-left-color: var(--emerald-500);
+        }
+
+        .toast.hiding {
+            animation: slideOutRight 0.3s ease forwards;
+        }
+
+        @keyframes slideInRight {
+            from {
+                transform: translateX(110%);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideOutRight {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+
+            to {
+                transform: translateX(110%);
+                opacity: 0;
+            }
+        }
+
+        /* --- Loading Spinner --- */
+        .spinner {
+            width: 1.25rem;
+            height: 1.25rem;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* --- Quick Copy Action --- */
+        .copy-action {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
+
+        .copy-action:hover {
+            background: var(--sky-500);
+            color: white;
+            transform: scale(1.1);
+        }
+
+        .copy-action svg {
+            width: 14px;
+            height: 14px;
+        }
     </style>
 </head>
 
 <body>
+
+    <div id="toast-container"></div>
 
     <!-- Onboarding Modal -->
     <div class="modal-overlay" id="auth-modal">
@@ -581,7 +735,8 @@
             <h2>Welcome to Huginn</h2>
             <p>To securely access the Muninn memory core, please initialize your session. You can find your secure
                 <code>MUNINN_AUTH_TOKEN</code> inside the <code>.muninn_token</code> file located in your project
-                directory.</p>
+                directory.
+            </p>
             <div style="display: flex; flex-direction: column; gap: 1rem;">
                 <input type="password" id="modal-token-input" class="input-base"
                     placeholder="Paste your Auth Token here...">
@@ -842,6 +997,120 @@
         let API_BASE = window.location.protocol === 'file:' ? 'http://localhost:42069' : window.location.origin;
         let AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
 
+        /* ================================
+           V3.4.0 UX Utilities
+           ================================ */
+
+        // --- Toast System ---
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+
+            let icon = 'ℹ️';
+            if (type === 'success') icon = '✓';
+            if (type === 'error') icon = '⚠️';
+
+            toast.innerHTML = `<span>${icon}</span> <span>${message}</span>`;
+            container.appendChild(toast);
+
+            // Auto-hide after 3 seconds
+            setTimeout(() => {
+                toast.classList.add('hiding');
+                toast.addEventListener('animationend', () => {
+                    toast.remove();
+                });
+            }, 3000);
+        }
+
+        // Override default log to also show toasts for errors or important info
+        const originalLog = log;
+        log = function (message) {
+            originalLog(message); // Keep terminal logging
+            if (message.includes('Error') || message.includes('Failed')) {
+                showToast(message, 'error');
+            } else if (message.includes('Success') || message.includes('Complete')) {
+                showToast(message, 'success');
+            }
+        };
+
+        // --- Copy to Clipboard ---
+        async function copyToClipboard(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+                showToast('Copied to clipboard', 'success');
+            } catch (err) {
+                console.error('Failed to copy!', err);
+                showToast('Failed to copy text', 'error');
+            }
+        }
+
+        function createCopyButton(textToCopy) {
+            return `
+                <span class="copy-action" onclick="copyToClipboard('${textToCopy.replace(/'/g, "\\'")}')" title="Copy">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                </span>
+            `;
+        }
+
+        // --- Search Clear ---
+        function setupSearchClear() {
+            const searchInput = document.getElementById('search-input');
+            const searchContainer = searchInput.parentElement;
+
+            // If the clear button doesn't exist yet, create it
+            if (!document.querySelector('.search-clear-btn')) {
+                const clearBtn = document.createElement('button');
+                clearBtn.className = 'search-clear-btn';
+                clearBtn.innerHTML = `
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                `;
+
+                // Insert after input but before the search button
+                searchInput.parentNode.insertBefore(clearBtn, searchInput.nextSibling);
+
+                clearBtn.addEventListener('click', () => {
+                    searchInput.value = '';
+                    searchInput.focus();
+                    clearBtn.style.display = 'none'; // Hide when empty
+                    // Optionally trigger a search reset here if desired
+                    // search();
+                });
+
+                // Show/hide based on input
+                searchInput.addEventListener('input', () => {
+                    clearBtn.style.display = searchInput.value.length > 0 ? 'flex' : 'none';
+                });
+            }
+        }
+
+        // --- Button Loading State Utilities ---
+        function setButtonLoading(buttonId, isLoading, originalText) {
+            const btn = document.getElementById(buttonId);
+            if (!btn) return;
+
+            btn.disabled = isLoading;
+            if (isLoading) {
+                // Determine width to keep button size stable
+                const width = btn.offsetWidth;
+                btn.style.width = `${width}px`;
+                btn.innerHTML = `<span>Processing</span><div class="spinner"></div>`;
+            } else {
+                btn.style.width = 'auto';
+                btn.innerHTML = originalText;
+            }
+        }
+
+        /* ================================
+           Existing Logic below
+           ================================ */
+
         // Modal Logic
         function checkAuthOnLoad() {
             if (!AUTH_TOKEN) {
@@ -876,14 +1145,15 @@
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
         }
 
-        function log(msg) {
-            const logDiv = document.getElementById('activity-log');
-            const time = new Date().toLocaleTimeString();
-            const line = document.createElement('div');
-            line.style.marginBottom = '0.5rem';
-            line.textContent = `[${time}] ${msg}`;
-            logDiv.prepend(line);
-        }
+        // Original log function (now `originalLog`)
+        // function log(msg) {
+        //     const logDiv = document.getElementById('activity-log');
+        //     const time = new Date().toLocaleTimeString();
+        //     const line = document.createElement('div');
+        //     line.style.marginBottom = '0.5rem';
+        //     line.textContent = `[${time}] ${msg}`;
+        //     logDiv.prepend(line);
+        // }
 
         async function api(endpoint, method = 'GET', body = null) {
             const options = {
@@ -915,6 +1185,7 @@
                     if (btn) btn.textContent = huntToggle.checked ? 'Execute Scout' : 'Search';
                 });
             }
+            setupSearchClear(); // Initialize search clear button
         });
 
         async function handleSearch() {
