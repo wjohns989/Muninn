@@ -1,32 +1,73 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Muninn Hub | Huginn Interface</title>
+    <title>Muninn Hub | Cyber-Norse Interface</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700;900&family=Rajdhani:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
     <style>
         :root {
-            --slate-950: #020617;
-            --slate-900: #0f172a;
-            --slate-800: #1e293b;
-            --slate-700: #334155;
-            --slate-400: #94a3b8;
-            --sky-400: #38bdf8;
-            --sky-500: #0ea5e9;
+            --slate-950: #050508;
+            --slate-900: #0a0e17;
+            --slate-800: #121c2d;
+            --slate-700: #1a2a44;
+            --slate-400: #8aa4c8;
+            --slate-300: #b0c4de;
+            --sky-400: #00f0ff;
+            --sky-500: #06b6d4;
+            --gold-500: #ffd700;
+            --glow-gold: 0 0 20px rgba(255, 215, 0, 0.4);
+            --sky-600: #0284c7;
             --emerald-500: #10b981;
             --rose-500: #f43f5e;
             --glass: rgba(30, 41, 59, 0.7);
+            --glass-strong: rgba(15, 23, 42, 0.85);
             --glass-border: rgba(255, 255, 255, 0.1);
+            --glow: 0 0 20px rgba(14, 165, 233, 0.3);
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
         body {
             background-color: var(--slate-950);
             color: white;
-            font-family: 'Inter', -apple-system, sans-serif;
+            font-family: 'Rajdhani', 'Inter', sans-serif;
             height: 100vh;
             display: flex;
             overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body::before {
+            content: "ᛗ ᚢ ᚾ ᛁ ᚾ";
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 25vw;
+            color: rgba(0, 240, 255, 0.02);
+            font-family: 'Cinzel Decorative', serif;
+            z-index: 1;
+            pointer-events: none;
+            text-shadow: 0 0 80px rgba(0, 240, 255, 0.05);
+            white-space: nowrap;
+            letter-spacing: 0.1em;
+        }
+
+        h1,
+        h2,
+        h3,
+        .brand {
+            font-family: 'Cinzel Decorative', serif;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
 
         /* --- Layout --- */
@@ -36,7 +77,7 @@
             border-right: 1px solid var(--glass-border);
             display: flex;
             flex-direction: column;
-            transition: all 0.3s ease;
+            transition: width 0.3s ease;
             z-index: 100;
         }
 
@@ -54,15 +95,21 @@
             display: flex;
             align-items: center;
             gap: 0.75rem;
-            font-weight: 800;
-            font-size: 1.25rem;
-            letter-spacing: -0.025em;
-            color: var(--sky-400);
+            font-weight: 900;
+            font-size: 1.5rem;
+            letter-spacing: 0.1em;
+            color: var(--gold-500);
+            text-shadow: var(--glow-gold);
         }
 
-        .nav-list { list-style: none; padding: 0 1rem; flex: 1; }
+        .nav-list {
+            list-style: none;
+            padding: 0 1rem;
+            flex: 1;
+        }
+
         .nav-item {
-            padding: 0.75rem 1rem;
+            padding: 0.85rem 1rem;
             margin-bottom: 0.5rem;
             border-radius: 8px;
             cursor: pointer;
@@ -71,15 +118,26 @@
             gap: 0.75rem;
             color: var(--slate-400);
             transition: all 0.2s ease;
+            font-weight: 500;
         }
-        .nav-item:hover { background: var(--slate-800); color: white; }
-        .nav-item.active { background: var(--sky-500); color: white; }
+
+        .nav-item:hover {
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--sky-400);
+            transform: translateX(4px);
+        }
+
+        .nav-item.active {
+            background: var(--sky-500);
+            color: white;
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
+        }
 
         /* --- Header --- */
         header {
-            padding: 1rem 2rem;
+            padding: 1.25rem 2rem;
             background: var(--glass);
-            backdrop-filter: blur(12px);
+            backdrop-filter: blur(16px);
             border-bottom: 1px solid var(--glass-border);
             display: flex;
             justify-content: space-between;
@@ -91,180 +149,492 @@
 
         .status-pill {
             background: var(--slate-800);
-            padding: 0.4rem 0.75rem;
+            padding: 0.5rem 1rem;
             border-radius: 999px;
-            font-size: 0.75rem;
+            font-size: 0.8rem;
+            font-weight: 600;
             display: flex;
             align-items: center;
             gap: 0.5rem;
             border: 1px solid var(--glass-border);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
         }
-        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #444; }
-        .status-dot.online { background: var(--emerald-500); box-shadow: 0 0 8px var(--emerald-500); }
-        .status-dot.offline { background: var(--rose-500); }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #444;
+            transition: all 0.3s ease;
+        }
+
+        .status-dot.online {
+            background: var(--emerald-500);
+            box-shadow: 0 0 8px var(--emerald-500);
+        }
+
+        .status-dot.offline {
+            background: var(--rose-500);
+            box-shadow: 0 0 8px var(--rose-500);
+        }
 
         /* --- Cards & UI Elements --- */
-        .container { padding: 2rem; max-width: 1200px; margin: 0 auto; width: 100%; }
-        
+        .container {
+            padding: 2.5rem;
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
         .card {
-            background: var(--slate-900);
+            background: var(--glass-strong);
+            backdrop-filter: blur(12px);
             border: 1px solid var(--glass-border);
-            border-radius: 12px;
-            padding: 1.5rem;
+            clip-path: polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px);
+            position: relative;
+            z-index: 10;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .card:hover {
+            border-color: rgba(56, 189, 248, 0.3);
+        }
+
+        .card h3 {
             margin-bottom: 1.5rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            color: white;
+            font-size: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
 
         .help-box {
-            background: rgba(56, 189, 248, 0.1);
+            background: rgba(56, 189, 248, 0.05);
+            border: 1px solid rgba(56, 189, 248, 0.2);
             border-left: 4px solid var(--sky-400);
-            padding: 1rem;
-            border-radius: 0 8px 8px 0;
-            margin-bottom: 1.5rem;
-            font-size: 0.9rem;
-            color: var(--slate-400);
-            line-height: 1.5;
+            padding: 1.25rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            font-size: 0.95rem;
+            color: var(--slate-300);
+            line-height: 1.6;
         }
-        .help-box b { color: var(--sky-400); display: block; margin-bottom: 0.25rem; }
+
+        .help-box b {
+            color: var(--sky-400);
+            display: block;
+            margin-bottom: 0.5rem;
+            font-size: 1.05rem;
+        }
 
         .stat-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
             gap: 1.5rem;
-            margin-bottom: 2rem;
+            margin-bottom: 2.5rem;
         }
 
         .stat-card {
-            background: var(--slate-900);
-            border: 1px solid var(--glass-border);
-            padding: 1.5rem;
-            border-radius: 12px;
+            background: linear-gradient(145deg, var(--slate-800), var(--slate-900));
+            border: 1px solid var(--sky-500);
+            border-left: 4px solid var(--gold-500);
+            padding: 1.75rem;
+            clip-path: polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px);
+            position: relative;
+            z-index: 10;
             display: flex;
             flex-direction: column;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
         }
-        .stat-label { color: var(--slate-400); font-size: 0.8rem; text-transform: uppercase; }
-        .stat-value { font-size: 2rem; font-weight: 700; margin-top: 0.5rem; color: var(--sky-400); }
+
+        .stat-label {
+            color: var(--slate-400);
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-top: 0.5rem;
+            color: var(--sky-400);
+            text-shadow: var(--glow);
+        }
 
         /* --- Search Interface --- */
         .search-container {
             position: relative;
-            margin-bottom: 2rem;
+            margin-bottom: 2.5rem;
         }
-        #search-input {
+
+        #search-input,
+        .input-base {
             width: 100%;
-            background: var(--slate-800);
-            border: 2px solid var(--glass-border);
+            background: var(--slate-900);
+            border: 1px solid var(--glass-border);
             border-radius: 12px;
             padding: 1.25rem 1.5rem;
             color: white;
-            font-size: 1.1rem;
-            transition: all 0.2s ease;
-            padding-right: 4rem;
+            font-size: 1.05rem;
+            transition: all 0.3s ease;
+            font-family: inherit;
         }
-        #search-input:focus {
+
+        #search-input {
+            padding-right: 8rem;
+        }
+
+        #search-input:focus,
+        .input-base:focus {
             outline: none;
             border-color: var(--sky-400);
-            box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.1);
+            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+            background: var(--slate-800);
         }
-        .search-btn {
-            position: absolute;
-            right: 0.75rem;
-            top: 0.75rem;
-            background: var(--sky-500);
-            border: none;
-            padding: 0.5rem 1rem;
-            border-radius: 8px;
+
+        .btn-primary {
+            background: linear-gradient(to right, var(--sky-500), var(--sky-600));
+            border: 1px solid var(--sky-400);
+            padding: 0.75rem 1.5rem;
+            clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
             color: white;
+            text-transform: uppercase;
             font-weight: 600;
             cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.2);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(14, 165, 233, 0.4);
+            background: linear-gradient(to right, var(--sky-400), var(--sky-500));
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: var(--slate-800);
+            border: 1px solid var(--glass-border);
+            padding: 0.75rem 1.5rem;
+            clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+            color: var(--gold-500);
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-secondary:hover {
+            background: var(--slate-700);
+            border-color: var(--sky-400);
+        }
+
+        .search-btn-absolute {
+            position: absolute;
+            right: 0.5rem;
+            top: 0.5rem;
+            bottom: 0.5rem;
+        }
+
+        /* --- Skeletons --- */
+        .skeleton {
+            animation: pulse-skeleton 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+            background: var(--slate-800);
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .skeleton-block {
+            height: 100px;
+            width: 100%;
+        }
+
+        .skeleton-text {
+            height: 20px;
+            width: 70%;
+            margin-bottom: 0.5rem;
+        }
+
+        @keyframes pulse-skeleton {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
         }
 
         /* --- Results --- */
         .result-item {
             background: var(--slate-800);
-            padding: 1.25rem;
-            border-radius: 10px;
+            padding: 1.5rem;
+            clip-path: polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px);
             margin-bottom: 1rem;
-            border: 1px solid var(--glass-border);
-            animation: fadeIn 0.3s ease forwards;
+            border: 1px solid var(--sky-500);
+            border-left: 4px solid var(--sky-400);
+            animation: slideUp 0.4s ease forwards;
+            position: relative;
+            z-index: 10;
+            opacity: 0;
+            transform: translateY(20px);
         }
-        .result-meta { display: flex; gap: 1rem; font-size: 0.75rem; color: var(--slate-400); margin-bottom: 0.5rem; }
-        .result-tag { background: var(--slate-700); padding: 2px 6px; border-radius: 4px; }
-        .result-content { font-size: 0.95rem; line-height: 1.6; }
+
+        .result-meta {
+            display: flex;
+            gap: 0.75rem;
+            font-size: 0.8rem;
+            color: var(--slate-400);
+            margin-bottom: 1rem;
+            font-weight: 500;
+        }
+
+        .result-tag {
+            background: var(--slate-900);
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid var(--glass-border);
+        }
+
+        .result-content {
+            font-size: 1rem;
+            line-height: 1.7;
+            color: var(--slate-300);
+        }
 
         /* --- Animation --- */
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+        @keyframes slideUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         canvas#brain-pulse {
             width: 100%;
-            height: 120px;
-            background: var(--slate-950);
-            border-radius: 8px;
-            margin-bottom: 1.5rem;
+            height: 160px;
+            background: var(--slate-900);
+            border-radius: 16px;
+            margin-bottom: 2.5rem;
+            border: 1px solid var(--glass-border);
         }
 
-        /* --- Responsive Sidebar --- */
-        @media (max-width: 768px) {
-            .sidebar { width: 64px; }
-            .sidebar .nav-text, .sidebar .brand span { display: none; }
-            .brand { padding: 1.5rem 1rem; }
+        /* --- Walkthrough Modal --- */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(2, 6, 23, 0.8);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .modal-content {
+            background: var(--slate-900);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 3rem;
+            width: 100%;
+            max-width: 500px;
+            transform: scale(0.95);
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-overlay.active .modal-content {
+            transform: scale(1);
+        }
+
+        .modal-content h2 {
+            color: white;
+            margin-bottom: 1rem;
+            font-size: 1.75rem;
+        }
+
+        .modal-content p {
+            color: var(--slate-300);
+            margin-bottom: 2rem;
+            line-height: 1.6;
+            font-size: 1rem;
+        }
+
+        .modal-content code {
+            background: var(--slate-800);
+            padding: 4px 8px;
+            border-radius: 6px;
+            color: var(--sky-400);
+        }
+
+        select.input-base {
+            appearance: none;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 1rem center;
+            background-size: 1em;
+            cursor: pointer;
         }
 
         /* --- Tabs Logic --- */
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-
-        input, textarea {
-            background: var(--slate-800);
-            border: 1px solid var(--glass-border);
-            color: white;
-            padding: 0.75rem;
-            border-radius: 6px;
-            font-family: inherit;
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s ease;
         }
-        button { cursor: pointer; transition: opacity 0.2s; }
-        button:hover { opacity: 0.9; }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
 
         /* Legacy Table Styles */
         .legacy-table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 1rem;
-            font-size: 0.85rem;
+            font-size: 0.9rem;
         }
-        .legacy-table th { text-align: left; padding: 0.75rem; border-bottom: 1px solid var(--slate-700); color: var(--slate-400); }
-        .legacy-table td { padding: 0.75rem; border-bottom: 1px solid var(--glass-border); }
-        .legacy-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
-        .badge-high { background: rgba(16, 185, 129, 0.2); color: var(--emerald-500); }
-        .badge-medium { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
-        .badge-low { background: rgba(244, 63, 94, 0.2); color: var(--rose-500); }
+
+        .legacy-table th {
+            text-align: left;
+            padding: 1rem;
+            border-bottom: 1px solid var(--slate-700);
+            color: var(--slate-400);
+            font-weight: 600;
+        }
+
+        .legacy-table td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--glass-border);
+            color: var(--slate-300);
+        }
+
+        .legacy-badge {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .badge-high {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--emerald-500);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-medium {
+            background: rgba(245, 158, 11, 0.15);
+            color: #f59e0b;
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .badge-low {
+            background: rgba(244, 63, 94, 0.15);
+            color: var(--rose-500);
+            border: 1px solid rgba(244, 63, 94, 0.3);
+        }
     </style>
 </head>
+
 <body>
+
+    <!-- Onboarding Modal -->
+    <div class="modal-overlay" id="auth-modal">
+        <div class="modal-content">
+            <h2>Welcome to Huginn</h2>
+            <p>To securely access the Muninn memory core, please initialize your session. You can find your secure
+                <code>MUNINN_AUTH_TOKEN</code> inside the <code>.muninn_token</code> file located in your project
+                directory.</p>
+            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                <input type="password" id="modal-token-input" class="input-base"
+                    placeholder="Paste your Auth Token here...">
+                <button class="btn-primary" style="padding: 1.25rem; font-size: 1.1rem;"
+                    onclick="initializeAuth()">Authenticate & Enter</button>
+            </div>
+        </div>
+    </div>
 
     <nav class="sidebar">
         <div class="brand">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+            </svg>
             <span>MUNINN</span>
         </div>
         <ul class="nav-list">
             <li class="nav-item active" onclick="showTab('overview')">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="7" height="7"></rect>
+                    <rect x="14" y="3" width="7" height="7"></rect>
+                    <rect x="14" y="14" width="7" height="7"></rect>
+                    <rect x="3" y="14" width="7" height="7"></rect>
+                </svg>
                 <span class="nav-text">Overview</span>
             </li>
             <li class="nav-item" onclick="showTab('ingest')">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
                 <span class="nav-text">Ingestion</span>
             </li>
             <li class="nav-item" onclick="showTab('search')">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
                 <span class="nav-text">Search</span>
             </li>
             <li class="nav-item" onclick="showTab('system')">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path
+                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                    </path>
+                </svg>
                 <span class="nav-text">System</span>
             </li>
         </ul>
@@ -272,8 +642,9 @@
 
     <div class="main-content">
         <header>
-            <div id="breadcrumb" style="color: var(--slate-400); font-size: 0.85rem; font-weight: 500;">
-                Muninn <span style="margin: 0 0.5rem">/</span> <span id="current-tab-name" style="color: white">Overview</span>
+            <div id="breadcrumb" style="color: var(--slate-400); font-size: 0.9rem; font-weight: 600;">
+                Muninn <span style="margin: 0 0.5rem; color: var(--slate-700)">/</span> <span id="current-tab-name"
+                    style="color: white">Overview</span>
             </div>
             <div style="display: flex; gap: 1rem;">
                 <div class="status-pill">
@@ -291,10 +662,12 @@
             <!-- TAB: OVERVIEW -->
             <div id="tab-overview" class="tab-content active">
                 <canvas id="brain-pulse"></canvas>
-                
+
                 <div class="help-box">
-                    <b>🧠 Welcome to the Muninn Hub</b>
-                    This is your personal memory command center. Muninn uses biological consolidation principles to ensure your AI never forgets the important stuff. The graph above shows real-time "synaptic activity" as memories are searched or consolidated.
+                    <b>🧠 Muninn Semantic Engine</b>
+                    Welcome to the dashboard. The neural visualizer above reflects real-time Temporal Knowledge Graph
+                    (TKG) consolidation. Memories ingested here are intelligently evaluated, stored, and
+                    shadow-versioned using biological consolidation principles.
                 </div>
 
                 <div class="stat-grid">
@@ -314,7 +687,8 @@
 
                 <div class="card">
                     <h3>Recent Activity</h3>
-                    <div id="activity-log" style="margin-top: 1rem; font-family: monospace; font-size: 0.85rem; color: var(--slate-400); max-height: 200px; overflow-y: auto;">
+                    <div id="activity-log"
+                        style="margin-top: 1rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.85rem; color: var(--slate-400); max-height: 250px; overflow-y: auto; line-height: 1.6;">
                         Muninn Hub initialized. Waiting for telemetry...
                     </div>
                 </div>
@@ -323,44 +697,56 @@
             <!-- TAB: INGEST -->
             <div id="tab-ingest" class="tab-content">
                 <div class="help-box">
-                    <b>📥 How Ingestion Works</b>
-                    Adding information to Muninn creates <b>"Working Memories"</b>. As you use them, the system promotes them to <b>"Semantic Knowledge"</b>. You can upload local files or scrape URLs directly.
+                    <b>📥 Zero-Trust Ingestion</b>
+                    Information added here initiates as "Episodic Context." Subprocess isolation guarantees secure
+                    parsing, while our TKG infrastructure evaluates contradictions against existing semantic fact nodes
+                    automatically.
                 </div>
-                
+
                 <div class="card">
-                    <h3>New Memory</h3>
-                    <div style="display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem;">
-                        <textarea id="ingest-text" placeholder="Type or paste information to remember..." rows="4"></textarea>
+                    <h3>Direct Ingestion</h3>
+                    <div style="display: flex; flex-direction: column; gap: 1.25rem; margin-top: 1rem;">
+                        <textarea id="ingest-text" class="input-base"
+                            placeholder="Type or paste information to remember securely..." rows="5"></textarea>
                         <div style="display: flex; gap: 1rem;">
-                            <input id="ingest-namespace" type="text" placeholder="Namespace (e.g. project-x)" style="flex: 1;">
-                            <button onclick="handleIngest()" class="search-btn" style="position: static;">Store Memory</button>
+                            <input id="ingest-namespace" type="text" class="input-base"
+                                placeholder="Namespace (e.g. project-x)" style="flex: 1;">
+                            <button onclick="handleIngest()" class="btn-primary" style="white-space: nowrap;">Store
+                                Memory</button>
                         </div>
                     </div>
                 </div>
 
                 <div class="card">
                     <h3>File / URL Discovery</h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1rem;">
                         <div>
-                            <label style="display:block; margin-bottom: 0.5rem; font-size: 0.8rem; color: var(--slate-400);">Local Path</label>
-                            <input id="ingest-path" type="text" placeholder="C:\docs\..." style="width: 100%;">
+                            <label
+                                style="display:block; margin-bottom: 0.75rem; font-size: 0.85rem; font-weight: 600; color: var(--slate-400);">Local
+                                Path</label>
+                            <input id="ingest-path" type="text" class="input-base" placeholder="C:\docs\..."
+                                style="width: 100%;">
                         </div>
                         <div>
-                            <label style="display:block; margin-bottom: 0.5rem; font-size: 0.8rem; color: var(--slate-400);">Web URL</label>
-                            <input id="ingest-url" type="text" placeholder="https://..." style="width: 100%;">
+                            <label
+                                style="display:block; margin-bottom: 0.75rem; font-size: 0.85rem; font-weight: 600; color: var(--slate-400);">Web
+                                URL</label>
+                            <input id="ingest-url" type="text" class="input-base" placeholder="https://..."
+                                style="width: 100%;">
                         </div>
                     </div>
-                    <button onclick="handleDiscovery()" id="discovery-btn" class="search-btn" style="position: static; margin-top: 1rem; width: 100%; background: var(--slate-800); border: 1px solid var(--glass-border);">Discover & Ingest</button>
+                    <button onclick="handleDiscovery()" id="discovery-btn" class="btn-secondary"
+                        style="margin-top: 1.5rem; width: 100%;">Discover & Ingest</button>
                 </div>
 
                 <div class="card" id="legacy-section">
                     <h3>Legacy Assistant Discovery</h3>
-                    <div class="help-box">
-                        <b>🕵️ Scan for Chats</b>
-                        Find chat histories from Claude, VS Code, Cursor, and more.
-                    </div>
-                    <button onclick="discoverLegacySources()" id="scan-btn" style="padding: 0.75rem 1rem; background: var(--sky-500); border: none; color: white; border-radius: 6px; font-weight: 600;">Scan Filesystem</button>
-                    <div id="legacy-results" style="margin-top: 1rem; overflow-x: auto;">
+                    <p style="color: var(--slate-400); margin-bottom: 1.5rem; font-size: 0.95rem;">Scan local
+                        environments (Claude, VS Code, Cursor) for fragmented chat context to integrate into the central
+                        graph.</p>
+                    <button onclick="discoverLegacySources()" id="scan-btn" class="btn-primary">Scan Local
+                        Filesystem</button>
+                    <div id="legacy-results" style="margin-top: 1.5rem; overflow-x: auto;">
                         <!-- Legacy items table here -->
                     </div>
                 </div>
@@ -370,20 +756,26 @@
             <div id="tab-search" class="tab-content">
                 <div class="help-box">
                     <b>Hybrid Search &amp; Scout Hunt</b>
-                    <b>Standard mode</b> uses Vector Math (concepts), Graph Traversal (relationships), and BM25 (keywords) simultaneously.
-                    <b>Scout Hunt mode</b> adds multi-hop agentic discovery: entity expansion, causal chain traversal, and optional LLM narration of what was found and why.
+                    <b>Standard search</b> fuses Vector space, TKG traversal, and BM25 simultaneously using Reciprocal
+                    Rank Fusion.
+                    <b>Scout Hunt</b> engages specialized sub-agents to multi-hop across the schema for deep
+                    chain-of-thought analysis.
                 </div>
 
-                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; padding: 0.5rem 0;">
-                    <input type="checkbox" id="hunt-mode" style="width: 1rem; height: 1rem; cursor: pointer; accent-color: var(--sky-400);">
-                    <label for="hunt-mode" style="color: var(--slate-300); font-size: 0.85rem; cursor: pointer; user-select: none;">
-                        Scout Hunt Mode (multi-hop agentic discovery + synthesis)
+                <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; padding: 0.5rem 0;">
+                    <input type="checkbox" id="hunt-mode"
+                        style="width: 1.25rem; height: 1.25rem; cursor: pointer; accent-color: var(--sky-500);">
+                    <label for="hunt-mode"
+                        style="color: var(--slate-300); font-size: 0.9rem; font-weight: 500; cursor: pointer; user-select: none;">
+                        Scout Hunt Mode (multi-hop agentic synthesis)
                     </label>
                 </div>
 
                 <div class="search-container">
-                    <input type="text" id="search-input" placeholder="Ask your memory anything..." onkeypress="if(event.key==='Enter')handleSearch()">
-                    <button onclick="handleSearch()" class="search-btn" id="search-btn-label">Search</button>
+                    <input type="text" id="search-input" placeholder="Query the memory core..."
+                        onkeypress="if(event.key==='Enter')handleSearch()">
+                    <button onclick="handleSearch()" class="btn-primary search-btn-absolute"
+                        id="search-btn-label">Search</button>
                 </div>
 
                 <div id="search-results">
@@ -394,22 +786,52 @@
             <!-- TAB: SYSTEM -->
             <div id="tab-system" class="tab-content">
                 <div class="card">
-                    <h3>Security & Authentication</h3>
-                    <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
-                        <div class="help-box">
-                            <b>🔑 Server Token</b>
-                            Muninn requires a valid <code>MUNINN_AUTH_TOKEN</code>. If you don't know yours, check the <code>.muninn_token</code> file in your project folder.
+                    <h3>Model Architecture Profiles</h3>
+                    <p style="color: var(--slate-400); margin-bottom: 1.5rem; font-size: 0.95rem; line-height: 1.5;">
+                        Dynamically shift the LLM parsing logic for different extraction pipelines without restarting
+                        the server. Alters the payload passed to the unified extraction tier.</p>
+
+                    <div style="display: grid; grid-template-columns: 1fr; gap: 1.5rem;">
+                        <div>
+                            <label
+                                style="display:block; margin-bottom: 0.5rem; font-size: 0.85rem; font-weight: 600; color: var(--slate-300);">Runtime
+                                Ingestion Profile</label>
+                            <select id="runtime-profile" class="input-base">
+                                <option value="low_latency">Low Latency (Fastest, basic JSON schema)</option>
+                                <option value="balanced" selected>Balanced (Standard)</option>
+                                <option value="high_reasoning">High Reasoning (Deep cognitive extraction)</option>
+                            </select>
                         </div>
-                        <input id="server-token" type="password" placeholder="Enter Authentication Token">
-                        <button onclick="applyToken()" class="search-btn" style="position: static;">Apply Token</button>
+                        <div>
+                            <label
+                                style="display:block; margin-bottom: 0.5rem; font-size: 0.85rem; font-weight: 600; color: var(--slate-300);">Background
+                                Consolidation Profile</label>
+                            <select id="ingest-profile" class="input-base">
+                                <option value="low_latency">Low Latency</option>
+                                <option value="balanced" selected>Balanced</option>
+                                <option value="high_reasoning">High Reasoning</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button onclick="updateModelProfiles()" class="btn-primary" style="margin-top: 2rem;">Apply Model
+                        Profiles Live</button>
+                </div>
+
+                <div class="card">
+                    <h3>Authentication Override</h3>
+                    <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1.25rem;">
+                        <input id="server-token" type="password" class="input-base"
+                            placeholder="Enter Authentication Token">
+                        <button onclick="applyToken()" class="btn-secondary" style="align-self: flex-start;">Update
+                            Session Token</button>
                     </div>
                 </div>
 
                 <div class="card">
-                    <h3>Maintenance</h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
-                        <button onclick="forceConsolidation()" style="padding: 1rem; background: var(--slate-800); border: 1px solid var(--glass-border); color: white; border-radius: 8px;">Force Consolidation</button>
-                        <button onclick="checkHealth()" style="padding: 1rem; background: var(--slate-800); border: 1px solid var(--glass-border); color: white; border-radius: 8px;">Re-check Health</button>
+                    <h3>System Mainteance</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+                        <button onclick="forceConsolidation()" class="btn-secondary">Trigger TKG Consolidation</button>
+                        <button onclick="checkHealth()" class="btn-secondary">Ping Diagnostics</button>
                     </div>
                 </div>
             </div>
@@ -420,16 +842,37 @@
         let API_BASE = window.location.protocol === 'file:' ? 'http://localhost:42069' : window.location.origin;
         let AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
 
+        // Modal Logic
+        function checkAuthOnLoad() {
+            if (!AUTH_TOKEN) {
+                document.getElementById('auth-modal').classList.add('active');
+            } else {
+                checkHealth();
+            }
+        }
+
+        function initializeAuth() {
+            const token = document.getElementById('modal-token-input').value.trim();
+            if (token) {
+                AUTH_TOKEN = token;
+                localStorage.setItem('muninn_token', token);
+                document.getElementById('server-token').value = token;
+                document.getElementById('auth-modal').classList.remove('active');
+                log("Session authenticated.");
+                checkHealth();
+            }
+        }
+
         function showTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
-            
+
             const activeTab = document.getElementById('tab-' + tabId);
             if (activeTab) activeTab.classList.add('active');
-            
+
             const activeNav = document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
             if (activeNav) activeNav.classList.add('active');
-            
+
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
         }
 
@@ -437,6 +880,7 @@
             const logDiv = document.getElementById('activity-log');
             const time = new Date().toLocaleTimeString();
             const line = document.createElement('div');
+            line.style.marginBottom = '0.5rem';
             line.textContent = `[${time}] ${msg}`;
             logDiv.prepend(line);
         }
@@ -463,13 +907,12 @@
             }
         }
 
-        // Update search button label when hunt mode changes
         document.addEventListener('DOMContentLoaded', () => {
             const huntToggle = document.getElementById('hunt-mode');
             if (huntToggle) {
                 huntToggle.addEventListener('change', () => {
                     const btn = document.getElementById('search-btn-label');
-                    if (btn) btn.textContent = huntToggle.checked ? 'Hunt' : 'Search';
+                    if (btn) btn.textContent = huntToggle.checked ? 'Execute Scout' : 'Search';
                 });
             }
         });
@@ -481,14 +924,18 @@
             const huntMode = document.getElementById('hunt-mode').checked;
             const resultsDiv = document.getElementById('search-results');
 
-            // Loading state
+            // Skeleton Loading State
             resultsDiv.innerHTML = '';
-            const loadingEl = document.createElement('div');
-            loadingEl.style.cssText = 'text-align: center; padding: 2rem; color: var(--slate-400);';
-            loadingEl.textContent = huntMode
-                ? 'Scout is hunting for hidden context...'
-                : 'Searching the collective consciousness...';
-            resultsDiv.appendChild(loadingEl);
+            for (let i = 0; i < 3; i++) {
+                const skel = document.createElement('div');
+                skel.className = 'skeleton result-item';
+                skel.innerHTML = `
+                    <div class="skeleton-text"></div>
+                    <div class="skeleton-text" style="width: 40%"></div>
+                    <div class="skeleton-block" style="margin-top: 1rem"></div>
+                `;
+                resultsDiv.appendChild(skel);
+            }
 
             const endpoint = huntMode ? '/search/hunt' : '/search';
             const payload = huntMode
@@ -502,39 +949,34 @@
                 const errEl = document.createElement('div');
                 errEl.className = 'result-item';
                 errEl.style.borderColor = 'var(--rose-500)';
-                errEl.textContent = 'Error: ' + data.error;
+                errEl.innerHTML = `<strong style="color:var(--rose-500)">Error:</strong> ${data.error}`;
                 resultsDiv.appendChild(errEl);
                 return;
             }
 
-            // Both /search and /search/hunt return {"success": true, "data": [...results]}
             const results = data.data;
             if (!results || results.length === 0) {
                 const emptyEl = document.createElement('div');
-                emptyEl.style.cssText = 'text-align: center; padding: 2rem; color: var(--slate-400);';
-                emptyEl.textContent = 'No relevant memories found.';
+                emptyEl.className = 'help-box';
+                emptyEl.textContent = 'No relevant semantic context found for this query.';
                 resultsDiv.appendChild(emptyEl);
                 return;
             }
 
-            // Show Scout synthesis narration when available
             if (huntMode && data.synthesis) {
                 const synthEl = document.createElement('div');
                 synthEl.className = 'help-box';
-                synthEl.style.marginBottom = '1rem';
-                const label = document.createElement('b');
-                label.textContent = 'Scout Discovery: ';
-                const text = document.createTextNode(data.synthesis);
-                synthEl.appendChild(label);
-                synthEl.appendChild(text);
+                synthEl.style.background = 'rgba(16, 185, 129, 0.05)';
+                synthEl.style.borderLeftColor = 'var(--emerald-500)';
+                synthEl.style.borderColor = 'rgba(16, 185, 129, 0.2)';
+                synthEl.innerHTML = `<b style="color: var(--emerald-500)">Scout Synthesis Result</b><p style="margin:0; color:var(--slate-300)">${data.synthesis}</p>`;
                 resultsDiv.appendChild(synthEl);
             }
 
-            // Render results — both endpoints use the same flat dict schema:
-            // { id, memory (content str), score, memory_type, importance, metadata }
-            results.forEach(r => {
+            results.forEach((r, idx) => {
                 const item = document.createElement('div');
                 item.className = 'result-item';
+                item.style.animationDelay = `${idx * 0.05}s`;
                 const score = Math.round((r.score || 0) * 100);
 
                 const meta = document.createElement('div');
@@ -543,14 +985,15 @@
                 const scoreTag = document.createElement('span');
                 scoreTag.className = 'result-tag';
                 scoreTag.style.color = 'var(--sky-400)';
-                scoreTag.textContent = score + '% Match';
+                scoreTag.textContent = score + '% Target';
 
                 const typeTag = document.createElement('span');
                 typeTag.className = 'result-tag';
-                typeTag.textContent = r.memory_type || 'memory';
+                typeTag.textContent = r.memory_type ? r.memory_type.toUpperCase() : 'EPISODIC';
 
                 const nsTag = document.createElement('span');
-                nsTag.textContent = (r.metadata && r.metadata.namespace) || 'global';
+                nsTag.className = 'result-tag';
+                nsTag.textContent = (r.metadata && r.metadata.namespace) || 'GLOBAL';
 
                 meta.appendChild(scoreTag);
                 meta.appendChild(typeTag);
@@ -565,8 +1008,8 @@
                 resultsDiv.appendChild(item);
             });
 
-            const modeLabel = huntMode ? 'Scout Hunt' : 'Search';
-            log(modeLabel + ' for: "' + query + '" (' + results.length + ' hits)');
+            const modeLabel = huntMode ? 'Scout Dispatch' : 'RRF Search';
+            log(`${modeLabel} completed: "${query}" (${results.length} nodes retrieved)`);
         }
 
         async function handleIngest() {
@@ -574,15 +1017,14 @@
             const namespace = document.getElementById('ingest-namespace').value || 'global';
             if (!content) return;
 
-            // v3.18.1: Fixed endpoint from /ingest (file ingestion) to /add (single memory add)
             const data = await api('/add', 'POST', { content, namespace, user_id: 'global_user' });
             if (data.success && data.data) {
                 const memId = data.data.id || '(stored)';
-                log(`Ingested memory: ${memId}`);
+                log(`Episodic memory committed successfully: ${memId.split('-')[0]}...`);
                 document.getElementById('ingest-text').value = "";
                 updateStats();
             } else {
-                alert('Error: ' + JSON.stringify(data));
+                alert('API Error: ' + JSON.stringify(data));
             }
         }
 
@@ -590,10 +1032,10 @@
             const path = document.getElementById('ingest-path').value;
             const url = document.getElementById('ingest-url').value;
             const btn = document.getElementById('discovery-btn');
-            
+
             if (!path && !url) return;
             btn.disabled = true;
-            btn.textContent = "Discovering...";
+            btn.textContent = "Scanning Targets...";
 
             const sources = [];
             if (path) sources.push(path);
@@ -604,10 +1046,10 @@
             btn.textContent = "Discover & Ingest";
 
             if (data.count > 0) {
-                log(`Discovered ${data.count} memories from sources.`);
+                log(`Ingested ${data.count} nodes from external sources.`);
                 updateStats();
             } else {
-                log(`Discovery failed or no new data found: ${data.error || '0 items'}`);
+                log(`Discovery returned zero findings: ${data.error || 'Check path/permissions'}`);
             }
         }
 
@@ -615,46 +1057,46 @@
             const btn = document.getElementById('scan-btn');
             const resDiv = document.getElementById('legacy-results');
             btn.disabled = true;
-            btn.textContent = "Scanning...";
-            resDiv.innerHTML = "Looking for lost knowledge...";
+            btn.textContent = "Scanning Volumes...";
+            resDiv.innerHTML = `<div class="skeleton-block skeleton"></div>`;
 
             const data = await api('/ingest/legacy/discover', 'POST', {});
             btn.disabled = false;
-            btn.textContent = "Scan Filesystem";
+            btn.textContent = "Scan Local Filesystem";
 
             if (data.error) {
-                resDiv.innerHTML = `Error: ${data.error}`;
+                resDiv.innerHTML = `<div style="color:var(--rose-500)">Error: ${data.error}</div>`;
                 return;
             }
 
             if (!data.sources || data.sources.length === 0) {
-                resDiv.innerHTML = "No legacy sources found.";
+                resDiv.innerHTML = "<div class='help-box'>No supported legacy chat contexts found on host.</div>";
                 return;
             }
 
             let html = `<table class="legacy-table">
-                <thead><tr><th>Provider</th><th>Path</th><th>Confidence</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Origin</th><th>Path</th><th>Integrity</th><th>Action</th></tr></thead>
                 <tbody>`;
-            
+
             data.sources.forEach(s => {
                 const confClass = `badge-${s.confidence}`;
                 html += `<tr>
-                    <td>${s.provider}</td>
-                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${s.path}">${s.path}</td>
+                    <td><strong>${s.provider}</strong></td>
+                    <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${s.path}">${s.path}</td>
                     <td><span class="legacy-badge ${confClass}">${s.confidence}</span></td>
-                    <td><button onclick="importLegacy('${s.source_id}')" style="background: var(--slate-800); border: 1px solid var(--sky-400); color: var(--sky-400); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;">Import</button></td>
+                    <td><button onclick="importLegacy('${s.source_id}')" class="btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Import Node</button></td>
                 </tr>`;
             });
             html += `</tbody></table>`;
             resDiv.innerHTML = html;
-            log(`Discovered ${data.sources.length} legacy sources.`);
+            log(`Identified ${data.sources.length} viable legacy targets.`);
         }
 
         async function importLegacy(sourceId) {
-            log(`Importing legacy source: ${sourceId}`);
+            log(`Initiating parse for target ID: ${sourceId}`);
             const data = await api('/ingest/legacy/import', 'POST', { selected_source_ids: [sourceId] });
             if (data.count > 0) {
-                log(`Successfully imported ${data.count} items.`);
+                log(`Parsed and merged ${data.count} nodes.`);
                 updateStats();
             } else {
                 alert(`Import failed: ${data.error}`);
@@ -662,11 +1104,10 @@
         }
 
         async function forceConsolidation() {
-            log("Forcing background consolidation...");
-            // v3.18.1: Fixed endpoint from /maintenance/consolidate (non-existent) to /consolidation/run
+            log("Triggering TKG Background Consolidation Cycle...");
             const data = await api('/consolidation/run', 'POST');
             if (data.success) {
-                log("Consolidation cycle triggered successfully.");
+                log("TKG Consolidation cycle successfully dispatched to background workers.");
             } else {
                 log(`Consolidation failed: ${data.error}`);
             }
@@ -675,11 +1116,33 @@
         function applyToken() {
             AUTH_TOKEN = document.getElementById('server-token').value;
             localStorage.setItem('muninn_token', AUTH_TOKEN);
-            log("Auth token updated.");
+            log("Session authentication token updated.");
             checkHealth();
         }
 
+        async function updateModelProfiles() {
+            const runtime = document.getElementById('runtime-profile').value;
+            const config = document.getElementById('ingest-profile').value; // mapping background ingest
+
+            log("Pushing architectural profile switch to backend...");
+
+            const payload = {
+                runtime_model_profile: runtime,
+                ingestion_model_profile: config,
+                model_profile: runtime // fallback
+            };
+
+            const data = await api('/profiles/model', 'POST', payload);
+            if (!data.error) {
+                log(`Architecture successfully transitioned to [${runtime.toUpperCase()}]`);
+                checkHealth();
+            } else {
+                alert(`Failed to push profiles: ${data.error}`);
+            }
+        }
+
         async function checkHealth() {
+            if (!AUTH_TOKEN) return;
             const data = await api('/health');
             const healthDot = document.getElementById('health-dot');
             const authDot = document.getElementById('auth-dot');
@@ -698,7 +1161,9 @@
             if (!data) return;
             document.getElementById('stat-total').innerText = data.memories || 0;
             document.getElementById('stat-entities').innerText = data.entities || 0;
-            document.getElementById('stat-profile').innerText = data.active_profile || 'Balanced';
+            // Get profile from health or just use the UI defaults
+            const profileDisplay = (data.active_profile || 'Balanced').charAt(0).toUpperCase() + (data.active_profile || 'Balanced').slice(1);
+            document.getElementById('stat-profile').innerText = profileDisplay;
         }
 
         // --- Visual Graph Animation ---
@@ -710,36 +1175,36 @@
             canvas.width = canvas.offsetWidth;
             canvas.height = canvas.offsetHeight;
             particles = [];
-            for(let i=0; i<30; i++) {
+            for (let i = 0; i < 40; i++) {
                 particles.push({
                     x: Math.random() * canvas.width,
                     y: Math.random() * canvas.height,
-                    vx: (Math.random() - 0.5) * 0.5,
-                    vy: (Math.random() - 0.5) * 0.5,
-                    r: Math.random() * 2 + 1
+                    vx: (Math.random() - 0.5) * 0.8,
+                    vy: (Math.random() - 0.5) * 0.8,
+                    r: Math.random() * 2.5 + 1
                 });
             }
         }
 
         function animate() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)';
-            ctx.fillStyle = 'rgba(56, 189, 248, 0.5)';
+            ctx.strokeStyle = 'rgba(14, 165, 233, 0.2)'; // sky-500 slightly transparent
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.7)'; // sky-400
 
             particles.forEach((p, i) => {
                 p.x += p.vx; p.y += p.vy;
-                if(p.x < 0 || p.x > canvas.width) p.vx *= -1;
-                if(p.y < 0 || p.y > canvas.height) p.vy *= -1;
+                if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
+                if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
 
                 ctx.beginPath();
-                ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+                ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
                 ctx.fill();
 
-                for(let j=i+1; j<particles.length; j++) {
+                for (let j = i + 1; j < particles.length; j++) {
                     const p2 = particles[j];
                     const dist = Math.hypot(p.x - p2.x, p.y - p2.y);
-                    if(dist < 80) {
-                        ctx.lineWidth = (1 - dist/80);
+                    if (dist < 100) {
+                        ctx.lineWidth = (1 - dist / 100) * 1.5;
                         ctx.beginPath();
                         ctx.moveTo(p.x, p.y);
                         ctx.lineTo(p2.x, p2.y);
@@ -754,9 +1219,15 @@
             initParticles();
             animate();
             document.getElementById('server-token').value = AUTH_TOKEN;
-            checkHealth();
+            checkAuthOnLoad();
             setInterval(checkHealth, 30000);
+
+            // Handle window resize for canvas
+            window.addEventListener('resize', () => {
+                initParticles();
+            });
         };
     </script>
 </body>
+
 </html>
