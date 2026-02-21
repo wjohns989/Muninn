@@ -883,6 +883,15 @@ class MuninnMemory:
                 signals=signals or {},
                 source=source,
             )
+
+            # Update Elo rating based on feedback outcome
+            from muninn.scoring.elo import calculate_elo_update, INITIAL_ELO
+            record = await asyncio.to_thread(self._metadata.get, memory_id)
+            if record:
+                current_elo = record.metadata.get("elo_rating", INITIAL_ELO) if record.metadata else INITIAL_ELO
+                new_elo = calculate_elo_update(current_elo, outcome)
+                await asyncio.to_thread(self._metadata.update_elo_rating, memory_id, new_elo)
+
         self._feedback_multiplier_cache.pop((user_id, namespace, project), None)
         return {
             "feedback_id": feedback_id,
