@@ -947,6 +947,12 @@ class SQLiteMetadataStore:
 
     def add(self, record: MemoryRecord) -> str:
         conn = self._get_conn()
+        
+        # Initialize Elo rating if not present
+        if "elo_rating" not in record.metadata:
+            from muninn.scoring.elo import INITIAL_ELO
+            record.metadata["elo_rating"] = INITIAL_ELO
+
         conn.execute(
             """INSERT INTO memories (
                 id, content, memory_type, importance, recency_score, access_count,
@@ -997,6 +1003,16 @@ class SQLiteMetadataStore:
         cursor = conn.execute(f"UPDATE memories SET {set_clause} WHERE id = ?", values)
         conn.commit()
         return cursor.rowcount > 0
+
+    def update_elo_rating(self, memory_id: str, new_rating: float) -> bool:
+        """Update the Elo rating for a specific memory."""
+        record = self.get(memory_id)
+        if not record:
+            return False
+            
+        metadata = record.metadata or {}
+        metadata["elo_rating"] = float(new_rating)
+        return self.update(memory_id, metadata=metadata)
 
     def delete(self, memory_id: str) -> bool:
         conn = self._get_conn()
