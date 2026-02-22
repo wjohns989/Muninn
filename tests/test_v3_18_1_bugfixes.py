@@ -59,10 +59,10 @@ class TestHybridSyntheticKeySkip:
         cls = self._get_retriever_class()
         assert "memory_ids" in cls._SYNTHETIC_FILTER_KEYS
 
-    def test_scope_in_synthetic_keys(self):
-        """'scope' must be in _SYNTHETIC_FILTER_KEYS."""
+    def test_scope_not_in_synthetic_keys(self):
+        """'scope' must NOT be in _SYNTHETIC_FILTER_KEYS to prevent data leakage."""
         cls = self._get_retriever_class()
-        assert "scope" in cls._SYNTHETIC_FILTER_KEYS
+        assert "scope" not in cls._SYNTHETIC_FILTER_KEYS
 
     def test_record_not_rejected_by_memory_ids_filter(self):
         """A valid record must pass _record_matches_constraints even when
@@ -81,21 +81,22 @@ class TestHybridSyntheticKeySkip:
         assert result is True, \
             "_record_matches_constraints must return True when memory_ids is the only filter"
 
-    def test_record_not_rejected_by_scope_filter(self):
-        """A valid record must pass _record_matches_constraints when filters
-        contains scope — the key must be skipped, not evaluated."""
+    def test_record_rejected_by_scope_filter(self):
+        """A valid record must be rejected by _record_matches_constraints when filters
+        contains a scope that does not match the record's scope."""
         cls = self._get_retriever_class()
         retriever = object.__new__(cls)
 
         record = _make_record(namespace="ns1", metadata={"user_id": "u1"})
+        record.scope = "project"  # Default scope
         result = retriever._record_matches_constraints(
             record,
             user_id="u1",
             namespaces=None,
             filters={"scope": "global"},
         )
-        assert result is True, \
-            "_record_matches_constraints must return True when scope is the only filter"
+        assert result is False, \
+            "_record_matches_constraints must return False when record scope does not match filter scope"
 
     def test_non_synthetic_filter_still_enforced(self):
         """Real (non-synthetic) filter keys must still be enforced."""
