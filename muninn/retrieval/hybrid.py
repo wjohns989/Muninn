@@ -824,7 +824,7 @@ class HybridRetriever:
     # These are pre-filtered at the Qdrant / BM25 / graph layer and must NOT be
     # re-evaluated here; doing so would incorrectly reject every record because no
     # MemoryRecord has a "memory_ids" attribute and no metadata stores a list of IDs.
-    _SYNTHETIC_FILTER_KEYS = frozenset({"memory_ids", "scope"})
+    _SYNTHETIC_FILTER_KEYS = frozenset({"memory_ids"})
 
     def _record_matches_constraints(
         self,

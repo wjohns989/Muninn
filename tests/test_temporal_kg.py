@@ -26,6 +26,7 @@ def test_temporal_fact_lifecycle(temporal_kg):
     assert temporal_kg.add_temporal_fact(
         "Server A", "status", "Active",
         valid_start=yesterday,
+        source_memory="test_source",
         valid_end=now
     )
     
@@ -33,6 +34,7 @@ def test_temporal_fact_lifecycle(temporal_kg):
     assert temporal_kg.add_temporal_fact(
         "Server A", "status", "Maintenance",
         valid_start=now,
+        source_memory="test_source",
         valid_end=tomorrow
     )
     
@@ -51,8 +53,8 @@ def test_snapshot_diff(temporal_kg):
     t1 = 2000
     t2 = 3000
     
-    temporal_kg.add_temporal_fact("User", "uses", "V1", t0, t1)
-    temporal_kg.add_temporal_fact("User", "uses", "V2", t1, t2)
+    temporal_kg.add_temporal_fact("User", "uses", "V1", t0, "source1", t1)
+    temporal_kg.add_temporal_fact("User", "uses", "V2", t1, "source2", t2)
     
     diff = temporal_kg.snapshot_diff(t0 + 1, t1 + 1)
     

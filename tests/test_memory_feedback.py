@@ -37,6 +37,10 @@ def test_record_retrieval_feedback_invalidates_cache():
     memory._initialized = True
     memory._metadata = MagicMock()
     memory._metadata.add_retrieval_feedback.return_value = 42
+    mock_mem = MagicMock()
+    mock_mem.metadata = {"elo_rating": 1200.0}
+    memory._metadata.get.return_value = mock_mem
+
     memory._feedback_multiplier_cache[("global_user", "global", "muninn_mcp")] = (9999999999.0, {"vector": 1.2})
 
     result = asyncio.run(
@@ -62,6 +66,9 @@ def test_record_retrieval_feedback_forwards_rank_and_sampling_prob():
     memory._initialized = True
     memory._metadata = MagicMock()
     memory._metadata.add_retrieval_feedback.return_value = 43
+    mock_mem = MagicMock()
+    mock_mem.metadata = {"elo_rating": 1200.0}
+    memory._metadata.get.return_value = mock_mem
 
     result = asyncio.run(
         memory.record_retrieval_feedback(
