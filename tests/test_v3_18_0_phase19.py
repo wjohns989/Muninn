@@ -73,9 +73,13 @@ class TestScoutSynthesis:
 
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_message)
+        # Support `async with AsyncAnthropic(...) as client:` pattern
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         mock_anthropic = MagicMock()
         mock_anthropic.AsyncAnthropic.return_value = mock_client
+        mock_anthropic.APIError = Exception  # expose APIError on the mock module
 
         with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
             with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
@@ -92,7 +96,7 @@ class TestScoutSynthesis:
         assert result == "These memories discuss Python patterns."
         mock_client.messages.create.assert_called_once()
         call_kwargs = mock_client.messages.create.call_args.kwargs
-        assert call_kwargs["model"] == "claude-haiku-4-5-20251001"
+        assert call_kwargs["model"] == "claude-haiku-4-5"
         assert call_kwargs["max_tokens"] == 200
         prompt_text = call_kwargs["messages"][0]["content"]
         assert "Python async patterns" in prompt_text
@@ -105,9 +109,13 @@ class TestScoutSynthesis:
 
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(side_effect=RuntimeError("API quota exceeded"))
+        # Support async context manager
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         mock_anthropic = MagicMock()
         mock_anthropic.AsyncAnthropic.return_value = mock_client
+        mock_anthropic.APIError = Exception  # RuntimeError is NOT a subclass, falls to generic except
 
         with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
             with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
@@ -131,8 +139,11 @@ class TestScoutSynthesis:
         mock_message.content = [MagicMock(text="Summary.")]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_message)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_anthropic = MagicMock()
         mock_anthropic.AsyncAnthropic.return_value = mock_client
+        mock_anthropic.APIError = Exception
 
         with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
             with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
@@ -164,8 +175,11 @@ class TestScoutSynthesis:
         mock_message.content = [MagicMock(text="Summary.")]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_message)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_anthropic = MagicMock()
         mock_anthropic.AsyncAnthropic.return_value = mock_client
+        mock_anthropic.APIError = Exception
 
         with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
             with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
