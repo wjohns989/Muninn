@@ -51,7 +51,7 @@ def _parse_positive_float_env(name: str, default: float, *, lower: float, upper:
 
 
 def _write_timeout_seconds() -> float:
-    return _parse_positive_float_env("MUNINN_MCP_WRITE_TIMEOUT_SEC", 20.0, lower=0.1, upper=180.0)
+    return _parse_positive_float_env("MUNINN_MCP_WRITE_TIMEOUT_SEC", 40.0, lower=0.1, upper=180.0)
 
 
 def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn, startup_warnings: Optional[List[str]] = None):
@@ -425,7 +425,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "update_memory": _do_update_memory,
         "delete_memory": _do_delete_memory,
         "delete_all_memories": _do_delete_all_memories,
-        "set_project_goal": _do_set_project_goal,
+        "set_project_instruction": _do_set_project_instruction,
         "get_project_goal": _do_get_project_goal,
         "set_user_profile": _do_set_user_profile,
         "get_user_profile": _do_get_user_profile,
@@ -449,7 +449,6 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "create_federation_bundle": _do_create_federation_bundle,
         "apply_federation_bundle": _do_apply_federation_bundle,
         "mimir_relay": _do_mimir_relay,
-        "set_project_instruction": _do_set_project_instruction,
     }
     
     handler = dispatch.get(name)
@@ -469,7 +468,13 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
         scope = "project"
 
     payload = {"content": args.get("content"), "metadata": metadata, "user_id": "global_user", "scope": scope}
-    resp = make_request_with_retry("POST", f"{SERVER_URL}/add", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
+    resp = make_request_with_retry(
+        "POST",
+        f"{SERVER_URL}/add",
+        deadline_epoch=deadline,
+        json=payload,
+        timeout=_write_timeout_seconds(),
+    )
     return resp.json()
 
 def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -495,7 +500,13 @@ def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float])
         "user_id": "global_user",
         "scope": "project",
     }
-    resp = make_request_with_retry("POST", f"{SERVER_URL}/add", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
+    resp = make_request_with_retry(
+        "POST",
+        f"{SERVER_URL}/add",
+        deadline_epoch=deadline,
+        json=payload,
+        timeout=_write_timeout_seconds(),
+    )
     return resp.json()
 
 
