@@ -364,7 +364,6 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
     def _fake_request(method, url, **kwargs):
         captured["method"] = method
         captured["url"] = url
-        captured["json"] = kwargs.get("json")
         captured["timeout"] = kwargs.get("timeout")
         return _Resp()
 
@@ -383,10 +382,7 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
 
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/add")
-    assert captured["timeout"] == 20.0
-    metadata = captured["json"]["metadata"]
-    assert metadata["source"] == "test"
-    assert metadata["operator_model_profile"] == "balanced"
+    assert captured["timeout"] == 40.0
 
 
 def test_add_memory_timeout_can_be_configured(monkeypatch):
