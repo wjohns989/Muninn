@@ -234,11 +234,6 @@ def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any
     return _internal_worker(task_id, name, arguments, send_notif)
 
 def send_json_rpc(message: Dict[str, Any]) -> None:
-    try:
-        with open("C:\\Users\\wjohn\\muninn_mcp\\mcp_debug.log", "a") as f:
-            f.write(f"TEST LOG: {message}\n")
-    except Exception:
-        pass
     _server.send_rpc(message)
 
 def _send_json_rpc_error(msg_id: Any, code: int, message: str) -> None:
