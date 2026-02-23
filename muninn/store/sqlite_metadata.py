@@ -148,6 +148,18 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 );
 """
 
+LEGACY_SOURCES_CACHE = """
+CREATE TABLE IF NOT EXISTS legacy_sources_cache (
+    source_id       TEXT PRIMARY KEY,
+    provider        TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    category        TEXT NOT NULL,
+    first_seen_at   REAL NOT NULL,
+    last_seen_at    REAL NOT NULL,
+    ignored         INTEGER DEFAULT 0
+);
+"""
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -185,6 +197,7 @@ class SQLiteMetadataStore:
         conn.execute(RETRIEVAL_FEEDBACK)
         conn.execute(PROFILE_POLICY_EVENTS)
         conn.execute(USER_PROFILES)
+        conn.execute(LEGACY_SOURCES_CACHE)
         self._ensure_column_exists(conn, "retrieval_feedback", "rank", "INTEGER")
         self._ensure_column_exists(conn, "retrieval_feedback", "sampling_prob", "REAL")
         # v3.11.0: Project isolation scope migration — add column if upgrading from older DB
@@ -1006,6 +1019,83 @@ class SQLiteMetadataStore:
                 "SELECT COUNT(*) FROM memories WHERE metadata NOT LIKE '%\"user_id\"%'"
             ).fetchone()
         return row[0] if row else 0
+
+    # --- Legacy Sources Cache ---
+
+    def sync_legacy_sources_cache(self, sources: List[Dict[str, Any]]) -> Dict[str, int]:
+        """
+        Synchronize the discovered legacy sources with the persistent cache.
+        Returns counts of new, updated, and total sources.
+        """
+        conn = self._get_conn()
+        now = time.time()
+        new_count = 0
+        updated_count = 0
+
+        # 1. Get existing IDs to detect what's new
+        rows = conn.execute("SELECT source_id FROM legacy_sources_cache").fetchall()
+        existing_ids = {row[0] for row in rows}
+
+        for src in sources:
+            sid = src["source_id"]
+            if sid in existing_ids:
+                conn.execute(
+                    "UPDATE legacy_sources_cache SET last_seen_at = ? WHERE source_id = ?",
+                    (now, sid),
+                )
+                updated_count += 1
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO legacy_sources_cache (
+                        source_id, provider, path, category, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sid,
+                        src["provider"],
+                        src["path"],
+                        src["category"],
+                        now,
+                        now,
+                    ),
+                )
+                new_count += 1
+
+        conn.commit()
+        return {
+            "new": new_count,
+            "updated": updated_count,
+            "total": len(sources),
+        }
+
+    def get_legacy_sources_stats(self) -> Dict[str, Any]:
+        """Return statistics about cached legacy sources."""
+        conn = self._get_conn()
+        
+        # Count total
+        row = conn.execute("SELECT COUNT(*) FROM legacy_sources_cache").fetchone()
+        total = row[0] if row else 0
+        
+        # Count "new" (seen for the first time in the last 24h)
+        cutoff = time.time() - 86400
+        row = conn.execute(
+            "SELECT COUNT(*) FROM legacy_sources_cache WHERE first_seen_at > ?",
+            (cutoff,),
+        ).fetchone()
+        new_24h = row[0] if row else 0
+        
+        # Count non-ignored
+        row = conn.execute(
+            "SELECT COUNT(*) FROM legacy_sources_cache WHERE ignored = 0"
+        ).fetchone()
+        active = row[0] if row else 0
+        
+        return {
+            "total_cached": total,
+            "new_last_24h": new_24h,
+            "active_non_ignored": active,
+        }
 
     # --- CRUD Operations ---
 

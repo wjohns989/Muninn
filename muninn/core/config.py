@@ -195,6 +195,12 @@ class IngestionConfig(BaseModel):
     allowed_roots: List[str] = Field(default_factory=list)
 
 
+class LegacyDiscoveryConfig(BaseModel):
+    """Legacy source discovery configuration (v3.18.1)."""
+    enabled: bool = True
+    interval_hours: float = 1.0
+
+
 class MemoryChainsConfig(BaseModel):
     """Memory chain detection/retrieval configuration (v3.3.0)."""
     detection_threshold: float = 0.6
@@ -259,6 +265,7 @@ class MuninnConfig(BaseModel):
     goal_compass: GoalCompassConfig = Field(default_factory=GoalCompassConfig)
     retrieval_feedback: RetrievalFeedbackConfig = Field(default_factory=RetrievalFeedbackConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
+    legacy_discovery: LegacyDiscoveryConfig = Field(default_factory=LegacyDiscoveryConfig)
     memory_chains: MemoryChainsConfig = Field(default_factory=MemoryChainsConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
     feature_flags: FeatureFlags = Field(default_factory=FeatureFlags)
@@ -426,6 +433,10 @@ class MuninnConfig(BaseModel):
                     for part in os.environ.get("MUNINN_INGESTION_ALLOWED_ROOTS", "").split(os.pathsep)
                     if part.strip()
                 ],
+            ),
+            legacy_discovery=LegacyDiscoveryConfig(
+                enabled=os.environ.get("MUNINN_LEGACY_DISCOVERY_ENABLED", "true").lower() == "true",
+                interval_hours=float(os.environ.get("MUNINN_LEGACY_DISCOVERY_INTERVAL", "1.0")),
             ),
             memory_chains=MemoryChainsConfig(
                 detection_threshold=float(
