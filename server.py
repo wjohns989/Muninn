@@ -53,6 +53,7 @@ from muninn.ingestion.periodic import (
     PeriodicIngestionScheduler,
     PeriodicIngestionSettings,
 )
+from muninn.ingestion.legacy_scheduler import LegacyDiscoveryScheduler
 from muninn.core.types import (
     AddMemoryRequest,
     SearchMemoryRequest,
@@ -82,6 +83,7 @@ GLOBAL_AUTH_TOKEN: Optional[str] = None
 _mimir_store: Optional[MimirStore] = None
 _mimir_relay: Optional[MimirRelay] = None
 _periodic_ingestion: Optional[PeriodicIngestionScheduler] = None
+_legacy_discovery: Optional[LegacyDiscoveryScheduler] = None
 _SERVER_INSTANCE_LOCK_HANDLE: Optional[portalocker.Lock] = None
 _SERVER_INSTANCE_LOCK_PATH: Optional[Path] = None
 
@@ -341,7 +343,7 @@ def _release_server_instance_lock() -> None:
 # --- Application Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global memory, _mimir_store, _mimir_relay, _periodic_ingestion
+    global memory, _mimir_store, _mimir_relay, _periodic_ingestion, _legacy_discovery
 
     logger.info("Muninn Server starting...")
 
@@ -393,9 +395,23 @@ async def lifespan(app: FastAPI):
                     "Periodic ingestion requested on startup but scheduler did not start"
                 )
 
+        if config.legacy_discovery.enabled:
+            _legacy_discovery = LegacyDiscoveryScheduler(
+                memory=memory,
+                interval_seconds=config.legacy_discovery.interval_hours * 3600.0,
+            )
+            await _legacy_discovery.start()
+            logger.info(
+                "Legacy discovery scheduler enabled (interval=%.1fh)",
+                config.legacy_discovery.interval_hours,
+            )
+
         yield
     finally:
         logger.info("Shutting down Muninn Server...")
+        if _legacy_discovery:
+            await _legacy_discovery.stop()
+            _legacy_discovery = None
         if _periodic_ingestion:
             await _periodic_ingestion.stop()
             _periodic_ingestion = None
@@ -935,6 +951,38 @@ async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
     except Exception as e:
         logger.error("Error importing legacy sources: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ingest/legacy/status", dependencies=[Depends(verify_token)])
+async def legacy_discovery_status_endpoint():
+    """Get runtime status for the background legacy scan scheduler."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    if _legacy_discovery is None:
+        return {
+            "success": True,
+            "data": {
+                "running": False,
+                "last_run_at": None,
+                "last_sync_result": None,
+                "cache_stats": {},
+            },
+        }
+
+    return {"success": True, "data": _legacy_discovery.status}
+
+
+@app.post("/ingest/legacy/run", dependencies=[Depends(verify_token)])
+async def legacy_discovery_run_endpoint():
+    """Manually trigger a background legacy discovery scan."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    if _legacy_discovery is None:
+        raise HTTPException(status_code=503, detail="Legacy discovery scheduler not initialized")
+
+    result = await _legacy_discovery.trigger_once()
+    return {"success": True, "data": result}
 
 
 @app.get("/ingest/periodic/status", dependencies=[Depends(verify_token)])
