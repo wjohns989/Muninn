@@ -50,6 +50,12 @@ class MuninnScout:
             rerank=True
         )
         
+        # Track effective scope for the final rerank pass.  If the fallback
+        # fires we must propagate the widened (None) scope into the final
+        # search, otherwise discovered candidates from the fallback are
+        # immediately filtered back out during re-scoring (PR 50 P1).
+        effective_namespaces = namespaces
+
         if not initial_results:
             # Namespace-free fallback: if a scoped search returned nothing, retry
             # without namespace restriction so we can surface cross-project context.
@@ -63,6 +69,7 @@ class MuninnScout:
                 namespaces=None,  # no namespace restriction
                 explain=True
             )
+            effective_namespaces = None  # widen scope for final rerank too
 
         # 2. Graph-Based Discovery (Hop 1 & 2)
         # Find all entities mentioned in initial results
@@ -114,8 +121,8 @@ class MuninnScout:
             query=query,
             limit=limit,
             user_id=user_id,
-            namespaces=namespaces,
-            filters={"memory_ids": all_ids}, # We need a way to filter to specific IDs in retriever
+            namespaces=effective_namespaces,
+            filters={"memory_ids": all_ids},
             rerank=True
         )
 

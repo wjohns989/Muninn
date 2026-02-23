@@ -16,7 +16,7 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger("Muninn.Synthesis")
 
-_SYNTHESIS_MODEL = "claude-haiku-4-5-20251001"
+_SYNTHESIS_MODEL = "claude-haiku-4-5"
 _SYNTHESIS_MAX_TOKENS = 200
 _SYNTHESIS_SNIPPET_CHARS = 120
 _SYNTHESIS_MAX_SNIPPETS = 6
@@ -39,7 +39,7 @@ async def synthesize_hunt_results(query: str, results: List[Dict[str, Any]]) -> 
         return ""
 
     try:
-        from anthropic import AsyncAnthropic  # optional dependency
+        from anthropic import AsyncAnthropic, APIError  # optional dependency
     except ImportError:
         logger.debug("Synthesis skipped: anthropic SDK not installed")
         return ""
@@ -50,26 +50,29 @@ async def synthesize_hunt_results(query: str, results: List[Dict[str, Any]]) -> 
         return ""
 
     try:
-        client = AsyncAnthropic(api_key=api_key)
-        snippets = "\n".join(
-            f"- [{r.get('memory_type', 'memory')}] {str(r.get('memory', ''))[:_SYNTHESIS_SNIPPET_CHARS]}"
-            for r in results[:_SYNTHESIS_MAX_SNIPPETS]
-        )
-        prompt = (
-            "You are Muninn, an AI memory assistant. In 2-3 concise sentences, "
-            "explain what was discovered during this multi-hop memory hunt and "
-            "why these memories are relevant to the query. "
-            "Focus on the conceptual connections, not just listing what was found.\n\n"
-            f"Query: {query}\n"
-            f"Discovered ({len(results)} memories):\n{snippets}\n\n"
-            "Discovery summary:"
-        )
-        message = await client.messages.create(
-            model=_SYNTHESIS_MODEL,
-            max_tokens=_SYNTHESIS_MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return message.content[0].text.strip()
+        async with AsyncAnthropic(api_key=api_key) as client:
+            snippets = "\n".join(
+                f"- [{r.get('memory_type', 'memory')}] {str(r.get('memory', ''))[:_SYNTHESIS_SNIPPET_CHARS]}"
+                for r in results[:_SYNTHESIS_MAX_SNIPPETS]
+            )
+            prompt = (
+                "You are Muninn, an AI memory assistant. In 2-3 concise sentences, "
+                "explain what was discovered during this multi-hop memory hunt and "
+                "why these memories are relevant to the query. "
+                "Focus on the conceptual connections, not just listing what was found.\n\n"
+                f"Query: {query}\n"
+                f"Discovered ({len(results)} memories):\n{snippets}\n\n"
+                "Discovery summary:"
+            )
+            message = await client.messages.create(
+                model=_SYNTHESIS_MODEL,
+                max_tokens=_SYNTHESIS_MAX_TOKENS,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return message.content[0].text.strip()
+    except APIError as exc:
+        logger.warning("Synthesis API call failed: %s", exc)
+        return ""
     except Exception as exc:
-        logger.warning("Synthesis failed: %s", exc)
+        logger.warning("Synthesis failed (unexpected): %s", exc)
         return ""
