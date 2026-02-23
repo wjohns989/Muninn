@@ -13,7 +13,7 @@ from .state import _SESSION_STATE
 from .definitions import (
     SUPPORTED_PROTOCOL_VERSIONS, TOOLS_SCHEMAS, JSON_SCHEMA_2020_12,
     READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS,
-    SUPPORTED_MODEL_PROFILES
+    SUPPORTED_MODEL_PROFILES, MIMIR_TOOLS,
 )
 from .tasks import (
     create_task, lookup_task_locked, purge_and_retain_tasks_locked, 
@@ -423,6 +423,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "calculate_federation_delta": _do_calculate_federation_delta,
         "create_federation_bundle": _do_create_federation_bundle,
         "apply_federation_bundle": _do_apply_federation_bundle,
+        "mimir_relay": _do_mimir_relay,
         "set_project_instruction": _do_set_project_instruction,
     }
     
@@ -736,6 +737,70 @@ def _do_apply_federation_bundle(args: Dict[str, Any], deadline: Optional[float])
     # FastAPI body logic: if it's a Pydantic model or Dict, it expects the JSON body to match.
     payload = args.get("bundle", {})
     resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/apply", deadline_epoch=deadline, json=payload, timeout=30)
+    return resp.json()
+
+
+def _do_mimir_relay(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    """Relay an instruction to a remote AI agent via the IRP/1 protocol.
+
+    Calls POST /mimir/relay on the Muninn FastAPI server, which delegates to
+    MimirRelay.  The HTTP timeout is derived from the IRP/1 policy.timeout_seconds
+    value (default 30 s) plus a 10-second transport overhead budget.
+
+    The server returns a RelayResult-shaped dict:
+        {
+            "run_id": str,
+            "status": "success" | "failed" | "policy_blocked" | ...,
+            "output": str | None,
+            "error_code": str | None,
+            "error_message": str | None,
+            "latency_ms": float,
+            "provider_used": str | None,
+            "redaction_count": int,
+        }
+    """
+    policy_raw: Dict[str, Any] = args.get("policy") or {}
+
+    # Build the MimirRelayRequest body that the FastAPI endpoint expects.
+    payload: Dict[str, Any] = {
+        "instruction": args.get("instruction"),
+        "mode": args.get("mode", "A"),
+        "provider": args.get("provider", "auto"),
+        "user_id": args.get("user_id", "global_user"),
+        "max_tokens": args.get("max_tokens", 4096),
+    }
+
+    # Only include optional fields when the caller supplied them so that the
+    # server-side defaults in IRPPolicy remain authoritative.
+    if args.get("context") is not None:
+        payload["context"] = args["context"]
+
+    if policy_raw:
+        policy: Dict[str, Any] = {}
+        if "max_hops" in policy_raw:
+            policy["max_hops"] = int(policy_raw["max_hops"])
+        if "timeout_seconds" in policy_raw:
+            policy["timeout_seconds"] = float(policy_raw["timeout_seconds"])
+        if "allow_redaction" in policy_raw:
+            policy["allow_redaction"] = bool(policy_raw["allow_redaction"])
+        if "require_consent" in policy_raw:
+            policy["require_consent"] = bool(policy_raw["require_consent"])
+        if "network" in policy_raw:
+            policy["network"] = policy_raw["network"]
+        if policy:
+            payload["policy"] = policy
+
+    # Give the HTTP call policy.timeout_seconds + 10 s for transport overhead.
+    # If the caller omitted a policy timeout, fall back to 40 s (30 + 10).
+    http_timeout = float(policy_raw.get("timeout_seconds", 30.0)) + 10.0
+
+    resp = make_request_with_retry(
+        "POST",
+        f"{SERVER_URL}/mimir/relay",
+        deadline_epoch=deadline,
+        json=payload,
+        timeout=http_timeout,
+    )
     return resp.json()
 
 
