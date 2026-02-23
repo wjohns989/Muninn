@@ -122,6 +122,15 @@ def sandboxed_parse_binary(
             f"sandboxed_parse_binary only supports 'pdf' and 'docx', got: {source_type!r}"
         )
 
+    def _coerce_positive_int(name: str, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be a positive integer, got: {value!r}")
+        if value <= 0:
+            raise ValueError(f"{name} must be positive, got: {value}")
+        return value
+
     resolved_path = Path(path).resolve()
     if not resolved_path.exists():
         raise RuntimeError(f"File not found: {resolved_path}")
@@ -142,6 +151,9 @@ def sandboxed_parse_binary(
             "require POSIX rlimits and are unsupported on this platform."
         )
 
+    max_memory_mb = _coerce_positive_int("max_memory_mb", max_memory_mb)
+    max_cpu_seconds = _coerce_positive_int("max_cpu_seconds", max_cpu_seconds)
+
     cmd = [
         sys.executable,
         "-m",
@@ -152,13 +164,9 @@ def sandboxed_parse_binary(
 
     env = _make_sandbox_env()
     if max_memory_mb is not None:
-        if max_memory_mb <= 0:
-            raise ValueError(f"max_memory_mb must be positive, got: {max_memory_mb}")
-        env["MUNINN_PARSER_MAX_MEMORY_MB"] = str(int(max_memory_mb))
+        env["MUNINN_PARSER_MAX_MEMORY_MB"] = str(max_memory_mb)
     if max_cpu_seconds is not None:
-        if max_cpu_seconds <= 0:
-            raise ValueError(f"max_cpu_seconds must be positive, got: {max_cpu_seconds}")
-        env["MUNINN_PARSER_MAX_CPU_SECONDS"] = str(int(max_cpu_seconds))
+        env["MUNINN_PARSER_MAX_CPU_SECONDS"] = str(max_cpu_seconds)
 
     try:
         result = subprocess.run(

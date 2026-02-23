@@ -34,7 +34,11 @@ MAX_OUTPUT_CHARS = 2_000_000  # 2 MB cap on extracted text
 
 
 def _apply_resource_limits() -> None:
-    """Apply optional POSIX rlimits for memory/CPU when configured."""
+    """Apply optional POSIX rlimits for memory/CPU when configured.
+
+    If a limit is requested but cannot be applied, fail fast so the parent
+    process receives a deterministic error instead of running unbounded.
+    """
     if os.name != "posix":
         return
 
@@ -46,24 +50,35 @@ def _apply_resource_limits() -> None:
 
     try:
         import resource  # POSIX only
-    except Exception:
-        return
+    except Exception as exc:
+        raise RuntimeError("Parser resource limits requested but 'resource' module is unavailable") from exc
+
+    def _parse_positive_int(value: str, label: str) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid {label} value: {value!r}") from exc
+        if parsed <= 0:
+            raise RuntimeError(f"{label} must be positive, got: {parsed}")
+        return parsed
+
+    def _set_limit(kind: int, limits: tuple[int, int], label: str) -> None:
+        try:
+            resource.setrlimit(kind, limits)
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(f"Failed to set parser {label} limit: {exc}") from exc
 
     if max_memory_mb:
-        try:
-            limit_bytes = int(max_memory_mb) * 1024 * 1024
-            rlimit_as = getattr(resource, "RLIMIT_AS", None)
-            if rlimit_as is not None:
-                resource.setrlimit(rlimit_as, (limit_bytes, limit_bytes))
-        except Exception:
-            pass
+        limit_mb = _parse_positive_int(max_memory_mb, "max_memory_mb")
+        rlimit_as = getattr(resource, "RLIMIT_AS", None)
+        if rlimit_as is None:
+            raise RuntimeError("Memory limit requested but RLIMIT_AS is unavailable on this platform")
+        limit_bytes = limit_mb * 1024 * 1024
+        _set_limit(rlimit_as, (limit_bytes, limit_bytes), "memory")
 
     if max_cpu_seconds:
-        try:
-            limit_seconds = int(max_cpu_seconds)
-            resource.setrlimit(resource.RLIMIT_CPU, (limit_seconds, limit_seconds))
-        except Exception:
-            pass
+        limit_seconds = _parse_positive_int(max_cpu_seconds, "max_cpu_seconds")
+        _set_limit(resource.RLIMIT_CPU, (limit_seconds, limit_seconds), "CPU")
 
 
 def _parse_pdf(path: Path) -> str:
