@@ -1,4 +1,6 @@
 import os
+
+DEFAULT_HTTP_TIMEOUT = float(os.getenv("MUNINN_MCP_HTTP_TIMEOUT_SEC", "40"))
 import time
 import logging
 import threading
@@ -520,7 +522,7 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
         "filters": filters,
         "explain": args.get("explain", False),
     }
-    resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=10)
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     result = resp.json()
 
     from muninn.core.feature_flags import get_flags
@@ -541,7 +543,7 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
         fallback_filters.pop("project")
         fallback_filters["scope"] = "global"
         payload["filters"] = fallback_filters
-        resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=10)
+        resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
         result = resp.json()
 
     return result
@@ -566,22 +568,22 @@ def _do_hunt_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str
 
 def _do_get_all_memories(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     params = {"user_id": "global_user", "limit": args.get("limit", 100)}
-    resp = make_request_with_retry("GET", f"{SERVER_URL}/get_all", deadline_epoch=deadline, params=params, timeout=10)
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/get_all", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_update_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     payload = {"memory_id": args.get("memory_id"), "data": args.get("content")}
-    resp = make_request_with_retry("PUT", f"{SERVER_URL}/update", deadline_epoch=deadline, json=payload, timeout=10)
+    resp = make_request_with_retry("PUT", f"{SERVER_URL}/update", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_delete_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     mid = quote(str(args.get("memory_id")), safe="")
-    resp = make_request_with_retry("DELETE", f"{SERVER_URL}/delete/{mid}", deadline_epoch=deadline, timeout=10)
+    resp = make_request_with_retry("DELETE", f"{SERVER_URL}/delete/{mid}", deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_delete_all_memories(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     payload = {"user_id": "global_user"}
-    resp = make_request_with_retry("POST", f"{SERVER_URL}/delete_all", deadline_epoch=deadline, json=payload, timeout=10)
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/delete_all", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_set_project_goal(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -603,7 +605,7 @@ def _do_get_project_goal(args: Dict[str, Any], deadline: Optional[float]) -> Dic
         "namespace": args.get("namespace", "global"),
         "project": args.get("project", git["project"]),
     }
-    resp = make_request_with_retry("GET", f"{SERVER_URL}/goal/get", deadline_epoch=deadline, params=params, timeout=10)
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/goal/get", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_set_user_profile(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -618,11 +620,11 @@ def _do_set_user_profile(args: Dict[str, Any], deadline: Optional[float]) -> Dic
 
 def _do_get_user_profile(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     params = {"user_id": "global_user"}
-    resp = make_request_with_retry("GET", f"{SERVER_URL}/profile/user/get", deadline_epoch=deadline, params=params, timeout=10)
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/profile/user/get", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_get_model_profiles(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    resp = make_request_with_retry("GET", f"{SERVER_URL}/profiles/model", deadline_epoch=deadline, timeout=10)
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/profiles/model", deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_set_model_profiles(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -634,12 +636,12 @@ def _do_set_model_profiles(args: Dict[str, Any], deadline: Optional[float]) -> D
     if not payload:
         raise ValueError("set_model_profiles requires at least one profile field")
     payload["source"] = args.get("source", "mcp_tool")
-    resp = make_request_with_retry("POST", f"{SERVER_URL}/profiles/model", deadline_epoch=deadline, json=payload, timeout=10)
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/profiles/model", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_get_model_profile_events(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     params = {"limit": args.get("limit", 25)}
-    resp = make_request_with_retry("GET", f"{SERVER_URL}/profiles/model/events", deadline_epoch=deadline, params=params, timeout=10)
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/profiles/model/events", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_export_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -735,7 +737,7 @@ def _do_ingest_legacy_sources(args: Dict[str, Any], deadline: Optional[float]) -
 
 def _do_get_temporal_knowledge(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     params = {"timestamp": args.get("timestamp"), "limit": args.get("limit", 50)}
-    resp = make_request_with_retry("GET", f"{SERVER_URL}/knowledge/temporal", deadline_epoch=deadline, params=params, timeout=10)
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/knowledge/temporal", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_create_federation_manifest(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -748,7 +750,7 @@ def _do_calculate_federation_delta(args: Dict[str, Any], deadline: Optional[floa
         "local": args.get("local", {}),
         "remote": args.get("remote", {}),
     }
-    resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/delta", deadline_epoch=deadline, json=payload, timeout=10)
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/delta", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_create_federation_bundle(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
