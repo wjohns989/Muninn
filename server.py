@@ -56,6 +56,9 @@ from muninn.core.types import (
     Provenance,
 )
 from muninn.retrieval.synthesis import synthesize_hunt_results
+from muninn.mimir.api import init_mimir, mimir_router
+from muninn.mimir.relay import MimirRelay
+from muninn.mimir.store import MimirStore
 
 # Configure logging
 logging.basicConfig(
@@ -71,6 +74,8 @@ logger = logging.getLogger("Muninn")
 # --- Global State ---
 memory: Optional[MuninnMemory] = None
 GLOBAL_AUTH_TOKEN: Optional[str] = None
+_mimir_store: Optional[MimirStore] = None
+_mimir_relay: Optional[MimirRelay] = None
 
 
 # --- Pydantic Models (API compatibility) ---
@@ -259,7 +264,7 @@ async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Sec
 # --- Application Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global memory
+    global memory, _mimir_store, _mimir_relay
 
     logger.info("Muninn Server starting...")
 
@@ -278,6 +283,16 @@ async def lifespan(app: FastAPI):
         # GLOBAL_LOCK = asyncio.Lock()
         # logger.info("Global concurrency lock initialized")
 
+        # Initialise Mimir IRP/1 interop relay.  MimirStore shares the Muninn
+        # metadata SQLite connection so all Mimir tables co-locate in the same
+        # WAL-mode database file — no extra file, no separate connection pool.
+        # The connection is owned by SQLiteMetadataStore; memory.shutdown()
+        # closes it, so MimirStore has no separate teardown responsibility.
+        _mimir_store = MimirStore(memory._metadata._get_conn())
+        _mimir_relay = MimirRelay(store=_mimir_store)
+        init_mimir(_mimir_relay, _mimir_store)
+        logger.info("Mimir relay initialised (db=%s)", memory._metadata.db_path)
+
         yield
     finally:
         logger.info("Shutting down Muninn Server...")
@@ -292,6 +307,11 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+# Register Mimir IRP/1 relay router (/mimir/* endpoints).
+# The router carries its own /mimir prefix and _verify_token dependency;
+# no additional prefix or auth wrapper is needed here.
+app.include_router(mimir_router)
 
 # --- CORS ---
 # Security design: Muninn runs on localhost only and all data-mutating endpoints
