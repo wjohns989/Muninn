@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Phase 21: Zero-Trust Parser Isolation & Ingestion Safety (SOTA+)
 
@@ -10,6 +12,7 @@ Verifies that:
 
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 import pytest
@@ -29,6 +32,27 @@ def test_sandboxed_parse_invalid_type():
         path = Path(tf.name)
         with pytest.raises(ValueError, match="only supports 'pdf' and 'docx'"):
             sandboxed_parse_binary(path, "txt")
+
+
+def test_sandboxed_parse_rejects_large_file():
+    """Files larger than max_bytes are rejected before subprocess launch."""
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+        tf.write(b"x" * 128)
+        path = Path(tf.name)
+
+    try:
+        with pytest.raises(RuntimeError, match="rejected file larger than max_bytes"):
+            sandboxed_parse_binary(path, "pdf", max_bytes=64)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_sandboxed_parse_invalid_max_bytes():
+    """Non-positive max_bytes is rejected."""
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tf:
+        path = Path(tf.name)
+        with pytest.raises(ValueError, match="max_bytes must be positive"):
+            sandboxed_parse_binary(path, "pdf", max_bytes=0)
 
 
 def test_sandboxed_parse_malformed_docx():
@@ -112,3 +136,64 @@ def test_sandboxed_timeout_kills_process(monkeypatch):
         # Call with a short timeout.
         with pytest.raises(RuntimeError, match="subprocess timed out after 1s"):
             sandboxed_parse_binary(dummy_file, "pdf", timeout=1.0)
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only rlimit behaviour")
+def test_fractional_limits_are_rejected():
+    """Fractional CPU/memory limits must be rejected rather than truncated."""
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tf:
+        path = Path(tf.name)
+        with pytest.raises(ValueError, match="max_memory_mb must be a positive integer"):
+            sandboxed_parse_binary(path, "pdf", max_memory_mb=0.5)
+        with pytest.raises(ValueError, match="max_cpu_seconds must be a positive integer"):
+            sandboxed_parse_binary(path, "pdf", max_cpu_seconds=0.5)
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only rlimit behaviour")
+def test_apply_resource_limits_failure_raises(monkeypatch):
+    """setrlimit failures surface as RuntimeError so the subprocess exits non-zero."""
+    import muninn.ingestion._parser_subprocess as ps
+
+    def failing_setrlimit(kind, limits):
+        raise OSError("nope")
+
+    fake_resource = types.SimpleNamespace(
+        RLIMIT_AS=1,
+        RLIMIT_CPU=2,
+        setrlimit=failing_setrlimit,
+    )
+
+    monkeypatch.setenv("MUNINN_PARSER_MAX_MEMORY_MB", "64")
+    monkeypatch.setenv("MUNINN_PARSER_MAX_CPU_SECONDS", "2")
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+
+    with pytest.raises(RuntimeError, match="Failed to set parser"):
+        ps._apply_resource_limits()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only rlimit behaviour")
+def test_apply_resource_limits_sets_expected_limits(monkeypatch):
+    """Happy path applies both limits using RLIMIT_AS and RLIMIT_CPU."""
+    import muninn.ingestion._parser_subprocess as ps
+
+    calls: list[tuple[int, tuple[int, int]]] = []
+
+    def recording_setrlimit(kind, limits):
+        calls.append((kind, limits))
+
+    fake_resource = types.SimpleNamespace(
+        RLIMIT_AS=11,
+        RLIMIT_CPU=22,
+        setrlimit=recording_setrlimit,
+    )
+
+    monkeypatch.setenv("MUNINN_PARSER_MAX_MEMORY_MB", "4")
+    monkeypatch.setenv("MUNINN_PARSER_MAX_CPU_SECONDS", "3")
+    monkeypatch.setitem(sys.modules, "resource", fake_resource)
+
+    ps._apply_resource_limits()
+
+    assert calls == [
+        (11, (4 * 1024 * 1024, 4 * 1024 * 1024)),
+        (22, (3, 3)),
+    ]

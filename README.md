@@ -21,7 +21,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 
 - **Scout Synthesis & Hunt Mode**: Phase 19 brings multi-agent tracking and autonomous synthesis patterns directly into the memory system.
 - **CI Benchmark Workflow & Token Rotation**: Auto-gated PRs with LongMemEval dry-runs (`run_benchmark.py --dry-run`). `rotate-token` CLI for safe MCP token resets.
-- **Parser Security Sandbox**: Strict isolation for PDF/DOCX format ingestion. Subprocess timeouts and stdout bounds prevent any malicious document from crashing the host server.
+- **Parser Security Sandbox**: Strict isolation for PDF/DOCX format ingestion. Subprocess timeouts and stdout bounds prevent any malicious document from crashing the host server. POSIX rlimits for memory/CPU (set via max_memory_mb / max_cpu_seconds) now fail fast if they cannot be applied, and reject non-integer values.
 - **SOTA+ Signed Verdict**: Verdict artifacts now include `commit_sha` (from `git rev-parse HEAD`), SHA256 hashes of all input report files, and an HMAC-SHA256 `promotion_signature` bound to the canonical payload.
 
 ### Previous Milestones
