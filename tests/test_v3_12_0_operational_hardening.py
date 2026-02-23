@@ -25,6 +25,7 @@ Correctness properties verified:
 import json
 import os
 import time
+import contextlib
 import pytest
 from unittest.mock import MagicMock, patch, call
 
@@ -226,6 +227,57 @@ class TestStartServerAuthPropagation:
         assert args[0] == "/fake/python"
         assert str(SERVER_SCRIPT) in args[1]
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Section 1B: Startup Locking — lifecycle.ensure_server_running()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEnsureServerRunningStartupLock:
+    """
+    Ensure startup is serialized across concurrent wrappers:
+    - A second health check happens inside the lock.
+    - start_server is skipped if another process already started backend.
+    """
+
+    def test_rechecks_health_inside_startup_lock_before_spawning(self):
+        from muninn.mcp.lifecycle import ensure_server_running
+
+        checks = iter([False, True])  # outside lock -> down, inside lock -> up
+
+        with patch("muninn.mcp.lifecycle.is_server_running", side_effect=lambda: next(checks)):
+            with patch("muninn.mcp.lifecycle._startup_spawn_lock", return_value=contextlib.nullcontext()):
+                with patch("muninn.mcp.lifecycle.start_server") as start_mock:
+                    assert ensure_server_running() is True
+                    start_mock.assert_not_called()
+
+    def test_starts_server_once_when_still_unhealthy_inside_lock(self):
+        from muninn.mcp.lifecycle import ensure_server_running
+
+        checks = iter([False, False, True])  # outside, inside, post-spawn poll
+
+        with patch("muninn.mcp.lifecycle.is_server_running", side_effect=lambda: next(checks)):
+            with patch("muninn.mcp.lifecycle._startup_spawn_lock", return_value=contextlib.nullcontext()):
+                with patch("muninn.mcp.lifecycle.start_server", return_value=True) as start_mock:
+                    with patch("time.sleep"):
+                        assert ensure_server_running() is True
+                    start_mock.assert_called_once()
+
+    def test_startup_lock_path_is_keyed_by_server_url_not_data_dir(self, monkeypatch):
+        import muninn.mcp.lifecycle as lifecycle
+
+        monkeypatch.setenv("MUNINN_DATA_DIR", r"C:\tmp\muninn_a")
+        monkeypatch.setattr(lifecycle, "SERVER_URL", "http://127.0.0.1:42069")
+        path_a = lifecycle._startup_lock_path()
+
+        monkeypatch.setenv("MUNINN_DATA_DIR", r"C:\tmp\muninn_b")
+        monkeypatch.setattr(lifecycle, "SERVER_URL", "http://127.0.0.1:42069")
+        path_b = lifecycle._startup_lock_path()
+
+        monkeypatch.setattr(lifecycle, "SERVER_URL", "http://127.0.0.1:42070")
+        path_c = lifecycle._startup_lock_path()
+
+        assert path_a == path_b
+        assert path_c != path_a
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 2: Graph Memory Chains Smoke Tests  (Task #18)

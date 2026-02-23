@@ -91,10 +91,10 @@ class MimirRelay:
         are used and nothing is written to disk.
     """
 
-    def __init__(self, store=None) -> None:
-        self._store = store
-        self._router = MemoryAwareRouter(mimir_store=store)
-        self._reconciler = Reconciler(mimir_store=store)
+    def __init__(self, mimir_store=None, metadata_store=None) -> None:
+        self._store = mimir_store
+        self._router = MemoryAwareRouter(mimir_store=mimir_store)
+        self._reconciler = Reconciler(metadata_store=metadata_store)
 
     # ------------------------------------------------------------------
     # Public API

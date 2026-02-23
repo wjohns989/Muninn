@@ -15,11 +15,11 @@ Tables owned by this store:
 
 Secret encryption:
   Secrets at rest use Fernet symmetric encryption.  The key is read once
-  from env var MUNINN_MIMIR_ENCRYPTION_KEY.  If the variable is absent a
-  derived key is generated from the hostname + a fixed salt — this is
-  weaker than a random key but ensures at-rest encryption still applies.
-  Call MimirStore.set_encryption_key() before any secret operations when
-  a proper key is available.
+  from env var MUNINN_MIMIR_ENCRYPTION_KEY.  If the variable is absent:
+  - in dev mode (MUNINN_DEV_MODE=true): a deterministic dev-only key is used.
+  - otherwise: initialization fails closed.
+  Call MimirStore.set_encryption_key() before any secret operations when a
+  proper key is available.
 """
 
 from __future__ import annotations
@@ -67,7 +67,10 @@ def _make_fernet():
 def _derive_key_from_env() -> bytes:
     """
     Derive a Fernet-compatible base64url key.
-    Priority: MUNINN_MIMIR_ENCRYPTION_KEY env var → hostname-derived fallback.
+    Priority:
+      1) MUNINN_MIMIR_ENCRYPTION_KEY (explicit key/passphrase)
+      2) deterministic dev key when MUNINN_DEV_MODE=true
+      3) fail closed in production
     """
     raw = os.environ.get("MUNINN_MIMIR_ENCRYPTION_KEY", "").strip()
     if raw:
@@ -84,18 +87,22 @@ def _derive_key_from_env() -> bytes:
         key_bytes = hashlib.sha256(raw.encode()).digest()
         return base64.urlsafe_b64encode(key_bytes)
 
-    # Fallback: derive from hostname + fixed salt (weaker but always present)
-    import hashlib
-    import socket
-    import base64
-    host = socket.gethostname()
-    salt = b"muninn-mimir-v1-default-salt"
-    key_bytes = hashlib.pbkdf2_hmac("sha256", host.encode(), salt, iterations=100_000)
-    logger.warning(
-        "MUNINN_MIMIR_ENCRYPTION_KEY not set; using hostname-derived key. "
-        "Set this env var for production deployments."
+    if os.environ.get("MUNINN_DEV_MODE", "").lower() == "true":
+        import base64
+        import hashlib
+        # Fixed dev key for deterministic testing/local development
+        dev_bytes = hashlib.sha256(b"muninn-mimir-dev-mode-only").digest()
+        logger.warning(
+            "MUNINN_MIMIR_ENCRYPTION_KEY not set. Using dev-only key because "
+            "MUNINN_DEV_MODE=true. SECRETS ARE NOT SECURE."
+        )
+        return base64.urlsafe_b64encode(dev_bytes)
+
+    # In production, we must fail if no key is provided.
+    raise RuntimeError(
+        "MUNINN_MIMIR_ENCRYPTION_KEY must be set for production deployments. "
+        "Set this environment variable to a 32-byte secret (base64 or passphrase)."
     )
-    return base64.urlsafe_b64encode(key_bytes)
 
 
 class _SecretEncryptor:
@@ -375,30 +382,25 @@ class MimirStore:
     def list_runs(
         self,
         user_id: str = "global_user",
+        provider: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM interop_runs WHERE user_id = ?"
+        params: List[Any] = [user_id]
+
+        if provider:
+            query += " AND selected_provider = ?"
+            params.append(provider)
         if status:
-            rows = self._conn.execute(
-                """
-                SELECT * FROM interop_runs
-                WHERE user_id = ? AND status = ?
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-                """,
-                (user_id, status, limit, offset),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                """
-                SELECT * FROM interop_runs
-                WHERE user_id = ?
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-                """,
-                (user_id, limit, offset),
-            ).fetchall()
+            query += " AND status = ?"
+            params.append(status)
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------

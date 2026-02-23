@@ -147,7 +147,8 @@ def _clear_singletons():
 
 @pytest.fixture(autouse=True)
 def _clear_api_key(monkeypatch):
-    """Remove MUNINN_API_KEY so all tests run in open-access dev mode by default."""
+    """Ensure tests run in dev mode by default (MUNINN_DEV_MODE=true)."""
+    monkeypatch.setenv("MUNINN_DEV_MODE", "true")
     monkeypatch.delenv("MUNINN_API_KEY", raising=False)
 
 
@@ -551,7 +552,13 @@ class TestListRunsEndpoint:
         api_module._store = store
         async with _make_client() as client:
             await client.get("/mimir/runs?user_id=bob&limit=10&offset=20")
-        store.list_runs.assert_called_once_with("bob", 10, 20, None)
+        store.list_runs.assert_called_once_with(
+            user_id="bob",
+            provider=None,
+            limit=10,
+            offset=20,
+            status=None,
+        )
 
     async def test_list_runs_valid_status_filter_passes(self, relay, store):
         api_module._relay = relay
@@ -566,7 +573,28 @@ class TestListRunsEndpoint:
         api_module._store = store
         async with _make_client() as client:
             await client.get("/mimir/runs?status=failed")
-        store.list_runs.assert_called_once_with("global_user", 50, 0, "failed")
+        store.list_runs.assert_called_once_with(
+            user_id="global_user",
+            provider=None,
+            limit=50,
+            offset=0,
+            status="failed",
+        )
+
+    async def test_list_runs_provider_filter_forwarded_to_store(self, relay, store):
+        api_module._relay = relay
+        api_module._store = store
+        async with _make_client() as client:
+            resp = await client.get("/mimir/runs?provider=codex_cli")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["provider_filter"] == "codex_cli"
+        store.list_runs.assert_called_once_with(
+            user_id="global_user",
+            provider="codex_cli",
+            limit=50,
+            offset=0,
+            status=None,
+        )
 
     async def test_list_runs_invalid_status_returns_422(self, with_singletons):
         async with _make_client() as client:

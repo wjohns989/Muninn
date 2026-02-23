@@ -12,10 +12,15 @@ Muninn Phase 3B adds feature-gated multi-source ingestion with fail-open behavio
 - REST endpoints: `POST /ingest/legacy/discover`, `POST /ingest/legacy/import`
 - MCP tool: `ingest_sources`
 - MCP tools: `discover_legacy_sources`, `ingest_legacy_sources`
+- MCP tools: `get_periodic_ingestion_status`, `run_periodic_ingestion`, `start_periodic_ingestion`, `stop_periodic_ingestion`
 - SDK methods:
   - `MuninnClient.ingest_sources(...)`
   - `MuninnClient.discover_legacy_sources(...)`
   - `MuninnClient.ingest_legacy_sources(...)`
+  - `MuninnClient.periodic_ingestion_status()`
+  - `MuninnClient.run_periodic_ingestion()`
+  - `MuninnClient.start_periodic_ingestion()`
+  - `MuninnClient.stop_periodic_ingestion()`
   - `AsyncMuninnClient` parity for all three methods
 
 ## Supported Source Types
@@ -58,6 +63,30 @@ Environment variables:
 - `MUNINN_INGESTION_CHUNK_OVERLAP_CHARS` (default `150`)
 - `MUNINN_INGESTION_MIN_CHUNK_CHARS` (default `120`)
 - `MUNINN_INGESTION_ALLOWED_ROOTS` (optional, path-separated list of allowed source roots)
+
+Periodic ingestion scheduler environment variables:
+
+- `MUNINN_PERIODIC_INGESTION_ENABLED` (`1`/`0`, default `0`)
+- `MUNINN_PERIODIC_INGESTION_RUN_ON_START` (`1`/`0`, default `0`)
+- `MUNINN_PERIODIC_INGESTION_INTERVAL_SECONDS` (default `900`, clamped to minimum `5`)
+- `MUNINN_PERIODIC_INGESTION_FAILURE_BACKOFF_MULTIPLIER` (default `2.0`, minimum `1.0`)
+- `MUNINN_PERIODIC_INGESTION_MAX_BACKOFF_SECONDS` (default `3600`, minimum `5`)
+- `MUNINN_PERIODIC_INGESTION_JITTER_RATIO` (default `0.1`, clamped to `0..1`)
+- `MUNINN_PERIODIC_INGESTION_SOURCES` (path-separated source list, required for scheduler runs)
+- `MUNINN_PERIODIC_INGESTION_RECURSIVE` (`1`/`0`, default `0`)
+- `MUNINN_PERIODIC_INGESTION_CHRONOLOGICAL_ORDER` (`none|oldest_first|newest_first`)
+- `MUNINN_PERIODIC_INGESTION_MODEL_PROFILE` (`low_latency|balanced|high_reasoning`, optional)
+- `MUNINN_PERIODIC_INGESTION_SKIP_EXTRACTION` (`1`/`0`, default `0`; bypasses extraction pipeline for bulk-speed imports)
+- `MUNINN_PERIODIC_INGESTION_EXTRACT_TIMEOUT_SECONDS` (optional per-memory extraction timeout, seconds)
+- `MUNINN_PERIODIC_INGESTION_RUN_TIMEOUT_SECONDS` (optional full periodic run timeout, seconds)
+- `MUNINN_PERIODIC_INGESTION_RUN_TIMEOUT_SKIP_WARMUP_RUNS` (optional integer, default `0`; skip run-timeout enforcement for first N periodic runs to absorb cold-start latency)
+- `MUNINN_PERIODIC_INGESTION_METADATA_JSON` (optional JSON object)
+- `MUNINN_PERIODIC_INGESTION_USER_ID`, `MUNINN_PERIODIC_INGESTION_NAMESPACE`, `MUNINN_PERIODIC_INGESTION_PROJECT`
+- Optional periodic overrides:
+  - `MUNINN_PERIODIC_INGESTION_MAX_FILE_SIZE_BYTES`
+  - `MUNINN_PERIODIC_INGESTION_CHUNK_SIZE_CHARS`
+  - `MUNINN_PERIODIC_INGESTION_CHUNK_OVERLAP_CHARS`
+  - `MUNINN_PERIODIC_INGESTION_MIN_CHUNK_CHARS`
 
 Runtime hard bounds enforced by pipeline:
 
@@ -153,3 +182,29 @@ print(result["added_memories"], result["selected_supported_sources"])
 - Use conservative size limits for untrusted corpora.
 - Prefer directory-level ingestion with recursion and stable source roots to preserve deterministic paths/checksums.
 - For SQLite ingestion, only read-only bounded scans are performed (table allowlisting + row limits) to reduce blast radius.
+- Periodic control-plane endpoints are token-protected:
+  - `GET /ingest/periodic/status`
+  - `POST /ingest/periodic/run`
+  - `POST /ingest/periodic/start`
+  - `POST /ingest/periodic/stop`
+- Scheduler status includes reliability diagnostics:
+  - `consecutive_failures`
+  - `last_scheduled_sleep_seconds`
+  - `last_run_elapsed_seconds`
+  - `last_run_timeout_enforced`
+  - configured backoff/jitter parameters
+- If `MUNINN_PERIODIC_INGESTION_MODEL_PROFILE` is set, periodic runs inject
+  `metadata.operator_model_profile` automatically so extraction follows the
+  selected runtime profile.
+- If `MUNINN_PERIODIC_INGESTION_SKIP_EXTRACTION=1`, periodic runs inject
+  `metadata.muninn_skip_extraction=true`, bypassing extraction for higher
+  ingestion throughput in bulk/log replay scenarios.
+- If `MUNINN_PERIODIC_INGESTION_EXTRACT_TIMEOUT_SECONDS` is set, periodic runs
+  inject `metadata.muninn_extraction_timeout_seconds` so slow extraction falls
+  back to empty extraction instead of stalling ingestion.
+- If `MUNINN_PERIODIC_INGESTION_RUN_TIMEOUT_SECONDS` is set, each periodic run
+  is bounded with `asyncio.wait_for`; timeout events are counted as scheduler
+  failures and trigger backoff.
+- If `MUNINN_PERIODIC_INGESTION_RUN_TIMEOUT_SKIP_WARMUP_RUNS` is set, timeout
+  enforcement is deferred for the first `N` periodic runs to avoid false
+  timeout failures during model/provider cold-start.

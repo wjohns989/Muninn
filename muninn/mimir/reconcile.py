@@ -77,8 +77,8 @@ class Reconciler:
         boost or penalise confidence scores.
     """
 
-    def __init__(self, mimir_store=None) -> None:
-        self._store = mimir_store
+    def __init__(self, metadata_store=None) -> None:
+        self._store = metadata_store
 
     # ------------------------------------------------------------------
     # Public API

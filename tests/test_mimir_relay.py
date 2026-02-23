@@ -92,8 +92,8 @@ def make_mock_adapter(result: ProviderResult) -> MagicMock:
     return adapter
 
 
-def make_relay(store=None) -> MimirRelay:
-    return MimirRelay(store=store)
+def make_relay(mimir_store=None, metadata_store=None, store=None) -> MimirRelay:
+    return MimirRelay(mimir_store=mimir_store or store, metadata_store=metadata_store)
 
 
 def make_mock_store(
@@ -128,8 +128,15 @@ class TestMimirRelayConstruction:
 
     def test_construct_with_store(self):
         store = MagicMock()
-        relay = MimirRelay(store=store)
+        relay = MimirRelay(mimir_store=store)
         assert relay._store is store
+
+    def test_construct_with_metadata_store(self):
+        mimir_store = MagicMock()
+        metadata_store = MagicMock()
+        relay = MimirRelay(mimir_store=mimir_store, metadata_store=metadata_store)
+        assert relay._store is mimir_store
+        assert relay._reconciler._store is metadata_store
 
     def test_router_and_reconciler_created_with_correct_types(self):
         from muninn.mimir.reconcile import Reconciler

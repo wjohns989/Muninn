@@ -69,14 +69,17 @@ class TestIRPMode:
 
 
 class TestIRPNetworkPolicy:
-    def test_forbidden_wire_value(self):
-        assert IRPNetworkPolicy.FORBIDDEN == "forbidden"
+    def test_deny_all_wire_value(self):
+        assert IRPNetworkPolicy.DENY_ALL == "deny_all"
 
-    def test_allowed_wire_value(self):
-        assert IRPNetworkPolicy.ALLOWED == "allowed"
+    def test_local_only_wire_value(self):
+        assert IRPNetworkPolicy.LOCAL_ONLY == "local_only"
+
+    def test_allow_all_wire_value(self):
+        assert IRPNetworkPolicy.ALLOW_ALL == "allow_all"
 
     def test_member_count(self):
-        assert len(IRPNetworkPolicy) == 2
+        assert len(IRPNetworkPolicy) == 3
 
 
 class TestIRPRedactionPolicy:
@@ -199,7 +202,7 @@ class TestIRPPolicy:
     def test_defaults(self):
         policy = IRPPolicy()
         assert policy.tools == "allowed"
-        assert policy.network == IRPNetworkPolicy.FORBIDDEN
+        assert policy.network == IRPNetworkPolicy.DENY_ALL
         assert policy.redaction == IRPRedactionPolicy.BALANCED
         assert policy.max_prompt_chars == 32_000
         assert policy.max_output_chars == 16_000

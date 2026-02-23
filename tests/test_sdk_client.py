@@ -239,6 +239,37 @@ def test_sync_get_model_profile_events_payload():
     assert stub.calls[0]["params"]["limit"] == 10
 
 
+def test_sync_get_model_profile_alerts_payload():
+    stub = _StubSession(
+        {
+            ("GET", "/profiles/model/alerts"): _requests_response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "event": "MODEL_PROFILE_ALERT_EVALUATION",
+                        "alerts_count": 1,
+                    },
+                },
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.get_model_profile_alerts(
+        window_seconds=1200,
+        churn_threshold=7,
+        source_churn_threshold=5,
+        distinct_sources_threshold=4,
+    )
+
+    assert result["event"] == "MODEL_PROFILE_ALERT_EVALUATION"
+    assert stub.calls[0]["method"] == "GET"
+    assert stub.calls[0]["params"]["window_seconds"] == 1200
+    assert stub.calls[0]["params"]["churn_threshold"] == 7
+    assert stub.calls[0]["params"]["source_churn_threshold"] == 5
+    assert stub.calls[0]["params"]["distinct_sources_threshold"] == 4
+
+
 def test_sync_health_unwrapped_payload():
     stub = _StubSession(
         {
@@ -254,6 +285,46 @@ def test_sync_health_unwrapped_payload():
 
     assert result["status"] == "healthy"
     assert result["memory_count"] == 3
+
+
+def test_sync_periodic_ingestion_control_payloads():
+    stub = _StubSession(
+        {
+            ("GET", "/ingest/periodic/status"): _requests_response(
+                200,
+                {"success": True, "data": {"runtime": {"running": False}}},
+            ),
+            ("POST", "/ingest/periodic/start"): _requests_response(
+                200,
+                {"success": True, "data": {"started": True}},
+            ),
+            ("POST", "/ingest/periodic/run"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "PERIODIC_INGESTION_COMPLETED"}},
+            ),
+            ("POST", "/ingest/periodic/stop"): _requests_response(
+                200,
+                {"success": True, "data": {"stopped": True}},
+            ),
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+
+    status = client.periodic_ingestion_status()
+    started = client.start_periodic_ingestion()
+    run_result = client.run_periodic_ingestion()
+    stopped = client.stop_periodic_ingestion()
+
+    assert status["runtime"]["running"] is False
+    assert started["started"] is True
+    assert run_result["event"] == "PERIODIC_INGESTION_COMPLETED"
+    assert stopped["stopped"] is True
+    assert [call["path"] for call in stub.calls] == [
+        "/ingest/periodic/status",
+        "/ingest/periodic/start",
+        "/ingest/periodic/run",
+        "/ingest/periodic/stop",
+    ]
 
 
 def test_sync_unwrap_success_payload_without_data_wrapper():
@@ -453,6 +524,61 @@ async def test_async_get_model_profile_events_payload():
         client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
         result = await client.get_model_profile_events(limit=7)
         assert result["event"] == "MODEL_PROFILE_EVENTS"
+
+
+@pytest.mark.asyncio
+async def test_async_get_model_profile_alerts_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/profiles/model/alerts"
+        assert request.url.params.get("window_seconds") == "1800"
+        assert request.url.params.get("churn_threshold") == "8"
+        assert request.url.params.get("source_churn_threshold") == "6"
+        assert request.url.params.get("distinct_sources_threshold") == "4"
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"event": "MODEL_PROFILE_ALERT_EVALUATION", "alerts_count": 0}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.get_model_profile_alerts(
+            window_seconds=1800,
+            churn_threshold=8,
+            source_churn_threshold=6,
+            distinct_sources_threshold=4,
+        )
+        assert result["event"] == "MODEL_PROFILE_ALERT_EVALUATION"
+
+
+@pytest.mark.asyncio
+async def test_async_periodic_ingestion_control_payloads():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/ingest/periodic/status":
+            return httpx.Response(200, json={"success": True, "data": {"runtime": {"running": False}}})
+        if request.method == "POST" and request.url.path == "/ingest/periodic/start":
+            return httpx.Response(200, json={"success": True, "data": {"started": True}})
+        if request.method == "POST" and request.url.path == "/ingest/periodic/run":
+            return httpx.Response(
+                200,
+                json={"success": True, "data": {"event": "PERIODIC_INGESTION_COMPLETED"}},
+            )
+        if request.method == "POST" and request.url.path == "/ingest/periodic/stop":
+            return httpx.Response(200, json={"success": True, "data": {"stopped": True}})
+        return httpx.Response(404, json={"detail": "not found"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        status = await client.periodic_ingestion_status()
+        started = await client.start_periodic_ingestion()
+        run_result = await client.run_periodic_ingestion()
+        stopped = await client.stop_periodic_ingestion()
+        assert status["runtime"]["running"] is False
+        assert started["started"] is True
+        assert run_result["event"] == "PERIODIC_INGESTION_COMPLETED"
+        assert stopped["stopped"] is True
 
 
 def test_mem0_style_alias_exports():

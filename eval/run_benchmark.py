@@ -54,7 +54,10 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import hmac
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -111,6 +114,7 @@ class BenchmarkRunReport:
     gates: Dict[str, Any]
     commit_sha: Optional[str]
     elapsed_total_seconds: float
+    signature: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -481,7 +485,7 @@ def _adapter_result_to_dict(r: Optional[AdapterResult]) -> Optional[Dict[str, An
 
 def _serialize_report(report: BenchmarkRunReport) -> Dict[str, Any]:
     """Serialize a BenchmarkRunReport to a JSON-serializable dict."""
-    return {
+    data = {
         "run_id": report.run_id,
         "mode": report.mode,
         "timestamp_utc": report.timestamp_utc,
@@ -496,6 +500,22 @@ def _serialize_report(report: BenchmarkRunReport) -> Dict[str, Any]:
         },
         "gates": report.gates,
     }
+    if report.signature:
+        data["signature"] = report.signature
+    return data
+
+
+def _sign_report(data: Dict[str, Any], key: str) -> str:
+    """Generate HMAC-SHA256 signature for the report payload."""
+    # Ensure signature is not in the payload before signing
+    payload_data = {k: v for k, v in data.items() if k != "signature"}
+    payload = json.dumps(
+        payload_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    sig = hmac.new(
+        key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"hmac-sha256:{sig}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -652,6 +672,10 @@ def run_benchmark(
         elapsed_total_seconds=elapsed_total,
     )
 
+    # Sign if key provided
+    if signing_key:
+        report.signature = _sign_report(_serialize_report(report), signing_key)
+
     if output_path:
         _write_report(output_path, report)
 
@@ -778,6 +802,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Per-adapter subprocess timeout in seconds (default: {_DEFAULT_TIMEOUT_SECONDS}).",
     )
     parser.add_argument(
+        "--promote",
+        action="store_true",
+        default=False,
+        help="Promote successful benchmark result to eval/reports/sota/promoted_verdict.json",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -835,6 +865,16 @@ def main() -> int:
             f"output={output_path}",
             file=sys.stderr,
         )
+
+    # Automated Promotion
+    if args.promote and report.overall_passed:
+        sota_dir = _REPORTS_DIR / "sota"
+        sota_dir.mkdir(parents=True, exist_ok=True)
+        promoted_path = sota_dir / "promoted_verdict.json"
+        if output_path and output_path.exists():
+            shutil.copy2(output_path, promoted_path)
+            if args.verbose:
+                print(f"[benchmark] promoted verdict to {promoted_path}", file=sys.stderr)
 
     return 0 if report.overall_passed else 1
 

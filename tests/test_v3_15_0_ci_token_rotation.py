@@ -358,8 +358,8 @@ class TestMCPConfigPatcher:
         assert result is False
         assert cfg_path.read_text(encoding="utf-8") == original, "File must not be modified"
 
-    def test_does_not_patch_if_no_auth_token_env_key(self, tmp_path):
-        """Muninn server present but env has no MUNINN_AUTH_TOKEN — skip."""
+    def test_injects_auth_token_when_env_key_missing(self, tmp_path):
+        """Muninn server present with empty env must receive injected auth token."""
         from muninn.cli import _patch_mcp_config
         cfg_path = tmp_path / "config.json"
         self._write_config(cfg_path, {
@@ -368,7 +368,9 @@ class TestMCPConfigPatcher:
             }
         })
         result = _patch_mcp_config(cfg_path, "tok")
-        assert result is False
+        assert result is True
+        updated = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert updated["mcpServers"]["muninn"]["env"]["MUNINN_AUTH_TOKEN"] == "tok"
 
     def test_dry_run_does_not_write_file(self, tmp_path):
         """dry_run=True must return True (would patch) but not write."""

@@ -67,6 +67,12 @@ The sync and async clients expose equivalent methods:
 - `search(...)`
 - `set_project_goal(...)`
 - `get_project_goal(...)`
+- `set_user_profile(...)`
+- `get_user_profile(...)`
+- `get_model_profiles()`
+- `set_model_profiles(...)`
+- `get_model_profile_events(...)`
+- `get_model_profile_alerts(...)`
 - `export_handoff(...)`
 - `import_handoff(...)`
 - `record_retrieval_feedback(...)`
@@ -83,6 +89,10 @@ The sync and async clients expose equivalent methods:
 - `federated_search(...)`
 - `run_consolidation()`
 - `consolidation_status()`
+- `periodic_ingestion_status()`
+- `run_periodic_ingestion()`
+- `start_periodic_ingestion()`
+- `stop_periodic_ingestion()`
 
 For ingestion methods, use `chronological_order` (`none`, `oldest_first`, `newest_first`) when you need timeline-preserving imports.
 

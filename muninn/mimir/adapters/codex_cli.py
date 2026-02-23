@@ -53,11 +53,11 @@ class CodexAdapter(BaseAdapter):
     provider = ProviderName.CODEX_CLI
     _binary_name = "codex"
 
-    # IRP tool policy → codex sandbox level
+    # IRP tool policy → codex sandbox level (v0.80.0)
     _SANDBOX_MAP: dict[str, str] = {
-        "forbidden": "workspace-only",   # no network, workspace-scoped
+        "forbidden": "read-only",
         "readonly": "read-only",
-        "allowed": "workspace-only",
+        "allowed": "workspace-write",
     }
 
     def env_vars(self) -> list[str]:
@@ -66,24 +66,15 @@ class CodexAdapter(BaseAdapter):
     def _build_command(self, envelope: IRPEnvelope) -> list[str]:
         """Build the `codex exec` command from an IRP envelope."""
         prompt = _build_prompt_text(envelope)
-        sandbox = self._SANDBOX_MAP.get(envelope.policy.tools, "workspace-only")
-
-        # Network restriction: if forbidden, force no-internet sandbox
-        # (codex sandbox doesn't have a direct network flag; workspace-only
-        #  already restricts external calls in the default setup)
+        sandbox = self._SANDBOX_MAP.get(envelope.policy.tools, "read-only")
 
         cmd: list[str] = [
-            "codex",
+            self._resolved_binary_path,
             "exec",
             prompt,
             "--json",
-            "--quiet",
             "--sandbox", sandbox,
         ]
-
-        # Mode B: ask for structured JSON output
-        if envelope.mode == IRPMode.STRUCTURED:
-            cmd += ["--instructions", "Respond only with valid JSON. No markdown fences."]
 
         logger.debug(
             "codex command: codex exec <prompt[%d chars]> --sandbox %s",
@@ -155,18 +146,24 @@ class CodexAdapter(BaseAdapter):
         return 0, 0
 
     async def _do_availability_check(self) -> bool:
-        """Codex is available if binary is on PATH and OPENAI_API_KEY is set."""
-        has_key = bool(os.environ.get("OPENAI_API_KEY"))
-        has_binary = shutil.which("codex") is not None
+        """Codex is available if binary is on PATH."""
+        import shutil
+        has_binary = shutil.which(self._binary_name) is not None
 
         if not has_binary:
-            logger.debug("codex: binary not found on PATH")
-            return False
-        if not has_key:
-            logger.debug("codex: OPENAI_API_KEY not set")
+            logger.debug("%s: binary '%s' not found on PATH", self.provider.value, self._binary_name)
             return False
 
-        return await self._check_binary_version()
+        available = await self._check_binary_version()
+        if available:
+            has_key = bool(os.environ.get("OPENAI_API_KEY"))
+            if not has_key:
+                logger.debug(
+                    "%s: binary present but OPENAI_API_KEY not set — "
+                    "relying on local CLI session.",
+                    self.provider.value
+                )
+        return available
 
 
 # ---------------------------------------------------------------------------

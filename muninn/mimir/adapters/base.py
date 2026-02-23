@@ -45,17 +45,24 @@ def _get_subprocess_kwargs() -> dict:
     Return platform-specific kwargs for asyncio subprocess creation.
     On Windows, suppresses the console window that would otherwise flash.
     """
+    import os
+    env = os.environ.copy()
+    env["CI"] = "true"  # Suppress interactive UI/Ink behavior
+    env.pop("TERM", None)  # Force dumb terminal behavior
+    env["PYTHONUNBUFFERED"] = "1"
+
+    kwargs = {"env": env}
     if _IS_WINDOWS:
         import subprocess
 
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         si.wShowWindow = subprocess.SW_HIDE
-        return {
+        kwargs.update({
             "creationflags": subprocess.CREATE_NO_WINDOW,
             "startupinfo": si,
-        }
-    return {}
+        })
+    return kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +89,25 @@ class BaseAdapter(ABC):
         self._available_cache: Optional[bool] = None
         self._available_checked_at: float = 0.0
         self._availability_ttl: float = 60.0  # seconds before re-checking
+
+    @property
+    def _resolved_binary_path(self) -> str:
+        """
+        Resolve ``_binary_name`` to a full filesystem path via shutil.which().
+
+        On Windows, npm-installed CLIs (gemini, codex) are ``.CMD`` wrapper
+        scripts.  ``asyncio.create_subprocess_exec`` cannot execute ``.CMD``
+        files by bare name — the fully-resolved path is required.  This
+        property returns the resolved path, falling back to the bare binary
+        name if resolution fails (which will surface a clear FileNotFoundError
+        when exec is attempted).
+        """
+        import shutil
+
+        binary = getattr(self, "_binary_name", None)
+        if not binary:
+            raise ValueError(f"{type(self).__name__} has no _binary_name set")
+        return shutil.which(binary) or binary
 
     # ------------------------------------------------------------------
     # Abstract interface
@@ -151,6 +177,7 @@ class BaseAdapter(ABC):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 **_get_subprocess_kwargs(),
@@ -285,14 +312,24 @@ class BaseAdapter(ABC):
         """
         Run `<binary> --version` as a quick availability probe.
         Subclasses must override `_binary_name` property.
+
+        On Windows, .CMD/.PS1 wrappers (npm-installed CLIs like gemini, codex)
+        require the fully-resolved path for asyncio.create_subprocess_exec.
         """
+        import shutil
+
         binary = getattr(self, "_binary_name", None)
         if not binary:
             return True  # skip check if not configured
 
+        # Resolve full path — critical on Windows for .CMD/.PS1 wrappers
+        resolved = shutil.which(binary)
+        if not resolved:
+            return False
+
         try:
             proc = await asyncio.create_subprocess_exec(
-                binary,
+                resolved,
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

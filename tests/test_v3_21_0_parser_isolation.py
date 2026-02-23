@@ -132,7 +132,7 @@ def test_sandboxed_timeout_kills_process(monkeypatch):
         # Create a dummy valid file to pass the file_exists check
         dummy_file = Path(td) / "dummy.pdf"
         dummy_file.write_bytes(b"dummy")
-        
+
         # Call with a short timeout.
         with pytest.raises(RuntimeError, match="subprocess timed out after 1s"):
             sandboxed_parse_binary(dummy_file, "pdf", timeout=1.0)
@@ -154,6 +154,7 @@ def test_apply_resource_limits_failure_raises(monkeypatch):
     """setrlimit failures surface as RuntimeError so the subprocess exits non-zero."""
     import muninn.ingestion._parser_subprocess as ps
 
+    # Prepare fake resource module that always fails
     def failing_setrlimit(kind, limits):
         raise OSError("nope")
 

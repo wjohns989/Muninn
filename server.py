@@ -38,6 +38,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 import secrets
+import portalocker
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
@@ -47,6 +48,10 @@ from muninn.ingestion.pipeline import (
     MAX_CHUNK_OVERLAP_CHARS,
     MAX_CHUNK_SIZE_CHARS,
     MAX_INGEST_FILE_SIZE_BYTES,
+)
+from muninn.ingestion.periodic import (
+    PeriodicIngestionScheduler,
+    PeriodicIngestionSettings,
 )
 from muninn.core.types import (
     AddMemoryRequest,
@@ -76,6 +81,9 @@ memory: Optional[MuninnMemory] = None
 GLOBAL_AUTH_TOKEN: Optional[str] = None
 _mimir_store: Optional[MimirStore] = None
 _mimir_relay: Optional[MimirRelay] = None
+_periodic_ingestion: Optional[PeriodicIngestionScheduler] = None
+_SERVER_INSTANCE_LOCK_HANDLE: Optional[portalocker.Lock] = None
+_SERVER_INSTANCE_LOCK_PATH: Optional[Path] = None
 
 
 # --- Pydantic Models (API compatibility) ---
@@ -261,10 +269,79 @@ async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Sec
     return credentials
 
 
+def _server_instance_lock_timeout_seconds() -> float:
+    raw = os.environ.get("MUNINN_SERVER_INSTANCE_LOCK_TIMEOUT_SEC", "0.25").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid MUNINN_SERVER_INSTANCE_LOCK_TIMEOUT_SEC='%s'; using default 0.25s",
+            raw,
+        )
+        return 0.25
+
+
+def _acquire_server_instance_lock(config: MuninnConfig) -> None:
+    """
+    Acquire an exclusive process-wide server lease for the configured data dir.
+
+    This prevents duplicate `server.py` instances from racing into Qdrant local
+    mode, which is single-process per storage path.
+    """
+    global _SERVER_INSTANCE_LOCK_HANDLE, _SERVER_INSTANCE_LOCK_PATH
+
+    data_dir = Path(config.data_dir)
+    lock_path = data_dir / ".muninn_server.instance.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_handle = portalocker.Lock(
+        str(lock_path),
+        mode="a",
+        timeout=_server_instance_lock_timeout_seconds(),
+        flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+        fail_when_locked=True,
+    )
+
+    try:
+        lock_handle.acquire()
+    except portalocker.exceptions.LockException as exc:
+        raise RuntimeError(
+            "Muninn server instance lock is already held for data directory "
+            f"'{data_dir}'. Reuse the existing server or stop it before starting "
+            "another instance."
+        ) from exc
+
+    _SERVER_INSTANCE_LOCK_HANDLE = lock_handle
+    _SERVER_INSTANCE_LOCK_PATH = lock_path
+    logger.info("Acquired server instance lock: %s", lock_path)
+
+
+def _release_server_instance_lock() -> None:
+    """Release the process-wide server lease if held."""
+    global _SERVER_INSTANCE_LOCK_HANDLE, _SERVER_INSTANCE_LOCK_PATH
+    lock_handle = _SERVER_INSTANCE_LOCK_HANDLE
+    lock_path = _SERVER_INSTANCE_LOCK_PATH
+    _SERVER_INSTANCE_LOCK_HANDLE = None
+    _SERVER_INSTANCE_LOCK_PATH = None
+    if lock_handle is None:
+        return
+
+    try:
+        lock_handle.release()
+    except Exception:
+        pass
+    try:
+        lock_handle.close()
+    except Exception:
+        pass
+    if lock_path is not None:
+        logger.info("Released server instance lock: %s", lock_path)
+
+
 # --- Application Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global memory, _mimir_store, _mimir_relay
+    global memory, _mimir_store, _mimir_relay, _periodic_ingestion
 
     logger.info("Muninn Server starting...")
 
@@ -274,6 +351,9 @@ async def lifespan(app: FastAPI):
 
         # Auth Token Initialization (Phase 10 / v3.7.0)
         initialize_security(config.server.auth_token)
+
+        # Single-owner guard for local embedded stores (especially Qdrant local).
+        _acquire_server_instance_lock(config)
 
         # Initialize memory engine
         memory = MuninnMemory(config)
@@ -289,15 +369,39 @@ async def lifespan(app: FastAPI):
         # The connection is owned by SQLiteMetadataStore; memory.shutdown()
         # closes it, so MimirStore has no separate teardown responsibility.
         _mimir_store = MimirStore(memory._metadata._get_conn())
-        _mimir_relay = MimirRelay(store=_mimir_store)
+        _mimir_relay = MimirRelay(
+            mimir_store=_mimir_store,
+            metadata_store=memory._metadata
+        )
         init_mimir(_mimir_relay, _mimir_store)
         logger.info("Mimir relay initialised (db=%s)", memory._metadata.db_path)
+
+        periodic_settings = PeriodicIngestionSettings.from_env()
+        _periodic_ingestion = PeriodicIngestionScheduler(
+            memory=memory,
+            settings=periodic_settings,
+        )
+        if periodic_settings.enabled_on_startup:
+            started = await _periodic_ingestion.start()
+            if started:
+                logger.info(
+                    "Periodic ingestion enabled on startup (interval=%.1fs)",
+                    periodic_settings.interval_seconds,
+                )
+            else:
+                logger.warning(
+                    "Periodic ingestion requested on startup but scheduler did not start"
+                )
 
         yield
     finally:
         logger.info("Shutting down Muninn Server...")
+        if _periodic_ingestion:
+            await _periodic_ingestion.stop()
+            _periodic_ingestion = None
         if memory:
             await memory.shutdown()
+        _release_server_instance_lock()
         logger.info("Muninn Server stopped.")
 
 
@@ -662,6 +766,31 @@ async def get_model_profile_events_endpoint(limit: int = 25):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/profiles/model/alerts", dependencies=[Depends(verify_token)])
+async def get_model_profile_alerts_endpoint(
+    window_seconds: Optional[float] = None,
+    churn_threshold: Optional[int] = None,
+    source_churn_threshold: Optional[int] = None,
+    distinct_sources_threshold: Optional[int] = None,
+):
+    """Evaluate profile-policy mutation churn against alert thresholds."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    try:
+        result = await memory.get_model_profile_alerts(
+            window_seconds=window_seconds,
+            churn_threshold=churn_threshold,
+            source_churn_threshold=source_churn_threshold,
+            distinct_sources_threshold=distinct_sources_threshold,
+        )
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error evaluating model profile alerts: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/handoff/export", dependencies=[Depends(verify_token)])
 async def export_handoff_endpoint(req: ExportHandoffRequest):
     """Export portable handoff bundle for cross-assistant continuity."""
@@ -806,6 +935,61 @@ async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
     except Exception as e:
         logger.error("Error importing legacy sources: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ingest/periodic/status", dependencies=[Depends(verify_token)])
+async def periodic_ingestion_status_endpoint():
+    """Get runtime status for the periodic ingestion scheduler."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    if _periodic_ingestion is None:
+        return {
+            "success": True,
+            "data": {
+                "configured": {"enabled_on_startup": False, "sources": []},
+                "runtime": {"running": False, "inflight": False},
+                "last_result": None,
+            },
+        }
+
+    return {"success": True, "data": _periodic_ingestion.status}
+
+
+@app.post("/ingest/periodic/run", dependencies=[Depends(verify_token)])
+async def periodic_ingestion_run_endpoint():
+    """Manually trigger one periodic-ingestion cycle."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    if _periodic_ingestion is None:
+        raise HTTPException(status_code=503, detail="Periodic ingestion scheduler not initialized")
+
+    result = await _periodic_ingestion.trigger_once(reason="manual")
+    return {"success": bool(result.get("success")), "data": result}
+
+
+@app.post("/ingest/periodic/start", dependencies=[Depends(verify_token)])
+async def periodic_ingestion_start_endpoint():
+    """Start periodic ingestion loop without restarting server."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    if _periodic_ingestion is None:
+        raise HTTPException(status_code=503, detail="Periodic ingestion scheduler not initialized")
+
+    started = await _periodic_ingestion.start()
+    return {"success": True, "data": {"started": started, "status": _periodic_ingestion.status}}
+
+
+@app.post("/ingest/periodic/stop", dependencies=[Depends(verify_token)])
+async def periodic_ingestion_stop_endpoint():
+    """Stop periodic ingestion loop without restarting server."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    if _periodic_ingestion is None:
+        raise HTTPException(status_code=503, detail="Periodic ingestion scheduler not initialized")
+
+    stopped = await _periodic_ingestion.stop()
+    return {"success": True, "data": {"stopped": stopped, "status": _periodic_ingestion.status}}
 
 
 @app.get("/get_all", dependencies=[Depends(verify_token)])

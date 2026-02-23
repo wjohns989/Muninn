@@ -218,6 +218,21 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any]):
 def handle_cancel_task(msg_id: Any, params: Dict[str, Any]):
     return _handle_cancel_task(msg_id, params, _legacy_send_error, _legacy_send_result, send_notification_fn=send_json_rpc)
 
+def handle_list_resources(msg_id: Any, params: Dict[str, Any]):
+    send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"resources": []}})
+
+def handle_list_resource_templates(msg_id: Any, params: Dict[str, Any]):
+    send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"resourceTemplates": []}})
+
+def handle_list_prompts(msg_id: Any, params: Dict[str, Any]):
+    send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}})
+
+def handle_get_prompt(msg_id: Any, params: Dict[str, Any]):
+    _send_json_rpc_error(msg_id, -32602, "Prompt not found")
+
+def handle_read_resource(msg_id: Any, params: Dict[str, Any]):
+    _send_json_rpc_error(msg_id, -32602, "Resource not found")
+
 def handle_call_tool_with_task(msg_id: Any, name: str, args: Dict[str, Any], task_request: Dict[str, Any]):
     """Facade for task-backed tool calls."""
     return _handle_call_tool_with_task(
