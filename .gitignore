@@ -102,3 +102,7 @@ assets/*.ico
 !assets/README.md
 
 .worktrees/
+
+# Muninn local runtime (NEVER COMMIT)
+.muninn_runtime/
+node_modules/

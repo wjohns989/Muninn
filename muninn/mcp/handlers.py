@@ -432,12 +432,17 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "get_model_profiles": _do_get_model_profiles,
         "set_model_profiles": _do_set_model_profiles,
         "get_model_profile_events": _do_get_model_profile_events,
+        "get_model_profile_alerts": _do_get_model_profile_alerts,
         "export_handoff": _do_export_handoff,
         "import_handoff": _do_import_handoff,
         "record_retrieval_feedback": _do_record_retrieval_feedback,
         "ingest_sources": _do_ingest_sources,
         "discover_legacy_sources": _do_discover_legacy_sources,
         "ingest_legacy_sources": _do_ingest_legacy_sources,
+        "get_periodic_ingestion_status": _do_get_periodic_ingestion_status,
+        "run_periodic_ingestion": _do_run_periodic_ingestion,
+        "start_periodic_ingestion": _do_start_periodic_ingestion,
+        "stop_periodic_ingestion": _do_stop_periodic_ingestion,
         "get_temporal_knowledge": _do_get_temporal_knowledge,
         "create_federation_manifest": _do_create_federation_manifest,
         "calculate_federation_delta": _do_calculate_federation_delta,
@@ -464,13 +469,7 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
         scope = "project"
 
     payload = {"content": args.get("content"), "metadata": metadata, "user_id": "global_user", "scope": scope}
-    resp = make_request_with_retry(
-        "POST",
-        f"{SERVER_URL}/add",
-        deadline_epoch=deadline,
-        json=payload,
-        timeout=_write_timeout_seconds(),
-    )
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/add", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -496,13 +495,7 @@ def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float])
         "user_id": "global_user",
         "scope": "project",
     }
-    resp = make_request_with_retry(
-        "POST",
-        f"{SERVER_URL}/add",
-        deadline_epoch=deadline,
-        json=payload,
-        timeout=_write_timeout_seconds(),
-    )
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/add", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
 
@@ -644,6 +637,21 @@ def _do_get_model_profile_events(args: Dict[str, Any], deadline: Optional[float]
     resp = make_request_with_retry("GET", f"{SERVER_URL}/profiles/model/events", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
 
+def _do_get_model_profile_alerts(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    params = {}
+    for key in ("window_seconds", "churn_threshold", "source_churn_threshold", "distinct_sources_threshold"):
+        value = args.get(key)
+        if value is not None:
+            params[key] = value
+    resp = make_request_with_retry(
+        "GET",
+        f"{SERVER_URL}/profiles/model/alerts",
+        deadline_epoch=deadline,
+        params=params,
+        timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return resp.json()
+
 def _do_export_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     git = get_git_info()
     payload = {
@@ -735,6 +743,22 @@ def _do_ingest_legacy_sources(args: Dict[str, Any], deadline: Optional[float]) -
     resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest/legacy/import", deadline_epoch=deadline, json=payload, timeout=120)
     return resp.json()
 
+def _do_get_periodic_ingestion_status(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/ingest/periodic/status", deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT)
+    return resp.json()
+
+def _do_run_periodic_ingestion(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest/periodic/run", deadline_epoch=deadline, json={}, timeout=120)
+    return resp.json()
+
+def _do_start_periodic_ingestion(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest/periodic/start", deadline_epoch=deadline, json={}, timeout=15)
+    return resp.json()
+
+def _do_stop_periodic_ingestion(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/ingest/periodic/stop", deadline_epoch=deadline, json={}, timeout=15)
+    return resp.json()
+
 def _do_get_temporal_knowledge(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     params = {"timestamp": args.get("timestamp"), "limit": args.get("limit", 50)}
     resp = make_request_with_retry("GET", f"{SERVER_URL}/knowledge/temporal", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT)
@@ -797,7 +821,7 @@ def _do_mimir_relay(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str
     payload: Dict[str, Any] = {
         "instruction": args.get("instruction"),
         "mode": args.get("mode", "A"),
-        "provider": args.get("provider", "auto"),
+        "target": args.get("provider", "auto"),
         "user_id": args.get("user_id", "global_user"),
         "max_tokens": args.get("max_tokens", 4096),
     }

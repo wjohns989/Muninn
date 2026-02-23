@@ -113,16 +113,27 @@ async def _verify_token(
     Validate the Bearer token against the ``MUNINN_API_KEY`` environment
     variable.
 
-    - If ``MUNINN_API_KEY`` is empty / unset: all requests are accepted
-      (development / unit-test mode).
+    - If ``MUNINN_API_KEY`` is empty / unset: all requests are rejected
+      unless MUNINN_DEV_MODE is 'true'.
     - If a key is configured: credentials must be present and match exactly.
 
-    Raises HTTP 401 on failure.
+    Raises HTTP 401 on failure, or 500 if the key is missing in non-dev mode.
     """
     api_key = os.environ.get("MUNINN_API_KEY", "").strip()
     if not api_key:
-        # No key configured — open access (dev mode)
-        return
+        if os.environ.get("MUNINN_DEV_MODE", "").lower() == "true":
+            logger.warning(
+                "MUNINN_API_KEY is unset; allowing unauthenticated access in DEV_MODE."
+            )
+            return
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "MUNINN_API_KEY is not configured. Set this environment variable "
+                "to enable API access."
+            ),
+        )
 
     if credentials is None or credentials.credentials != api_key:
         raise HTTPException(
@@ -225,8 +236,7 @@ def _serialise_run_status(status: Optional[str]) -> Optional[str]:
     valid = {s.value for s in RunStatus}
     if status not in valid:
         raise _fail(
-            f"Invalid status value '{status}'. "
-            f"Valid values: {sorted(valid)}",
+            "Invalid status value. ",
             status_code=422,
         )
     return status
@@ -272,7 +282,7 @@ async def relay_request(request: MimirRelayRequest) -> Dict[str, Any]:
         return _ok(result.model_dump(mode="json"))
     except Exception as exc:
         logger.exception("Unexpected error in POST /mimir/relay: %s", exc)
-        raise _fail(f"Internal relay error: {exc}", status_code=500)
+        raise _fail("Internal relay error.", status_code=500)
 
 
 @mimir_router.get(
@@ -330,7 +340,7 @@ async def list_providers(
 
     except Exception as exc:
         logger.exception("Error computing provider scores: %s", exc)
-        raise _fail(f"Provider scoring failed: {exc}", status_code=500)
+        raise _fail("Provider scoring failed.", status_code=500)
 
 
 @mimir_router.get(
@@ -353,6 +363,10 @@ async def list_runs(
         default=0,
         ge=0,
         description="Number of records to skip (for pagination).",
+    ),
+    provider: Optional[str] = Query(
+        default=None,
+        description="Optional provider filter (e.g. claude_code, codex_cli, gemini_cli).",
     ),
     status: Optional[str] = Query(
         default=None,
@@ -379,16 +393,18 @@ async def list_runs(
     try:
         runs: List[Dict[str, Any]] = await asyncio.to_thread(
             store.list_runs,
-            user_id,
-            limit,
-            offset,
-            normalised_status,
+            user_id=user_id,
+            provider=provider,
+            limit=limit,
+            offset=offset,
+            status=normalised_status,
         )
         return _ok(
             {
                 "user_id": user_id,
                 "limit": limit,
                 "offset": offset,
+                "provider_filter": provider,
                 "status_filter": normalised_status,
                 "count": len(runs),
                 "runs": runs,
@@ -396,7 +412,7 @@ async def list_runs(
         )
     except Exception as exc:
         logger.exception("Error listing runs for user=%s: %s", user_id, exc)
-        raise _fail(f"Failed to list runs: {exc}", status_code=500)
+        raise _fail("Failed to list runs.", status_code=500)
 
 
 @mimir_router.get(
@@ -418,13 +434,13 @@ async def get_run(run_id: str) -> Dict[str, Any]:
             store.get_run, run_id
         )
         if record is None:
-            raise _fail(f"Run '{run_id}' not found.", status_code=404)
+            raise _fail("Run not found.", status_code=404)
         return _ok(record)
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("Error fetching run_id=%s: %s", run_id, exc)
-        raise _fail(f"Failed to fetch run: {exc}", status_code=500)
+        raise _fail("Failed to fetch run.", status_code=500)
 
 
 @mimir_router.get(
@@ -467,7 +483,7 @@ async def get_run_audit(
         logger.exception(
             "Error fetching audit trail for run_id=%s: %s", run_id, exc
         )
-        raise _fail(f"Failed to fetch audit trail: {exc}", status_code=500)
+        raise _fail("Failed to fetch audit trail.", status_code=500)
 
 
 @mimir_router.get(
@@ -498,7 +514,7 @@ async def get_settings(
         logger.exception(
             "Error fetching settings for user=%s: %s", user_id, exc
         )
-        raise _fail(f"Failed to fetch settings: {exc}", status_code=500)
+        raise _fail("Failed to fetch settings.", status_code=500)
 
 
 @mimir_router.post(
@@ -533,7 +549,7 @@ async def update_settings(settings: InteropSettings) -> Dict[str, Any]:
         logger.exception(
             "Error updating settings for user=%s: %s", settings.user_id, exc
         )
-        raise _fail(f"Failed to update settings: {exc}", status_code=500)
+        raise _fail("Failed to update settings.", status_code=500)
 
 
 @mimir_router.get(
@@ -570,7 +586,7 @@ async def list_connections(
         logger.exception(
             "Error listing connections for user=%s: %s", user_id, exc
         )
-        raise _fail(f"Failed to list connections: {exc}", status_code=500)
+        raise _fail("Failed to list connections.", status_code=500)
 
 
 @mimir_router.post(
@@ -607,4 +623,4 @@ async def purge_audit(body: AuditPurgeRequest) -> Dict[str, Any]:
         )
     except Exception as exc:
         logger.exception("Error during audit purge: %s", exc)
-        raise _fail(f"Audit purge failed: {exc}", status_code=500)
+        raise _fail("Audit purge failed.", status_code=500)

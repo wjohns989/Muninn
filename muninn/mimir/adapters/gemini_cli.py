@@ -67,18 +67,19 @@ class GeminiAdapter(BaseAdapter):
         prompt = _build_prompt_text(envelope)
 
         cmd: list[str] = [
-            "gemini",
+            self._resolved_binary_path,
             "-p", prompt,
-            "--output-format", "json",
+            "-o", "json",
         ]
 
-        # Tool restrictions
-        if envelope.policy.tools == "forbidden":
-            cmd.append("--no-tools")
-        elif envelope.policy.tools == "readonly":
-            # Gemini CLI doesn't have a read-only mode; disable tools entirely
-            # to be safe when readonly is required
-            cmd.append("--no-tools")
+        # Approval mode: --yolo and --approval-mode are mutually exclusive.
+        # Use --approval-mode yolo for Mimir. Read-only 'plan' mode is
+        # currently experimental in Gemini CLI and requires extra config.
+        # For now, we use restricted allowed-tools for forbidden/readonly.
+        if envelope.policy.tools in ("forbidden", "readonly"):
+            cmd += ["--approval-mode", "yolo", "--allowed-tools", "none"]
+        else:
+            cmd += ["--approval-mode", "yolo"]
 
         # Mode B: request structured JSON
         if envelope.mode == IRPMode.STRUCTURED:
@@ -88,20 +89,15 @@ class GeminiAdapter(BaseAdapter):
             ]
 
         # Network policy (advisory — Gemini CLI doesn't have a network flag)
-        # We log a warning if network=forbidden and tools=allowed since Gemini
-        # tools can make network calls.
         if (
-            envelope.policy.network.value == "forbidden"
+            envelope.policy.network.value == "deny_all"
             and envelope.policy.tools == "allowed"
         ):
             logger.warning(
-                "gemini: policy.network=forbidden but policy.tools=allowed — "
+                "gemini: policy.network=deny_all but policy.tools=allowed — "
                 "Gemini tools may still make network calls. "
                 "Consider setting policy.tools=forbidden for strict isolation."
             )
-
-        # --yolo suppresses safety confirmations in automated environments
-        cmd.append("--yolo")
 
         logger.debug(
             "gemini command: gemini -p <prompt[%d chars]>",
@@ -169,19 +165,25 @@ class GeminiAdapter(BaseAdapter):
         return 0, 0
 
     async def _do_availability_check(self) -> bool:
-        """Gemini is available if binary is on PATH and GEMINI_API_KEY is set."""
-        has_gemini_key = bool(os.environ.get("GEMINI_API_KEY"))
-        has_google_key = bool(os.environ.get("GOOGLE_API_KEY"))
-        has_binary = shutil.which("gemini") is not None
+        """Gemini is available if binary is on PATH."""
+        import shutil
+        has_binary = shutil.which(self._binary_name) is not None
 
         if not has_binary:
-            logger.debug("gemini: binary not found on PATH")
-            return False
-        if not (has_gemini_key or has_google_key):
-            logger.debug("gemini: neither GEMINI_API_KEY nor GOOGLE_API_KEY is set")
+            logger.debug("%s: binary '%s' not found on PATH", self.provider.value, self._binary_name)
             return False
 
-        return await self._check_binary_version()
+        available = await self._check_binary_version()
+        if available:
+            has_gemini_key = bool(os.environ.get("GEMINI_API_KEY"))
+            has_google_key = bool(os.environ.get("GOOGLE_API_KEY"))
+            if not (has_gemini_key or has_google_key):
+                logger.debug(
+                    "%s: binary present but no API key set — "
+                    "relying on local CLI session.",
+                    self.provider.value
+                )
+        return available
 
 
 # ---------------------------------------------------------------------------

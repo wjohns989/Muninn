@@ -61,16 +61,47 @@ class IngestionManager:
             or self.config.extraction.runtime_model_profile
             or self.config.extraction.model_profile
         )
+        skip_extraction = bool(scoped_metadata.get("muninn_skip_extraction", False))
+        extraction_timeout_value = scoped_metadata.get("muninn_extraction_timeout_seconds")
+        extraction_timeout_seconds: Optional[float] = None
+        if extraction_timeout_value is not None:
+            try:
+                parsed_timeout = float(extraction_timeout_value)
+            except (TypeError, ValueError):
+                parsed_timeout = 0.0
+            if parsed_timeout > 0:
+                extraction_timeout_seconds = parsed_timeout
         
         # 1. Extraction
-        with self._otel.span("muninn.ingestion.extract", {"model_profile": extraction_profile}):
-            extraction = await self.memory._extract_with_profile(
-                content,
-                model_profile=extraction_profile,
-            )
-            entity_names = self.memory._extract_entity_names(extraction)
-            if entity_names:
-                scoped_metadata["entity_names"] = entity_names
+        if skip_extraction:
+            extraction = ExtractionResult()
+            entity_names = []
+        else:
+            with self._otel.span("muninn.ingestion.extract", {"model_profile": extraction_profile}):
+                if extraction_timeout_seconds is not None:
+                    try:
+                        extraction = await asyncio.wait_for(
+                            self.memory._extract_with_profile(
+                                content,
+                                model_profile=extraction_profile,
+                            ),
+                            timeout=extraction_timeout_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Extraction timed out after %.3fs; continuing without extracted entities",
+                            extraction_timeout_seconds,
+                        )
+                        extraction = ExtractionResult()
+                        scoped_metadata["muninn_extraction_timed_out"] = True
+                else:
+                    extraction = await self.memory._extract_with_profile(
+                        content,
+                        model_profile=extraction_profile,
+                    )
+                entity_names = self.memory._extract_entity_names(extraction)
+                if entity_names:
+                    scoped_metadata["entity_names"] = entity_names
         
         # 2. Embedding
         with self._otel.span("muninn.ingestion.embed"):

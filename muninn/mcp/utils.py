@@ -95,7 +95,25 @@ def truncate_tool_text(text: str, name: str) -> str:
 def format_tool_result_text(result: Dict[str, Any], name: str) -> str:
     """Convert backend JSON result to standard text representation for tool output."""
     if not result.get("success"):
-        return f"Error: {result.get('error', 'Unknown error')}"
+        error_value = result.get("error")
+        if isinstance(error_value, str) and error_value.strip():
+            return f"Error: {error_value}"
+        if isinstance(error_value, dict):
+            nested = error_value.get("message") or error_value.get("detail") or error_value.get("error")
+            if isinstance(nested, str) and nested.strip():
+                return f"Error: {nested}"
+
+        data = result.get("data")
+        if isinstance(data, dict):
+            nested = data.get("detail") or data.get("error") or data.get("message")
+            if isinstance(nested, str) and nested.strip():
+                return f"Error: {nested}"
+            if isinstance(data.get("detail"), list) and data["detail"]:
+                return f"Error: {data['detail'][0]}"
+        elif isinstance(data, str) and data.strip():
+            return f"Error: {data}"
+
+        return "Error: Unknown error"
     
     data = result.get("data")
     if data is None:
@@ -125,6 +143,13 @@ def negotiated_protocol_version(requested: Optional[str]) -> Optional[str]:
         return SUPPORTED_PROTOCOL_VERSIONS[0]
     if requested in SUPPORTED_PROTOCOL_VERSIONS:
         return requested
+    if env_flag("MUNINN_MCP_PROTOCOL_FALLBACK", True):
+        logger.warning(
+            "Unsupported MCP protocol version '%s'; falling back to %s",
+            requested,
+            SUPPORTED_PROTOCOL_VERSIONS[0],
+        )
+        return SUPPORTED_PROTOCOL_VERSIONS[0]
     return None
 
 def build_initialize_instructions(startup_warnings: Optional[List[str]] = None) -> str:
@@ -191,12 +216,12 @@ def get_tool_call_deadline_epoch() -> float:
             # Clamp if overrun not allowed
             if not env_flag("MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN", False):
                 explicit = min(explicit, safe_budget)
-            return time.monotonic() + explicit
+            return time.time() + explicit
         except ValueError:
             pass
             
     # Priority 3: Derived from host timeout
-    return time.monotonic() + safe_budget
+    return time.time() + safe_budget
 
 def remaining_deadline_seconds(deadline_epoch: Optional[float]) -> Optional[float]:
     import time

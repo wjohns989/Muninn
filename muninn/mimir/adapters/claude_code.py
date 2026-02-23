@@ -31,7 +31,7 @@ import logging
 import os
 import shlex
 
-from ..models import IRPEnvelope, IRPMode, IRPNetworkPolicy, ProviderName
+from ..models import IRPEnvelope, IRPMode, IRPNetworkPolicy, ProviderName, ProviderResult
 from .base import BaseAdapter
 
 logger = logging.getLogger("Muninn.Mimir.adapters.claude_code")
@@ -78,15 +78,16 @@ class ClaudeCodeAdapter(BaseAdapter):
         max_turns = self._MODE_MAX_TURNS.get(envelope.mode, 1)
 
         cmd: list[str] = [
-            "claude",
+            self._resolved_binary_path,
             "-p", prompt,
             "--output-format", "json",
             "--max-turns", str(max_turns),
+            "--permission-mode", "dontAsk",
         ]
 
         # Tool restrictions
         if envelope.policy.tools == "forbidden":
-            cmd += ["--allowedTools", "none"]
+            cmd += ["--allowedTools", ""]
         elif envelope.policy.tools == "readonly":
             # read-only subset: list files, read files, grep, search
             cmd += ["--allowedTools", "Bash(read),Read,Glob,Grep"]
@@ -102,6 +103,97 @@ class ClaudeCodeAdapter(BaseAdapter):
             max_turns,
         )
         return cmd
+
+    async def call(self, envelope: IRPEnvelope) -> ProviderResult:
+        """
+        Execute a relay call to Claude Code via the programmatic Agent SDK.
+
+        This bypasses the Node-based CLI's terminal rendering issues on Windows.
+        """
+        import time
+        from claude_agent_sdk import query, ClaudeAgentOptions
+
+        t_start = time.monotonic()
+        prompt = _build_prompt_text(envelope)
+        max_turns = self._MODE_MAX_TURNS.get(envelope.mode, 1)
+
+        # Map tools
+        allowed = []
+        if envelope.policy.tools == "forbidden":
+            allowed = []
+        elif envelope.policy.tools == "readonly":
+            allowed = ["Bash(read)", "Read", "Glob", "Grep"]
+        else:
+            allowed = ["*"]
+
+        options = ClaudeAgentOptions(
+            max_turns=max_turns,
+            allowed_tools=allowed,
+            permission_mode="dontAsk",
+            output_format="json",
+        )
+
+        # Handle Mode B (Structured) system prompt
+        if envelope.mode == IRPMode.STRUCTURED:
+            options.system_prompt = "Respond only with valid JSON. No markdown fences."
+
+        raw_text = ""
+        input_tokens = 0
+        output_tokens = 0
+        parsed = {}
+
+        try:
+            logger.debug("claude-sdk: sending query (max_turns=%d)", max_turns)
+            # Stateless query returns an async generator of Message objects
+            try:
+                async for message in query(prompt=prompt, options=options):
+                    # Handle message content (TextBlocks)
+                    if hasattr(message, "content") and message.content:
+                        for block in message.content:
+                            if hasattr(block, "text"):
+                                raw_text += block.text
+
+                    # Handle usage/stats events
+                    if hasattr(message, "type") and message.type == "usage_event":
+                        if hasattr(message, "usage"):
+                            input_tokens += getattr(message.usage, "input_tokens", 0)
+                            output_tokens += getattr(message.usage, "output_tokens", 0)
+            except Exception as sdk_iter_exc:
+                # The SDK might raise MessageParseError for unknown types (e.g. rate_limit_event)
+                # We log this as a warning and proceed with whatever text we captured.
+                logger.warning("claude-sdk: internal iteration error (partial text len=%d): %s", 
+                               len(raw_text), sdk_iter_exc)
+
+            # Rehydrate 'parsed' for Mimir downstream
+            if raw_text:
+                try:
+                    parsed = json.loads(raw_text)
+                except Exception:
+                    parsed = {"result": raw_text}
+            else:
+                parsed = {}
+
+        except Exception as exc:
+            latency_ms = int((time.monotonic() - t_start) * 1000)
+            logger.exception("claude-sdk: unexpected error: %s", exc)
+            return ProviderResult(
+                provider=self.provider,
+                raw_output="",
+                error=f"SDK Error: {exc}",
+                latency_ms=latency_ms,
+                available=True,
+            )
+
+        latency_ms = int((time.monotonic() - t_start) * 1000)
+        return ProviderResult(
+            provider=self.provider,
+            raw_output=raw_text,
+            parsed=parsed,
+            latency_ms=latency_ms,
+            input_tokens=input_tokens,  # Token extraction from SDK messages can be added
+            output_tokens=output_tokens,
+            available=True,
+        )
 
     def _parse_output(self, raw: str, returncode: int) -> dict:
         """
@@ -165,26 +257,29 @@ class ClaudeCodeAdapter(BaseAdapter):
     async def _do_availability_check(self) -> bool:
         """
         Claude Code is available if:
-        1. `claude` binary is on PATH (or ANTHROPIC_API_KEY is set)
+        1. `claude` binary is on PATH
         2. The binary responds to --version
         """
         import shutil
 
-        has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-        has_binary = shutil.which("claude") is not None
-
+        # Binary check (mandatory)
+        has_binary = shutil.which(self._binary_name) is not None
         if not has_binary:
-            logger.debug("claude: binary not found on PATH")
+            logger.debug("%s: binary '%s' not found on PATH", self.provider.value, self._binary_name)
             return False
 
-        # Binary present; test --version response
+        # Version check (mandatory to verify execution)
         available = await self._check_binary_version()
-        if available and not has_key:
-            # binary present but no key → might still work with auth cookie
-            logger.debug(
-                "claude: binary present but ANTHROPIC_API_KEY not set — "
-                "availability depends on local auth session"
-            )
+
+        # Auth status logging (advisory)
+        if available:
+            has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+            if not has_key:
+                logger.debug(
+                    "%s: binary present but ANTHROPIC_API_KEY not set — "
+                    "relying on local CLI session/cookies.",
+                    self.provider.value
+                )
         return available
 
 

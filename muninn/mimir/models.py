@@ -30,8 +30,9 @@ class IRPMode(str, Enum):
 
 
 class IRPNetworkPolicy(str, Enum):
-    FORBIDDEN = "forbidden"
-    ALLOWED = "allowed"
+    ALLOW_ALL = "allow_all"
+    LOCAL_ONLY = "local_only"
+    DENY_ALL = "deny_all"
 
 
 class IRPRedactionPolicy(str, Enum):
@@ -106,8 +107,8 @@ class IRPPolicy(BaseModel):
         pattern=r"^(forbidden|readonly|allowed)$",
     )
     network: IRPNetworkPolicy = Field(
-        default=IRPNetworkPolicy.FORBIDDEN,
-        description="Network access policy for the relay target",
+        default=IRPNetworkPolicy.DENY_ALL,
+        description="Network access policy: 'allow_all' | 'local_only' | 'deny_all'",
     )
     redaction: IRPRedactionPolicy = Field(
         default=IRPRedactionPolicy.BALANCED,

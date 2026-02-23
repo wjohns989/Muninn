@@ -10,10 +10,31 @@ logger = logging.getLogger("Muninn.mcp.requests")
 class _BackendCircuitOpenError(Exception): pass
 class _RequestDeadlineExceededError(Exception): pass
 
-def get_remaining_deadline_seconds(deadline_epoch: Optional[float]) -> Optional[float]:
+def _remaining_seconds_from_deadline(deadline_epoch: Optional[float]) -> Optional[float]:
+    """
+    Compute remaining budget for either epoch-based or monotonic-based deadlines.
+
+    Historical callers have used both clocks. We accept either and choose the
+    smallest non-negative remaining budget as the effective constraint.
+    """
     if deadline_epoch is None:
         return None
-    return max(0.001, deadline_epoch - time.time())
+
+    now_epoch = time.time()
+    now_mono = time.monotonic()
+    remaining_epoch = deadline_epoch - now_epoch
+    remaining_mono = deadline_epoch - now_mono
+
+    non_negative = [r for r in (remaining_epoch, remaining_mono) if r >= 0.0]
+    if non_negative:
+        return min(non_negative)
+    return max(remaining_epoch, remaining_mono)
+
+def get_remaining_deadline_seconds(deadline_epoch: Optional[float]) -> Optional[float]:
+    remaining = _remaining_seconds_from_deadline(deadline_epoch)
+    if remaining is None:
+        return None
+    return max(0.0, remaining)
 
 def make_request_with_retry(
     method: str,
@@ -46,12 +67,12 @@ def _make_request_with_retry_internal(
     if is_circuit_open():
         raise BackendCircuitOpenError(f"Backend circuit is open, skipping request to {url}")
 
-    remaining = deadline_epoch - time.monotonic() if deadline_epoch else None
+    remaining = _remaining_seconds_from_deadline(deadline_epoch)
     if remaining is not None and remaining <= 0:
         # Use local exception class
         raise _RequestDeadlineExceededError(f"Deadline exceeded before request to {url}")
 
-    effective_timeout = min(timeout, remaining) if remaining is not None else timeout
+    effective_timeout = min(timeout, max(0.001, remaining)) if remaining is not None else timeout
     
     # Inject security token for unified auth (Phase 10)
     headers = kwargs.get("headers", {})
@@ -72,10 +93,10 @@ def _make_request_with_retry_internal(
             if attempt < max_retries:
                 time.sleep(0.5 * (attempt + 1))
                 # Re-check deadline
-                remaining = get_remaining_deadline_seconds(deadline_epoch)
-                if remaining is not None and remaining <= 0.1:
+                remaining = _remaining_seconds_from_deadline(deadline_epoch)
+                if remaining is not None and remaining <= 0:
                     break
-                effective_timeout = min(timeout, remaining) if remaining is not None else timeout
+                effective_timeout = min(timeout, max(0.001, remaining)) if remaining is not None else timeout
             continue
         except requests.HTTPError as e:
             # Don't retry 4xx errors

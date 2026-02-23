@@ -128,6 +128,7 @@ def test_read_rpc_message_invalid_framed_payload_skips_to_next_message():
 def test_initialize_rejects_unsupported_protocol(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setenv("MUNINN_MCP_PROTOCOL_FALLBACK", "0")
 
     mcp_wrapper.handle_initialize("req-1", {"protocolVersion": "1999-01-01"})
 
@@ -836,6 +837,33 @@ def test_make_request_with_retry_clamps_timeout_to_remaining_deadline(monkeypatc
     assert 0 < timeout_value <= 0.06
 
 
+def test_make_request_with_retry_clamps_timeout_to_remaining_epoch_deadline(monkeypatch):
+    observed = {}
+
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+
+    def _fake_request(_method, _url, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr("muninn.mcp.requests.requests.request", _fake_request)
+
+    deadline_epoch = time.time() + 0.05
+    mcp_wrapper.make_request_with_retry(
+        "GET",
+        "http://localhost:42069/health",
+        timeout=10.0,
+        deadline_epoch=deadline_epoch,
+    )
+
+    timeout_value = observed["timeout"]
+    assert isinstance(timeout_value, float)
+    assert 0 < timeout_value <= 0.06
+
+
 def test_make_request_with_retry_fails_before_request_when_deadline_exhausted(monkeypatch):
     calls = {"request": 0}
 
@@ -966,6 +994,18 @@ def test_format_tool_result_text_compacts_nested_depth(monkeypatch):
     )
 
     assert "max preview depth reached" in text
+
+
+def test_format_tool_result_text_surfaces_backend_detail_for_failed_results():
+    text = mcp_wrapper._format_tool_result_text(
+        {
+            "success": False,
+            "data": {"detail": "Invalid or missing authentication credentials"},
+        },
+        "search_memory",
+    )
+    assert "Invalid or missing authentication credentials" in text
+    assert "Unknown error" not in text
 
 
 def test_compact_tool_response_payload_truncates_long_string(monkeypatch):
@@ -1765,11 +1805,14 @@ def test_list_tools_adds_json_schema_and_annotations(monkeypatch):
     assert "get_model_profiles" in by_name
     assert "set_model_profiles" in by_name
     assert "get_model_profile_events" in by_name
+    assert "get_model_profile_alerts" in by_name
     assert "set_user_profile" in by_name
     assert "get_user_profile" in by_name
     assert "ingest_sources" in by_name
     assert "discover_legacy_sources" in by_name
     assert "ingest_legacy_sources" in by_name
+    assert "get_periodic_ingestion_status" in by_name
+    assert "run_periodic_ingestion" in by_name
 
     for tool in tools:
         schema = tool["inputSchema"]
@@ -2040,6 +2083,41 @@ def test_get_model_profile_events_tool_call_payload(monkeypatch):
     assert sent[0]["id"] == "req-profile-events"
 
 
+def test_get_model_profile_alerts_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "MODEL_PROFILE_ALERT_EVALUATION", "alerts_count": 0}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-profile-alerts",
+        {
+            "name": "get_model_profile_alerts",
+            "arguments": {"window_seconds": 1200, "churn_threshold": 7},
+        },
+    )
+
+    assert captured["method"] == "GET"
+    assert captured["url"].endswith("/profiles/model/alerts")
+    assert captured["params"]["window_seconds"] == 1200
+    assert captured["params"]["churn_threshold"] == 7
+    assert sent
+    assert sent[0]["id"] == "req-profile-alerts"
+
+
 def test_discover_legacy_sources_tool_call_payload(monkeypatch):
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
@@ -2123,6 +2201,74 @@ def test_ingest_legacy_sources_tool_call_payload(monkeypatch):
     assert captured["json"]["chronological_order"] == "oldest_first"
     assert sent
     assert sent[0]["id"] == "req-legacy-import"
+
+
+def test_get_periodic_ingestion_status_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"runtime": {"running": False}}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr("muninn.mcp.handlers.make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-periodic-status",
+        {
+            "name": "get_periodic_ingestion_status",
+            "arguments": {},
+        },
+    )
+
+    assert captured["method"] == "GET"
+    assert captured["url"].endswith("/ingest/periodic/status")
+    assert captured["json"] is None
+    assert sent
+    assert sent[0]["id"] == "req-periodic-status"
+
+
+def test_run_periodic_ingestion_tool_call_payload(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True, "data": {"event": "PERIODIC_INGESTION_COMPLETED"}}
+
+    def _fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    monkeypatch.setattr("muninn.mcp.handlers.make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-periodic-run",
+        {
+            "name": "run_periodic_ingestion",
+            "arguments": {},
+        },
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/ingest/periodic/run")
+    assert captured["json"] == {}
+    assert sent
+    assert sent[0]["id"] == "req-periodic-run"
 
 
 def test_delete_memory_tool_call_url_encodes_memory_id_and_sets_deadline(monkeypatch):

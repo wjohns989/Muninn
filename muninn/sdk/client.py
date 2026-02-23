@@ -327,6 +327,25 @@ class MuninnClient(_BaseMuninnClient):
     def get_model_profile_events(self, *, limit: int = 25) -> Dict[str, Any]:
         return self._request("GET", "/profiles/model/events", params={"limit": limit})
 
+    def get_model_profile_alerts(
+        self,
+        *,
+        window_seconds: Optional[float] = None,
+        churn_threshold: Optional[int] = None,
+        source_churn_threshold: Optional[int] = None,
+        distinct_sources_threshold: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        if window_seconds is not None:
+            params["window_seconds"] = window_seconds
+        if churn_threshold is not None:
+            params["churn_threshold"] = churn_threshold
+        if source_churn_threshold is not None:
+            params["source_churn_threshold"] = source_churn_threshold
+        if distinct_sources_threshold is not None:
+            params["distinct_sources_threshold"] = distinct_sources_threshold
+        return self._request("GET", "/profiles/model/alerts", params=params or None)
+
     def export_handoff(
         self,
         *,
@@ -588,6 +607,18 @@ class MuninnClient(_BaseMuninnClient):
     def consolidation_status(self) -> Dict[str, Any]:
         return self._request("GET", "/consolidation/status")
 
+    def periodic_ingestion_status(self) -> Dict[str, Any]:
+        return self._request("GET", "/ingest/periodic/status")
+
+    def run_periodic_ingestion(self) -> Dict[str, Any]:
+        return self._request("POST", "/ingest/periodic/run")
+
+    def start_periodic_ingestion(self) -> Dict[str, Any]:
+        return self._request("POST", "/ingest/periodic/start")
+
+    def stop_periodic_ingestion(self) -> Dict[str, Any]:
+        return self._request("POST", "/ingest/periodic/stop")
+
 
 class AsyncMuninnClient(_BaseMuninnClient):
     """
@@ -800,6 +831,25 @@ class AsyncMuninnClient(_BaseMuninnClient):
 
     async def get_model_profile_events(self, *, limit: int = 25) -> Dict[str, Any]:
         return await self._request("GET", "/profiles/model/events", params={"limit": limit})
+
+    async def get_model_profile_alerts(
+        self,
+        *,
+        window_seconds: Optional[float] = None,
+        churn_threshold: Optional[int] = None,
+        source_churn_threshold: Optional[int] = None,
+        distinct_sources_threshold: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        if window_seconds is not None:
+            params["window_seconds"] = window_seconds
+        if churn_threshold is not None:
+            params["churn_threshold"] = churn_threshold
+        if source_churn_threshold is not None:
+            params["source_churn_threshold"] = source_churn_threshold
+        if distinct_sources_threshold is not None:
+            params["distinct_sources_threshold"] = distinct_sources_threshold
+        return await self._request("GET", "/profiles/model/alerts", params=params or None)
 
     async def export_handoff(
         self,
@@ -1061,6 +1111,18 @@ class AsyncMuninnClient(_BaseMuninnClient):
 
     async def consolidation_status(self) -> Dict[str, Any]:
         return await self._request("GET", "/consolidation/status")
+
+    async def periodic_ingestion_status(self) -> Dict[str, Any]:
+        return await self._request("GET", "/ingest/periodic/status")
+
+    async def run_periodic_ingestion(self) -> Dict[str, Any]:
+        return await self._request("POST", "/ingest/periodic/run")
+
+    async def start_periodic_ingestion(self) -> Dict[str, Any]:
+        return await self._request("POST", "/ingest/periodic/start")
+
+    async def stop_periodic_ingestion(self) -> Dict[str, Any]:
+        return await self._request("POST", "/ingest/periodic/stop")
 
 
 class Memory(MuninnClient):

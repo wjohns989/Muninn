@@ -354,6 +354,57 @@ class SQLiteMetadataStore:
             )
         return events
 
+    def get_profile_policy_event_stats_since(self, *, since_epoch: float) -> Dict[str, Any]:
+        """
+        Return aggregate stats for profile-policy events in a recent window.
+
+        Used by runtime alerting to detect abnormal profile-policy churn.
+        """
+        conn = self._get_conn()
+
+        total_row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM profile_policy_events
+            WHERE created_at >= ?
+            """,
+            (float(since_epoch),),
+        ).fetchone()
+        total_events = int(total_row["n"]) if total_row and total_row["n"] is not None else 0
+
+        distinct_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT source) AS n
+            FROM profile_policy_events
+            WHERE created_at >= ?
+            """,
+            (float(since_epoch),),
+        ).fetchone()
+        distinct_sources = (
+            int(distinct_row["n"]) if distinct_row and distinct_row["n"] is not None else 0
+        )
+
+        top_row = conn.execute(
+            """
+            SELECT source, COUNT(*) AS n
+            FROM profile_policy_events
+            WHERE created_at >= ?
+            GROUP BY source
+            ORDER BY n DESC, source ASC
+            LIMIT 1
+            """,
+            (float(since_epoch),),
+        ).fetchone()
+        top_source = str(top_row["source"]) if top_row and top_row["source"] is not None else None
+        top_source_count = int(top_row["n"]) if top_row and top_row["n"] is not None else 0
+
+        return {
+            "events_in_window": total_events,
+            "distinct_sources": distinct_sources,
+            "top_source": top_source,
+            "top_source_count": top_source_count,
+        }
+
     def set_project_goal(
         self,
         *,

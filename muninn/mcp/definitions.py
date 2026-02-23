@@ -228,6 +228,35 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         }
     },
     {
+        "name": "get_model_profile_alerts",
+        "description": "Evaluate profile-policy mutation churn against alert thresholds to detect abnormal policy churn.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_seconds": {
+                    "type": "number",
+                    "minimum": 60,
+                    "description": "Optional alert lookback window in seconds."
+                },
+                "churn_threshold": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional total-event threshold within the window."
+                },
+                "source_churn_threshold": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional per-source event threshold within the window."
+                },
+                "distinct_sources_threshold": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional distinct-source threshold within the window."
+                }
+            }
+        }
+    },
+    {
         "name": "export_handoff",
         "description": "Export deterministic cross-assistant handoff bundle for this project.",
         "inputSchema": {
@@ -327,6 +356,38 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                 "chunk_overlap_chars": {"type": "integer", "minimum": 0},
                 "min_chunk_chars": {"type": "integer", "minimum": 1}
             }
+        }
+    },
+    {
+        "name": "get_periodic_ingestion_status",
+        "description": "Fetch periodic-ingestion scheduler runtime state, cadence, and last run result.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "run_periodic_ingestion",
+        "description": "Trigger one immediate periodic-ingestion run using configured sources and options.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "start_periodic_ingestion",
+        "description": "Start the periodic-ingestion scheduler loop without restarting the server.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "stop_periodic_ingestion",
+        "description": "Stop the periodic-ingestion scheduler loop without restarting the server.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
         }
     },
     {
@@ -492,8 +553,9 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
     "search_memory", "hunt_memory", "get_all_memories", "get_project_goal",
-    "get_user_profile", "get_model_profiles", "get_model_profile_events",
+    "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
     "export_handoff", "discover_legacy_sources",
+    "get_periodic_ingestion_status",
     "get_temporal_knowledge", "create_federation_manifest", "calculate_federation_delta", "create_federation_bundle"
 }
 
@@ -503,7 +565,10 @@ IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
     "update_memory", "delete_memory", "delete_all_memories",
     "set_project_goal", "set_user_profile", "set_model_profiles",
     "import_handoff", "apply_federation_bundle",
-    "set_project_instruction"
+    "set_project_instruction",
+    "run_periodic_ingestion",
+    "start_periodic_ingestion",
+    "stop_periodic_ingestion",
 })
 
 # mimir_relay creates a new interop_runs record on every call and may have

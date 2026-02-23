@@ -24,6 +24,7 @@ import json
 import uuid
 import time
 import logging
+import os
 from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
 
@@ -1888,6 +1889,14 @@ class MuninnMemory:
         event = "MODEL_PROFILE_POLICY_UPDATED" if updates else "MODEL_PROFILE_POLICY_UNCHANGED"
         policy = await self.get_model_profiles()
         audit_event_id: Optional[int] = None
+        alert_evaluation: Optional[Dict[str, Any]] = None
+        alert_hook: Dict[str, Any] = {
+            "configured": bool(os.environ.get("MUNINN_PROFILE_POLICY_ALERT_WEBHOOK_URL")),
+            "attempted": False,
+            "delivered": False,
+            "status_code": None,
+            "error": None,
+        }
         if updates:
             async with self._write_lock:
                 audit_event_id = self._metadata.record_profile_policy_event(
@@ -1895,11 +1904,21 @@ class MuninnMemory:
                     updates=updates,
                     policy=policy,
                 )
+            alert_evaluation = await self.get_model_profile_alerts()
+            if alert_evaluation.get("alerts"):
+                alert_hook = await self._emit_profile_policy_alert_hook(
+                    audit_event_id=audit_event_id,
+                    source=source,
+                    alert_evaluation=alert_evaluation,
+                    policy=policy,
+                )
         return {
             "event": event,
             "updates": updates,
             "policy": policy,
             "audit_event_id": audit_event_id,
+            "alert_evaluation": alert_evaluation,
+            "alert_hook": alert_hook,
         }
 
     async def get_model_profile_events(self, *, limit: int = 25) -> Dict[str, Any]:
@@ -1911,6 +1930,199 @@ class MuninnMemory:
             "events": events,
             "count": len(events),
         }
+
+    async def get_model_profile_alerts(
+        self,
+        *,
+        window_seconds: Optional[float] = None,
+        churn_threshold: Optional[int] = None,
+        source_churn_threshold: Optional[int] = None,
+        distinct_sources_threshold: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate profile-policy mutation churn and return alert candidates."""
+        self._check_initialized()
+        config = self._resolve_profile_policy_alert_config(
+            window_seconds=window_seconds,
+            churn_threshold=churn_threshold,
+            source_churn_threshold=source_churn_threshold,
+            distinct_sources_threshold=distinct_sources_threshold,
+        )
+        since_epoch = time.time() - config["window_seconds"]
+        stats = self._metadata.get_profile_policy_event_stats_since(since_epoch=since_epoch)
+        alerts: List[Dict[str, Any]] = []
+
+        if stats["events_in_window"] >= config["churn_threshold"]:
+            alerts.append(
+                {
+                    "code": "PROFILE_POLICY_CHURN",
+                    "severity": "warning",
+                    "message": (
+                        f"{stats['events_in_window']} profile-policy mutations in "
+                        f"{int(config['window_seconds'])}s (threshold {config['churn_threshold']})."
+                    ),
+                }
+            )
+
+        if (
+            stats.get("top_source")
+            and stats["top_source_count"] >= config["source_churn_threshold"]
+        ):
+            alerts.append(
+                {
+                    "code": "PROFILE_POLICY_SOURCE_CHURN",
+                    "severity": "warning",
+                    "message": (
+                        f"Source '{stats['top_source']}' produced {stats['top_source_count']} "
+                        f"mutations in {int(config['window_seconds'])}s "
+                        f"(threshold {config['source_churn_threshold']})."
+                    ),
+                    "source": stats["top_source"],
+                }
+            )
+
+        if stats["distinct_sources"] >= config["distinct_sources_threshold"]:
+            alerts.append(
+                {
+                    "code": "PROFILE_POLICY_MULTI_SOURCE_CHURN",
+                    "severity": "info",
+                    "message": (
+                        f"{stats['distinct_sources']} distinct sources mutated profile policy in "
+                        f"{int(config['window_seconds'])}s "
+                        f"(threshold {config['distinct_sources_threshold']})."
+                    ),
+                }
+            )
+
+        return {
+            "event": "MODEL_PROFILE_ALERT_EVALUATION",
+            "window_seconds": config["window_seconds"],
+            "thresholds": {
+                "churn_threshold": config["churn_threshold"],
+                "source_churn_threshold": config["source_churn_threshold"],
+                "distinct_sources_threshold": config["distinct_sources_threshold"],
+            },
+            "stats": stats,
+            "alerts": alerts,
+            "alerts_count": len(alerts),
+        }
+
+    def _resolve_profile_policy_alert_config(
+        self,
+        *,
+        window_seconds: Optional[float],
+        churn_threshold: Optional[int],
+        source_churn_threshold: Optional[int],
+        distinct_sources_threshold: Optional[int],
+    ) -> Dict[str, Any]:
+        def _env_float(name: str, default: float, minimum: float) -> float:
+            raw = os.environ.get(name, "")
+            if raw.strip() == "":
+                return default
+            try:
+                value = float(raw)
+            except ValueError:
+                return default
+            return max(minimum, value)
+
+        def _env_int(name: str, default: int, minimum: int) -> int:
+            raw = os.environ.get(name, "")
+            if raw.strip() == "":
+                return default
+            try:
+                value = int(raw)
+            except ValueError:
+                return default
+            return max(minimum, value)
+
+        resolved_window = (
+            max(60.0, float(window_seconds))
+            if window_seconds is not None
+            else _env_float("MUNINN_PROFILE_POLICY_ALERT_WINDOW_SECONDS", 900.0, 60.0)
+        )
+        resolved_churn = (
+            max(1, int(churn_threshold))
+            if churn_threshold is not None
+            else _env_int("MUNINN_PROFILE_POLICY_ALERT_CHURN_THRESHOLD", 6, 1)
+        )
+        resolved_source_churn = (
+            max(1, int(source_churn_threshold))
+            if source_churn_threshold is not None
+            else _env_int("MUNINN_PROFILE_POLICY_ALERT_SOURCE_CHURN_THRESHOLD", 4, 1)
+        )
+        resolved_distinct_sources = (
+            max(1, int(distinct_sources_threshold))
+            if distinct_sources_threshold is not None
+            else _env_int("MUNINN_PROFILE_POLICY_ALERT_DISTINCT_SOURCES_THRESHOLD", 3, 1)
+        )
+        return {
+            "window_seconds": resolved_window,
+            "churn_threshold": resolved_churn,
+            "source_churn_threshold": resolved_source_churn,
+            "distinct_sources_threshold": resolved_distinct_sources,
+        }
+
+    async def _emit_profile_policy_alert_hook(
+        self,
+        *,
+        audit_event_id: Optional[int],
+        source: str,
+        alert_evaluation: Dict[str, Any],
+        policy: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        webhook_url = os.environ.get("MUNINN_PROFILE_POLICY_ALERT_WEBHOOK_URL", "").strip()
+        result: Dict[str, Any] = {
+            "configured": bool(webhook_url),
+            "attempted": False,
+            "delivered": False,
+            "status_code": None,
+            "error": None,
+        }
+        if not webhook_url:
+            return result
+
+        timeout_raw = os.environ.get("MUNINN_PROFILE_POLICY_ALERT_WEBHOOK_TIMEOUT_SECONDS", "3").strip()
+        try:
+            timeout_seconds = max(0.1, float(timeout_raw))
+        except ValueError:
+            timeout_seconds = 3.0
+
+        token = os.environ.get("MUNINN_PROFILE_POLICY_ALERT_WEBHOOK_TOKEN", "").strip()
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        payload = {
+            "event": "MODEL_PROFILE_POLICY_ALERT",
+            "audit_event_id": audit_event_id,
+            "source": source,
+            "occurred_at": time.time(),
+            "alert_evaluation": alert_evaluation,
+            "policy": policy.get("active", {}),
+        }
+
+        def _post_hook() -> Tuple[bool, Optional[int], Optional[str]]:
+            import requests
+
+            try:
+                resp = requests.post(
+                    webhook_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=timeout_seconds,
+                )
+                if 200 <= resp.status_code < 300:
+                    return True, int(resp.status_code), None
+                return False, int(resp.status_code), f"webhook returned status {resp.status_code}"
+            except Exception as exc:
+                return False, None, str(exc)
+
+        result["attempted"] = True
+        delivered, status_code, error = await asyncio.to_thread(_post_hook)
+        result["delivered"] = delivered
+        result["status_code"] = status_code
+        result["error"] = error
+        if error:
+            logger.warning("Profile policy alert hook delivery failed: %s", error)
+        return result
 
     # ==========================================
     # Internal Methods
