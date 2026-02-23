@@ -31,6 +31,27 @@ def test_sandboxed_parse_invalid_type():
             sandboxed_parse_binary(path, "txt")
 
 
+def test_sandboxed_parse_rejects_large_file():
+    """Files larger than max_bytes are rejected before subprocess launch."""
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+        tf.write(b"x" * 128)
+        path = Path(tf.name)
+
+    try:
+        with pytest.raises(RuntimeError, match="rejected file larger than max_bytes"):
+            sandboxed_parse_binary(path, "pdf", max_bytes=64)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_sandboxed_parse_invalid_max_bytes():
+    """Non-positive max_bytes is rejected."""
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tf:
+        path = Path(tf.name)
+        with pytest.raises(ValueError, match="max_bytes must be positive"):
+            sandboxed_parse_binary(path, "pdf", max_bytes=0)
+
+
 def test_sandboxed_parse_malformed_docx():
     """Malformed DOCX should return an error from the subprocess and not crash the parent."""
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tf:

@@ -26,10 +26,44 @@ Security properties:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 MAX_OUTPUT_CHARS = 2_000_000  # 2 MB cap on extracted text
+
+
+def _apply_resource_limits() -> None:
+    """Apply optional POSIX rlimits for memory/CPU when configured."""
+    if os.name != "posix":
+        return
+
+    max_memory_mb = os.environ.get("MUNINN_PARSER_MAX_MEMORY_MB")
+    max_cpu_seconds = os.environ.get("MUNINN_PARSER_MAX_CPU_SECONDS")
+
+    if not max_memory_mb and not max_cpu_seconds:
+        return
+
+    try:
+        import resource  # POSIX only
+    except Exception:
+        return
+
+    if max_memory_mb:
+        try:
+            limit_bytes = int(max_memory_mb) * 1024 * 1024
+            rlimit_as = getattr(resource, "RLIMIT_AS", None)
+            if rlimit_as is not None:
+                resource.setrlimit(rlimit_as, (limit_bytes, limit_bytes))
+        except Exception:
+            pass
+
+    if max_cpu_seconds:
+        try:
+            limit_seconds = int(max_cpu_seconds)
+            resource.setrlimit(resource.RLIMIT_CPU, (limit_seconds, limit_seconds))
+        except Exception:
+            pass
 
 
 def _parse_pdf(path: Path) -> str:
@@ -91,6 +125,7 @@ def main() -> int:
         return 1
 
     try:
+        _apply_resource_limits()
         if source_type == "pdf":
             text = _parse_pdf(file_path)
         else:  # docx
