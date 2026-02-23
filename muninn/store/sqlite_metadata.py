@@ -203,6 +203,19 @@ class SQLiteMetadataStore:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_user_profiles_updated_at ON user_profiles(updated_at DESC);"
         )
+        # Mimir interop relay tables — imported locally to prevent circular
+        # imports at module load time (muninn.mimir.store → muninn.mimir →
+        # muninn.mimir.relay → ... none of which import sqlite_metadata).
+        # The try/except allows the base store to initialise cleanly in
+        # environments where the mimir sub-package is absent.
+        try:
+            from muninn.mimir.store import MIMIR_DDL_STATEMENTS as _mimir_ddl
+            for _stmt in _mimir_ddl:
+                conn.execute(_stmt)
+            logger.debug("Mimir DDL applied (%d statements).", len(_mimir_ddl))
+        except ImportError:
+            logger.debug("muninn.mimir not available; skipping Mimir DDL.")
+
         conn.execute(
             "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)",
             ("version", str(SCHEMA_VERSION))
