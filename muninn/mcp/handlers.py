@@ -34,6 +34,24 @@ logger = logging.getLogger("Muninn.mcp.handlers")
 
 _thread_local = threading.local()
 
+
+def _parse_positive_float_env(name: str, default: float, *, lower: float, upper: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except Exception:
+        return default
+    if not (lower <= value <= upper):
+        return default
+    return value
+
+
+def _write_timeout_seconds() -> float:
+    return _parse_positive_float_env("MUNINN_MCP_WRITE_TIMEOUT_SEC", 20.0, lower=0.1, upper=180.0)
+
+
 def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn, startup_warnings: Optional[List[str]] = None):
     """Handle protocol negotiation and server initialization."""
     if not isinstance(params, dict):
@@ -444,7 +462,13 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
         scope = "project"
 
     payload = {"content": args.get("content"), "metadata": metadata, "user_id": "global_user", "scope": scope}
-    resp = make_request_with_retry("POST", f"{SERVER_URL}/add", deadline_epoch=deadline, json=payload, timeout=10)
+    resp = make_request_with_retry(
+        "POST",
+        f"{SERVER_URL}/add",
+        deadline_epoch=deadline,
+        json=payload,
+        timeout=_write_timeout_seconds(),
+    )
     return resp.json()
 
 def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -470,7 +494,13 @@ def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float])
         "user_id": "global_user",
         "scope": "project",
     }
-    resp = make_request_with_retry("POST", f"{SERVER_URL}/add", deadline_epoch=deadline, json=payload, timeout=10)
+    resp = make_request_with_retry(
+        "POST",
+        f"{SERVER_URL}/add",
+        deadline_epoch=deadline,
+        json=payload,
+        timeout=_write_timeout_seconds(),
+    )
     return resp.json()
 
 

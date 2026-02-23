@@ -364,6 +364,7 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
         captured["method"] = method
         captured["url"] = url
         captured["json"] = kwargs.get("json")
+        captured["timeout"] = kwargs.get("timeout")
         return _Resp()
 
     monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
@@ -381,9 +382,43 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
 
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/add")
+    assert captured["timeout"] == 20.0
     metadata = captured["json"]["metadata"]
     assert metadata["source"] == "test"
     assert metadata["operator_model_profile"] == "balanced"
+
+
+def test_add_memory_timeout_can_be_configured(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setenv("MUNINN_MCP_WRITE_TIMEOUT_SEC", "45")
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    def _fake_request(method, url, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-add-memory-timeout",
+        {
+            "name": "add_memory",
+            "arguments": {
+                "content": "timeout test",
+                "metadata": {},
+            },
+        },
+    )
+
+    assert captured["timeout"] == 45.0
 
 
 def test_handle_call_tool_skips_preflight_when_autostart_disabled(monkeypatch):
