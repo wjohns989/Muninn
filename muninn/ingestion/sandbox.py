@@ -81,6 +81,9 @@ def sandboxed_parse_binary(
     source_type: str,
     *,
     timeout: float = 30.0,
+    max_bytes: Optional[int] = None,
+    max_memory_mb: Optional[int] = None,
+    max_cpu_seconds: Optional[int] = None,
     fallback_in_process: bool = False,
 ) -> str:
     """
@@ -96,6 +99,12 @@ def sandboxed_parse_binary(
         source_type: "pdf" or "docx".
         timeout: Maximum seconds to wait for the subprocess (default 30s).
                  On timeout the subprocess is killed and RuntimeError is raised.
+        max_bytes: Optional maximum file size in bytes. If set and the file size
+                   exceeds this value, parsing is rejected before subprocess launch.
+        max_memory_mb: Optional maximum memory (MB) for the parser subprocess.
+                       Enforced via POSIX rlimit if available.
+        max_cpu_seconds: Optional CPU time limit (seconds) for the parser subprocess.
+                         Enforced via POSIX rlimit if available.
         fallback_in_process: If True and subprocess fails due to infrastructure
                              reasons (not parser errors), attempt in-process parse.
                              Default False — safer to raise than silently bypass.
@@ -113,9 +122,37 @@ def sandboxed_parse_binary(
             f"sandboxed_parse_binary only supports 'pdf' and 'docx', got: {source_type!r}"
         )
 
+    def _coerce_positive_int(name: str, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be a positive integer, got: {value!r}")
+        if value <= 0:
+            raise ValueError(f"{name} must be positive, got: {value}")
+        return value
+
     resolved_path = Path(path).resolve()
     if not resolved_path.exists():
         raise RuntimeError(f"File not found: {resolved_path}")
+
+    if max_bytes is not None:
+        if max_bytes <= 0:
+            raise ValueError(f"max_bytes must be positive, got: {max_bytes}")
+        file_size = resolved_path.stat().st_size
+        if file_size > max_bytes:
+            raise RuntimeError(
+                f"Binary parser rejected file larger than max_bytes "
+                f"({file_size} > {max_bytes} bytes) for {resolved_path.name}"
+            )
+
+    if (max_memory_mb is not None or max_cpu_seconds is not None) and os.name != "posix":
+        raise RuntimeError(
+            "Parser resource limits (max_memory_mb/max_cpu_seconds) "
+            "require POSIX rlimits and are unsupported on this platform."
+        )
+
+    max_memory_mb = _coerce_positive_int("max_memory_mb", max_memory_mb)
+    max_cpu_seconds = _coerce_positive_int("max_cpu_seconds", max_cpu_seconds)
 
     cmd = [
         sys.executable,
@@ -125,12 +162,18 @@ def sandboxed_parse_binary(
         str(resolved_path),
     ]
 
+    env = _make_sandbox_env()
+    if max_memory_mb is not None:
+        env["MUNINN_PARSER_MAX_MEMORY_MB"] = str(max_memory_mb)
+    if max_cpu_seconds is not None:
+        env["MUNINN_PARSER_MAX_CPU_SECONDS"] = str(max_cpu_seconds)
+
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             timeout=timeout,
-            env=_make_sandbox_env(),
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         # Kill is implicit after TimeoutExpired when using capture_output

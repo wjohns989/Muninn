@@ -100,3 +100,5 @@ assets/*.png
 assets/*.jpg
 assets/*.ico
 !assets/README.md
+
+.worktrees/

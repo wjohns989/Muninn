@@ -159,6 +159,36 @@ Completed since last update:
    - `dev-cycle` now supports deferred mode (`--defer-benchmarks`) so active development can reuse existing live/legacy reports instead of regenerating benchmarks every tranche,
    - deferred mode now supports bounded freshness checks (`--max-reused-report-age-hours`) for reused evidence,
    - roadmap sequencing is now explicit: continue improvement/enhancement implementation with fast deterministic gates, reserve full benchmark matrix replay for release-readiness closure.
+48. Phase 4AH periodic-ingestion operational cadence baseline implemented:
+   - server lifecycle now supports optional periodic ingestion scheduling with overlap protection and runtime status tracking,
+   - authenticated control-plane endpoints now expose scheduler status + manual run + start/stop controls (`/ingest/periodic/*`),
+   - REST/MCP/SDK parity is extended for periodic-ingestion operations to keep multi-assistant workflows operationally consistent.
+49. Phase 4AI periodic-ingestion reliability hardening implemented:
+   - scheduler now applies exponential backoff + bounded jitter after failed cycles to reduce failure thrash and hot-loop risk,
+   - runtime status now exposes consecutive-failure depth and effective next-sleep diagnostics for operator visibility,
+   - deterministic tests now cover failure escalation and success-path reset semantics,
+   - periodic runs can now pin extraction to explicit model profile (`MUNINN_PERIODIC_INGESTION_MODEL_PROFILE`) for predictable latency/cost behavior,
+   - optional extraction bypass (`MUNINN_PERIODIC_INGESTION_SKIP_EXTRACTION`) now enables bulk-speed ingestion for replay/indexing workloads where entity extraction is not required.
+50. Phase 4AJ periodic-ingestion timeout governance implemented:
+   - per-memory extraction timeout control added for periodic runs (`MUNINN_PERIODIC_INGESTION_EXTRACT_TIMEOUT_SECONDS`),
+   - full periodic run timeout control added (`MUNINN_PERIODIC_INGESTION_RUN_TIMEOUT_SECONDS`) with explicit failure accounting/backoff interaction,
+   - extraction timeout path now degrades gracefully (empty extraction + continued ingest) instead of stalling the pipeline.
+51. Phase 4AK periodic-ingestion cold-start timeout hardening implemented:
+   - periodic scheduler now supports warm-up timeout bypass (`MUNINN_PERIODIC_INGESTION_RUN_TIMEOUT_SKIP_WARMUP_RUNS`) so first-run provider/model cold starts do not trigger false timeout failures,
+   - scheduler runtime status now exposes timeout-governance observability fields (`last_run_elapsed_seconds`, `last_run_timeout_enforced`),
+   - timeout-enforcement state is now returned in trigger responses for deterministic operator-side diagnostics.
+52. Phase 4AL profile-policy churn alerting baseline implemented:
+   - runtime alert evaluation added for profile-policy mutation churn with deterministic thresholds (`window`, `total churn`, `per-source churn`, `distinct-source churn`),
+   - optional webhook alert hook added for triggered churn alerts (`MUNINN_PROFILE_POLICY_ALERT_WEBHOOK_URL` + optional bearer token),
+   - REST/MCP/SDK parity shipped for alert evaluation (`GET /profiles/model/alerts`, `get_model_profile_alerts`).
+53. Phase 4AM local singleton-server lock hardening implemented:
+   - server startup now acquires a non-blocking process-level lease at `<data_dir>/.muninn_server.instance.lock` before memory/Qdrant initialization,
+   - duplicate `server.py` launches now fail fast with explicit lock-contended diagnostics instead of reaching Qdrant local lock crashes,
+   - startup contention behavior remains validated via stress harness single-owner metrics (`max_concurrent_listener_pids = 1` in current run).
+54. Phase 4AN cross-assistant MCP convergence doctor implemented:
+   - new CLI command `python -m muninn.cli doctor` validates token/url convergence across known MCP host configs plus authenticated server health,
+   - optional `--repair` now rewrites Muninn MCP entries to expected `MUNINN_AUTH_TOKEN` + `MUNINN_SERVER_URL`,
+   - `rotate-token` now patches both token and server URL to reduce drift reintroduction in multi-assistant setups.
 
 Verification:
 - Full suite now passes in-session: `418 passed, 2 skipped, 0 warnings`.
@@ -179,6 +209,11 @@ Verification:
   - `28 passed` across MCP transport protocol tests (`tests/test_mcp_wrapper_protocol.py`).
   - `30 passed` across MCP startup/bootstrap protocol tests (`tests/test_mcp_wrapper_protocol.py`) plus initialize smoke probe.
   - `11 passed` across benchmark helper apply/rollback flows (`tests/test_ollama_local_benchmark.py`).
+  - `22 passed` across periodic-ingestion slices (`tests/test_periodic_ingestion.py`, `tests/test_ingestion_manager.py`, `tests/test_memory_ingestion.py`).
+  - `128 passed` across SDK/MCP/security parity surfaces (`tests/test_sdk_client.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_v3_6_2_security.py`).
+  - `139 passed` across profile-alerting + MCP/SDK/security slices (`tests/test_memory_profiles.py`, `tests/test_sqlite_profile_policy_events.py`, `tests/test_mcp_wrapper_protocol.py`, `tests/test_sdk_client.py`, `tests/test_v3_6_2_security.py`).
+  - `39 passed` across startup-lock hardening slices (`tests/test_server_instance_lock.py`, `tests/test_v3_12_0_operational_hardening.py`).
+  - `45 passed` across CLI convergence/rotation slices (`tests/test_cli_doctor.py`, `tests/test_cli_rotate_token.py`, `tests/test_v3_15_0_ci_token_rotation.py`).
 - Compile checks passed for all touched modules/tests.
   - unified verdict command checks now pass: compile check + `32 passed` (`tests/test_ollama_local_benchmark.py`) + `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
   - deferred dev-cycle checks now pass: compile check + deferred report reuse/staleness tests in `tests/test_ollama_local_benchmark.py`.
@@ -204,11 +239,12 @@ Fixed in current implementation slice:
 
 Still open and blocking SOTA claims:
 1. Benchmark corpus breadth improved (now multi-bundle), but additional domain slices are still needed for broader external validity.
-2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) remains pending.
-3. Profile-level promotion criteria are partially open: routing, audit visibility, ability/resource benchmark plumbing, and controlled apply/rollback paths are now implemented; telemetry-backed automatic default-policy alerting and governance thresholds are still pending.
+2. Parser sandbox/process-isolation for optional binary backends (`pdf/docx`) is implemented at subprocess isolation baseline with optional POSIX resource caps; remaining gap is hard OS-level sandboxing policy on Windows (Job Objects/low-integrity equivalent) plus continuous adversarial corpus coverage.
+3. Profile-level promotion criteria are partially open: routing, audit visibility, ability/resource benchmark plumbing, controlled apply/rollback paths, and runtime profile-policy churn alerting are now implemented; remaining gap is closed-loop governance automation (CI/ops escalation policy + auto-remediation gating).
 4. Browser UI preference depth remains partially open: persistence is implemented, but advanced user-adaptive controls (profile presets, safety mode templates, benchmark launch UX) still need phased rollout.
 5. Unified SOTA+ verdict automation is partially closed: one-command promotion verdict emission + normalization hooks are now implemented; remaining work is external benchmark adapters, scheduled CI replay, and signed promotion-manifest issuance.
 6. Enhancement-vs-benchmark cadence is now codified: full matrix replay should run at release-readiness boundaries (or scheduled CI), not on every implementation tranche.
+7. Periodic ingestion cadence is now available for local/agent operations, but policy automation for benchmark replay cadence in CI remains pending.
 
 ---
 
@@ -598,6 +634,6 @@ This is core for vibecoders, not optional polish.
 4. Expand benchmark corpus with additional domain/noise/adversarial slices and refresh canonical artifact manifests.
 5. Add policy-approval manifest workflow so `dev-cycle --apply-policy` checkpoints are explicitly accepted/rejected before long-lived default policy adoption.
 6. Extend browser control center with profile-policy controls and benchmark/gate report visualization.
-7. Add alert hooks/threshold rules for profile-policy mutation events so abnormal profile churn is detectable in operations.
+7. Wire profile-policy churn alerts into production escalation paths (on-call sink, dashboard, and CI policy gates) with explicit runbook ownership.
 
 Completing these next actions keeps roadmap progression logically consistent while preserving merge hygiene, SOTA evidence quality, and operational ROI.

@@ -26,10 +26,59 @@ Security properties:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 MAX_OUTPUT_CHARS = 2_000_000  # 2 MB cap on extracted text
+
+
+def _apply_resource_limits() -> None:
+    """Apply optional POSIX rlimits for memory/CPU when configured.
+
+    If a limit is requested but cannot be applied, fail fast so the parent
+    process receives a deterministic error instead of running unbounded.
+    """
+    if os.name != "posix":
+        return
+
+    max_memory_mb = os.environ.get("MUNINN_PARSER_MAX_MEMORY_MB")
+    max_cpu_seconds = os.environ.get("MUNINN_PARSER_MAX_CPU_SECONDS")
+
+    if not max_memory_mb and not max_cpu_seconds:
+        return
+
+    try:
+        import resource  # POSIX only
+    except Exception as exc:
+        raise RuntimeError("Parser resource limits requested but 'resource' module is unavailable") from exc
+
+    def _parse_positive_int(value: str, label: str) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid {label} value: {value!r}") from exc
+        if parsed <= 0:
+            raise RuntimeError(f"{label} must be positive, got: {parsed}")
+        return parsed
+
+    def _set_limit(kind: int, limits: tuple[int, int], label: str) -> None:
+        try:
+            resource.setrlimit(kind, limits)
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(f"Failed to set parser {label} limit: {exc}") from exc
+
+    if max_memory_mb:
+        limit_mb = _parse_positive_int(max_memory_mb, "max_memory_mb")
+        rlimit_as = getattr(resource, "RLIMIT_AS", None)
+        if rlimit_as is None:
+            raise RuntimeError("Memory limit requested but RLIMIT_AS is unavailable on this platform")
+        limit_bytes = limit_mb * 1024 * 1024
+        _set_limit(rlimit_as, (limit_bytes, limit_bytes), "memory")
+
+    if max_cpu_seconds:
+        limit_seconds = _parse_positive_int(max_cpu_seconds, "max_cpu_seconds")
+        _set_limit(resource.RLIMIT_CPU, (limit_seconds, limit_seconds), "CPU")
 
 
 def _parse_pdf(path: Path) -> str:
@@ -91,6 +140,7 @@ def main() -> int:
         return 1
 
     try:
+        _apply_resource_limits()
         if source_type == "pdf":
             text = _parse_pdf(file_path)
         else:  # docx
