@@ -234,11 +234,6 @@ def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any
     return _internal_worker(task_id, name, arguments, send_notif)
 
 def send_json_rpc(message: Dict[str, Any]) -> None:
-    try:
-        with open("C:\\Users\\user\\muninn_mcp\\mcp_debug.log", "a") as f:
-            f.write(f"TEST LOG: {message}\n")
-    except Exception:
-        pass
     _server.send_rpc(message)
 
 def _send_json_rpc_error(msg_id: Any, code: int, message: str) -> None:
@@ -254,6 +249,51 @@ def _should_dispatch_in_background(msg: Dict[str, Any]) -> bool:
     if method == "tools/call" and _env_flag("MUNINN_MCP_BACKGROUND_TOOLS_CALL", False):
         return True
     return False
+
+_OPTIONAL_CAPABILITY_METHOD_RESULTS: Dict[str, Dict[str, Any]] = {
+    "resources/list": {"resources": []},
+    "resources/templates/list": {"resourceTemplates": []},
+    "prompts/list": {"prompts": []},
+}
+
+
+def _handle_optional_capability_method(msg_id: Any, method: str, params: Any) -> bool:
+    """
+    Handle optional MCP methods with graceful fallbacks.
+    This avoids hard method-not-found failures for clients that probe
+    optional capability surfaces unconditionally.
+    """
+    if method in _OPTIONAL_CAPABILITY_METHOD_RESULTS:
+        if msg_id is not None:
+            send_json_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": _OPTIONAL_CAPABILITY_METHOD_RESULTS[method],
+                }
+            )
+        return True
+
+    if method == "resources/read":
+        if not isinstance(params, dict):
+            if msg_id is not None:
+                _send_json_rpc_error(msg_id, -32602, "resources/read params must be an object.")
+            return True
+        if msg_id is not None:
+            send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"contents": []}})
+        return True
+
+    if method == "prompts/get":
+        if not isinstance(params, dict):
+            if msg_id is not None:
+                _send_json_rpc_error(msg_id, -32602, "prompts/get params must be an object.")
+            return True
+        if msg_id is not None:
+            send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"messages": []}})
+        return True
+
+    return False
+
 
 def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
     msg_id = msg.get("id")
@@ -302,6 +342,11 @@ def _dispatch_rpc_message(msg: Dict[str, Any]) -> None:
             if msg_id: _send_json_rpc_error(msg_id, -32600, "Server not initialized. Send initialize then notifications/initialized.")
             return
         handle_get_task_result(msg_id, params)
+    elif method in ("resources/list", "resources/templates/list", "resources/read", "prompts/list", "prompts/get"):
+        if not _SESSION_STATE.get("initialized"):
+            if msg_id: _send_json_rpc_error(msg_id, -32600, "Server not initialized. Send initialize then notifications/initialized.")
+            return
+        _handle_optional_capability_method(msg_id, method, params)
     elif method == "ping":
         if msg_id: send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {}})
     else:

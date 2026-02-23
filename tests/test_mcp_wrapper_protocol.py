@@ -364,6 +364,7 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
         captured["method"] = method
         captured["url"] = url
         captured["json"] = kwargs.get("json")
+        captured["timeout"] = kwargs.get("timeout")
         return _Resp()
 
     monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
@@ -381,9 +382,43 @@ def test_add_memory_injects_operator_profile_into_metadata(monkeypatch):
 
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/add")
+    assert captured["timeout"] == 20.0
     metadata = captured["json"]["metadata"]
     assert metadata["source"] == "test"
     assert metadata["operator_model_profile"] == "balanced"
+
+
+def test_add_memory_timeout_can_be_configured(monkeypatch):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "get_git_info", lambda: {"project": "muninn", "branch": "main"})
+    monkeypatch.setenv("MUNINN_MCP_WRITE_TIMEOUT_SEC", "45")
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"success": True}
+
+    def _fake_request(method, url, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return _Resp()
+
+    monkeypatch.setattr(mcp_wrapper, "make_request_with_retry", _fake_request)
+
+    mcp_wrapper.handle_call_tool(
+        "req-add-memory-timeout",
+        {
+            "name": "add_memory",
+            "arguments": {
+                "content": "timeout test",
+                "metadata": {},
+            },
+        },
+    )
+
+    assert captured["timeout"] == 45.0
 
 
 def test_handle_call_tool_skips_preflight_when_autostart_disabled(monkeypatch):
@@ -511,6 +546,102 @@ def test_unknown_notification_method_is_ignored(monkeypatch):
     })
 
     assert sent == []
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "expected_key"),
+    [
+        ("resources/list", {}, "resources"),
+        ("resources/templates/list", {}, "resourceTemplates"),
+        ("resources/read", {"uri": "memory://noop"}, "contents"),
+        ("prompts/list", {}, "prompts"),
+        ("prompts/get", {"name": "noop"}, "messages"),
+    ],
+)
+def test_optional_capability_methods_return_non_fatal_responses(
+    monkeypatch,
+    method: str,
+    params: dict,
+    expected_key: str,
+):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    mcp_wrapper._dispatch_rpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": f"req-{method}",
+            "method": method,
+            "params": params,
+        }
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["id"] == f"req-{method}"
+    assert "result" in sent[0]
+    assert expected_key in sent[0]["result"]
+    assert "error" not in sent[0]
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "resources/list",
+        "resources/templates/list",
+        "resources/read",
+        "prompts/list",
+        "prompts/get",
+    ],
+)
+def test_optional_capability_methods_require_initialize(monkeypatch, method: str):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+
+    mcp_wrapper._dispatch_rpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": f"req-uninit-{method}",
+            "method": method,
+            "params": {},
+        }
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32600
+    assert "Server not initialized" in sent[0]["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("method", "expected_message"),
+    [
+        ("resources/read", "resources/read params must be an object."),
+        ("prompts/get", "prompts/get params must be an object."),
+    ],
+)
+def test_optional_capability_methods_validate_params_type(
+    monkeypatch,
+    method: str,
+    expected_message: str,
+):
+    sent = []
+    monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
+    mcp_wrapper._SESSION_STATE["negotiated"] = True
+    mcp_wrapper._SESSION_STATE["initialized"] = True
+
+    mcp_wrapper._dispatch_rpc_message(
+        {
+            "jsonrpc": "2.0",
+            "id": f"req-invalid-{method}",
+            "method": method,
+            "params": "bad",
+        }
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["error"]["code"] == -32602
+    assert sent[0]["error"]["message"] == expected_message
 
 
 def test_background_dispatch_selection():
