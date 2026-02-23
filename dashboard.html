@@ -997,6 +997,13 @@
         let API_BASE = window.location.protocol === 'file:' ? 'http://localhost:42069' : window.location.origin;
         let AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
 
+        // XSS prevention: escape HTML entities in user-influenced strings
+        function esc(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
         /* ================================
            V3.4.0 UX Utilities
            ================================ */
@@ -1011,7 +1018,13 @@
             if (type === 'success') icon = '✓';
             if (type === 'error') icon = '⚠️';
 
-            toast.innerHTML = `<span>${icon}</span> <span>${message}</span>`;
+            const iconSpan = document.createElement('span');
+            iconSpan.textContent = icon;
+            const msgSpan = document.createElement('span');
+            msgSpan.textContent = message;
+            toast.appendChild(iconSpan);
+            toast.appendChild(document.createTextNode(' '));
+            toast.appendChild(msgSpan);
             container.appendChild(toast);
 
             // Auto-hide after 3 seconds
@@ -1023,16 +1036,22 @@
             }, 3000);
         }
 
-        // Override default log to also show toasts for errors or important info
-        const originalLog = log;
-        log = function (message) {
-            originalLog(message); // Keep terminal logging
-            if (message.includes('Error') || message.includes('Failed')) {
-                showToast(message, 'error');
-            } else if (message.includes('Success') || message.includes('Complete')) {
-                showToast(message, 'success');
+        // Base log function — renders timestamped lines into the activity log
+        function log(msg) {
+            const logDiv = document.getElementById('activity-log');
+            const time = new Date().toLocaleTimeString();
+            const line = document.createElement('div');
+            line.style.marginBottom = '0.5rem';
+            line.textContent = `[${time}] ${msg}`;
+            logDiv.prepend(line);
+
+            // Also emit toasts for important messages
+            if (msg.includes('Error') || msg.includes('Failed')) {
+                showToast(msg, 'error');
+            } else if (msg.includes('Success') || msg.includes('Complete')) {
+                showToast(msg, 'success');
             }
-        };
+        }
 
         // --- Copy to Clipboard ---
         async function copyToClipboard(text) {
@@ -1220,7 +1239,11 @@
                 const errEl = document.createElement('div');
                 errEl.className = 'result-item';
                 errEl.style.borderColor = 'var(--rose-500)';
-                errEl.innerHTML = `<strong style="color:var(--rose-500)">Error:</strong> ${data.error}`;
+                const errLabel = document.createElement('strong');
+                errLabel.style.color = 'var(--rose-500)';
+                errLabel.textContent = 'Error: ';
+                errEl.appendChild(errLabel);
+                errEl.appendChild(document.createTextNode(data.error));
                 resultsDiv.appendChild(errEl);
                 return;
             }
@@ -1240,7 +1263,15 @@
                 synthEl.style.background = 'rgba(16, 185, 129, 0.05)';
                 synthEl.style.borderLeftColor = 'var(--emerald-500)';
                 synthEl.style.borderColor = 'rgba(16, 185, 129, 0.2)';
-                synthEl.innerHTML = `<b style="color: var(--emerald-500)">Scout Synthesis Result</b><p style="margin:0; color:var(--slate-300)">${data.synthesis}</p>`;
+                const synthTitle = document.createElement('b');
+                synthTitle.style.color = 'var(--emerald-500)';
+                synthTitle.textContent = 'Scout Synthesis Result';
+                const synthBody = document.createElement('p');
+                synthBody.style.margin = '0';
+                synthBody.style.color = 'var(--slate-300)';
+                synthBody.textContent = data.synthesis;
+                synthEl.appendChild(synthTitle);
+                synthEl.appendChild(synthBody);
                 resultsDiv.appendChild(synthEl);
             }
 
@@ -1336,30 +1367,73 @@
             btn.textContent = "Scan Local Filesystem";
 
             if (data.error) {
-                resDiv.innerHTML = `<div style="color:var(--rose-500)">Error: ${data.error}</div>`;
+                resDiv.textContent = '';
+                const errDiv = document.createElement('div');
+                errDiv.style.color = 'var(--rose-500)';
+                errDiv.textContent = 'Error: ' + data.error;
+                resDiv.appendChild(errDiv);
                 return;
             }
 
             if (!data.sources || data.sources.length === 0) {
-                resDiv.innerHTML = "<div class='help-box'>No supported legacy chat contexts found on host.</div>";
+                resDiv.textContent = '';
+                const emptyDiv = document.createElement('div');
+                emptyDiv.className = 'help-box';
+                emptyDiv.textContent = 'No supported legacy chat contexts found on host.';
+                resDiv.appendChild(emptyDiv);
                 return;
             }
 
-            let html = `<table class="legacy-table">
-                <thead><tr><th>Origin</th><th>Path</th><th>Integrity</th><th>Action</th></tr></thead>
-                <tbody>`;
-
-            data.sources.forEach(s => {
-                const confClass = `badge-${s.confidence}`;
-                html += `<tr>
-                    <td><strong>${s.provider}</strong></td>
-                    <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${s.path}">${s.path}</td>
-                    <td><span class="legacy-badge ${confClass}">${s.confidence}</span></td>
-                    <td><button onclick="importLegacy('${s.source_id}')" class="btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Import Node</button></td>
-                </tr>`;
+            // Build table safely via DOM (no innerHTML with user data)
+            resDiv.textContent = '';
+            const table = document.createElement('table');
+            table.className = 'legacy-table';
+            const thead = document.createElement('thead');
+            const headRow = document.createElement('tr');
+            ['Origin', 'Path', 'Integrity', 'Action'].forEach(h => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                headRow.appendChild(th);
             });
-            html += `</tbody></table>`;
-            resDiv.innerHTML = html;
+            thead.appendChild(headRow);
+            table.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            data.sources.forEach(s => {
+                const tr = document.createElement('tr');
+
+                const providerTd = document.createElement('td');
+                const strong = document.createElement('strong');
+                strong.textContent = s.provider || '—';
+                providerTd.appendChild(strong);
+                tr.appendChild(providerTd);
+
+                const pathTd = document.createElement('td');
+                pathTd.style.cssText = 'max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+                pathTd.title = s.path || '';
+                pathTd.textContent = s.path || '';
+                tr.appendChild(pathTd);
+
+                const confTd = document.createElement('td');
+                const badge = document.createElement('span');
+                badge.className = 'legacy-badge badge-' + (s.confidence || 'low');
+                badge.textContent = s.confidence || 'unknown';
+                confTd.appendChild(badge);
+                tr.appendChild(confTd);
+
+                const actionTd = document.createElement('td');
+                const importBtn = document.createElement('button');
+                importBtn.className = 'btn-secondary';
+                importBtn.style.cssText = 'padding:0.5rem 1rem;font-size:0.8rem;';
+                importBtn.textContent = 'Import Node';
+                importBtn.addEventListener('click', () => importLegacy(s.source_id));
+                actionTd.appendChild(importBtn);
+                tr.appendChild(actionTd);
+
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            resDiv.appendChild(table);
             log(`Identified ${data.sources.length} viable legacy targets.`);
         }
 
