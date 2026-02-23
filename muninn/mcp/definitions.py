@@ -383,12 +383,115 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
             },
             "required": ["bundle"]
         }
+    },
+    {
+        "name": "mimir_relay",
+        "description": (
+            "Relay an instruction to another AI agent (Claude Code, Codex CLI, Gemini CLI) "
+            "via the IRP/1 Interop Relay Protocol. Muninn selects the best provider based on "
+            "memory-aware routing, enforces policy (redaction, hop limits, consent), and returns "
+            "a structured RelayResult. "
+            "Modes: A=Advisory (observation only), B=Structured (single-provider execution), "
+            "C=Reconcile (multi-provider consensus). "
+            "Set provider='auto' to let Muninn choose. "
+            "The run is persisted to the interop_runs audit table and all policy events are logged."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instruction": {
+                    "type": "string",
+                    "description": "The instruction or prompt to relay to the target agent."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["A", "B", "C"],
+                    "default": "A",
+                    "description": (
+                        "IRP/1 relay mode. "
+                        "A=Advisory (probe/observe, no write), "
+                        "B=Structured (single-provider execution), "
+                        "C=Reconcile (multi-provider consensus with conflict resolution)."
+                    )
+                },
+                "provider": {
+                    "type": "string",
+                    "enum": ["claude_code", "codex_cli", "gemini_cli", "auto"],
+                    "default": "auto",
+                    "description": (
+                        "Target provider. 'auto' triggers memory-aware scoring to select "
+                        "the highest-confidence available provider."
+                    )
+                },
+                "user_id": {
+                    "type": "string",
+                    "default": "global_user",
+                    "description": "User namespace for memory scoping, audit logging, and consent checks."
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 131072,
+                    "default": 4096,
+                    "description": "Maximum output tokens to request from the target provider."
+                },
+                "context": {
+                    "type": "object",
+                    "description": (
+                        "Optional free-form context dictionary forwarded verbatim inside the "
+                        "IRP envelope. Useful for passing project metadata, conversation history "
+                        "summaries, or structured task parameters to the remote agent."
+                    )
+                },
+                "policy": {
+                    "type": "object",
+                    "description": "Optional IRP/1 policy overrides for this relay call.",
+                    "properties": {
+                        "max_hops": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "default": 3,
+                            "description": "Maximum number of provider hops before the relay aborts."
+                        },
+                        "timeout_seconds": {
+                            "type": "number",
+                            "minimum": 1.0,
+                            "maximum": 300.0,
+                            "default": 30.0,
+                            "description": "Wall-clock timeout for the entire relay operation."
+                        },
+                        "allow_redaction": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "When true, PII/secret patterns are redacted from the instruction before forwarding."
+                        },
+                        "require_consent": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "When true, the relay is blocked unless the user has an active consent record."
+                        },
+                        "network": {
+                            "type": "string",
+                            "enum": ["allow_all", "local_only", "deny_all"],
+                            "default": "allow_all",
+                            "description": (
+                                "Network policy. 'local_only' restricts relay to providers "
+                                "reachable without external network calls. 'deny_all' blocks "
+                                "all outbound relay (useful for dry-run/policy testing)."
+                            )
+                        }
+                    }
+                }
+            },
+            "required": ["instruction"]
+        }
     }
 ]
 
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
-    "search_memory", "hunt_memory", "get_all_memories", "get_project_goal", 
+    "search_memory", "hunt_memory", "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events",
     "export_handoff", "discover_legacy_sources",
     "get_temporal_knowledge", "create_federation_manifest", "calculate_federation_delta", "create_federation_bundle"
@@ -402,3 +505,7 @@ IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
     "import_handoff", "apply_federation_bundle",
     "set_project_instruction"
 })
+
+# mimir_relay creates a new interop_runs record on every call and may have
+# side-effects on the remote agent — it is therefore not read-only or idempotent.
+MIMIR_TOOLS = {"mimir_relay"}
