@@ -1,0 +1,89 @@
+{
+  "metrics": {
+    "search": {
+      "ndcg": 0.6487070625036495,
+      "recall": 1.0,
+      "p50_ms": 2086.4729000004445
+    },
+    "hunt": {
+      "ndcg": 0.651394103483979,
+      "recall": 1.0,
+      "p50_ms": 2264.038700001038
+    },
+    "delta": {
+      "ndcg": 0.002687040980329458,
+      "recall": 0.0,
+      "ndcg_pct": 0.4142148491429969,
+      "recall_pct": 0.0,
+      "latency_multiplier": 1.0851033339568203
+    }
+  },
+  "by_type_delta": {
+    "single-session-qa": {
+      "ndcg_delta": 0.002687040980329569,
+      "count": 10.0
+    }
+  },
+  "search_report": {
+    "dataset_path": "eval\\data\\longmemeval_synthetic_v1.jsonl",
+    "server_url": "http://localhost:42069",
+    "k": 10,
+    "total_cases": 10,
+    "evaluated_cases": 10,
+    "skipped_cases": 0,
+    "mean_ndcg_at_k": 0.6487070625036495,
+    "mean_recall_at_k": 1.0,
+    "p50_latency_ms": 2086.4729000004445,
+    "p95_latency_ms": 2341.0296000001836,
+    "by_question_type": {
+      "single-session-qa": {
+        "count": 10.0,
+        "mean_ndcg_at_10": 0.6487070625036495,
+        "mean_recall_at_10": 1.0
+      }
+    },
+    "results": [
+      "CaseResult(question_id='lme_syn_001', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2086.4729000004445, ranked_ids=['lme_session_001_a_0001_0_use', 'lme_session_001_a_0003_2_use', 'lme_session_001_a_0002_1_ass', 'lme_session_001_a_0004_3_ass'], relevant_ids=['lme_session_001_a_0003_2_use', 'lme_session_001_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_002', question_type='single-session-qa', ndcg_at_k=0.6934264036172708, recall_at_k=1.0, latency_ms=2341.0296000001836, ranked_ids=['lme_session_002_a_0001_0_use', 'lme_session_002_a_0003_2_use', 'lme_session_002_a_0004_3_ass', 'lme_session_002_a_0002_1_ass'], relevant_ids=['lme_session_002_a_0003_2_use', 'lme_session_002_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_003', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2086.744100000942, ranked_ids=['lme_session_003_a_0001_0_use', 'lme_session_003_a_0003_2_use', 'lme_session_003_a_0002_1_ass', 'lme_session_003_a_0004_3_ass'], relevant_ids=['lme_session_003_a_0003_2_use', 'lme_session_003_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_004', question_type='single-session-qa', ndcg_at_k=0.6934264036172708, recall_at_k=1.0, latency_ms=2075.025000000096, ranked_ids=['lme_session_004_a_0001_0_use', 'lme_session_004_a_0003_2_use', 'lme_session_004_a_0004_3_ass', 'lme_session_004_a_0002_1_ass'], relevant_ids=['lme_session_004_a_0003_2_use', 'lme_session_004_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_005', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2088.290199999392, ranked_ids=['lme_session_005_a_0001_0_use', 'lme_session_005_a_0003_2_use', 'lme_session_005_a_0002_1_ass', 'lme_session_005_a_0004_3_ass'], relevant_ids=['lme_session_005_a_0003_2_use', 'lme_session_005_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_006', question_type='single-session-qa', ndcg_at_k=0.5706417189553201, recall_at_k=1.0, latency_ms=2082.0469000009325, ranked_ids=['lme_session_006_a_0001_0_use', 'lme_session_006_a_0002_1_ass', 'lme_session_006_a_0003_2_use', 'lme_session_006_a_0004_3_ass'], relevant_ids=['lme_session_006_a_0003_2_use', 'lme_session_006_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_007', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2072.8440999992017, ranked_ids=['lme_session_007_a_0001_0_use', 'lme_session_007_a_0003_2_use', 'lme_session_007_a_0002_1_ass', 'lme_session_007_a_0004_3_ass'], relevant_ids=['lme_session_007_a_0003_2_use', 'lme_session_007_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_008', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2087.255999998888, ranked_ids=['lme_session_008_a_0001_0_use', 'lme_session_008_a_0003_2_use', 'lme_session_008_a_0002_1_ass', 'lme_session_008_a_0004_3_ass'], relevant_ids=['lme_session_008_a_0003_2_use', 'lme_session_008_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_009', question_type='single-session-qa', ndcg_at_k=0.6240505200038379, recall_at_k=1.0, latency_ms=2085.785900000701, ranked_ids=['lme_session_009_a_0001_0_use', 'lme_session_009_a_0003_2_use', 'lme_session_009_a_0001_0_use', 'lme_session_009_a_0002_1_ass', 'lme_session_009_a_0004_3_ass', 'lme_session_009_a_0002_1_ass'], relevant_ids=['lme_session_009_a_0003_2_use', 'lme_session_009_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_010', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2097.498799999812, ranked_ids=['lme_session_010_a_0001_0_use', 'lme_session_010_a_0003_2_use', 'lme_session_010_a_0002_1_ass', 'lme_session_010_a_0004_3_ass'], relevant_ids=['lme_session_010_a_0003_2_use', 'lme_session_010_a_0004_3_ass'])"
+    ]
+  },
+  "hunt_report": {
+    "dataset_path": "eval\\data\\longmemeval_synthetic_v1.jsonl",
+    "server_url": "http://localhost:42069",
+    "k": 10,
+    "total_cases": 10,
+    "evaluated_cases": 10,
+    "skipped_cases": 0,
+    "mean_ndcg_at_k": 0.651394103483979,
+    "mean_recall_at_k": 1.0,
+    "p50_latency_ms": 2264.038700001038,
+    "p95_latency_ms": 2590.6490999987,
+    "by_question_type": {
+      "single-session-qa": {
+        "count": 10.0,
+        "mean_ndcg_at_10": 0.6513941034839791,
+        "mean_recall_at_10": 1.0
+      }
+    },
+    "results": [
+      "CaseResult(question_id='lme_syn_001', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2330.0512000005256, ranked_ids=['lme_session_001_a_0001_0_use', 'lme_session_001_a_0003_2_use', 'lme_session_001_a_0002_1_ass', 'lme_session_001_a_0004_3_ass'], relevant_ids=['lme_session_001_a_0003_2_use', 'lme_session_001_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_002', question_type='single-session-qa', ndcg_at_k=0.6934264036172708, recall_at_k=1.0, latency_ms=2117.8185000007943, ranked_ids=['lme_session_002_a_0001_0_use', 'lme_session_002_a_0003_2_use', 'lme_session_002_a_0004_3_ass', 'lme_session_002_a_0002_1_ass'], relevant_ids=['lme_session_002_a_0003_2_use', 'lme_session_002_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_003', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2120.8354999998846, ranked_ids=['lme_session_003_a_0001_0_use', 'lme_session_003_a_0003_2_use', 'lme_session_003_a_0002_1_ass', 'lme_session_003_a_0004_3_ass'], relevant_ids=['lme_session_003_a_0003_2_use', 'lme_session_003_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_004', question_type='single-session-qa', ndcg_at_k=0.6934264036172708, recall_at_k=1.0, latency_ms=2170.807500000592, ranked_ids=['lme_session_004_a_0001_0_use', 'lme_session_004_a_0003_2_use', 'lme_session_004_a_0004_3_ass', 'lme_session_004_a_0002_1_ass'], relevant_ids=['lme_session_004_a_0003_2_use', 'lme_session_004_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_005', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2218.490000001111, ranked_ids=['lme_session_005_a_0001_0_use', 'lme_session_005_a_0003_2_use', 'lme_session_005_a_0002_1_ass', 'lme_session_005_a_0004_3_ass'], relevant_ids=['lme_session_005_a_0003_2_use', 'lme_session_005_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_006', question_type='single-session-qa', ndcg_at_k=0.5706417189553201, recall_at_k=1.0, latency_ms=2461.948800000755, ranked_ids=['lme_session_006_a_0001_0_use', 'lme_session_006_a_0002_1_ass', 'lme_session_006_a_0003_2_use', 'lme_session_006_a_0004_3_ass'], relevant_ids=['lme_session_006_a_0003_2_use', 'lme_session_006_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_007', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2590.6490999987, ranked_ids=['lme_session_007_a_0001_0_use', 'lme_session_007_a_0003_2_use', 'lme_session_007_a_0002_1_ass', 'lme_session_007_a_0004_3_ass'], relevant_ids=['lme_session_007_a_0003_2_use', 'lme_session_007_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_008', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2293.0512000002636, ranked_ids=['lme_session_008_a_0001_0_use', 'lme_session_008_a_0003_2_use', 'lme_session_008_a_0002_1_ass', 'lme_session_008_a_0004_3_ass'], relevant_ids=['lme_session_008_a_0003_2_use', 'lme_session_008_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_009', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2273.9942999996856, ranked_ids=['lme_session_009_a_0001_0_use', 'lme_session_009_a_0003_2_use', 'lme_session_009_a_0002_1_ass', 'lme_session_009_a_0004_3_ass'], relevant_ids=['lme_session_009_a_0003_2_use', 'lme_session_009_a_0004_3_ass'])",
+      "CaseResult(question_id='lme_syn_010', question_type='single-session-qa', ndcg_at_k=0.6509209298071326, recall_at_k=1.0, latency_ms=2264.038700001038, ranked_ids=['lme_session_010_a_0001_0_use', 'lme_session_010_a_0003_2_use', 'lme_session_010_a_0002_1_ass', 'lme_session_010_a_0004_3_ass'], relevant_ids=['lme_session_010_a_0003_2_use', 'lme_session_010_a_0004_3_ass'])"
+    ]
+  }
+}
