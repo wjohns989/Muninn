@@ -35,6 +35,12 @@ SUPPORTED_EXTENSIONS = {
     ".vscdb": "sqlite",
     # Zed AI conversation files (plain-text role/separator format)
     ".zed": "text",
+    # Images (Phase 20)
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".png": "image",
+    ".webp": "image",
+    ".bmp": "image",
 }
 
 CHAT_ROLE_KEYS = ("role", "speaker", "author", "sender")

@@ -9,7 +9,7 @@ import concurrent.futures
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Sequence, Set, Any
+from typing import Iterable, List, Sequence, Set, Any, Dict
 
 from muninn.ingestion.models import IngestionReport, IngestionSourceResult
 from muninn.ingestion.parser import (
@@ -19,6 +19,7 @@ from muninn.ingestion.parser import (
     infer_source_type,
     parse_source,
 )
+from muninn.extraction.vision_adapter import VisionAdapter
 
 MAX_INGEST_FILE_SIZE_BYTES = 100 * 1024 * 1024
 MAX_CHUNK_SIZE_CHARS = 20_000
@@ -53,6 +54,7 @@ def _ingest_worker(
     min_chunk: int,
     chronological_order: str,
     allowed_roots_str: List[str],
+    vision_config: Dict[str, Any] | None = None,
 ) -> IngestionSourceResult:
     """Worker function for parallel ingestion."""
     # Reconstruct allowed roots from strings to ensure clean pickle state
@@ -98,7 +100,28 @@ def _ingest_worker(
         return result
 
     try:
-        text = parse_source(path, source_type)
+        if source_type == "image":
+            # Phase 20: Vision support
+            if not vision_config or not vision_config.get("enabled"):
+                result.status = "skipped"
+                result.skipped_reason = "vision_disabled"
+                return result
+            
+            vision = VisionAdapter(
+                enabled=True,
+                provider=vision_config.get("provider", "ollama"),
+                base_url=vision_config.get("ollama_url", "http://localhost:11434"),
+                model=vision_config.get("model", "llava"),
+                timeout_seconds=vision_config.get("timeout_seconds", 30.0),
+            )
+            text = vision.describe_image_sync(str(path))
+            if not text:
+                result.status = "failed"
+                result.errors.append("Vision generation failed or returned empty")
+                return result
+        else:
+            text = parse_source(path, source_type)
+
         source_sha256 = compute_file_sha256(path)
         source_mtime = path.stat().st_mtime
         source_mtime_iso = datetime.fromtimestamp(
@@ -140,6 +163,7 @@ class IngestionPipeline:
         chunk_overlap_chars: int = 150,
         min_chunk_chars: int = 120,
         allowed_roots: Sequence[str] | None = None,
+        vision_config: Dict[str, Any] | None = None,
     ):
         self.max_file_size_bytes = max_file_size_bytes
         self.chunk_size_chars = chunk_size_chars
@@ -151,6 +175,7 @@ class IngestionPipeline:
             else _default_allowed_roots()
         )
         self.allowed_roots = sorted({str(root): root for root in roots}.values(), key=str)
+        self.vision_config = vision_config
 
     def resolve_source_path(self, source: str) -> Path:
         return Path(source).expanduser().resolve()
@@ -313,6 +338,7 @@ class IngestionPipeline:
                     min_chunk,
                     chronological_order,
                     allowed_roots_str,
+                    self.vision_config,
                 ): idx
                 for idx, path in enumerate(expanded)
             }
