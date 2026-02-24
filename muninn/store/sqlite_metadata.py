@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS memories (
     -- "global"  = always visible regardless of current project
     scope           TEXT NOT NULL DEFAULT 'project',
 
+    -- Multimodal support (v3.20.0)
+    media_type      TEXT DEFAULT 'text',
+
     -- Embedding Reference
     vector_id       TEXT,
     embedding_model TEXT DEFAULT 'nomic-embed-text',
@@ -73,6 +76,7 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(consolidated);",
     # NOTE: idx_memories_scope is NOT here — it must be created AFTER the scope column
     # migration runs in _initialize() (see _ensure_column_exists call below).
+    "CREATE INDEX IF NOT EXISTS idx_memories_media_type ON memories(media_type);",
 ]
 
 SCHEMA_META = """
@@ -204,8 +208,12 @@ class SQLiteMetadataStore:
         # IMPORTANT: idx_memories_scope must be created AFTER this call; it cannot be in
         # CREATE_INDEXES because the column may not exist yet in pre-v3.11.0 databases.
         self._ensure_column_exists(conn, "memories", "scope", "TEXT NOT NULL DEFAULT 'project'")
+        self._ensure_column_exists(conn, "memories", "media_type", "TEXT DEFAULT 'text'")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_media_type ON memories(media_type);"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_feedback_scope_time ON retrieval_feedback(user_id, namespace, project, created_at DESC);"
@@ -290,6 +298,17 @@ class SQLiteMetadataStore:
         # v3.11.0: normalize scope — treat NULL or unknown values as "project" (backward compat)
         if d.get("scope") not in ("project", "global"):
             d["scope"] = "project"
+        
+        # v3.20.0: normalize media_type
+        if d.get("media_type"):
+            try:
+                from muninn.core.types import MediaType
+                d["media_type"] = MediaType(d.get("media_type"))
+            except ValueError:
+                d["media_type"] = "text"
+        else:
+            d["media_type"] = "text"
+
         return MemoryRecord(**d)
 
 
@@ -836,7 +855,7 @@ class SQLiteMetadataStore:
                 try:
                     rank_value = int(rank)
                     if rank_value > 0:
-                        rank_propensity = 1.0 / math.log2(rank_value + 1.0)
+                        rank_propensity = 1.0 / math.log2(rv + 1.0)
                 except (TypeError, ValueError):
                     pass
             
@@ -1113,8 +1132,8 @@ class SQLiteMetadataStore:
                 novelty_score, created_at, ingested_at, last_accessed, expires_at,
                 source_agent, project, branch, namespace, provenance,
                 vector_id, embedding_model, consolidated, parent_id,
-                consolidation_gen, metadata, scope
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                consolidation_gen, metadata, scope, media_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.id, record.content, record.memory_type.value,
                 record.importance, record.recency_score, record.access_count,
@@ -1125,7 +1144,7 @@ class SQLiteMetadataStore:
                 record.vector_id, record.embedding_model,
                 int(record.consolidated), record.parent_id,
                 record.consolidation_gen, json.dumps(record.metadata),
-                record.scope
+                record.scope, record.media_type.value
             )
         )
         conn.commit()
@@ -1212,6 +1231,7 @@ class SQLiteMetadataStore:
         created_at_min: Optional[float] = None,
         created_at_max: Optional[float] = None,
         scope: Optional[str] = None,
+        media_type: Optional[str] = None,
     ) -> List[MemoryRecord]:
         conn = self._get_conn()
         conditions = []
@@ -1240,6 +1260,10 @@ class SQLiteMetadataStore:
         if scope is not None:
             conditions.append("scope = ?")
             params.append(scope)
+        # v3.20.0: Multimodal filter
+        if media_type is not None:
+            conditions.append("media_type = ?")
+            params.append(media_type)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
