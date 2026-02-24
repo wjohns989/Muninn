@@ -409,9 +409,54 @@ No new environment variables. Parser sandboxing is always active for PDF/DOCX (n
 
 ---
 
+## Phase 21: RL-Driven Memory Governance (Policy-aware decay)
+
+**Status**: PIVOTED to Elo-Rated SNIPS Governance (see Phase 23).
+
+---
+
+## Phase 22: Temporal Knowledge Graph (TKG) & Shadowing
+
+**Goal**: Support bi-temporal reasoning and logical context reconstruction over time.
+
+### Key Objectives
+
+- [x] **Valid-Time Relations**: Formalize `VALID_DURING` edges in Kuzu schema.
+- [x] **Memory Shadowing**: Implement shadowing logic to preserve but bypass outdated facts.
+- [x] **Time-Travel Queries**: Enable agents to query the state of the world at any specific timestamp.
+
+---
+
+## Phase 23: Elo-Rated SNIPS Governance
+
+**Goal**: Replace static rules with dynamic, usage-driven retention.
+
+### Key Objectives
+
+- [x] **Elo Math**: Implement standard Elo update algorithm for memory "players".
+- [x] **Feedback Integration**: Hook into SNIPS retrieval feedback.
+- [x] **Dynamic Decay**: Map Elo ratings to exponential decay multipliers.
+
+---
+
+## Phase 24: Cognitive Architecture (CoALA) Integration
+
+**Goal**: Bridge the gap between memory and active decision-making.
+
+### Key Objectives
+
+- [ ] **Proactive Reasoning**: Introduce a modular decision-making loop bridging traditional cognitive structures with memory components.
+- [ ] **Omission Filtering**: Help agents detect and fill gaps in their own knowledge.
+- [ ] **Native Grounding**: Ground agent reasoning natively within the Muninn tri-store substrate.
+
+---
+
 ## Validation History
 
 - **Phase 20**: **1033 tests passed (100%), 0 failed** — Multimodal support (Vision, Audio, Sensor), Low-latency Hive Mind synchronization (Broadcast), User-scoped federation sync. 14 new tests.
+- **Phase 21 (Pragmatic)**: **Done** — Zero-trust parser isolation via OS subprocess sandboxing. [v3.14.0]
+- **Phase 22 (Pragmatic)**: **Done** — Temporal Knowledge Graph (TKG) & Shadowing for bi-temporal reasoning. [v3.22.0]
+- **Phase 23 (Pragmatic)**: **Done** — Elo-Rated SNIPS Governance for dynamic retention. [v3.23.0]
 - **Phase 18**: **890 tests passed (100%), 0 failed** — CI benchmark workflow, token rotation CLI, MCP config patcher, version 3.15.0. 39 new tests.
 - **Phase 17**: **851 tests passed (100%), 0 failed** (incl. PR review fixes) — synthetic benchmark datasets (30+30 cases), automated benchmark runner, parser security sandbox, env-sanitized subprocess, corrected SME metric keys, version 3.14.0. 63 new tests. Merged (PR #45).
 - **Phase 16**: **788 tests passed (100%), 0 failed** — SOTA+ signed verdict v1, HMAC-SHA256 provenance, LongMemEval hard gate, StructMemEval adapter. 61 new tests. PR #45 ready.

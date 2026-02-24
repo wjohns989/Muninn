@@ -738,11 +738,13 @@ class MuninnMemory:
                     "id": r.memory.id,
                     "memory": r.memory.content,
                     "score": r.score,
-                    "source": r.source,
+                    "namespace": r.memory.namespace,
                     "memory_type": r.memory.memory_type.value,
                     "importance": r.memory.importance,
                     "created_at": r.memory.created_at,
                     "metadata": r.memory.metadata,
+                    "source": r.source,
+                    "trace": r.trace.to_dict() if r.trace else None
                 }
                 if explain and r.trace is not None:
                     item["trace"] = r.trace.model_dump()
@@ -762,6 +764,7 @@ class MuninnMemory:
         limit: int = 10,
         depth: int = 2,
         namespaces: Optional[List[str]] = None,
+        media_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform an agentic multi-hop search to discover hidden context.
@@ -778,6 +781,7 @@ class MuninnMemory:
                 "muninn.user_id": user_id,
                 "muninn.limit": limit,
                 "muninn.depth": depth,
+                "muninn.media_type": media_type,
             },
         ):
             results = await self._scout.hunt(
@@ -786,6 +790,7 @@ class MuninnMemory:
                 user_id=user_id,
                 namespaces=namespaces,
                 depth=depth,
+                media_type=media_type,
             )
 
             output = []
@@ -794,13 +799,13 @@ class MuninnMemory:
                     "id": r.memory.id,
                     "memory": r.memory.content,
                     "score": r.score,
-                    "source": r.source,
+                    "namespace": r.memory.namespace,
                     "memory_type": r.memory.memory_type.value,
+                    "media_type": r.memory.media_type.value,
                     "importance": r.memory.importance,
                     "metadata": r.memory.metadata,
+                    "source": r.source,
                 })
-            
-            self._otel.add_event("muninn.hunt.result", {"result_count": len(output)})
             return output
 
     async def get_all(
@@ -810,6 +815,7 @@ class MuninnMemory:
         limit: int = 100,
         namespace: Optional[str] = None,
         project: Optional[str] = None,
+        media_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get all memories, optionally filtered.
@@ -825,6 +831,7 @@ class MuninnMemory:
             namespace=namespace,
             user_id=user_id,
             project=project,
+            media_type=media_type,
         )
 
         return [
@@ -832,6 +839,7 @@ class MuninnMemory:
                 "id": r.id,
                 "memory": r.content,
                 "memory_type": r.memory_type.value,
+                "media_type": r.media_type.value,
                 "importance": r.importance,
                 "created_at": r.created_at,
                 "access_count": r.access_count,
@@ -1756,6 +1764,10 @@ class MuninnMemory:
             "id": record.id,
             "content": data,
             "previous_content": old_content,
+            "memory_type": record.memory_type.value,
+            "media_type": record.media_type.value,
+            "importance": record.importance,
+            "namespace": record.namespace,
             "chain_links_created": chain_links_created,
             "event": "UPDATE",
         }

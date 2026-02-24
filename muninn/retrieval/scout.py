@@ -32,7 +32,8 @@ class MuninnScout:
         user_id: str = "global_user",
         namespaces: Optional[List[str]] = None,
         depth: int = 2,
-        expand_query: bool = True
+        expand_query: bool = True,
+        media_type: Optional[str] = None
     ) -> List[SearchResult]:
         """
         Perform a multi-hop agentic search.
@@ -46,6 +47,7 @@ class MuninnScout:
             limit=limit,
             user_id=user_id,
             namespaces=namespaces,
+            media_type=media_type,
             explain=True,
             rerank=True
         )
@@ -67,6 +69,7 @@ class MuninnScout:
                 limit=limit,
                 user_id=user_id,
                 namespaces=None,  # no namespace restriction
+                media_type=media_type,
                 explain=True
             )
             effective_namespaces = None  # widen scope for final rerank too
@@ -122,6 +125,7 @@ class MuninnScout:
             limit=limit,
             user_id=user_id,
             namespaces=effective_namespaces,
+            media_type=media_type,
             filters={"memory_ids": all_ids},
             rerank=True
         )
