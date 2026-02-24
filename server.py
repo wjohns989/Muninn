@@ -136,6 +136,13 @@ class CorrectionRequest(BaseModel):
     correction: str
 
 
+class ForagingRequest(BaseModel):
+    query: str
+    ambiguity_threshold: float = 0.7
+    user_id: str = "global_user"
+    limit: int = 10
+
+
 class SetProjectGoalRequest(BaseModel):
     user_id: str = "global_user"
     namespace: str = "global"
@@ -1322,6 +1329,33 @@ async def correct_memory_endpoint(req: CorrectionRequest):
         raise
     except Exception as e:
         logger.error("Memory correction failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/optimization/forage", dependencies=[Depends(verify_token)])
+async def forage_knowledge_endpoint(req: ForagingRequest):
+    """Execute Epistemic Foraging (Active Inference)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        from muninn.optimization.foraging import ForagingEngine
+        # Initial search to get baseline results for entropy analysis
+        initial_results = await memory.search(
+            query=req.query,
+            user_id=req.user_id,
+            limit=req.limit
+        )
+        
+        engine = ForagingEngine(memory)
+        result = await engine.forage(
+            initial_query=req.query,
+            initial_results=initial_results,
+            ambiguity_threshold=req.ambiguity_threshold
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Foraging failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
