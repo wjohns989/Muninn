@@ -322,7 +322,25 @@ class MuninnHTTPClient:
             "namespace": namespace,
             "limit": limit,
         })
-        return resp.get("results", [])
+        return resp.get("data", [])  # v3.18.1 fix: server returns list in "data"
+
+    def hunt(
+        self,
+        query: str,
+        user_id: str,
+        namespace: str = "longmemeval",
+        limit: int = 10,
+        depth: int = 2,
+    ) -> List[Dict[str, Any]]:
+        """Perform agentic multi-hop retrieval and return the ranked result list."""
+        resp = self._post("/search/hunt", {
+            "query": query,
+            "user_id": user_id,
+            "namespace": namespace,
+            "limit": limit,
+            "depth": depth,
+        })
+        return resp.get("data", [])
 
     def delete_all(self, user_id: str, namespace: str = "longmemeval") -> None:
         """Best-effort cleanup — remove all memories for a given user_id."""
@@ -343,7 +361,7 @@ class LongMemEvalAdapter:
     Evaluation protocol per question case:
       1. Derive an isolated user_id from question_id — prevents cross-case leakage.
       2. Ingest all conversation turns from the case's sessions via POST /add.
-      3. Issue the question as a search query via POST /search; collect top-k results.
+      3. Issue the question as a search query via POST /search or /search/hunt; collect top-k results.
       4. Map ranked search results back to their stable turn IDs.
       5. Compute nDCG@k and Recall@k against heuristically-identified relevant turns.
       6. Optionally delete ingested data (cleanup=True, default).
@@ -357,12 +375,16 @@ class LongMemEvalAdapter:
         limit: Optional[int] = None,
         namespace: str = "longmemeval",
         cleanup: bool = True,
+        method: str = "search",
+        depth: int = 2,
     ):
         self._client = client
         self.k = k
         self.limit = limit
         self.namespace = namespace
         self.cleanup = cleanup
+        self.method = method
+        self.depth = depth
 
     def _user_id(self, question_id: str) -> str:
         """Derive an isolated user_id; capped to prevent oversized identifiers."""
@@ -407,7 +429,8 @@ class LongMemEvalAdapter:
         """
         ranked: List[str] = []
         for result in results:
-            result_content = str(result.get("content", ""))
+            # v3.18.1 fix: server returns memory text in "memory" key, not "content"
+            result_content = str(result.get("memory", ""))
             for idx, turn in enumerate(turns):
                 # The ingested content was "[role] {turn.content}"
                 expected_prefix = f"[{turn.role}] {turn.content[:80]}"
@@ -436,12 +459,21 @@ class LongMemEvalAdapter:
 
             t0 = time.perf_counter()
             try:
-                results = self._client.search(
-                    query=case.question,
-                    user_id=user_id,
-                    namespace=self.namespace,
-                    limit=self.k,
-                )
+                if self.method == "hunt":
+                    results = self._client.hunt(
+                        query=case.question,
+                        user_id=user_id,
+                        namespace=self.namespace,
+                        limit=self.k,
+                        depth=self.depth,
+                    )
+                else:
+                    results = self._client.search(
+                        query=case.question,
+                        user_id=user_id,
+                        namespace=self.namespace,
+                        limit=self.k,
+                    )
             except Exception as exc:
                 logger.error("Search failed for case %s: %s", case.question_id, exc)
                 return None
@@ -661,6 +693,8 @@ def run_adapter(
     limit: Optional[int] = None,
     cleanup: bool = True,
     namespace: str = "longmemeval",
+    method: str = "search",
+    depth: int = 2,
 ) -> AdapterReport:
     """
     Evaluate a LongMemEval JSONL dataset against a running Muninn server.
@@ -673,6 +707,8 @@ def run_adapter(
         limit:        Maximum number of cases to evaluate (None = all).
         cleanup:      Delete ingested data after each case (default: True).
         namespace:    Muninn namespace for evaluation isolation.
+        method:       Retrieval method — 'search' or 'hunt'.
+        depth:        Expansion depth for 'hunt' method.
 
     Returns:
         AdapterReport with aggregate and per-case metrics.
@@ -680,7 +716,9 @@ def run_adapter(
     effective_token = auth_token or os.environ.get("MUNINN_AUTH_TOKEN", "")
     cases = parse_dataset(dataset_path)
     client = MuninnHTTPClient(server_url, effective_token)
-    adapter = LongMemEvalAdapter(client, k=k, limit=limit, cleanup=cleanup, namespace=namespace)
+    adapter = LongMemEvalAdapter(
+        client, k=k, limit=limit, cleanup=cleanup, namespace=namespace, method=method, depth=depth
+    )
     report = adapter.run(cases)
     report.dataset_path = str(dataset_path)
     return report
@@ -733,6 +771,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--namespace", default="longmemeval",
         metavar="NS",
         help="Muninn namespace for evaluation isolation (default: %(default)s).",
+    )
+    p.add_argument(
+        "--method", default="search", choices=["search", "hunt"],
+        help="Retrieval method to evaluate (default: %(default)s).",
+    )
+    p.add_argument(
+        "--depth", type=int, default=2,
+        help="Expansion depth for 'hunt' method (default: %(default)s).",
     )
     p.add_argument(
         "--no-cleanup", dest="cleanup", action="store_false", default=True,
@@ -812,6 +858,8 @@ def main(argv=None) -> None:
             limit=args.limit,
             cleanup=args.cleanup,
             namespace=args.namespace,
+            method=args.method,
+            depth=args.depth,
         )
     else:
         logger.error("Provide --dataset <path> or --selftest.")

@@ -20,9 +20,9 @@ logger = logging.getLogger("Muninn.Config")
 
 # Default data directory — now cross-platform via platform.py
 DEFAULT_DATA_DIR = str(get_data_dir())
-DEFAULT_LOW_LATENCY_MODEL = "llama3.2:3b"
-DEFAULT_BALANCED_MODEL = "qwen3:8b"
-DEFAULT_HIGH_REASONING_MODEL = "qwen3:14b"
+DEFAULT_LOW_LATENCY_MODEL = "llama3.1:latest"
+DEFAULT_BALANCED_MODEL = "qwen2.5:7b"
+DEFAULT_HIGH_REASONING_MODEL = "qwen2.5-coder:14b"
 SUPPORTED_MODEL_PROFILES = ("low_latency", "balanced", "high_reasoning")
 
 
