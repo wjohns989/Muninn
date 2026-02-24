@@ -28,6 +28,13 @@ class Provenance(str, Enum):
     INGESTED = "ingested"
 
 
+class MediaType(str, Enum):
+    TEXT = "text"
+    IMAGE = "image"
+    AUDIO = "audio"
+    VIDEO = "video"
+
+
 class MemoryRecord(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str
@@ -56,6 +63,9 @@ class MemoryRecord(BaseModel):
     # "project" — visible only within its project; NEVER returned in cross-project fallback search
     # "global"  — always visible regardless of current project (user prefs, universal rules)
     scope: Literal["project", "global"] = "project"
+
+    # Multimodal support (v3.20.0)
+    media_type: MediaType = MediaType.TEXT
 
     # Embedding reference
     vector_id: Optional[str] = None
@@ -140,4 +150,3 @@ class HealthResponse(BaseModel):
     graph_nodes: int = 0
     reranker: str = "inactive"
     backend: str = "muninn-native"
-

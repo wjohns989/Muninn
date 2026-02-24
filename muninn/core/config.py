@@ -222,6 +222,15 @@ class AdvancedConfig(BaseModel):
     colbert_multivec_collection: str = "muninn_colbert_multivec"
 
 
+class VisionConfig(BaseModel):
+    """Computer Vision configuration (Phase 20)."""
+    enabled: bool = False
+    provider: str = "ollama"
+    model: str = "llava"
+    ollama_url: str = "http://localhost:11434"
+    timeout_seconds: float = 30.0
+
+
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
@@ -258,6 +267,7 @@ class MuninnConfig(BaseModel):
     graph: GraphConfig = Field(default_factory=GraphConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
     conflict_detection: ConflictDetectionConfig = Field(default_factory=ConflictDetectionConfig)
@@ -469,6 +479,13 @@ class MuninnConfig(BaseModel):
                 colbert_multivec_collection=os.environ.get(
                     "MUNINN_COLBERT_MULTIVEC_COLLECTION", "muninn_colbert_multivec"
                 ),
+            ),
+            vision=VisionConfig(
+                enabled=os.environ.get("MUNINN_VISION_ENABLED", "false").lower() == "true",
+                provider=os.environ.get("MUNINN_VISION_PROVIDER", "ollama"),
+                model=os.environ.get("MUNINN_VISION_MODEL", "llava"),
+                ollama_url=ollama_url,
+                timeout_seconds=float(os.environ.get("MUNINN_VISION_TIMEOUT_SEC", "30.0")),
             ),
             feature_flags=FeatureFlags.from_env(),
             server=ServerConfig(
