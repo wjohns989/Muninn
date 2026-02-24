@@ -127,6 +127,15 @@ class ReasoningRequest(BaseModel):
     limit: int = 10
 
 
+class DistillationRequest(BaseModel):
+    force: bool = True
+
+
+class CorrectionRequest(BaseModel):
+    memory_id: str
+    correction: str
+
+
 class SetProjectGoalRequest(BaseModel):
     user_id: str = "global_user"
     namespace: str = "global"
@@ -1246,7 +1255,7 @@ async def consolidation_status():
     return {"success": False, "data": {"running": False}}
 
 
-@app.post("/reasoning/detect-gaps", dependencies=[Depends(verify_token)])
+@app.post("/reasoning/detect-gaps", dependencies=[Depends(verify_token)])  
 async def detect_gaps_endpoint(req: ReasoningRequest):
     """Analyze query and context for missing information (Omission Filtering)."""
     if memory is None:
@@ -1266,6 +1275,53 @@ async def detect_gaps_endpoint(req: ReasoningRequest):
         return {"success": True, "data": result.model_dump()}
     except Exception as e:
         logger.error("Gap detection failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/optimization/distill", dependencies=[Depends(verify_token)])
+async def trigger_distillation_endpoint(req: DistillationRequest):
+    """Trigger Knowledge Distillation."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        from muninn.optimization.distillation import DistillationDaemon
+        # Use existing daemon if available, or create transient one
+        # Ideally, MuninnMemory should manage the daemon instance.
+        # Assuming MuninnMemory doesn't have it yet (Phase 25), we create one.
+        # But wait, daemon is stateful. We should attach it to memory in initialize().
+        # For now, we'll instantiate ad-hoc for the trigger or check if memory has it.
+        
+        daemon = getattr(memory, "_distillation_daemon", None)
+        if not daemon:
+            daemon = DistillationDaemon(memory)
+            # Attach for reuse
+            setattr(memory, "_distillation_daemon", daemon)
+            
+        result = await daemon.run_cycle()
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Distillation trigger failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/optimization/correct", dependencies=[Depends(verify_token)])
+async def correct_memory_endpoint(req: CorrectionRequest):
+    """Execute Memory Surgery."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        from muninn.optimization.surgeon import MemorySurgeon
+        surgeon = MemorySurgeon(memory)
+        success = await surgeon.correct_memory(req.memory_id, req.correction)
+        if not success:
+             raise HTTPException(status_code=404, detail="Memory not found or correction failed")
+        return {"success": True, "data": {"memory_id": req.memory_id, "status": "corrected"}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Memory correction failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

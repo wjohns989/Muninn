@@ -89,6 +89,28 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         }
     },
     {
+        "name": "trigger_distillation",
+        "description": "Manually trigger the background knowledge distillation process. Identifies clusters of episodic memories and synthesizes them into clean semantic manuals. Useful for maintenance or after heavy interaction sessions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "force": {"type": "boolean", "default": True, "description": "Force run even if interval has not passed."}
+            }
+        }
+    },
+    {
+        "name": "correct_fact",
+        "description": "Correct an erroneous memory based on user feedback. Surgically rewrites the memory record to reflect the new truth.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "The ID of the memory to correct."},
+                "correction": {"type": "string", "description": "The correct information provided by the user."}
+            },
+            "required": ["memory_id", "correction"]
+        }
+    },
+    {
         "name": "get_all_memories",
         "description": "Retrieve all stored memories, optionally filtered by user/agent.",
         "inputSchema": {
@@ -594,6 +616,8 @@ IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
     "run_periodic_ingestion",
     "start_periodic_ingestion",
     "stop_periodic_ingestion",
+    "trigger_distillation",
+    "correct_fact"
 })
 
 # mimir_relay creates a new interop_runs record on every call and may have

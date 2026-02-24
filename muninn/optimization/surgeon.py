@@ -33,9 +33,7 @@ class MemorySurgeon:
         # Ideally, we'd use an LLM to merge them ("The user said X is actually Y...").
         # For MVP, we append the correction as a 'Correction Note'.
         
-        new_content = f"{original.content}
-
-[CORRECTION]: {correction}"
+        new_content = f"{original.content}\n\n[CORRECTION]: {correction}"
         
         # 3. Update
         try:
