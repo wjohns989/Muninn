@@ -116,8 +116,9 @@ Procedural Memory (workflows, tool usage patterns, habits)
 ```sql
 CREATE TABLE memories (
     id              TEXT PRIMARY KEY,      -- UUID
-    content         TEXT NOT NULL,         -- Raw memory text
+    content         TEXT NOT NULL,         -- Raw memory text (or transcription)
     memory_type     TEXT DEFAULT 'episodic', -- working|episodic|semantic|procedural
+    media_type      TEXT DEFAULT 'text',   -- text|image|audio|video|sensor
 
     -- Importance Scoring (Multi-Factor)
     importance      REAL DEFAULT 0.5,      -- Composite score [0, 1]
@@ -600,10 +601,28 @@ Dependencies: Phase 3 complete
 Deliverables:
 ├── muninn/advanced/colbert.py         # Multi-vector ColBERT embeddings
 ├── muninn/advanced/temporal_kg.py     # Bi-temporal knowledge graph edges
-├── muninn/advanced/predictive.py      # Predictive pre-fetch cache
-├── muninn/advanced/cross_agent.py     # Cross-assistant memory federation
-└── muninn/dashboard/                  # Enhanced web dashboard
+├── muninn/advanced/predictive.py      # Predictive pre-fetch cache  
+├── muninn/advanced/cross_agent.py     # Cross-assistant Hive Mind synchronization
+└── muninn/dashboard/                  # Enhanced web dashboard      
 ```
+
+---
+
+## Multimodal Hive Mind (Phase 20)
+
+Muninn extends the unified embedding space to support cross-assistant shared multimodal memory.
+
+### Multimodal Ingestion
+Images and audio are automatically processed during ingestion:
+- **Audio**: Transcribed via `AudioAdapter` using Whisper-compatible endpoints.
+- **Vision**: Described via `VisionAdapter` using VLMs (Ollama LLaVA).
+- **Sensor**: Native support for structured sensor data strings.
+
+### Hive Mind Federation
+A push-based Merkle-DAG inspired sync protocol reconciles states between disparate runtimes:
+- **Low-Latency Sync**: `sync_on_add` triggers immediate broadcast to peer instances.
+- **Delta Bundles**: Efficient reconciliation via lightweight sync manifests.
+- **User Scoping**: Multi-tenant isolation preserved across federated instances.
 
 ---
 
@@ -629,6 +648,8 @@ muninn_mcp/
 │   │   ├── rules.py               # Rule-based extraction
 │   │   ├── xlam.py                # xLAM chain-of-extraction
 │   │   ├── schemas.py             # PA-Tool aligned schemas
+│   │   ├── vision_adapter.py      # VLM image description
+│   │   ├── audio_adapter.py       # STT audio transcription
 │   │   └── resolver.py            # Entity resolution
 │   ├── retrieval/
 │   │   ├── __init__.py

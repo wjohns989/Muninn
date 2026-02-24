@@ -28,6 +28,9 @@ Muninn Phase 3B adds feature-gated multi-source ingestion with fail-open behavio
 - Native: `.txt`, `.md`, `.markdown`, `.json`, `.jsonl`, `.ndjson`, `.csv`, `.tsv`, `.html`, `.htm`
 - SQLite-backed chat/session stores: `.vscdb`, `.db`, `.sqlite`, `.sqlite3`
 - Optional dependency-backed: `.pdf` (`pypdf`), `.docx` (`python-docx`)
+- **Multimodal (Phase 20)**:
+  - **Audio**: `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac` (requires transcription provider)
+  - **Vision**: `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp` (requires VLM provider)
 
 ## Safety + Reliability Model
 
@@ -63,6 +66,15 @@ Environment variables:
 - `MUNINN_INGESTION_CHUNK_OVERLAP_CHARS` (default `150`)
 - `MUNINN_INGESTION_MIN_CHUNK_CHARS` (default `120`)
 - `MUNINN_INGESTION_ALLOWED_ROOTS` (optional, path-separated list of allowed source roots)
+
+### Multimodal Configuration (Phase 20)
+
+- `MUNINN_VISION_ENABLED=1`: Enable image analysis.
+- `MUNINN_VISION_PROVIDER`: `ollama` (default).
+- `MUNINN_VISION_MODEL`: `llava` (default).
+- `MUNINN_AUDIO_ENABLED=1`: Enable audio transcription.
+- `MUNINN_AUDIO_PROVIDER`: `openai_compatible` (default).
+- `MUNINN_AUDIO_MODEL`: `whisper-1` (default).
 
 Periodic ingestion scheduler environment variables:
 
