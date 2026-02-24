@@ -10,6 +10,7 @@ import base64
 from pathlib import Path
 from typing import Optional, Dict, Any
 import aiohttp
+import requests
 
 logger = logging.getLogger("Muninn.Vision")
 
@@ -33,6 +34,28 @@ class VisionAdapter:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout_seconds
+
+    def describe_image_sync(self, image_path: str, prompt: str = "Describe this image in detail.") -> Optional[str]:
+        """
+        Synchronous version of describe_image for use in worker processes.
+        """
+        if not self.enabled:
+            return None
+
+        path = Path(image_path)
+        if not path.exists():
+            logger.warning("Image file not found: %s", image_path)
+            return None
+
+        try:
+            if self.provider == "ollama":
+                return self._describe_ollama_sync(path, prompt)
+            else:
+                logger.warning("Unsupported vision provider: %s", self.provider)
+                return None
+        except Exception as e:
+            logger.error("Vision generation failed for %s: %s", image_path, e)
+            return None
 
     async def describe_image(self, image_path: str, prompt: str = "Describe this image in detail.") -> Optional[str]:
         """
@@ -82,3 +105,29 @@ class VisionAdapter:
                 
                 result = await resp.json()
                 return result.get("response", "").strip()
+
+    def _describe_ollama_sync(self, path: Path, prompt: str) -> Optional[str]:
+        """Synchronous Ollama call."""
+        with path.open("rb") as f:
+            image_bytes = f.read()
+            base64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "images": [base64_image],
+            "stream": False,
+        }
+
+        resp = requests.post(
+            f"{self.base_url}/api/generate",
+            json=payload,
+            timeout=self.timeout
+        )
+        
+        if resp.status_code != 200:
+            logger.error("Ollama vision error %d: %s", resp.status_code, resp.text)
+            return None
+            
+        result = resp.json()
+        return result.get("response", "").strip()

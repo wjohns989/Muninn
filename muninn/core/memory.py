@@ -241,6 +241,7 @@ class MuninnMemory:
                 chunk_overlap_chars=self.config.ingestion.chunk_overlap_chars,
                 min_chunk_chars=self.config.ingestion.min_chunk_chars,
                 allowed_roots=self.config.ingestion.allowed_roots,
+                vision_config=self.config.vision.model_dump() if self.config.vision.enabled else None,
             )
             logger.info(
                 "Multi-source ingestion enabled (max_file_size_bytes=%d, chunk=%d/%d)",
