@@ -69,7 +69,13 @@ class FederationManager:
         except Exception as e:
             return {"status": "failed", "error": str(e)}
 
-    async def generate_manifest(self, project: str = "global", user_id: str = "global_user") -> Dict[str, Any]:
+    async def generate_manifest(
+        self,
+        project: str = "global",
+        user_id: str = "global_user",
+        namespace: Optional[str] = None,
+        media_type: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Generate a lightweight sync manifest describing the current state. 
         Uses project-scoped memory hashes to detect drift.
@@ -77,15 +83,19 @@ class FederationManager:
         # Fetch all memory records for the scope
         # We use _metadata directly to get MemoryRecord objects
         records = await asyncio.to_thread(
-            self.memory._metadata.get_all, 
-            limit=10000, 
+            self.memory._metadata.get_all,
+            limit=10000,
             project=project,
-            user_id=user_id
+            user_id=user_id,
+            namespace=namespace,
+            media_type=media_type
         )
 
         manifest = {
             "project": project,
             "user_id": user_id,
+            "namespace": namespace,
+            "media_type": media_type,
             "count": len(records),
             "heads": {}, # user_id -> latest_hash
             "ids": [],   # List of (id, hash) tuples

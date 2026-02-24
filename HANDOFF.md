@@ -77,10 +77,11 @@ C:\Users\user\AppData\Local\AntigravityLabs\muninn\
   synthetic `memory_ids` (passed by Scout's final re-rank call). Since `MemoryRecord`
   has no `memory_ids` attribute and no metadata stores a list of all candidate IDs,
   every record was rejected → Scout always returned empty results.
-- **Fix**: Added `_SYNTHETIC_FILTER_KEYS = frozenset({"memory_ids", "scope"})` class
+- **Fix**: Added `_SYNTHETIC_FILTER_KEYS = frozenset({"memory_ids"})` class
   attribute; modified `_record_matches_constraints` to `continue` (skip) for any key
-  in this set. These keys are pre-handled by Qdrant `MatchAny` / `target_set` at the
-  signal level and must not be re-evaluated post-retrieval.
+  in this set. This key is pre-handled by Qdrant `MatchAny` at the signal level and 
+  must not be re-evaluated post-retrieval. Note: `scope` is explicitly NOT skipped
+  to ensure strict project isolation and prevent data leakage.
 
 #### P2 Fix — MCP Hunt Synthesis Exposure (`muninn/mcp/handlers.py`)
 - **Root cause**: `_do_hunt_memory` never forwarded `synthesize: True` → server always

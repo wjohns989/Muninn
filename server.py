@@ -253,6 +253,7 @@ class HuntMemoryRequest(BaseModel):
     limit: int = 10
     depth: int = 2
     namespaces: Optional[List[str]] = None
+    media_type: Optional[MediaType] = None
     synthesize: bool = False  # v3.18.0: optional LLM narration of discovery path
 
 
@@ -610,7 +611,7 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
 
 @app.post("/search/hunt", dependencies=[Depends(verify_token)])
 async def hunt_memory_endpoint(req: HuntMemoryRequest):
-    """Perform agentic multi-hop retrieval to discover hidden context.
+    """Perform agentic multi-hop retrieval to discover hidden context.     
 
     When ``synthesize=True`` and ANTHROPIC_API_KEY is configured, the response
     includes a ``synthesis`` field: a brief LLM-generated narrative explaining
@@ -627,6 +628,7 @@ async def hunt_memory_endpoint(req: HuntMemoryRequest):
             limit=req.limit,
             depth=req.depth,
             namespaces=req.namespaces,
+            media_type=req.media_type,
         )
 
         synthesis = ""

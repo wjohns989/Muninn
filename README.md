@@ -13,21 +13,23 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 
 ## 🚩 Status
 
-**Current Version:** v3.19.0 (Phase 20 Complete)
+**Current Version:** v3.23.0 (Phase 23 Complete)
 **Stability:** Production Beta
-**Test Suite:** 1033 passing, 0 failing
+**Test Suite:** 1033+ passing, 0 failing
 
-### What's New in v3.19.0
+### What's New in v3.23.0
 
-- **Multimodal Hive Mind**: Phase 20 extends the unified embedding space to support cross-assistant shared multimodal memory.
-- **Unified Multimodal Ingestion**: Integrated `AudioAdapter` (Whisper) and `VisionAdapter` (LLaVA) for automatic transcription and description of non-text assets.
-- **Low-Latency Federation**: Push-based `broadcast_memory` mechanism for real-time synchronization across decentralized assistant runtimes.
-- **Sensor Data Support**: Added `media_type="sensor"` for persisting and retrieving structured sensor context.
+- **Elo-Rated SNIPS Governance**: Dynamic memory retention system mapping retrieval success to Elo ratings for usage-driven decay.
+- **Temporal Knowledge Graph (TKG)**: Bi-temporal reasoning support with `VALID_DURING` relations and fact shadowing.
+- **Zero-Trust Parser Isolation**: Hardened ingestion security via OS-level subprocess sandboxing for binary files.
+- **Multimodal Hive Mind**: Phase 20 support for cross-assistant shared multimodal memory (Vision, Audio, Sensor).
 
 ### Previous Milestones
 
 | Version | Phase | Key Feature |
 |---------|-------|-------------|
+| v3.23.0 | 23 | Elo-Rated SNIPS Governance |
+| v3.22.0 | 22 | Temporal Knowledge Graph |
 | v3.19.0 | 20 | Multimodal Hive Mind Operations |
 | v3.18.1 | 19 | Scout synthesis, hunt mode |
 
@@ -41,13 +43,16 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 - **Multimodal**: Native support for Text, Image, Audio, Video, and Sensor data
 - **5-Signal Hybrid Retrieval**: Dense vector · BM25 lexical · Graph traversal · Temporal relevance · Goal relevance
 - **Explainable Recall Traces**: Per-signal score attribution on every search result
+- **Bi-Temporal Reasoning**: Support for "Valid Time" vs "Transaction Time" via Temporal Knowledge Graph
 - **Project Isolation**: `scope="project"` memories never cross repo boundaries; `scope="global"` memories are always available
 - **Cross-Session Continuity**: Memories survive session ends, assistant switches, and tool restarts
 - **Bi-Temporal Records**: `created_at` (real-world event time) vs `ingested_at` (system intake time)
 
 ### Memory Lifecycle
 
-- **Consolidation Daemon**: Background process for decay, deduplication, promotion, and replay — inspired by sleep consolidation
+- **Elo-Rated Governance**: Dynamic retention driven by retrieval feedback (SNIPS) and usage statistics
+- **Consolidation Daemon**: Background process for decay, deduplication, promotion, and shadowing — inspired by sleep consolidation
+- **Zero-Trust Ingestion**: Isolated subprocess parsing for PDF/DOCX to neutralize document-based exploits
 - **ColBERT Multi-Vector**: Native Qdrant multi-vector storage for MaxSim scoring
 - **NL Temporal Query Expansion**: Natural-language time phrases ("last week", "before the refactor") parsed into structured time ranges
 - **Goal Compass**: Retrieval signal for project objectives and constraint drift
