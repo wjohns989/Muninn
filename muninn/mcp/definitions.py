@@ -76,6 +76,19 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         }
     },
     {
+        "name": "detect_information_gaps",
+        "description": "Analyze a user query and current context to identify missing information (e.g. credentials, paths, IPs) that prevents successful execution. Uses cognitive reasoning (CoALA) to prevent hallucination.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The user's intent or command (e.g. 'Deploy to production')."},
+                "context": {"type": "string", "description": "Current conversation state or working memory."},
+                "limit": {"type": "integer", "default": 10, "description": "Max memories to retrieve for grounding."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "get_all_memories",
         "description": "Retrieve all stored memories, optionally filtered by user/agent.",
         "inputSchema": {
@@ -567,7 +580,8 @@ READ_ONLY_TOOLS = {
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
     "export_handoff", "discover_legacy_sources",
     "get_periodic_ingestion_status",
-    "get_temporal_knowledge", "create_federation_manifest", "calculate_federation_delta", "create_federation_bundle"
+    "get_temporal_knowledge", "create_federation_manifest", "calculate_federation_delta", "create_federation_bundle",
+    "detect_information_gaps"
 }
 
 DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories"}

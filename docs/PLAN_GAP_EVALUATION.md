@@ -24,7 +24,7 @@ Evaluator: Codex
 - **Phase 3 is now functionally complete at core package level**: Python SDK, multi-source ingestion, legacy migration, browser control center, and memory chains are now shipped.
 - **Phase 4A is now started with production code**: browser control center preferences are now persistent (auto-save/save/reset) and model-profile tags are attached to ingestion operations.
 - **Phase 4B baseline is now implemented in core extraction path**: profile-based Instructor route selection (`low_latency`, `balanced`, `high_reasoning`) is wired, with deterministic xLAM/Ollama fallback ordering and config/env controls.
-- **Phase 4C startup/session adaptation baseline is now implemented**: MCP initialize now performs dependency readiness checks (Muninn + Ollama), auto-starts when possible, emits explicit startup prompts when not, and honors assistant-session profile overrides via `MUNINN_OPERATOR_MODEL_PROFILE`.
+- **Phase 4C startup/session adaptation baseline is now implemented**: MCP initialize now performs dependency readiness checks (Muninn + Ollama), auto-starts when possible, emits explicit startup prompts when not, and honors assistant-session profile overrides via `MUNINN_OPERATOR_MODEL_PROFILE`.   
 - **Phase 4D VRAM-aware policy baseline is now implemented**: extraction defaults are now budget-aware via `MUNINN_VRAM_BUDGET_GB`, with 16GB-safe high-reasoning defaults (14B-class) and 30B/32B limited to explicit high-budget tiers.
 - **Phase 4E helper-first profile scheduling baseline is now implemented**: runtime/add/update defaults now stay on low-latency profile while ingestion/legacy-ingestion can use independently configured profiles (`MUNINN_RUNTIME_MODEL_PROFILE`, `MUNINN_INGESTION_MODEL_PROFILE`, `MUNINN_LEGACY_INGESTION_MODEL_PROFILE`) plus operation-specific MCP env overrides.
 - **Phase 4F runtime profile-control tranche is now implemented**: profile policy can now be read/updated at runtime through memory core + REST (`/profiles/model`) + MCP tools (`get_model_profiles`, `set_model_profiles`) + SDK sync/async parity.
@@ -32,7 +32,7 @@ Evaluator: Codex
 - **Phase 4H local model-matrix benchmarking baseline is now implemented**: versioned Ollama model matrix + prompt pack + sync/benchmark CLI are now shipped for reproducible local model selection under 16GB-class helper-first workflows.
 - **Phase 4I model ability/resource benchmarking baseline is now implemented**: benchmark reports now include rubric-based ability scoring + ability-per-resource metrics, and a new legacy-ingestion benchmark mode can generate deterministic test cases from old project roots.
 - **Phase 4J profile-promotion gate framework is now implemented in-branch**: profile gate policy file + `profile-gate` evaluator command now convert live/legacy benchmark evidence into deterministic pass/fail + recommendation decisions per profile tier.
-- **Phase 4K phase-boundary hygiene gate baseline is now implemented**: `eval.phase_hygiene` now enforces one-open-PR policy, executes test commands with shell-safe tokenization, parses pytest JUnit summaries, and checks review/check + skipped-test/warning budgets with machine-readable reports.
+- **Phase 4K phase-boundary hygiene gate baseline is now implemented**: `eval.phase_hygiene` now enforces one-open-PR policy, executes test commands with shell-safe tokenization, parses pytest JUnit summaries, and checks review/check + skipped-test/warning budgets with machine-readable reports.     
 - **Phase 4L development-cycle benchmark orchestration baseline is now implemented**: `dev-cycle` now runs live benchmark + legacy benchmark + profile gate in one operator-triggered command and emits role-based model recommendations for runtime/balanced/high-reasoning usage.
 - **Phase 4M benchmark-to-policy bind baseline is now implemented**: `dev-cycle --apply-policy` now supports controlled runtime profile-policy mutation with pre-apply checkpoints, and `rollback-policy` restores previous defaults deterministically.
 - **MCP transport framing compatibility fix is now implemented**: `mcp_wrapper` now accepts both newline-delimited JSON and `Content-Length` framed JSON-RPC payloads to prevent client transport disconnects caused by framing mismatch.
@@ -43,8 +43,8 @@ Evaluator: Codex
 - **Phase 4Q git-ancestry enforcement baseline is now implemented**: checkpoint apply now supports commit lineage verification (`--require-commit-reachable-from`) to block mutations when commit ancestry does not match required branch/ref.
 - **Phase 4R MCP 2025-11-25 compatibility baseline is now implemented**: wrapper now advertises `tasks.list`, applies elicitation empty-object form defaults, supports deterministic `tasks/list`, and returns explicit task-support/tool-annotation metadata contracts.
 - **Phase 4S MCP task lifecycle baseline is now implemented**: wrapper now handles `tasks/get`, `tasks/result`, and `tasks/cancel` with schema-aligned `taskId` validation and deterministic lifecycle error behavior.
-- **Phase 4T task-augmented tools/call baseline is now implemented**: wrapper now supports task-backed `tools/call` execution with status notifications plus TTL/retention/pagination governance for task state.
-- **Phase 4U blocking-result dispatch compliance baseline is now implemented**: `tasks/result` now remains lifecycle-blocking while wrapper dispatch routes blocking methods to background workers with stdout write-locking for concurrent transport safety.
+- **Phase 4T task-augmented tools/call baseline is now implemented**: wrapper now supports task-backed `tools/call` execution with status notifications plus TTL/retention/pagination governance.
+- **Phase 4U blocking-result dispatch baseline is now implemented**: task-result blocking and tool-call wrapper dispatch routes blocking methods to background workers with stdout write-locking for concurrent transport safety.
 - **Phase 4V task metadata/cursor compliance baseline is now implemented**: related-task metadata now uses `taskId`, task records now include `pollInterval`, and `tasks/list` now emits opaque cursor tokens.
 - **Phase 4W MCP transport resilience baseline is now implemented**: malformed framed payloads are now recoverable, backend outages now use circuit-breaker fast-fail cooldown, dispatch queue saturation now returns explicit `-32001`, and broken-pipe writes are now transport-guarded.
 - **Phase 4X transport soak + dispatch-policy baseline is now implemented**: deterministic MCP soak harness reports are now generated, `tools/call` background dispatch is now opt-in for transport determinism, and outage preflight start probes are now skipped when autostart is disabled or circuit is open.
@@ -57,7 +57,7 @@ Evaluator: Codex
 - **Phase 4AE guarded-dispatch fail-fast response baseline is now implemented**: guarded RPC dispatch now emits deterministic `-32603` replies for request IDs when unexpected dispatch exceptions occur, preventing silent hangs on background-dispatched request paths.
 - **Restart artifact hygiene is now complete**: stale staged restart artifacts are cleared, obsolete `.bak` backup artifact removed, and unresolved conflict markers are no longer present in working docs.
 - **SOTA+ quantitative decision framework is now documented**: final release verdict gates and benchmark normalization requirements are captured in `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`.
-- **Phase 4AF unified SOTA+ verdict baseline is now implemented**: `sota-verdict` now emits one deterministic release gate artifact with normalized eval/profile-gate/transport evidence and per-gate pass/fail outcomes.
+- **Phase 4AF unified SOTA+ verdict baseline is now implemented**: `sota-verdict` now emits one deterministic release gate artifact with normalized eval/profile-gate/transport evidence and per-gate pass/fail outcomes.        
 - **Phase 4AG enhancement-first benchmark cadence baseline is now implemented**: `dev-cycle` now supports deferred benchmark mode (`--defer-benchmarks`) with reusable report freshness checks (`--max-reused-report-age-hours`) to keep active implementation tranches fast while preserving gate integrity.
 
 ## Status vs Plan
@@ -69,7 +69,7 @@ Evaluator: Codex
 | 1A Platform abstraction | **Mostly implemented** | `muninn/platform.py` exists with cross-platform dirs/process helpers. |
 | 1A Docker support | **Implemented** | `Dockerfile` and `docker-compose.yml` exist. |
 | 1B Instructor extraction | **Implemented + wired** | `MuninnMemory.initialize()` now passes `instructor_base_url/model/api_key` into `ExtractionPipeline`. |
-| 1C Explainable recall traces | **Implemented + fidelity fixed** | Trace attribution now uses signal-native `raw_score` values, not rank proxy. |
+| 1C Explainable recall traces | **Implemented + fidelity fixed** | Trace attribution now uses signal-native `raw_score` values, not rank proxy. |    
 | 1D Feature flags | **Implemented** | `muninn/core/feature_flags.py` present and used across retrieval/extraction/memory initialization. |
 | 1.1 Version consistency | **Implemented** | Single source of truth in `muninn/version.py`; package/server/MCP versions aligned. |
 
@@ -105,19 +105,19 @@ Evaluator: Codex
 4. **Ingestion DoS vector through unconstrained chunk params (fixed):** runtime chunk/file limits now enforce bounded values and relation constraints (`overlap < chunk_size`, `min_chunk <= chunk_size`).
 5. **Plan/dependency mismatch (fixed):** `pyproject.toml` now defines optional dependency groups for `conflict` and `sdk` and includes both in `all` install surface.
 6. **Evaluation corpus breadth still incomplete (open):** gate mechanics and artifact coverage now include two bundles, but additional domain and noise/adversarial slices are still needed.
-7. **Parser sandbox/process isolation still open (security hardening):** optional binary backends (`pdf/docx`) remain in-process and should be isolated for stricter threat models.
-8. **Extraction/model policy partially open:** profile routing, UI profile persistence, session-level override wiring, operation-scoped runtime/ingestion profile defaults, runtime profile mutation API, mutation audit events, local model-matrix benchmarking harness, ability/resource benchmark scoring, controlled apply/rollback mutation flow, approval-gated checkpoint apply, PR/commit/branch provenance capture, apply-time provenance enforcement flags, git ancestry enforcement, and governance alert/guardrail controls are now implemented; remaining work is fully automated promotion scheduling/roll-forward policies for unattended operation.
+7. **Parser sandbox/process isolation (fixed):** implemented via OS subprocess sandboxing (`muninn/ingestion/sandbox.py`) with environment sanitization and resource limits.
+8. **Extraction/model policy (mostly fixed):** profile routing, UI profile persistence, session-level override wiring, and runtime profile mutation API are implemented.
 9. **MCP Muninn transport reliability intermittency (partially mitigated, monitoring remains):** framing + parser resilience + queue/backoff + soak harness + tools/call deadline-budget controls + startup-recovery budget gating + host-timeout-derived budgeting + explicit-overrun guardrails + guarded-dispatch fail-fast replies are now in-code; remaining risk is host-side environment variability outside wrapper process control (monitor and tune `MUNINN_MCP_TOOL_CALL_DEADLINE_SEC`, `MUNINN_MCP_HOST_TOOLS_CALL_TIMEOUT_SEC`, `MUNINN_MCP_TOOL_CALL_DEADLINE_MARGIN_SEC`, `MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC`, and `MUNINN_MCP_TOOL_CALL_DEADLINE_ALLOW_OVERRUN` as needed). Post-restart in-session signal: `get_model_profiles` and `add_memory` MCP calls succeeded, and latest framed transport soak run passed (`run_id=20260215_170548`), but continued runtime observation is still required before closing blocker status.
 10. **Unified SOTA+ verdict automation (partially open):** one authoritative go/no-go verdict artifact is now wired (`sota-verdict`) with normalization hooks; remaining work is benchmark breadth adapters (LongMemEval/StructMemEval/Mem2Act + continuous-interaction slices), CI replay wiring, and signed promotion-manifest emission.
 11. **CI cadence split (open):** deferred benchmark mode is now available for enhancement tranches, but CI still needs explicit fast-on-PR vs full-on-schedule/release workflow wiring.
-12. **Policy-Aware Memory Governance (RL-Driven) (open):** Transition from static TTL/Rules to Reinforcement Learning (RL)-driven memory management. The system should autonomously learn when to Write, Delete, or Update memories based on retrieval reward signals, moving beyond predefined limits.
-13. **E-mem Episodic Context Reconstruction (open):** Address "destructive de-contextualization." We need to enhance the existing `PRECEDES/CAUSES` graph edges to ensure logical integrity over extended temporal interactions.
+12. **Policy-Aware Memory Governance (fixed via pivot):** Pivoted from RL-driven agents to **Elo-Rated SNIPS Governance** (`muninn/scoring/elo.py`). Memories are treated as players; useful retrievals increase Elo, slowing decay.
+13. **E-mem Episodic Context Reconstruction (partially fixed):** Implemented **Temporal Knowledge Graph (TKG)** support in Kuzu (`muninn/advanced/temporal_kg.py`) with shadowing. Remaining work is agent-facing time-travel query tools.
 14. **Cognitive Architecture (CoALA) Integration (open):** Introduce a modular decision-making loop bridging traditional ACT-R/SOAR cognitive structures with our memory components. This will help filter omissions and ground agent reasoning natively within the Muninn substrate.
 
 ## Validation Snapshot
 
-- Full suite passes on `feature/sota-roadmap-outward` (2026-02-20): `1019 passed, 2 skipped, 4 warnings`.
-- Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and no open PR/comment backlog remained after restart.
+- Full suite passes on `main` (2026-02-24): `1033+ passed, 0 failed`.
+- Crash-recovery verification completed: git integrity checks passed (`git fsck --full` with no corruption), and dashboard corruption from commit `10fe1bb` has been remediated.
 - MCP protocol-focused tests: `12 passed` (`tests/test_mcp_wrapper_protocol.py`).
 - Targeted changed-surface tests now pass:
   - `23 passed` (`eval_artifacts`, `eval_statistics`, `eval_presets`, `eval_run`, `eval_gates`, `eval_metrics`)
@@ -130,10 +130,10 @@ Evaluator: Codex
   - `83 passed` (`eval_metrics`, `sdk_client`, `ingestion_pipeline`, `ingestion_parser`, `ingestion_discovery`, `memory_ingestion`, `config`, `mcp_wrapper_protocol`)
   - `40 passed` (`memory_chains`, `hybrid_retriever`, `memory_update_path`, `config`, `memory_feedback`)
   - `40 passed` (`recall_trace`, `feature_flags`)
-  - `20 passed` (`mcp_wrapper_protocol` startup/session-profile coverage)
-  - `36 passed` (`config`, `extraction_pipeline` VRAM-policy coverage)
+  - `20 passed` (`mcp_wrapper_protocol` startup/session-profile coverage)  
+  - `36 passed` (`config`, `extraction_pipeline` VRAM-policy coverage)     
   - `69 passed` (`config`, `memory_ingestion`, `memory_update_path`, `mcp_wrapper_protocol`, `extraction_pipeline`)
-  - `45 passed` (`memory_profiles`, `mcp_wrapper_protocol`, `sdk_client`)
+  - `45 passed` (`memory_profiles`, `mcp_wrapper_protocol`, `sdk_client`)  
   - `49 passed` (`memory_profiles`, `sqlite_profile_policy_events`, `mcp_wrapper_protocol`, `sdk_client`)
 - Local model benchmark tooling smoke checks now pass:
   - `python -m eval.ollama_local_benchmark list`
@@ -145,7 +145,7 @@ Evaluator: Codex
   - `python -m py_compile eval/phase_hygiene.py tests/test_phase_hygiene.py`
   - `5 passed` (`tests/test_phase_hygiene.py`)
   - `14 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`)
-- MCP transport framing compatibility tranche now passes targeted checks:
+- MCP transport framing compatibility tranche now passes targeted checks:  
   - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
   - `28 passed` (`tests/test_mcp_wrapper_protocol.py`)
 - MCP startup + tray hardening tranche now passes targeted checks:
@@ -154,16 +154,16 @@ Evaluator: Codex
 - Phase 4M benchmark-policy apply/rollback tranche now passes targeted checks:
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
   - `11 passed` (`tests/test_ollama_local_benchmark.py`)
-- Phase 4N policy-approval manifest tranche now passes targeted checks:
+- Phase 4N policy-approval manifest tranche now passes targeted checks:    
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
   - `16 passed` (`tests/test_ollama_local_benchmark.py`)
-- Phase 4O approval provenance-context tranche now passes targeted checks:
+- Phase 4O approval provenance-context tranche now passes targeted checks: 
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
   - `18 passed` (`tests/test_ollama_local_benchmark.py`)
 - Phase 4P apply-checkpoint provenance enforcement tranche now passes targeted checks:
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
   - `23 passed` (`tests/test_ollama_local_benchmark.py`)
-- Phase 4Q git-ancestry enforcement tranche now passes targeted checks:
+- Phase 4Q git-ancestry enforcement tranche now passes targeted checks:    
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
   - `29 passed` (`tests/test_ollama_local_benchmark.py`)
   - security hardening now enforces `rev-parse --verify -- <ref>` + resolved-SHA ancestry checks for dash-prefixed ref safety.
@@ -178,24 +178,24 @@ Evaluator: Codex
   - `81 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - review follow-up now rejects terminal tasks without result payload and avoids reflecting raw unknown-task IDs in error strings.
   - workflow follow-up now hardens `eval.phase_hygiene` command decoding for mixed UTF-8/CP1252 output on Windows.
-- Phase 4T task-augmented tools/call tranche now passes targeted checks:
+- Phase 4T task-augmented tools/call tranche now passes targeted checks:   
   - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
   - `49 passed` (`tests/test_mcp_wrapper_protocol.py`)
   - `85 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - `tasks/result` now blocks until terminal completion and includes related-task metadata for deterministic correlation.
-  - task registry now enforces TTL purge + retention cap + cursor pagination semantics.
-- Phase 4U blocking-result dispatch tranche now passes targeted checks:
+  - task registry now enforces TTL profile purge + retention cap + cursor pagination semantics.
+- Phase 4U blocking-result dispatch tranche now passes targeted checks:    
   - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
   - `52 passed` (`tests/test_mcp_wrapper_protocol.py`)
   - `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - blocking lifecycle semantics now run on background dispatch paths (`tasks/result`, `tools/call`) so wrapper channel remains responsive under concurrent requests.
   - review follow-up now bounds background dispatch with a thread pool and removes reflected exception text from guarded-dispatch logs.
-- Phase 4V metadata/cursor compliance tranche now passes targeted checks:
+- Phase 4V metadata/cursor compliance tranche now passes targeted checks:  
   - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
   - `52 passed` (`tests/test_mcp_wrapper_protocol.py`)
   - `88 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - related-task metadata now emits schema-aligned `taskId` key and `tasks/list` now uses opaque cursor tokens with backward-compatible numeric decode handling.
-- Phase 4W MCP transport resilience tranche now passes targeted checks:
+- Phase 4W MCP transport resilience tranche now passes targeted checks:    
   - `python -m py_compile mcp_wrapper.py tests/test_mcp_wrapper_protocol.py`
   - `56 passed` (`tests/test_mcp_wrapper_protocol.py`)
   - `92 passed` (`tests/test_ollama_local_benchmark.py`, `tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
@@ -237,14 +237,14 @@ Evaluator: Codex
   - `78 passed` (`tests/test_phase_hygiene.py`, `tests/test_mcp_wrapper_protocol.py`)
   - `python -m eval.mcp_transport_soak --iterations 10 --warmup-requests 2 --timeout-sec 15 --transport framed --max-p95-ms 5000` -> PASS (`run_id=20260215_170548`)
   - guarded-dispatch path now returns deterministic `-32603` replies for request IDs when unexpected dispatcher exceptions occur.
-- Phase 4AF unified SOTA+ verdict tranche now passes targeted checks:
+- Phase 4AF unified SOTA+ verdict tranche now passes targeted checks:      
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
   - `32 passed` (`tests/test_ollama_local_benchmark.py`)
   - `39 passed` (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`)
   - command now emits deterministic gate-family outcomes across quality/reliability/statistical/reproducibility/profile-policy dimensions.
-- Phase 4AG deferred benchmark cadence tranche now passes targeted checks:
+- Phase 4AG deferred benchmark cadence tranche now passes targeted checks: 
   - `python -m py_compile eval/ollama_local_benchmark.py tests/test_ollama_local_benchmark.py`
-  - deferred-mode tests now validate benchmark-skip + report-reuse behavior and stale-report rejection (`tests/test_ollama_local_benchmark.py`)
+  - deferred-mode tests now validate benchmark-skip + report-reuse behavior and stale-report rejection (`tests/test_ollama_local_benchmark.py`)       
   - combined targeted suite passes (`tests/test_phase_hygiene.py`, `tests/test_ollama_local_benchmark.py`).
 - Initial cross-model quick-pass benchmark captured for 5 downloaded defaults (`xlam`, `qwen3:8b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`, `llama3.1:8b`); snapshot and interpretation documented in `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`.
 - Compile checks passed on all touched modules/tests.
@@ -257,13 +257,13 @@ Evaluator: Codex
 
 ## Unthought SOTA Enhancements (Recommended Additions)
 
-1. **Continuous retrieval evaluation harness (must-have for SOTA claims)**
+1. **Continuous retrieval evaluation harness (must-have for SOTA claims)** 
    - Add benchmark datasets + replay traces + nDCG@k / Recall@k / MRR + latency percentiles.
    - Required to validate adaptive-weights and explainability claims quantitatively.
 
 2. **Policy-aware memory governance (RL-Driven)**
    - Per-memory retention TTL, PII tags, redaction/transformation policies, and auditable deletion proofs.
-   - Transition to Reinforcement Learning (RL)-driven memory management. The system should autonomously learn when to Write, Delete, or Update memories based on retrieval reward signals, moving beyond predefined limits.
+   - Transition to Reinforcement Learning (RL)-driven memory management. The system should autonomously learn when to Write, Delete, or Update memories based on retrieval reward signals, moving beyond predefined limits.      
 
 3. **Off-policy model upgrade over current SNIPS calibration**
    - Extend from scalar multipliers to feature-aware off-policy ranking updates (e.g., doubly robust estimators over trace features).
@@ -273,7 +273,7 @@ Evaluator: Codex
    - Carry confidence from extraction + contradiction scores + source reliability into final ranking and response generation.
    - Useful to avoid confidently surfacing low-trust facts.
 
-5. **Memory compression/summarization layer for long-lived stores**
+5. **Memory compression/summarization layer for long-lived stores**        
    - Periodic abstraction of dense episodic clusters into semantic memories with reversible provenance links.
    - Helps scale and keeps retrieval focused.
 6. **MCP 2025-11 conformance tranche (follow-up now narrower)**
@@ -284,7 +284,7 @@ Evaluator: Codex
 ## Suggested Plan Adjustments
 
 1. Keep **Phase 1.1 Stabilization** as an explicit completed checkpoint in roadmap history:
-   - Instructor wiring, Docker detection contract, trace raw-score fidelity, adaptive score-entropy, version consistency, and retrieval scope fixes.
+   - Instructor wiring, Docker detection contract, trace raw-score fidelity, adaptive score-entropy, version consistency, and retrieval scope fixes.  
 2. Re-scope Phase 2 acceptance criteria around **measurable retrieval quality metrics** (not just feature existence).
 3. Expand Phase 3 to include **ingestion safety hardening** (parser sandboxing, fail-open/skip semantics, and provenance metadata standards).
 4. Add a cross-platform CI matrix + optional-dependency matrix as explicit deliverables before v3.2/v3.3 claims.
@@ -304,12 +304,12 @@ To align with the product intent (not enterprise-heavy), the highest-ROI additio
 
 2. **Cross-Assistant Handoff Bundles**
    - Deterministic import/export for moving between IDEs/agents.
-   - Include goals, decisions, unresolved questions, and top-k memories.
+   - Include goals, decisions, unresolved questions, and top-k memories.   
    - Idempotent replay with event IDs for safe repeated imports.
 
 3. **Release-Gated Retrieval Evaluation**
-   - Require nDCG@k/Recall@k/MRR + latency budgets before SOTA claims.
-   - A/B adaptive-vs-fixed and explain-on-vs-off to prove net value.
+   - Require nDCG@k/Recall@k/MRR + latency budgets before SOTA claims.     
+   - A/B adaptive-vs-fixed and explain-on-vs-off to prove net value.       
 
 ## Web Research Snapshot
 
@@ -320,9 +320,9 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-14-phase4h-local-ollama-benchmarking.md`
 - `docs/plans/2026-02-15-phase4i-ability-resource-benchmarking.md`
 - `docs/plans/2026-02-15-phase4j-profile-promotion-gates.md`
-- `docs/plans/2026-02-15-phase4k-hygiene-gate-and-roadmap-refresh.md`
-- `docs/plans/2026-02-15-phase4l-dev-cycle-benchmark-orchestration.md`
-- `docs/plans/2026-02-15-phase4m-dev-cycle-policy-apply-rollback.md`
+- `docs/plans/2026-02-15-phase4k-hygiene-gate-and-roadmap-refresh.md`      
+- `docs/plans/2026-02-15-phase4l-dev-cycle-benchmark-orchestration.md`     
+- `docs/plans/2026-02-15-phase4m-dev-cycle-policy-apply-rollback.md`       
 - `docs/plans/2026-02-15-phase4n-policy-approval-manifest.md`
 - `docs/plans/2026-02-15-phase4o-approval-provenance-context.md`
 - `docs/plans/2026-02-15-phase4p-apply-checkpoint-provenance-enforcement.md`
@@ -330,14 +330,14 @@ Research notes and implementation guidance are documented in:
 - `docs/plans/2026-02-15-phase4r-mcp-2025-11-25-compatibility.md`
 - `docs/plans/2026-02-15-phase4s-mcp-task-lifecycle-baseline.md`
 - `docs/plans/2026-02-15-mcp-transport-closed-recovery.md`
-- `docs/plans/2026-02-15-phase4aa-mcp-tool-call-timeout-hardening.md`
-- `docs/plans/2026-02-15-phase4ab-mcp-startup-recovery-budget-gating.md`
+- `docs/plans/2026-02-15-phase4aa-mcp-tool-call-timeout-hardening.md`      
+- `docs/plans/2026-02-15-phase4ab-mcp-startup-recovery-budget-gating.md`   
 - `docs/plans/2026-02-15-phase4ac-mcp-host-timeout-derived-deadline-budget.md`
 - `docs/plans/2026-02-15-phase4ad-mcp-explicit-deadline-overrun-guardrail.md`
 - `docs/plans/2026-02-15-phase4ae-mcp-guarded-dispatch-fail-fast-response.md`
-- `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`
+- `docs/plans/2026-02-15-sota-plus-quantitative-comparison-plan.md`        
 - `docs/plans/2026-02-15-phase4af-unified-sota-verdict-command.md`
-- `docs/plans/2026-02-15-phase4ag-enhancement-first-benchmark-cadence.md`
+- `docs/plans/2026-02-15-phase4ag-enhancement-first-benchmark-cadence.md`  
 - `docs/plans/2026-02-15-phase4l2-mcp-startup-tray-integration.md`
 
 ## Model-Caliber Research Update (2026-02-14)
@@ -348,7 +348,7 @@ Research-backed recommendation for SOTA+ operator profiles is to keep **caliber-
 2. `balanced`: `qwen3:8b` default for quality/latency tradeoff.
 3. `high_reasoning`: `qwen3:14b` default for 16GB-class workflows; reserve `qwen3:30b/32b` (or `deepseek-r1:32b`) for explicit high-VRAM opt-in sessions.
 4. Keep xLAM as optional specialist endpoint for structured extraction/tool-calling workloads, not as mandatory global default.
-5. For active coding sessions, pin runtime extraction to low-latency by default and split ingestion/legacy import into separate configurable profiles so background memory continuity does not consume planning-grade VRAM.
+5. For active coding sessions, pin runtime extraction to low-latency by default and split ingestion/legacy import into separate configurable profiles so background memory continuity does not consume planning-grade VRAM.      
 6. Local reproducibility is now codified with a versioned model matrix and benchmark harness:
    - `eval/ollama_model_matrix.json`
    - `eval/ollama_benchmark_prompts.jsonl`

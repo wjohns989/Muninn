@@ -120,6 +120,13 @@ class SynthesisRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class ReasoningRequest(BaseModel):
+    query: str
+    context: Optional[str] = None
+    user_id: str = "global_user"
+    limit: int = 10
+
+
 class SetProjectGoalRequest(BaseModel):
     user_id: str = "global_user"
     namespace: str = "global"
@@ -1228,15 +1235,38 @@ async def trigger_consolidation():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/consolidation/status", dependencies=[Depends(verify_token)])
+@app.get("/consolidation/status", dependencies=[Depends(verify_token)])    
 async def consolidation_status():
     """Get consolidation daemon status."""
     if memory is None:
         return {"status": "not_initialized"}
 
     if memory._consolidation:
-        return {"success": True, "data": memory._consolidation.status}
+        return {"success": True, "data": memory._consolidation.status}     
     return {"success": False, "data": {"running": False}}
+
+
+@app.post("/reasoning/detect-gaps", dependencies=[Depends(verify_token)])
+async def detect_gaps_endpoint(req: ReasoningRequest):
+    """Analyze query and context for missing information (Omission Filtering)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        # Import dynamically to avoid circular deps at module level if any
+        from muninn.reasoning.omission import OmissionDetector
+        detector = OmissionDetector(memory)
+        
+        result = await detector.detect_gaps(
+            query=req.query,
+            context=req.context,
+            user_id=req.user_id,
+            limit=req.limit
+        )
+        return {"success": True, "data": result.model_dump()}
+    except Exception as e:
+        logger.error("Gap detection failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Phase 6 Endpoints ---
