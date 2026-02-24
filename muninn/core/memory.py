@@ -627,6 +627,12 @@ class MuninnMemory:
                 "muninn.add.result",
                 {"memory_id": record.id, "importance": record.importance},
             )
+
+            # Phase 20: Low-latency federation broadcast
+            if self.config.federation.enabled and self.config.federation.sync_on_add:
+                # Fire and forget or await? SOTA plan says "low-latency", so maybe background task.
+                asyncio.create_task(self._federation.broadcast_memory(record.id))
+
             return result
 
     async def search(

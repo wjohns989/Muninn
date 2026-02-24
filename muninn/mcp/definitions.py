@@ -22,7 +22,7 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                 },
                 "media_type": {
                     "type": "string",
-                    "enum": ["text", "image", "audio", "video"],
+                    "enum": ["text", "image", "audio", "video", "sensor"],
                     "default": "text",
                     "description": "Media type of the memory (Phase 20)."
                 }
@@ -54,7 +54,7 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                 "explain": {"type": "boolean", "default": False, "description": "Include per-result recall trace explaining retrieval signals (v3.1.0)"},
                 "media_type": {
                     "type": "string",
-                    "enum": ["text", "image", "audio", "video"],
+                    "enum": ["text", "image", "audio", "video", "sensor"],
                     "description": "Filter results by media type (Phase 20)."
                 }
             },

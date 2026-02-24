@@ -222,6 +222,14 @@ class AdvancedConfig(BaseModel):
     colbert_multivec_collection: str = "muninn_colbert_multivec"
 
 
+class FederationConfig(BaseModel):
+    """Cross-agent federation configuration (Phase 20)."""
+    enabled: bool = False
+    peers: List[str] = Field(default_factory=list)  # List of base URLs
+    sync_on_add: bool = False
+    timeout_seconds: float = 5.0
+
+
 class VisionConfig(BaseModel):
     """Computer Vision configuration (Phase 20)."""
     enabled: bool = False
@@ -279,6 +287,7 @@ class MuninnConfig(BaseModel):
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
+    federation: FederationConfig = Field(default_factory=FederationConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
     conflict_detection: ConflictDetectionConfig = Field(default_factory=ConflictDetectionConfig)
@@ -505,6 +514,16 @@ class MuninnConfig(BaseModel):
                 base_url=os.environ.get("MUNINN_AUDIO_BASE_URL", "http://localhost:8000/v1"),
                 api_key=os.environ.get("MUNINN_AUDIO_API_KEY", "not-needed"),
                 timeout_seconds=float(os.environ.get("MUNINN_AUDIO_TIMEOUT_SEC", "60.0")),
+            ),
+            federation=FederationConfig(
+                enabled=os.environ.get("MUNINN_FEDERATION_ENABLED", "false").lower() == "true",
+                peers=[
+                    p.strip()
+                    for p in os.environ.get("MUNINN_FEDERATION_PEERS", "").split(",")
+                    if p.strip()
+                ],
+                sync_on_add=os.environ.get("MUNINN_FEDERATION_SYNC_ON_ADD", "false").lower() == "true",
+                timeout_seconds=float(os.environ.get("MUNINN_FEDERATION_TIMEOUT_SEC", "5.0")),
             ),
             feature_flags=FeatureFlags.from_env(),
             server=ServerConfig(

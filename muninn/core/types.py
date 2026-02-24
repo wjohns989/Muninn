@@ -33,6 +33,7 @@ class MediaType(str, Enum):
     IMAGE = "image"
     AUDIO = "audio"
     VIDEO = "video"
+    SENSOR = "sensor"
 
 
 class MemoryRecord(BaseModel):
