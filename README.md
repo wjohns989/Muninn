@@ -11,31 +11,25 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 
 ---
 
-## 🚦 Status
+## 🚩 Status
 
-**Current Version:** v3.18.1 (Phase 19 In Progress)
+**Current Version:** v3.19.0 (Phase 20 Complete)
 **Stability:** Production Beta
-**Test Suite:** 1019 passing, 0 failing
+**Test Suite:** 1033 passing, 0 failing
 
-### What's New in v3.18.1
+### What's New in v3.19.0
 
-- **Scout Synthesis & Hunt Mode**: Phase 19 brings multi-agent tracking and autonomous synthesis patterns directly into the memory system.
-- **CI Benchmark Workflow & Token Rotation**: Auto-gated PRs with LongMemEval dry-runs (`run_benchmark.py --dry-run`). `rotate-token` CLI for safe MCP token resets.
-- **Parser Security Sandbox**: Strict isolation for PDF/DOCX format ingestion. Subprocess timeouts and stdout bounds prevent any malicious document from crashing the host server. POSIX rlimits for memory/CPU (set via max_memory_mb / max_cpu_seconds) now fail fast if they cannot be applied, and reject non-integer values.
-- **SOTA+ Signed Verdict**: Verdict artifacts now include `commit_sha` (from `git rev-parse HEAD`), SHA256 hashes of all input report files, and an HMAC-SHA256 `promotion_signature` bound to the canonical payload.
+- **Multimodal Hive Mind**: Phase 20 extends the unified embedding space to support cross-assistant shared multimodal memory.
+- **Unified Multimodal Ingestion**: Integrated `AudioAdapter` (Whisper) and `VisionAdapter` (LLaVA) for automatic transcription and description of non-text assets.
+- **Low-Latency Federation**: Push-based `broadcast_memory` mechanism for real-time synchronization across decentralized assistant runtimes.
+- **Sensor Data Support**: Added `media_type="sensor"` for persisting and retrieving structured sensor context.
 
 ### Previous Milestones
 
 | Version | Phase | Key Feature |
 |---------|-------|-------------|
-| v3.18.1 | 19 | Scout synthesis, hunt mode (In Progress) |
-| v3.15.0 | 18 | CI Benchmark Workflow & Token Rotation |
-| v3.14.0 | 17 | Synthetic Benchmark Suite & Parser Security Sandbox |
-| v3.13.0 | 16 | SOTA+ Signed Verdict, LongMemEval Gate, StructMemEval Adapter |
-| v3.12.0 | 15 | Auth propagation fix, graph chains smoke, OTel GenAI hardening |
-| v3.11.0 | 14 | Project-scoped memory — `scope="project"/"global"` strict isolation |
-| v3.10.0 | 13 | Native ColBERT multi-vector MaxSim + NL temporal query expansion |
-| v3.9.0 | 12 | Distributed entity scoping with composite IDs |
+| v3.19.0 | 20 | Multimodal Hive Mind Operations |
+| v3.18.1 | 19 | Scout synthesis, hunt mode |
 
 ---
 
@@ -44,6 +38,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 ### Core Memory Engine
 
 - **Local-First**: Zero cloud dependency — all data stays on your machine
+- **Multimodal**: Native support for Text, Image, Audio, Video, and Sensor data
 - **5-Signal Hybrid Retrieval**: Dense vector · BM25 lexical · Graph traversal · Temporal relevance · Goal relevance
 - **Explainable Recall Traces**: Per-signal score attribution on every search result
 - **Project Isolation**: `scope="project"` memories never cross repo boundaries; `scope="global"` memories are always available
@@ -69,7 +64,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 
 - **Handoff Bundles**: Export/import memory checkpoints with checksum verification and idempotent replay
 - **Legacy Migration**: Discover and import memories from prior assistant sessions (JSONL chat history, SQLite state)
-- **Federation**: Multi-instance memory synchronization with delta bundles
+- **Hive Mind Federation**: Push-based low-latency memory synchronization across assistant runtimes
 - **MCP 2025-11 Compliant**: Full protocol negotiation, lifecycle gating, schema annotations
 
 ---
@@ -154,8 +149,8 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 
 | Tool | Description |
 |------|-------------|
-| `add_memory` | Store a memory with optional `scope`, `project`, `namespace`, `importance` |
-| `search_memory` | Hybrid 5-signal search with explainable recall traces |
+| `add_memory` | Store a memory with optional `scope`, `project`, `namespace`, `media_type` |
+| `search_memory` | Hybrid 5-signal search with `media_type` filtering and recall traces |
 | `get_all_memories` | Paginated memory listing with filters |
 | `update_memory` | Update content or metadata of an existing memory |
 | `delete_memory` | Remove a memory by ID |
@@ -209,8 +204,8 @@ async def main():
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Server health + memory/vector/graph counts |
-| `POST` | `/add` | Add a memory |
-| `POST` | `/search` | Hybrid search |
+| `POST` | `/add` | Add a memory (supports `media_type`) |
+| `POST` | `/search` | Hybrid search (supports `media_type` filtering) |
 | `GET` | `/get_all` | Paginated memory listing |
 | `PUT` | `/update` | Update a memory |
 | `DELETE` | `/delete/{memory_id}` | Delete a memory |
@@ -247,6 +242,9 @@ Key environment variables:
 | `MUNINN_OTEL_ENDPOINT` | `http://localhost:4318` | OTLP HTTP endpoint for trace export |
 | `MUNINN_CHAINS_ENABLED` | off | `=1` enables graph memory chain detection (PRECEDES/CAUSES edges) |
 | `MUNINN_COLBERT_MULTIVEC` | off | `=1` enables native ColBERT multi-vector storage |
+| `MUNINN_FEDERATION_ENABLED` | off | `=1` enables P2P memory synchronization |
+| `MUNINN_FEDERATION_PEERS` | - | Comma-separated list of peer base URLs |
+| `MUNINN_FEDERATION_SYNC_ON_ADD` | off | `=1` enables real-time push-on-add to peers |
 | `MUNINN_TEMPORAL_QUERY_EXPANSION` | off | `=1` enables NL time-phrase parsing in search |
 
 ---

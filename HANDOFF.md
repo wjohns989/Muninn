@@ -1,25 +1,21 @@
 # Muninn Development Handoff
 
-> **Updated**: 2026-02-20
-> **Branch**: `feature/v3.18.0-phase19`
-> **Version**: v3.18.1 (Phase 19 IN PROGRESS)
-> **Status**: 1019 tests pass. Phases 14–18 merged to main. Phase 19 branch active.
+> **Updated**: 2026-02-23
+> **Branch**: `main`
+> **Version**: v3.19.0 (Phase 20 COMPLETE)
+> **Status**: 1033 tests pass. Phases 14–20 merged to main.
 
 ---
 
 ## Current State
 
 ### What's Working
-- **1005 tests pass** (100% pass rate)
+- **1033 tests pass** (100% pass rate)
 - **Server**: FastAPI on `http://localhost:42069`, auth token via `MUNINN_AUTH_TOKEN`
 - **MCP**: Registered as "muninn" in Claude Code user config with auth token baked in
-- **Claude Desktop**: Already correctly registered as "muninn"
-- **Phase 14 (v3.11.0)**: Project-scoped memory — **MERGED**
-- **Phase 15 (v3.12.0)**: Operational hardening — **MERGED**
-- **Phase 16 (v3.13.0)**: SOTA+ signed verdict v1 — **MERGED**
-- **Phase 17a (v3.14.0)**: Synthetic benchmark suite + parser security sandbox — **MERGED**
-- **Phase 18 (v3.15.0)**: CI benchmark workflow + token rotation utility — **MERGED** (PRs #46, #47)
-- **Phase 17b (v3.17.x)**: Legacy discovery, dashboard overhaul, Scout — **PR #48 open**
+- **Phase 20 (v3.19.0)**: Multimodal support (Vision, Audio, Sensor) & Hive Mind Sync — **COMPLETE**
+- **Phase 19 (v3.18.1)**: Scout synthesis & hunt mode — **MERGED**
+- **Phase 18 (v3.15.0)**: CI benchmark workflow + token rotation utility — **MERGED**
 
 ### Server Quick Start
 
@@ -44,6 +40,29 @@ C:\Users\user\AppData\Local\AntigravityLabs\muninn\
 ├── qdrant_v8/           # Vector store — 73 vectors
 └── kuzu_v12/            # Graph store — activated in Phase 15
 ```
+
+---
+
+## Phase 20 (v3.19.0) Summary — 2026-02-23
+
+### Multimodal Hive Mind Operations
+**Files**: `muninn/extraction/audio_adapter.py` (new), `muninn/extraction/vision_adapter.py` (new),
+          `muninn/advanced/cross_agent.py`, `muninn/core/config.py`, `muninn/core/memory.py`,
+          `muninn/ingestion/parser.py`, `muninn/ingestion/pipeline.py`, `server.py`,
+          `muninn/mcp/definitions.py`, `muninn/mcp/handlers.py`, `muninn/core/types.py`
+
+#### Unified Multimodal Ingestion
+- **Audio support**: `AudioAdapter` for Whisper-compatible transcription of `.mp3`, `.wav`, `.m4a`, etc.
+- **Vision support**: `VisionAdapter` for Ollama LLaVA image description.
+- **Sensor support**: Added `media_type="sensor"` for structured sensor context.
+- **Pipeline Integration**: `IngestionPipeline` now automatically routes images and audio through appropriate adapters.
+
+#### Cross-Assistant Hive Mind Synchronization
+- **Push broadcast**: `FederationManager.broadcast_memory` for real-time memory propagation to peers.
+- **Low-latency sync**: `sync_on_add` configuration flag triggers immediate broadcast upon memory creation.
+- **User scoping**: Federation manifests and bundles now honor `user_id` boundaries.
+
+### Phase 20 Test Suite — `tests/test_multimodal_retrieval.py`, `tests/test_multimodal_ingestion.py`, `tests/test_audio_adapter.py`, `tests/test_federation_broadcast.py` (14 new tests)
 
 ---
 
@@ -300,6 +319,7 @@ pytest tests/test_ingestion_discovery.py -v
 
 ## Validation History
 
+- **Phase 20 (v3.19.0)**: **1033 tests passed (100%), 0 failed** — Multimodal Hive Mind Operations (Vision, Audio, Sensor), push-based synchronization, low-latency federation. 14 new tests. 2026-02-23.
 - **Phase 19 (v3.18.1)**: **1019 tests passed (100%), 0 failed** — P0 Scout re-rank fix
   (_record_matches_constraints synthetic key skip), P2 MCP synthesis exposure, P2 dashboard
   endpoint fixes (handleIngest /add, forceConsolidation /consolidation/run), 13 new regression
