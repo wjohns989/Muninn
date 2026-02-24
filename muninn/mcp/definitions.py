@@ -111,6 +111,18 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         }
     },
     {
+        "name": "forage_knowledge",
+        "description": "Actively forage for related knowledge when an initial search is ambiguous or returns low-confidence results. Uses graph scent-following to discover hidden context.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query or topic to forage for."},
+                "ambiguity_threshold": {"type": "number", "default": 0.7, "description": "Entropy threshold to trigger foraging (0.0 to 1.0)."}
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "get_all_memories",
         "description": "Retrieve all stored memories, optionally filtered by user/agent.",
         "inputSchema": {
@@ -603,7 +615,7 @@ READ_ONLY_TOOLS = {
     "export_handoff", "discover_legacy_sources",
     "get_periodic_ingestion_status",
     "get_temporal_knowledge", "create_federation_manifest", "calculate_federation_delta", "create_federation_bundle",
-    "detect_information_gaps"
+    "detect_information_gaps", "forage_knowledge"
 }
 
 DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories"}
@@ -617,7 +629,8 @@ IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
     "start_periodic_ingestion",
     "stop_periodic_ingestion",
     "trigger_distillation",
-    "correct_fact"
+    "correct_fact",
+    "forage_knowledge"
 })
 
 # mimir_relay creates a new interop_runs record on every call and may have

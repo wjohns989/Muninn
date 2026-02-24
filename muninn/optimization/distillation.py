@@ -120,7 +120,7 @@ class DistillationDaemon:
             return None
 
     async def _commit_semantic_memory(self, cluster: Dict[str, Any], content: str):
-        """Save the new semantic memory and archive the old ones."""
+        """Save the new semantic memory and archive the old ones."""       
         # 1. Add new semantic memory
         await self.memory.add(
             content=content,
@@ -130,10 +130,11 @@ class DistillationDaemon:
             metadata={
                 "provenance": "distillation",
                 "source_cluster": cluster.get("id"),
-                "memory_type": "semantic"
+                "memory_type": "semantic",
+                "importance": 0.9 # High starting importance for distilled knowledge
             }
         )
-        
+
         # 2. Archive old memories
         for mem_id in cluster.get("memory_ids", []):
             # Mark archived and consolidated
