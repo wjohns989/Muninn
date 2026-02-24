@@ -467,7 +467,16 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
     if scope not in ("project", "global"):
         scope = "project"
 
-    payload = {"content": args.get("content"), "metadata": metadata, "user_id": "global_user", "scope": scope}
+    # Phase 20: Multimodal support
+    media_type = args.get("media_type", "text")
+
+    payload = {
+        "content": args.get("content"),
+        "metadata": metadata,
+        "user_id": "global_user",
+        "scope": scope,
+        "media_type": media_type,
+    }
     resp = make_request_with_retry(
         "POST",
         f"{SERVER_URL}/add",
@@ -525,6 +534,7 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
         "user_id": "global_user",
         "filters": filters,
         "explain": args.get("explain", False),
+        "media_type": args.get("media_type"),
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     result = resp.json()

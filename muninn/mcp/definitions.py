@@ -19,6 +19,12 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                     "enum": ["project", "global"],
                     "default": "project",
                     "description": "Isolation scope. 'project' = visible only within this project (default). 'global' = always visible across all projects (use for user preferences, universal rules)."
+                },
+                "media_type": {
+                    "type": "string",
+                    "enum": ["text", "image", "audio", "video"],
+                    "default": "text",
+                    "description": "Media type of the memory (Phase 20)."
                 }
             },
             "required": ["content"]
@@ -45,7 +51,12 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                 "query": {"type": "string", "description": "The search query."},
                 "limit": {"type": "integer", "default": 5, "description": "Max number of results (default 5)"},
                 "rerank": {"type": "boolean", "default": True, "description": "Enable SOTA reranking for precision (default true)"},
-                "explain": {"type": "boolean", "default": False, "description": "Include per-result recall trace explaining retrieval signals (v3.1.0)"}
+                "explain": {"type": "boolean", "default": False, "description": "Include per-result recall trace explaining retrieval signals (v3.1.0)"},
+                "media_type": {
+                    "type": "string",
+                    "enum": ["text", "image", "audio", "video"],
+                    "description": "Filter results by media type (Phase 20)."
+                }
             },
             "required": ["query"]
         }

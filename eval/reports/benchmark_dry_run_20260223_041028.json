@@ -1,0 +1,55 @@
+{
+  "run_id": "8987c80e-2de4-4a47-9b15-f63d2e89c566",
+  "mode": "dry-run",
+  "timestamp_utc": "2026-02-23T04:10:28Z",
+  "server_url": null,
+  "overall_passed": true,
+  "commit_sha": "15313c9aeec114ea06cd701ecb46e36972508881",
+  "elapsed_total_seconds": 31.36402570000064,
+  "error": null,
+  "adapters": {
+    "longmemeval": {
+      "adapter": "longmemeval",
+      "mode": "selftest",
+      "passed": true,
+      "metrics": {},
+      "dataset_path": null,
+      "case_count": 0,
+      "elapsed_seconds": 31.136661499999718,
+      "error": null
+    },
+    "structmemeval": {
+      "adapter": "structmemeval",
+      "mode": "selftest",
+      "passed": true,
+      "metrics": {},
+      "dataset_path": null,
+      "case_count": 0,
+      "elapsed_seconds": 0.18000200000005862,
+      "error": null
+    }
+  },
+  "gates": {
+    "longmemeval": {
+      "passed": true,
+      "reason": "selftest_pass_no_metrics",
+      "required": false,
+      "ndcg_at_10": null,
+      "recall_at_10": null,
+      "thresholds": {
+        "min_ndcg_at_10": 0.6,
+        "min_recall_at_10": 0.65
+      }
+    },
+    "structmemeval": {
+      "passed": true,
+      "reason": "selftest_pass_no_metrics",
+      "required": false,
+      "mean_exact_match": null,
+      "thresholds": {
+        "min_exact_match": 0.5
+      }
+    }
+  },
+  "signature": "hmac-sha256:5f60a330e2c07d70d544e2b6022abf8f8b50851d8492e83f8295593f2d7a4eeb"
+}

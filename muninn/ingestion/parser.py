@@ -41,6 +41,12 @@ SUPPORTED_EXTENSIONS = {
     ".png": "image",
     ".webp": "image",
     ".bmp": "image",
+    # Audio (Phase 20)
+    ".mp3": "audio",
+    ".wav": "audio",
+    ".m4a": "audio",
+    ".ogg": "audio",
+    ".flac": "audio",
 }
 
 CHAT_ROLE_KEYS = ("role", "speaker", "author", "sender")

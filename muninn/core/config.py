@@ -231,6 +231,16 @@ class VisionConfig(BaseModel):
     timeout_seconds: float = 30.0
 
 
+class AudioConfig(BaseModel):
+    """Audio transcription configuration (Phase 20)."""
+    enabled: bool = False
+    provider: str = "openai_compatible"
+    model: str = "whisper-1"
+    base_url: str = "http://localhost:8000/v1"
+    api_key: str = "not-needed"
+    timeout_seconds: float = 60.0
+
+
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
@@ -268,6 +278,7 @@ class MuninnConfig(BaseModel):
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
     conflict_detection: ConflictDetectionConfig = Field(default_factory=ConflictDetectionConfig)
@@ -486,6 +497,14 @@ class MuninnConfig(BaseModel):
                 model=os.environ.get("MUNINN_VISION_MODEL", "llava"),
                 ollama_url=ollama_url,
                 timeout_seconds=float(os.environ.get("MUNINN_VISION_TIMEOUT_SEC", "30.0")),
+            ),
+            audio=AudioConfig(
+                enabled=os.environ.get("MUNINN_AUDIO_ENABLED", "false").lower() == "true",
+                provider=os.environ.get("MUNINN_AUDIO_PROVIDER", "openai_compatible"),
+                model=os.environ.get("MUNINN_AUDIO_MODEL", "whisper-1"),
+                base_url=os.environ.get("MUNINN_AUDIO_BASE_URL", "http://localhost:8000/v1"),
+                api_key=os.environ.get("MUNINN_AUDIO_API_KEY", "not-needed"),
+                timeout_seconds=float(os.environ.get("MUNINN_AUDIO_TIMEOUT_SEC", "60.0")),
             ),
             feature_flags=FeatureFlags.from_env(),
             server=ServerConfig(

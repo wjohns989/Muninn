@@ -79,6 +79,7 @@ class FederationManager:
                     "content": r.content,
                     "metadata": r.metadata,
                     "type": r.memory_type.value,
+                    "media_type": r.media_type.value,
                     "created_at": r.created_at
                 }
                 for r in records
@@ -96,6 +97,7 @@ class FederationManager:
                     content=item["content"],
                     user_id=(item.get("metadata") or {}).get("user_id", "federated"),
                     metadata={**(item.get("metadata") or {}), "federation_sync": True},
+                    media_type=item.get("media_type", "text"),
                     provenance="federated_sync"
                 )
                 applied += 1
