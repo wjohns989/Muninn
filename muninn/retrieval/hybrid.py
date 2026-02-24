@@ -123,6 +123,7 @@ class HybridRetriever:
         filters: Optional[Dict[str, Any]] = None,
         rerank: bool = True,
         namespaces: Optional[List[str]] = None,
+        media_type: Optional[str] = None,
         explain: bool = False,
         goal_embedding: Optional[List[float]] = None,
         goal_signal_weight: float = GOAL_SIGNAL_WEIGHT,
@@ -138,6 +139,7 @@ class HybridRetriever:
             filters: Optional metadata filters.
             rerank: Whether to apply cross-encoder reranking.
             namespaces: Optional namespace filter list.
+            media_type: Optional media type filter (text|image|audio|video).
             explain: Whether to generate recall traces (v3.1.0).
 
         Returns:
@@ -151,6 +153,7 @@ class HybridRetriever:
                 "gen_ai.system": "muninn",
                 "muninn.limit": limit,
                 "muninn.user_id": user_id,
+                "muninn.media_type": media_type,
             },
         ):
             # Check if explainable recall is enabled via feature flags
@@ -186,6 +189,8 @@ class HybridRetriever:
                 effective_filters["user_id"] = user_id
             if namespaces and len(namespaces) == 1 and "namespace" not in effective_filters:
                 effective_filters["namespace"] = namespaces[0]
+            if media_type:
+                effective_filters["media_type"] = media_type
 
         # --- Parallel retrieval across all signals ---
         # We use asyncio.to_thread to run synchronous store operations in separate threads,
@@ -199,8 +204,8 @@ class HybridRetriever:
                 temporal_results,
             ) = await asyncio.gather(
                 asyncio.to_thread(self._vector_search, query_embedding, limit * 3, effective_filters),
-                asyncio.to_thread(self._graph_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces, memory_ids=target_ids),
-                asyncio.to_thread(self._bm25_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces, memory_ids=target_ids),
+                asyncio.to_thread(self._graph_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces, memory_ids=target_ids, media_type=media_type),
+                asyncio.to_thread(self._bm25_search, search_query, limit * 2, user_id=user_id, namespaces=namespaces, memory_ids=target_ids, media_type=media_type),
                 asyncio.to_thread(self._goal_search, goal_embedding, limit * 2, effective_filters),
                 asyncio.to_thread(
                     self._temporal_search,
@@ -210,6 +215,7 @@ class HybridRetriever:
                     limit=limit * 2,
                     time_range=resolved_time_range,
                     memory_ids=target_ids,
+                    media_type=media_type,
                 ),
             )
 
@@ -355,6 +361,7 @@ class HybridRetriever:
         user_id: Optional[str] = None,
         namespaces: Optional[List[str]] = None,
         memory_ids: Optional[List[str]] = None,
+        media_type: Optional[str] = None,
     ) -> List[Tuple[str, float]]:
         """Graph-based entity search. Returns list of (id, score) (scoped)."""
         try:
@@ -393,6 +400,17 @@ class HybridRetriever:
                         continue
                     scores[mem_id] += query_entity_weight
 
+            # Post-filter by media_type if needed (since graph store doesn't handle it yet)
+            if media_type and scores:
+                # Batch fetch to check media_type
+                records = self.metadata.get_by_ids(list(scores.keys()))
+                filtered_scores = {
+                    r.id: scores[r.id]
+                    for r in records
+                    if r.media_type.value == media_type
+                }
+                scores = filtered_scores
+
             ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:limit]
             return ranked
         except Exception as e:
@@ -406,6 +424,7 @@ class HybridRetriever:
         user_id: Optional[str] = None,
         namespaces: Optional[List[str]] = None,
         memory_ids: Optional[List[str]] = None,
+        media_type: Optional[str] = None,
     ) -> List[Tuple[str, float]]:
         """BM25 keyword search. Returns list of (id, score)."""
         try:
@@ -415,10 +434,32 @@ class HybridRetriever:
                 user_id=user_id,
                 namespaces=namespaces,
             )
-            if memory_ids:
-                target_set = set(memory_ids)
-                return [(doc_id, float(score)) for doc_id, score in results if doc_id in target_set]
-            return [(doc_id, float(score)) for doc_id, score in results]
+            # results are list of (id, score)
+            doc_ids = [r[0] for r in results]
+            if not doc_ids:
+                return []
+            
+            # Post-filter by memory_ids and media_type
+            records = self.metadata.get_by_ids(doc_ids)
+            record_map = {r.id: r for r in records}
+            
+            target_set = set(memory_ids) if memory_ids else None
+            
+            filtered = []
+            for doc_id, score in results:
+                if target_set and doc_id not in target_set:
+                    continue
+                
+                r = record_map.get(doc_id)
+                if not r:
+                    continue
+                
+                if media_type and r.media_type.value != media_type:
+                    continue
+                    
+                filtered.append((doc_id, float(score)))
+                
+            return filtered
         except Exception as e:
             logger.warning("BM25 search failed: %s", e)
             return []
@@ -451,6 +492,7 @@ class HybridRetriever:
         limit: int,
         time_range: Optional[TimeRange] = None,
         memory_ids: Optional[List[str]] = None,
+        media_type: Optional[str] = None,
     ) -> List[Tuple[str, float]]:
         """
         Temporal/metadata search via SQLite. Returns list of (id, score).
@@ -474,6 +516,7 @@ class HybridRetriever:
                 user_id=user_id,
                 created_at_min=time_range.start if time_range is not None else None,
                 created_at_max=time_range.end if time_range is not None else None,
+                media_type=media_type,
             )
             if namespaces:
                 ns = set(namespaces)

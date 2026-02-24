@@ -36,6 +36,7 @@ class IngestionManager:
         memory_type: MemoryType,
         provenance: Provenance,
         scope: str = "project",
+        media_type: str = "text",
     ) -> Dict[str, Any]:
         """
         Execute the full ingestion pipeline: extract -> embed -> dedup -> conflict -> score -> store.
@@ -118,6 +119,7 @@ class IngestionManager:
             metadata=scoped_metadata,
             novelty_score=0.0,
             scope=scope,
+            media_type=media_type,
         )
 
         # 3. Semantic Deduplication

@@ -1,0 +1,45 @@
+{
+  "run_id": "e7afe956-7c80-4432-b377-bdfb6327623b",
+  "mode": "production",
+  "timestamp_utc": "2026-02-24T00:41:24Z",
+  "server_url": "http://localhost:42069",
+  "overall_passed": true,
+  "commit_sha": "67ce164d7d68fb544c6433df7af1f7655f39a000",
+  "elapsed_total_seconds": 22.956362200000513,
+  "error": null,
+  "adapters": {
+    "longmemeval": null,
+    "structmemeval": {
+      "adapter": "structmemeval",
+      "mode": "production",
+      "passed": true,
+      "metrics": {
+        "mean_exact_match": 0.0,
+        "mean_token_f1": 0.0,
+        "mean_mrr_at_k": 0.0
+      },
+      "dataset_path": "C:\\Users\\user\\muninn_mcp\\eval\\data\\structmemeval_suite_v1.jsonl",
+      "case_count": 5,
+      "elapsed_seconds": 20.770056500001374,
+      "error": null
+    }
+  },
+  "gates": {
+    "longmemeval": {
+      "passed": true,
+      "reason": "not_run",
+      "required": false
+    },
+    "structmemeval": {
+      "passed": false,
+      "reason": "threshold_evaluation",
+      "required": false,
+      "mean_exact_match": 0.0,
+      "mean_token_f1": 0.0,
+      "mean_mrr_at_k": 0.0,
+      "thresholds": {
+        "min_exact_match": 0.5
+      }
+    }
+  }
+}

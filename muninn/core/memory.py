@@ -242,6 +242,7 @@ class MuninnMemory:
                 min_chunk_chars=self.config.ingestion.min_chunk_chars,
                 allowed_roots=self.config.ingestion.allowed_roots,
                 vision_config=self.config.vision.model_dump() if self.config.vision.enabled else None,
+                audio_config=self.config.audio.model_dump() if self.config.audio.enabled else None,
             )
             logger.info(
                 "Multi-source ingestion enabled (max_file_size_bytes=%d, chunk=%d/%d)",
@@ -436,6 +437,7 @@ class MuninnMemory:
         memory_type: MemoryType = MemoryType.EPISODIC,
         provenance: Provenance = Provenance.AUTO_EXTRACTED,
         scope: str = "project",
+        media_type: str = "text",
     ) -> Dict[str, Any]:
         """
         Add a new memory. Delegation to IngestionManager.
@@ -455,6 +457,7 @@ class MuninnMemory:
                 "muninn.user_id": user_id,
                 "muninn.project": (metadata or {}).get("project", "global"),
                 "muninn.scope": scope,
+                "muninn.media_type": media_type,
             },
         ):
             # Process via IngestionManager
@@ -467,6 +470,7 @@ class MuninnMemory:
                 memory_type=memory_type,
                 provenance=provenance,
                 scope=scope,
+                media_type=media_type,
             )
 
             # Handle terminal early returns (DEDUP_SKIP, CONFLICT_SKIP)
@@ -504,6 +508,7 @@ class MuninnMemory:
                                     "project": existing.project,
                                     "branch": existing.branch,
                                     "scope": existing.scope,
+                                    "media_type": existing.media_type.value,
                                 },
                             ),
                             asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content, user_id, namespace)
@@ -544,30 +549,32 @@ class MuninnMemory:
                             "project": record.project,
                             "branch": record.branch,
                             "scope": record.scope,
+                            "media_type": media_type,
                         },
                     )
 
                 def _write_graph():
+                    uid = record.metadata.get("user_id", "global")
+                    ns = record.namespace
                     self._graph.add_memory_node(
                         record.id, 
                         extraction.summary or content[:200],
-                        user_id=user_id,
-                        namespace=namespace
+                        user_id=uid, namespace=ns
                     )
                     for entity in extraction.entities:
-                        self._graph.add_entity(entity.name, entity.entity_type, user_id, namespace)
-                        self._graph.link_memory_to_entity(record.id, entity.name, "mentions", user_id, namespace)
+                        self._graph.add_entity(entity.name, entity.entity_type, uid, ns)
+                        self._graph.link_memory_to_entity(record.id, entity.name, "mentions", uid, ns)
                     for relation in extraction.relations:
-                        self._graph.add_entity(relation.subject, "concept", user_id, namespace)
-                        self._graph.add_entity(relation.object, "concept", user_id, namespace)
+                        self._graph.add_entity(relation.subject, "concept", uid, ns)
+                        self._graph.add_entity(relation.object, "concept", uid, ns)
                         self._graph.create_relation(
                             relation.subject,
                             relation.predicate,
                             relation.object,
                             record.id,
                             relation.confidence,
-                            user_id=user_id,
-                            namespace=namespace,
+                            user_id=uid,
+                            namespace=ns,
                         )
 
                 def _write_bm25():
@@ -597,6 +604,7 @@ class MuninnMemory:
                 "content": content,
                 "importance": record.importance,
                 "memory_type": memory_type.value,
+                "media_type": media_type,
                 "entities": [e.model_dump() for e in extraction.entities],
                 "relations": [r.model_dump() for r in extraction.relations],
                 "chain_links_created": chain_links_created,
@@ -624,17 +632,17 @@ class MuninnMemory:
     async def search(
         self,
         query: str,
-        user_id: str = "global_user",
-        agent_id: Optional[str] = None,
         limit: int = 10,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         rerank: bool = True,
         filters: Optional[Dict[str, Any]] = None,
         namespaces: Optional[List[str]] = None,
+        media_type: Optional[str] = None,
         explain: bool = False,
-        project: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SearchResult]:
         """
-        Search memories using hybrid multi-signal retrieval.
+        Search memories with hybrid RRF fusion and reranking.
 
         Args:
             query: Search query text.
@@ -665,8 +673,8 @@ class MuninnMemory:
                 {"query_preview": self._otel.maybe_content(query)},
             )
             effective_filters = dict(filters or {})
-            if project and "project" not in effective_filters:
-                effective_filters["project"] = project
+            if user_id and "user_id" not in effective_filters:
+                effective_filters["user_id"] = user_id
 
             resolved_namespace = "global"
             if namespaces and len(namespaces) == 1:
@@ -674,7 +682,7 @@ class MuninnMemory:
             elif effective_filters.get("namespace"):
                 resolved_namespace = str(effective_filters["namespace"])
 
-            resolved_project = str(effective_filters.get("project") or project or "global")
+            resolved_project = str(effective_filters.get("project") or "global")
             goal_embedding = None
             goal_alignment = None
             feedback_signal_multipliers = None
@@ -715,6 +723,7 @@ class MuninnMemory:
                 goal_embedding=goal_embedding,
                 goal_signal_weight=self.config.goal_compass.signal_weight,
                 feedback_signal_multipliers=feedback_signal_multipliers,
+                media_type=media_type,
             )
 
             output = []
@@ -1283,6 +1292,9 @@ class MuninnMemory:
             chunk_metadata.update(source_context)
             chunk_metadata.update(chunk.metadata)
             
+            # Map chunk.source_type to media_type if possible
+            media_type = chunk.source_type if chunk.source_type in ["image", "audio", "video"] else "text"
+            
             async with semaphore:
                 try:
                     add_result = await self.add(
@@ -1291,6 +1303,7 @@ class MuninnMemory:
                         namespace=namespace,
                         metadata=chunk_metadata,
                         provenance=Provenance.INGESTED,
+                        media_type=media_type,
                     )
                     
                     if add_result.get("event") in {"DEDUP_SKIP", "CONFLICT_SKIP"}:
@@ -1678,6 +1691,7 @@ class MuninnMemory:
                         "user_id": record.metadata.get("user_id", "global_user"),
                         "project": record.project,
                         "branch": record.branch,
+                        "media_type": record.media_type.value,
                     },
                 )
 
@@ -1686,7 +1700,8 @@ class MuninnMemory:
                 ns = record.namespace
                 self._graph.delete_memory_references(record.id)
                 self._graph.add_memory_node(
-                    record.id, extraction.summary or data[:200],
+                    record.id, 
+                    extraction.summary or data[:200],
                     user_id=uid, namespace=ns,
                 )
                 for entity in extraction.entities:

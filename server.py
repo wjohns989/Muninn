@@ -550,6 +550,7 @@ async def add_memory_endpoint(req: AddMemoryRequest):
                     namespace=req.namespace or "global",
                     provenance=provenance,
                     scope=req.scope,
+                    media_type=req.media_type,
                 )
                 for chunk in merged_chunks
             ]
@@ -564,6 +565,7 @@ async def add_memory_endpoint(req: AddMemoryRequest):
             namespace=req.namespace or "global",
             provenance=provenance,
             scope=req.scope,
+            media_type=req.media_type,
         )
 
         logger.info("Added memory for user %s", req.user_id)
@@ -596,6 +598,7 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
             rerank=req.rerank,
             filters=req.filters,
             namespaces=req.namespaces,
+            media_type=req.media_type,
             explain=req.explain,
         )
 

@@ -123,6 +123,7 @@ class AddMemoryRequest(BaseModel):
     infer: Optional[bool] = None
     namespace: Optional[str] = "global"
     scope: Literal["project", "global"] = "project"
+    media_type: MediaType = MediaType.TEXT
 
 
 class SearchMemoryRequest(BaseModel):
@@ -133,6 +134,7 @@ class SearchMemoryRequest(BaseModel):
     rerank: bool = True
     filters: Optional[Dict[str, Any]] = None
     namespaces: Optional[List[str]] = None
+    media_type: Optional[MediaType] = None
     explain: bool = Field(
         default=False,
         description="When True, include RecallTrace explaining retrieval signals (v3.1.0).",

@@ -20,6 +20,7 @@ from muninn.ingestion.parser import (
     parse_source,
 )
 from muninn.extraction.vision_adapter import VisionAdapter
+from muninn.extraction.audio_adapter import AudioAdapter
 
 MAX_INGEST_FILE_SIZE_BYTES = 100 * 1024 * 1024
 MAX_CHUNK_SIZE_CHARS = 20_000
@@ -55,6 +56,7 @@ def _ingest_worker(
     chronological_order: str,
     allowed_roots_str: List[str],
     vision_config: Dict[str, Any] | None = None,
+    audio_config: Dict[str, Any] | None = None,
 ) -> IngestionSourceResult:
     """Worker function for parallel ingestion."""
     # Reconstruct allowed roots from strings to ensure clean pickle state
@@ -119,6 +121,26 @@ def _ingest_worker(
                 result.status = "failed"
                 result.errors.append("Vision generation failed or returned empty")
                 return result
+        elif source_type == "audio":
+            # Phase 20: Audio support
+            if not audio_config or not audio_config.get("enabled"):
+                result.status = "skipped"
+                result.skipped_reason = "audio_disabled"
+                return result
+            
+            audio = AudioAdapter(
+                enabled=True,
+                provider=audio_config.get("provider", "openai_compatible"),
+                base_url=audio_config.get("base_url", "http://localhost:8000/v1"),
+                model=audio_config.get("model", "whisper-1"),
+                api_key=audio_config.get("api_key", "not-needed"),
+                timeout_seconds=audio_config.get("timeout_seconds", 60.0),
+            )
+            text = audio.transcribe_audio_sync(str(path))
+            if not text:
+                result.status = "failed"
+                result.errors.append("Audio transcription failed or returned empty")
+                return result
         else:
             text = parse_source(path, source_type)
 
@@ -164,6 +186,7 @@ class IngestionPipeline:
         min_chunk_chars: int = 120,
         allowed_roots: Sequence[str] | None = None,
         vision_config: Dict[str, Any] | None = None,
+        audio_config: Dict[str, Any] | None = None,
     ):
         self.max_file_size_bytes = max_file_size_bytes
         self.chunk_size_chars = chunk_size_chars
@@ -176,6 +199,7 @@ class IngestionPipeline:
         )
         self.allowed_roots = sorted({str(root): root for root in roots}.values(), key=str)
         self.vision_config = vision_config
+        self.audio_config = audio_config
 
     def resolve_source_path(self, source: str) -> Path:
         return Path(source).expanduser().resolve()
@@ -339,6 +363,7 @@ class IngestionPipeline:
                     chronological_order,
                     allowed_roots_str,
                     self.vision_config,
+                    self.audio_config,
                 ): idx
                 for idx, path in enumerate(expanded)
             }
