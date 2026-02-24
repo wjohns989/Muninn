@@ -13,6 +13,7 @@ from datetime import datetime
 
 from muninn.core.memory import MuninnMemory
 from muninn.extraction.pipeline import ExtractionPipeline
+from muninn.optimization.clustering import VectorClusterEngine
 
 logger = logging.getLogger("Muninn.Optimization.Distillation")
 
@@ -23,6 +24,7 @@ class DistillationDaemon:
         self.running = False
         self._task = None
         self.status = {"state": "stopped", "last_run": None, "clusters_processed": 0}
+        self.cluster_engine = VectorClusterEngine(memory)
 
     async def start(self):
         if self.running:
@@ -88,12 +90,8 @@ class DistillationDaemon:
     async def _find_episodic_clusters(self) -> List[Dict[str, Any]]:
         """
         Identify groups of related episodic memories.
-        Placeholder implementation: returns empty list until clustering logic is added.
         """
-        # In a real implementation, this would:
-        # 1. Query Qdrant for dense regions of 'episodic' points.
-        # 2. Or use Kuzu to find graph cliques.
-        return [] 
+        return await self.cluster_engine.find_episodic_clusters()
 
     async def _synthesize_cluster(self, cluster: Dict[str, Any]) -> Optional[str]:
         """Use ExtractionPipeline to rewrite memories into a manual."""
@@ -102,14 +100,11 @@ class DistillationDaemon:
             return None
             
         memories = cluster.get("memories", [])
-        text_block = "
-".join([m.get("content", "") for m in memories])
+        text_block = "\n".join([m.get("content", "") for m in memories])
         
         prompt = (
             f"Synthesize the following {len(memories)} interaction logs into a single, "
-            "authoritative semantic reference document. Remove redundancy and conversational filler.
-
-"
+            "authoritative semantic reference document. Remove redundancy and conversational filler.\n\n"
             f"{text_block}"
         )
         
@@ -130,8 +125,10 @@ class DistillationDaemon:
         await self.memory.add(
             content=content,
             user_id="distillation_daemon",
+            namespace=cluster.get("namespace", "global"),
+            project=cluster.get("project", "global"),
             metadata={
-                "provenance": "distillation", 
+                "provenance": "distillation",
                 "source_cluster": cluster.get("id"),
                 "memory_type": "semantic"
             }
@@ -139,7 +136,9 @@ class DistillationDaemon:
         
         # 2. Archive old memories
         for mem_id in cluster.get("memory_ids", []):
-            # We need a way to mark archived. 
-            # Ideally update metadata. For now, we assume update() works.
-            # await self.memory.update(mem_id, metadata_patch={"archived": True})
-            pass
+            # Mark archived and consolidated
+            await self.memory.update(
+                mem_id, 
+                consolidated=True, 
+                metadata={"archived": True, "distilled_into_cluster": cluster.get("id")}
+            )
