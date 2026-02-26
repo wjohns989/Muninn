@@ -679,6 +679,11 @@ class MuninnMemory:
                 {"query_preview": self._otel.maybe_content(query)},
             )
             effective_filters = dict(filters or {})
+            
+            # v3.24.0: Default to excluding archived memories
+            if "archived" not in effective_filters:
+                effective_filters["archived"] = False
+
             if user_id and "user_id" not in effective_filters:
                 effective_filters["user_id"] = user_id
 
@@ -1652,13 +1657,14 @@ class MuninnMemory:
         )
         return result
 
-    async def update(self, memory_id: str, data: str) -> Dict[str, Any]:
+    async def update(self, memory_id: str, data: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
-        Update a memory's content.
+        Update a memory's content or metadata.
 
         Args:
             memory_id: ID of the memory to update.
-            data: New content text.
+            data: Optional new content text.
+            **kwargs: Additional fields to update (e.g., archived, consolidated, metadata).
 
         Returns:
             Updated memory dict.
@@ -1670,77 +1676,105 @@ class MuninnMemory:
             return {"error": f"Memory {memory_id} not found"}
 
         old_content = record.content
-        record.content = data
+        if data is not None:
+            record.content = data
 
-        # Re-extract entities
-        extraction = await self._extract_with_profile(
-            data,
-            model_profile=self.config.extraction.runtime_model_profile,
-        )
-        entity_names = self._extract_entity_names(extraction)
-        updated_metadata = dict(record.metadata or {})
-        if entity_names:
-            updated_metadata["entity_names"] = entity_names
+        # Handle explicit field updates from kwargs
+        for key, value in kwargs.items():
+            if hasattr(record, key):
+                setattr(record, key, value)
+            elif key == "metadata_patch" and isinstance(value, dict):
+                # Selective merge for metadata
+                new_meta = dict(record.metadata or {})
+                new_meta.update(value)
+                record.metadata = new_meta
+
+        # If content changed, re-extract and re-embed
+        if data is not None:
+            extraction = await self._extract_with_profile(
+                data,
+                model_profile=self.config.extraction.runtime_model_profile,
+            )
+            entity_names = self._extract_entity_names(extraction)
+            updated_metadata = dict(record.metadata or {})
+            if entity_names:
+                updated_metadata["entity_names"] = entity_names
+            else:
+                updated_metadata.pop("entity_names", None)
+            record.metadata = updated_metadata
+
+            # Re-embed
+            embedding = await self._embed(data)
         else:
-            updated_metadata.pop("entity_names", None)
-        record.metadata = updated_metadata
-
-        # Re-embed
-        embedding = await self._embed(data)
+            embedding = None
 
         # Update stores
         async with self._write_lock:
             def _update_metadata():
-                self._metadata.update(record.id, content=record.content, metadata=record.metadata)
+                # Pass all changed fields to SQL store
+                update_fields = {"content": record.content, "metadata": record.metadata}
+                for k in ("archived", "consolidated", "importance", "memory_type"):
+                    update_fields[k] = getattr(record, k)
+                self._metadata.update(record.id, **update_fields)
 
             def _update_vectors():
-                self._vectors.upsert(
-                    memory_id=record.id,
-                    embedding=embedding,
-                    metadata={
-                        "content": data[:500],
+                if embedding is not None:
+                    self._vectors.upsert(
+                        memory_id=record.id,
+                        embedding=embedding,
+                        metadata={
+                            "content": record.content[:500],
+                            "memory_type": record.memory_type.value,
+                            "namespace": record.namespace,
+                            "importance": record.importance,
+                            "user_id": record.metadata.get("user_id", "global_user"),
+                            "project": record.project,
+                            "branch": record.branch,
+                            "media_type": record.media_type.value,
+                        },
+                    )
+                else:
+                    # Just update payload metadata if needed
+                    self._vectors.set_payload(record.id, {
                         "memory_type": record.memory_type.value,
-                        "namespace": record.namespace,
                         "importance": record.importance,
-                        "user_id": record.metadata.get("user_id", "global_user"),
-                        "project": record.project,
-                        "branch": record.branch,
-                        "media_type": record.media_type.value,
-                    },
-                )
+                        "archived": record.archived
+                    })
 
             def _update_graph():
-                uid = record.metadata.get("user_id", "global")
-                ns = record.namespace
-                self._graph.delete_memory_references(record.id)
-                self._graph.add_memory_node(
-                    record.id, 
-                    extraction.summary or data[:200],
-                    user_id=uid, namespace=ns,
-                )
-                for entity in extraction.entities:
-                    self._graph.add_entity(entity.name, entity.entity_type, uid, ns)
-                    self._graph.link_memory_to_entity(record.id, entity.name, "mentions", uid, ns)
-                for relation in extraction.relations:
-                    self._graph.add_entity(relation.subject, "concept", uid, ns)
-                    self._graph.add_entity(relation.object, "concept", uid, ns)
-                    self._graph.create_relation(
-                        relation.subject,
-                        relation.predicate,
-                        relation.object,
-                        record.id,
-                        relation.confidence,
-                        user_id=uid,
-                        namespace=ns,
+                if data is not None:
+                    uid = record.metadata.get("user_id", "global")
+                    ns = record.namespace
+                    self._graph.delete_memory_references(record.id)
+                    self._graph.add_memory_node(
+                        record.id, 
+                        extraction.summary or data[:200],
+                        user_id=uid, namespace=ns
                     )
-
+                    for entity in extraction.entities:
+                        self._graph.add_entity(entity.name, entity.entity_type, uid, ns)
+                        self._graph.link_memory_to_entity(record.id, entity.name, "mentions", uid, ns)
+                    for relation in extraction.relations:
+                        self._graph.add_entity(relation.subject, "concept", uid, ns)
+                        self._graph.add_entity(relation.object, "concept", uid, ns)
+                        self._graph.create_relation(
+                            relation.subject,
+                            relation.predicate,
+                            relation.object,
+                            record.id,
+                            relation.confidence,
+                            user_id=uid,
+                            namespace=ns,
+                        )
+                
             def _update_bm25():
-                uid = (record.metadata or {}).get("user_id", "global")
-                ns = record.namespace or "global"
-                self._bm25.add(record.id, data, user_id=uid, namespace=ns)
+                if data is not None:
+                    uid = (record.metadata or {}).get("user_id", "global")
+                    ns = record.namespace or "global"
+                    self._bm25.add(record.id, data, user_id=uid, namespace=ns)
 
             def _update_colbert():
-                if getattr(self, "_colbert_indexer", None):
+                if data is not None and getattr(self, "_colbert_indexer", None):
                     self._colbert_indexer.index_text(record.id, data)
 
             await asyncio.gather(
@@ -2166,17 +2200,18 @@ class MuninnMemory:
         """Initialize the embedding model."""
         try:
             from fastembed import TextEmbedding
-            self._embed_model = TextEmbedding(
-                model_name=f"nomic-ai/{self.config.embedding.model}-v1.5"
-                if "nomic" in self.config.embedding.model
-                else self.config.embedding.model
-            )
+            model_id = f"nomic-ai/{self.config.embedding.model}-v1.5" if "nomic" in self.config.embedding.model else self.config.embedding.model
+            self._embed_model = TextEmbedding(model_name=model_id)
             logger.info("Embedding model loaded: fastembed/%s", self.config.embedding.model)
         except ImportError:
             logger.info("fastembed not available — falling back to Ollama embeddings")
             self._embed_model = None
         except Exception as e:
-            logger.warning("FastEmbed init failed: %s — falling back to Ollama", e)
+            msg = str(e)
+            if "NO_SUCHFILE" in msg or "size" in msg.lower():
+                logger.warning("FastEmbed cache corruption detected (see logs). Run 'python fix_fastembed.py' to repair. — falling back to Ollama")
+            else:
+                logger.warning("FastEmbed init failed: %s — falling back to Ollama", msg)
             self._embed_model = None
 
     async def _embed(self, text: str) -> List[float]:
@@ -2214,8 +2249,7 @@ class MuninnMemory:
     async def _extract(self, content: str, model_profile: Optional[str] = None) -> ExtractionResult:
         """Run extraction pipeline on content."""
         if self._extraction:
-            return await asyncio.to_thread(
-                self._extraction.extract,
+            return await self._extraction.extract(
                 content,
                 model_profile=model_profile,
             )
@@ -2329,3 +2363,66 @@ class MuninnMemory:
     async def get_federation_manager(self) -> FederationManager:
         self._check_initialized()
         return self._federation
+
+    async def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch editable scoped user profile/context object if present."""
+        self._check_initialized()
+        # Profiles are stored in metadata store
+        return self._metadata.get_user_profile(user_id=user_id)
+
+    async def set_user_profile(
+        self,
+        *,
+        user_id: str,
+        profile: Dict[str, Any],
+        source: str = "unknown",
+        merge: bool = True,
+    ) -> None:
+        """Persist or update an editable scoped user profile/context object."""
+        self._check_initialized()
+        
+        current = None
+        if merge:
+            current_data = self._metadata.get_user_profile(user_id=user_id)
+            if current_data:
+                current = current_data.get("profile", {})
+        
+        if current is not None:
+            updated_profile = {**current, **profile}
+        else:
+            updated_profile = profile
+            
+        self._metadata.set_user_profile(
+            user_id=user_id,
+            profile=updated_profile,
+            source=source,
+        )
+
+    async def record_retrieval_feedback(
+        self,
+        *,
+        user_id: str,
+        namespace: str,
+        project: str,
+        query: str,
+        memory_id: str,
+        outcome: float,
+        rank: Optional[int] = None,
+        sampling_prob: Optional[float] = None,
+        signals: Optional[Dict[str, float]] = None,
+        source: str = "unknown",
+    ) -> int:
+        """Persist retrieval feedback for later weighting calibration."""
+        self._check_initialized()
+        return self._metadata.add_retrieval_feedback(
+            user_id=user_id,
+            namespace=namespace,
+            project=project,
+            query_text=query,
+            memory_id=memory_id,
+            outcome=outcome,
+            rank=rank,
+            sampling_prob=sampling_prob,
+            signals=signals,
+            source=source,
+        )

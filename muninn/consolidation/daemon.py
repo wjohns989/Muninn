@@ -277,18 +277,16 @@ class ConsolidationDaemon:
                 if not vec:
                     return []
                 
-                must_conditions = []
+                search_filters = {}
                 if user_id:
-                    must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=user_id)))
+                    search_filters["user_id"] = user_id
                 if namespace:
-                    must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=namespace)))
-                
-                search_filter = Filter(must=must_conditions) if must_conditions else None
+                    search_filters["namespace"] = namespace
                 
                 results = self.vectors.search(
                     query_embedding=vec,
                     limit=5,
-                    filters=search_filter
+                    filters=search_filters
                 )
                 return results
             except Exception as e:
@@ -628,16 +626,14 @@ class ConsolidationDaemon:
                 # v3.6.2/v3.8.0 Security Fix: Enforce user and namespace scoping in semantic search
                 # candidates must belong to the same user AND namespace as the record being audited
                 record_user_id = (record.metadata or {}).get("user_id")
-                must_conditions = []
+                search_filters = {}
                 if record_user_id:
-                    must_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=record_user_id)))
+                    search_filters["user_id"] = record_user_id
                 if record.namespace:
-                    must_conditions.append(FieldCondition(key="namespace", match=MatchValue(value=record.namespace)))
+                    search_filters["namespace"] = record.namespace
                 
-                search_filter = Filter(must=must_conditions) if must_conditions else None
-
                 # Search Top-5 closest neighbors (limit 6 to exclude self)
-                similar = self.vectors.search(query_embedding=vec, limit=6, filters=search_filter)
+                similar = self.vectors.search(query_embedding=vec, limit=6, filters=search_filters)
                 sim_ids = [s[0] for s in similar if s[0] != record.id]
                 neighbor_map[record.id] = sim_ids
                 all_neighbor_ids.update(sim_ids)

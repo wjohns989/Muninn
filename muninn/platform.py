@@ -238,14 +238,9 @@ def find_python_executable() -> str:
     """
     Find the best Python executable for spawning subprocesses.
 
-    Windows: prefers pythonw.exe (no console window), falls back to python.exe.
-    Unix: uses sys.executable directly.
+    Uses sys.executable directly to ensure we use the same environment
+    and have a stable console context if needed.
     """
-    if IS_WINDOWS:
-        python_dir = Path(sys.executable).parent
-        pythonw = python_dir / "pythonw.exe"
-        if pythonw.exists():
-            return str(pythonw)
     return sys.executable
 
 

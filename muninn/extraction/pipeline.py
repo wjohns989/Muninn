@@ -191,14 +191,14 @@ class ExtractionPipeline:
         except Exception:
             return False
 
-    def extract(
+    async def extract(
         self,
         text: str,
         use_llm: bool = True,
         model_profile: Optional[str] = None,
     ) -> ExtractionResult:
         """
-        Run extraction pipeline. Returns combined results from best available tier.
+        Run extraction pipeline (async). Returns combined results from best available tier.
 
         v3.1.0 routing:
           Tier 1 (rules) → always runs first (0ms, guaranteed baseline)
@@ -209,6 +209,7 @@ class ExtractionPipeline:
         Args:
             text: Input text to extract from.
             use_llm: Whether to attempt LLM-based extraction (Tier 2/3).
+            model_profile: Optional profile override.
         """
         # Always run Tier 1 (rule-based) — it's free and fast
         result = rule_based_extract(text)
@@ -229,7 +230,8 @@ class ExtractionPipeline:
             if not extractor.is_available:
                 continue
             try:
-                instructor_result = extractor.extract(text)
+                # Instructor's .extract() is synchronous, offload to thread
+                instructor_result = await asyncio.to_thread(extractor.extract, text)
                 if instructor_result.entities or instructor_result.relations:
                     logger.debug("Instructor route succeeded: %s", route_label)
                     result = self._merge_results(result, instructor_result)
@@ -245,7 +247,7 @@ class ExtractionPipeline:
         # Tier 3: xLAM chain-of-extraction (legacy)
         if self._xlam_available:
             try:
-                xlam_result = self._xlam_extract(text)
+                xlam_result = await asyncio.to_thread(self._xlam_extract, text)
                 result = self._merge_results(result, xlam_result)
                 return result
             except Exception as e:

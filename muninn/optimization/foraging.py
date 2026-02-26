@@ -32,15 +32,19 @@ class ForagingEngine:
         entropy = calculate_shannon_entropy(scores)
         norm_entropy = normalize_entropy(entropy, len(scores))
         
-        logger.info(f"Foraging Analysis: Query='{initial_query}' Entropy={norm_entropy:.3f}")
+        logger.info(f"Foraging Analysis: Query='{initial_query}' Entropy={norm_entropy:.3f} Results={len(initial_results)}")
         
-        if norm_entropy < ambiguity_threshold:
+        # v3.24.1: Trigger on high entropy OR zero results (Complete Miss)
+        if norm_entropy < ambiguity_threshold and len(initial_results) > 0:
             return {
                 "triggered": False,
                 "reason": "low_entropy",
                 "entropy": norm_entropy,
                 "new_results": []
             }
+
+        if len(initial_results) == 0:
+            logger.info("Foraging triggered by Zero Results (Complete Miss)")
 
         # 2. Extract Entities from Top-K
         # We need the memory IDs to check the graph

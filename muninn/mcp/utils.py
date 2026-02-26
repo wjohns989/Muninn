@@ -25,17 +25,19 @@ def _read_operator_model_profile(env_var: str) -> Optional[str]:
 
 def _do_get_git_info() -> Dict[str, str]:
     """Retrieve Git branch and repository name for contextual metadata."""
+    kwargs = {"stderr": subprocess.DEVNULL, "text": True}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        
     try:
         branch = subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], 
-            stderr=subprocess.DEVNULL, 
-            text=True
+            **kwargs
         ).strip()
         
         repo_url = subprocess.check_output(
             ["git", "config", "--get", "remote.origin.url"], 
-            stderr=subprocess.DEVNULL, 
-            text=True
+            **kwargs
         ).strip()
         
         project = repo_url.split("/")[-1].replace(".git", "") if repo_url else "unknown"

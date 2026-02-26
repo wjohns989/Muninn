@@ -16,6 +16,7 @@ logger = logging.getLogger("Muninn.Optimization.Clustering")
 class VectorClusterEngine:
     def __init__(self, memory: MuninnMemory):
         self.memory = memory
+        self._last_scan_ts = 0.0 # Dirty Mark Optimization (v3.24.1)
 
     async def find_episodic_clusters(
         self, 
@@ -30,22 +31,26 @@ class VectorClusterEngine:
         clusters = []
         processed_ids: Set[str] = set()
         
-        # 1. Fetch candidates (Episodic, not archived)
-        # We scroll through recent episodic memories.
+        # 1. Fetch candidates (Episodic, not archived, since last scan)
         candidates = await self.memory._metadata.get_all(
             memory_type=MemoryType.EPISODIC,
+            archived=False,
+            created_at_min=self._last_scan_ts, # Only scan new memories
             limit=limit_candidates,
-            # TODO: Add archived filter once column/metadata exists
         )
         
-        logger.info(f"Clustering scanning {len(candidates)} candidates...")
+        # Update high-water mark for next run
+        if candidates:
+            self._last_scan_ts = max(c.created_at for c in candidates)
+
+        logger.info(f"Clustering scanning {len(candidates)} new candidates since {self._last_scan_ts}...")
 
         for leader in candidates:
             if leader.id in processed_ids:
                 continue
             
-            # Skip if already consolidated/archived (check metadata)
-            if leader.metadata.get("archived") or leader.consolidated:
+            # Skip if already consolidated/archived (double check)
+            if leader.archived or leader.consolidated:
                 processed_ids.add(leader.id)
                 continue
 
