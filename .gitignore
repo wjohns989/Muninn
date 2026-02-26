@@ -106,3 +106,4 @@ assets/*.ico
 # Muninn local runtime (NEVER COMMIT)
 .muninn_runtime/
 node_modules/
+local_docs_backup/

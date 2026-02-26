@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS memories (
     parent_id       TEXT,
     consolidation_gen INTEGER DEFAULT 0,
 
+    -- Cognitive Optimization (v3.24.0)
+    archived        INTEGER DEFAULT 0,
+
     -- Flexible Metadata (JSON)
     metadata        TEXT DEFAULT '{}'
 );
@@ -74,9 +77,6 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source_agent);",
     "CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(consolidated);",
-    # NOTE: idx_memories_scope is NOT here — it must be created AFTER the scope column
-    # migration runs in _initialize() (see _ensure_column_exists call below).
-    "CREATE INDEX IF NOT EXISTS idx_memories_media_type ON memories(media_type);",
 ]
 
 SCHEMA_META = """
@@ -189,7 +189,14 @@ class SQLiteMetadataStore:
         self._json1_available = self._detect_json1(conn)
         conn.execute(CREATE_TABLE)
         for idx in CREATE_INDEXES:
-            conn.execute(idx)
+            try:
+                conn.execute(idx)
+            except sqlite3.OperationalError as e:
+                # If a column doesn't exist yet, we'll create the index after the migration below
+                if "no such column" in str(e):
+                    logger.debug("Skipping index creation for now: %s", e)
+                else:
+                    raise
         if self._json1_available:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_user_id_json ON memories(json_extract(metadata, '$.user_id'));"
@@ -209,11 +216,15 @@ class SQLiteMetadataStore:
         # CREATE_INDEXES because the column may not exist yet in pre-v3.11.0 databases.
         self._ensure_column_exists(conn, "memories", "scope", "TEXT NOT NULL DEFAULT 'project'")
         self._ensure_column_exists(conn, "memories", "media_type", "TEXT DEFAULT 'text'")
+        self._ensure_column_exists(conn, "memories", "archived", "INTEGER DEFAULT 0")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_media_type ON memories(media_type);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_archived ON memories(archived);"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_feedback_scope_time ON retrieval_feedback(user_id, namespace, project, created_at DESC);"
@@ -286,6 +297,7 @@ class SQLiteMetadataStore:
     def _row_to_record(self, row: sqlite3.Row) -> MemoryRecord:
         d = dict(row)
         d["consolidated"] = bool(d.get("consolidated", 0))
+        d["archived"] = bool(d.get("archived", 0))
         d["metadata"] = json.loads(d.get("metadata", "{}"))
         try:
             d["memory_type"] = MemoryType(d.get("memory_type", "episodic"))
@@ -947,7 +959,7 @@ class SQLiteMetadataStore:
                         base = min(1.0, p)
                 except (TypeError, ValueError):
                     pass
-
+                    
             propensity = max(safe_floor, min(1.0, base * rank_prop))
             ipw = 1.0 / propensity
             pos_w[mid] += outcome * ipw
@@ -1232,6 +1244,7 @@ class SQLiteMetadataStore:
         created_at_max: Optional[float] = None,
         scope: Optional[str] = None,
         media_type: Optional[str] = None,
+        archived: Optional[bool] = None,
     ) -> List[MemoryRecord]:
         conn = self._get_conn()
         conditions = []
@@ -1264,6 +1277,11 @@ class SQLiteMetadataStore:
         if media_type is not None:
             conditions.append("media_type = ?")
             params.append(media_type)
+        
+        # v3.24.0: Cognitive Optimization filter
+        if archived is not None:
+            conditions.append("archived = ?")
+            params.append(int(archived))
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"

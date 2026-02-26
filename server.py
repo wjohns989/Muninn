@@ -42,7 +42,7 @@ import portalocker
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
-from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security
+from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
     MAX_CHUNK_OVERLAP_CHARS,
@@ -59,6 +59,7 @@ from muninn.core.types import (
     SearchMemoryRequest,
     UpdateMemoryRequest,
     MemoryType,
+    MediaType,
     Provenance,
 )
 from muninn.retrieval.synthesis import synthesize_hunt_results
@@ -285,6 +286,8 @@ security = HTTPBearer(auto_error=False)
 
 async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)):
     """FastAPI dependency for token verification."""
+    if not is_security_enabled():
+        return credentials
     token = credentials.credentials if credentials else None
     if not core_verify_token(token):
         raise HTTPException(
@@ -494,7 +497,47 @@ def _load_dashboard_html() -> str:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_root():
     """Serve the browser UI for memory operations."""
-    return HTMLResponse(content=_load_dashboard_html())
+    content = _load_dashboard_html()
+    
+    # Automate Auth Token handling for the local dashboard (v3.18.2)
+    # We inject the current token so the user doesn't have to enter it manually.
+    try:
+        active_token = get_token()
+        no_auth = not is_security_enabled()
+        
+        # Inject active token
+        content = content.replace(
+            'let AUTH_TOKEN = localStorage.getItem(\'muninn_token\') || "";',
+            f'let AUTH_TOKEN = localStorage.getItem(\'muninn_token\') || "{active_token}";'
+        )
+        
+        # Inject security status for absolute bypass in UI
+        if no_auth:
+            content = content.replace(
+                'let SECURITY_ENABLED = true;',
+                'let SECURITY_ENABLED = false;'
+            )
+            # If no auth, we also force AUTH_TOKEN to be the server's dummy token 
+            # to satisfy the health checks in dashboard.html
+            content = content.replace(
+                'let AUTH_TOKEN = localStorage.getItem(\'muninn_token\') || "";',
+                f'let AUTH_TOKEN = "{active_token}"; // Bypassed'
+            )
+            
+    except Exception as e:
+        logger.warning("Failed to inject auth token into dashboard: %s", e)
+        
+    return HTMLResponse(content=content)
+
+@app.get("/dashboard.css")
+async def dashboard_css():
+    """Serve the dashboard CSS file."""
+    css_path = Path(__file__).with_name("dashboard.css")
+    try:
+        return HTMLResponse(content=css_path.read_text(encoding="utf-8"), media_type="text/css")
+    except Exception as exc:
+        logger.error("Failed to load dashboard CSS: %s", exc)
+        return HTMLResponse(content="", status_code=404)
 
 @app.get("/health")
 async def health_check():
