@@ -45,6 +45,7 @@ from .models import (
 )
 from .relay import MimirRelay
 from .store import MimirStore
+from muninn.core.security import verify_token as core_verify_token
 
 logger = logging.getLogger("Muninn.Mimir.api")
 
@@ -110,32 +111,12 @@ async def _verify_token(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
 ) -> None:
     """
-    Validate the Bearer token against the ``MUNINN_API_KEY`` environment
-    variable.
+    Validate the Bearer token against the global Muninn auth token.
 
-    - If ``MUNINN_API_KEY`` is empty / unset: all requests are rejected
-      unless MUNINN_DEV_MODE is 'true'.
-    - If a key is configured: credentials must be present and match exactly.
-
-    Raises HTTP 401 on failure, or 500 if the key is missing in non-dev mode.
+    Raises HTTP 401 on failure.
     """
-    api_key = os.environ.get("MUNINN_API_KEY", "").strip()
-    if not api_key:
-        if os.environ.get("MUNINN_DEV_MODE", "").lower() == "true":
-            logger.warning(
-                "MUNINN_API_KEY is unset; allowing unauthenticated access in DEV_MODE."
-            )
-            return
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "MUNINN_API_KEY is not configured. Set this environment variable "
-                "to enable API access."
-            ),
-        )
-
-    if credentials is None or credentials.credentials != api_key:
+    token = credentials.credentials if credentials else None
+    if not core_verify_token(token):
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing Bearer token.",

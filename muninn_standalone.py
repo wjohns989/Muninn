@@ -10,10 +10,10 @@ assistant/IDE bridge and ingest/search via the built-in browser UI.
 from __future__ import annotations
 
 import argparse
-import threading
 import webbrowser
-
 import uvicorn
+import threading
+from muninn_tray import create_tray_icon
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -56,6 +56,19 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://{args.host}:{args.port}/"
     if not args.no_browser:
         _schedule_browser_launch(url, args.browser_delay_sec)
+
+    # Launch tray icon in a separate thread
+    def stop_uvicorn():
+        # This is a bit hacky but works for a standalone script
+        import os
+        os._exit(0)
+
+    tray_thread = threading.Thread(
+        target=create_tray_icon, 
+        args=(url, stop_uvicorn),
+        daemon=True
+    )
+    tray_thread.start()
 
     uvicorn.run(
         "server:app",

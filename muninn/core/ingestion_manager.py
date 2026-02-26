@@ -106,7 +106,15 @@ class IngestionManager:
         
         # 2. Embedding
         with self._otel.span("muninn.ingestion.embed"):
-            embedding = await self.memory._embed(content)
+            try:
+                embedding = await asyncio.wait_for(
+                    self.memory._embed(content),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Embedding timed out after 30s; using zero-vector fallback")
+                embedding = [0.0] * self.config.vector.dimensions
+                scoped_metadata["muninn_embedding_timed_out"] = True
 
         record = MemoryRecord(
             content=content,

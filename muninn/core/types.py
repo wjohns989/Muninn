@@ -77,6 +77,9 @@ class MemoryRecord(BaseModel):
     parent_id: Optional[str] = None
     consolidation_gen: int = 0
 
+    # Cognitive Optimization (v3.24.0)
+    archived: bool = False
+
     # Metadata (flexible key-value)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

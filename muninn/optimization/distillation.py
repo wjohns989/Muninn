@@ -137,9 +137,10 @@ class DistillationDaemon:
 
         # 2. Archive old memories
         for mem_id in cluster.get("memory_ids", []):
-            # Mark archived and consolidated
+            # Mark archived and consolidated using the new column directly
             await self.memory.update(
                 mem_id, 
                 consolidated=True, 
-                metadata={"archived": True, "distilled_into_cluster": cluster.get("id")}
+                archived=True,
+                metadata_patch={"distilled_into_cluster": cluster.get("id")}
             )

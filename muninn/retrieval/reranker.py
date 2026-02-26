@@ -35,7 +35,7 @@ class Reranker:
     def _init_model(self) -> None:
         """Try to initialize the cross-encoder model."""
         try:
-            from fastembed import TextCrossEncoder
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
             self._model = TextCrossEncoder(model_name=self._model_name)
             self._available = True
             logger.info("Reranker initialized: %s", self._model_name)

@@ -169,12 +169,16 @@ def sandboxed_parse_binary(
         env["MUNINN_PARSER_MAX_CPU_SECONDS"] = str(max_cpu_seconds)
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=timeout,
-            env=env,
-        )
+        kwargs = {
+            "args": cmd,
+            "capture_output": True,
+            "timeout": timeout,
+            "env": env,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            
+        result = subprocess.run(**kwargs)
     except subprocess.TimeoutExpired as exc:
         # Kill is implicit after TimeoutExpired when using capture_output
         raise RuntimeError(
