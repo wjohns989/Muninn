@@ -49,11 +49,16 @@ def get_token() -> str:
 
 def verify_token(token: Optional[str]) -> bool:
     """Verify if the provided token matches the global token."""
+    if not is_security_enabled():
+        return True
     if token is None:
         return False
     expected = get_token()
     return secrets.compare_digest(token, expected)
 
 def is_security_enabled() -> bool:
-    """Check if security should be enforced (always true in v3.7.0+)."""
+    """Check if security should be enforced."""
+    # Allow global bypass via environment variable for local development/debugging
+    if os.environ.get("MUNINN_NO_AUTH") == "1":
+        return False
     return True
