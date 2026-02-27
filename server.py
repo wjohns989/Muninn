@@ -67,12 +67,14 @@ from muninn.mimir.api import init_mimir, mimir_router
 from muninn.mimir.relay import MimirRelay
 from muninn.mimir.store import MimirStore
 
-# Configure logging
+# Configure detailed logging to file with a robust, absolute path
+server_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'muninn_server.log'))
+file_handler = logging.FileHandler(server_log_path, mode='a')
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("muninn_server.log", mode="a"),
+        file_handler,
         logging.StreamHandler(),
     ],
 )
@@ -1577,13 +1579,39 @@ def main():
 
     logger.info("Starting Muninn Memory Server on %s:%d", args.host, args.port)
 
-    uvicorn.run(
-        "server:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level=config.server.log_level,
-    )
+    import sys
+    import os
+
+    try:
+        uvicorn.run(
+            "server:app",
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            log_level=config.server.log_level,
+        )
+    except OSError as e:
+        if e.errno in (98, 10048):
+            print(f"\n\033[91m{'='*60}\033[0m")
+            print("\033[91mCRITICAL ERROR: PORT ALREADY IN USE\033[0m")
+            print(f"\033[91m{'='*60}\033[0m")
+            print(f"Muninn failed to start because port {args.port} is already bound.")
+            print("This usually means another instance of Muninn is currently running in the background.")
+            print("")
+            error_msg = f"Failed to start server on port {args.port}. Port is likely in use."
+            logger.error(error_msg)
+            print(f"\n[ERROR] Port {args.port} is already in use.")
+            print(f"Please check the server log at: {server_log_path}")
+            print("\nTo forcefully kill the existing process using this port on Windows, use:")
+            print(f"  netstat -ano | findstr :{args.port}")
+            print("  taskkill /PID <PID> /F")
+            print(f"To forcefully kill the existing process using this port on Linux/macOS, use:")
+            print(f"  lsof -i :{args.port}")
+            print("  kill -9 <PID>")
+            print(f"\033[91m{'='*60}\033[0m\n")
+            sys.exit(1)
+        else:
+            raise
 
 
 if __name__ == "__main__":
