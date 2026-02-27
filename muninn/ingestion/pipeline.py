@@ -346,7 +346,12 @@ class IngestionPipeline:
             recursive,
             chronological_order,
         )
-        source_results: List[IngestionSourceResult] = []
+        # We'll collect results in a list aligned with ``expanded`` so that the
+        # final order reflects the chronological ordering applied earlier.  Using
+        # ``concurrent.futures.as_completed`` can yield tasks in arbitrary order
+        # depending on how long individual files take to process, which broke
+        # chronological tests.
+        source_results: List[IngestionSourceResult] = [None] * len(expanded)
         processed_sources = 0
         skipped_sources = 0
         total_chunks = 0
@@ -374,6 +379,8 @@ class IngestionPipeline:
             }
 
             for future in concurrent.futures.as_completed(future_map):
+                idx = future_map[future]
+                path = expanded[idx]
                 try:
                     result = future.result(timeout=60)  # 60s timeout per file
                     if result.status == "processed":
@@ -381,7 +388,27 @@ class IngestionPipeline:
                         total_chunks += len(result.chunks)
                     else:
                         skipped_sources += 1
-                    source_results.append(result)
+                    source_results[idx] = result
+                except concurrent.futures.TimeoutError:
+                    # Handle timeout
+                    logger.error(f"Ingestion timed out for {path}")
+                    source_results[idx] = IngestionSourceResult(
+                        source_path=str(path),
+                        source_type=infer_source_type(path),
+                        status="failed",
+                        errors=["Parsing timed out"],
+                    )
+                    skipped_sources += 1
+                except Exception as exc:
+                    # Handle pickling error or other worker launch failures
+                    logger.error(f"Ingestion failure for {path}: {exc}")
+                    source_results[idx] = IngestionSourceResult(
+                        source_path=str(path),
+                        source_type=infer_source_type(path),
+                        status="failed",
+                        errors=[str(exc)],
+                    )
+                    skipped_sources += 1
                 except concurrent.futures.TimeoutError:
                     # Handle timeout
                     idx = future_map[future]

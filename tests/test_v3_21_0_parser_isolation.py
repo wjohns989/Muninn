@@ -118,14 +118,20 @@ def test_sandboxed_timeout_kills_process(monkeypatch):
         
         original_run = sandbox_mod.subprocess.run
         
-        def mock_run(cmd, *args, **kwargs):
+        def mock_run(*args, **kwargs):
             # Intercept the module execution and inject our script
-            if "-m" in cmd and sandbox_mod._WORKER_MODULE in cmd:
+            cmd = args[0] if args else kwargs.pop('args', [])
+            if isinstance(cmd, list) and "-m" in cmd and sandbox_mod._WORKER_MODULE in cmd:
                 # Replace ["python", "-m", "muninn.ingestion._parser_subprocess", ...]
                 # with    ["python", str(worker_path), ...]
                 new_cmd = [sys.executable, str(worker_path)] + cmd[3:]
-                return original_run(new_cmd, *args, **kwargs)
-            return original_run(cmd, *args, **kwargs)
+                # Call original run with the modified command
+                return original_run(new_cmd, **kwargs)
+            # Original call - pass through
+            if args:
+                return original_run(args[0], **kwargs)
+            else:
+                return original_run(**kwargs)
             
         monkeypatch.setattr(sandbox_mod.subprocess, "run", mock_run)
         

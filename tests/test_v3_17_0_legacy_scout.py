@@ -802,6 +802,25 @@ class TestHybridRetrieverMemoryIds:
         retriever = HybridRetriever.__new__(HybridRetriever)
         retriever.bm25 = MagicMock()
         retriever.bm25.search.return_value = [("allowed", 0.8), ("blocked", 0.5)]
+        
+        # Mock metadata to return records with matching IDs
+        retriever.metadata = MagicMock()
+        from muninn.core.types import MemoryRecord, MemoryType, Provenance, MediaType
+        allowed_record = MemoryRecord(
+            id="allowed",
+            content="test",
+            memory_type=MemoryType.EPISODIC,
+            provenance=Provenance.AUTO_EXTRACTED,
+            media_type=MediaType.TEXT,
+        )
+        blocked_record = MemoryRecord(
+            id="blocked",
+            content="test",
+            memory_type=MemoryType.EPISODIC,
+            provenance=Provenance.AUTO_EXTRACTED,
+            media_type=MediaType.TEXT,
+        )
+        retriever.metadata.get_by_ids.return_value = [allowed_record, blocked_record]
 
         results = retriever._bm25_search(
             query="test", limit=10, user_id="u1",
@@ -819,6 +838,25 @@ class TestHybridRetrieverMemoryIds:
         retriever = HybridRetriever.__new__(HybridRetriever)
         retriever.bm25 = MagicMock()
         retriever.bm25.search.return_value = [("m1", 0.9), ("m2", 0.7)]
+        
+        # Mock metadata to return records
+        retriever.metadata = MagicMock()
+        from muninn.core.types import MemoryRecord, MemoryType, Provenance, MediaType
+        record_m1 = MemoryRecord(
+            id="m1",
+            content="test",
+            memory_type=MemoryType.EPISODIC,
+            provenance=Provenance.AUTO_EXTRACTED,
+            media_type=MediaType.TEXT,
+        )
+        record_m2 = MemoryRecord(
+            id="m2",
+            content="test",
+            memory_type=MemoryType.EPISODIC,
+            provenance=Provenance.AUTO_EXTRACTED,
+            media_type=MediaType.TEXT,
+        )
+        retriever.metadata.get_by_ids.return_value = [record_m1, record_m2]
 
         results = retriever._bm25_search(query="test", limit=10, user_id="u1")
 

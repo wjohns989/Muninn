@@ -48,13 +48,39 @@ def get_token() -> str:
     return _GLOBAL_AUTH_TOKEN
 
 def verify_token(token: Optional[str]) -> bool:
-    """Verify if the provided token matches the global token."""
+    """Verify if the provided token matches the configured token.
+
+    The Mimir API uses **MUNINN_API_KEY** for bearer token authentication.
+    The core security system uses **MUNINN_AUTH_TOKEN** for MCP/internal auth.
+    Behavior is:
+
+      * If ``MUNINN_NO_AUTH=1`` is set, security is disabled entirely.
+      * If **MUNINN_API_KEY** is set, the supplied token must match it exactly.
+      * If **MUNINN_API_KEY** is unset/empty, dev mode: check MUNINN_AUTH_TOKEN.
+      * If neither is set, dev mode: all requests allowed (return True).
+    """
+    # global bypass for integration tests / local development
     if not is_security_enabled():
         return True
-    if token is None:
-        return False
-    expected = get_token()
-    return secrets.compare_digest(token, expected)
+
+    # Check MUNINN_API_KEY first (Mimir API authentication)
+    env_api_key = os.environ.get("MUNINN_API_KEY")
+    if env_api_key:
+        # API key is explicitly configured, token must match
+        if token is None:
+            return False
+        return secrets.compare_digest(token, env_api_key)
+
+    # MUNINN_API_KEY not set, check core MUNINN_AUTH_TOKEN
+    env_auth_token = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
+    if env_auth_token:
+        # Use core auth token
+        if token is None:
+            return False
+        return secrets.compare_digest(token, env_auth_token)
+
+    # No auth token configured → dev/test mode: allow all requests
+    return True
 
 def is_security_enabled() -> bool:
     """Check if security should be enforced."""
