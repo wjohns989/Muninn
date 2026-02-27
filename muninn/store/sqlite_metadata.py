@@ -1100,6 +1100,35 @@ class SQLiteMetadataStore:
             "total": len(sources),
         }
 
+    def get_legacy_sources_cache(
+        self,
+        limit: int = 1000,
+        offset: int = 0,
+        providers: Optional[List[str]] = None,
+        include_ignored: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch legacy sources from the persistent cache.
+        """
+        conn = self._get_conn()
+        conditions = []
+        params: list = []
+
+        if providers:
+            placeholders = ",".join("?" for _ in providers)
+            conditions.append(f"provider IN ({placeholders})")
+            params.extend(providers)
+        
+        if not include_ignored:
+            conditions.append("ignored = 0")
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT * FROM legacy_sources_cache {where} ORDER BY last_seen_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
     def get_legacy_sources_stats(self) -> Dict[str, Any]:
         """Return statistics about cached legacy sources."""
         conn = self._get_conn()
@@ -1121,11 +1150,16 @@ class SQLiteMetadataStore:
             "SELECT COUNT(*) FROM legacy_sources_cache WHERE ignored = 0"
         ).fetchone()
         active = row[0] if row else 0
+
+        # MAX(last_seen_at) as sync timestamp
+        row = conn.execute("SELECT MAX(last_seen_at) FROM legacy_sources_cache").fetchone()
+        last_sync = row[0] if row and row[0] else 0
         
         return {
             "total_cached": total,
             "new_last_24h": new_24h,
             "active_non_ignored": active,
+            "last_sync_time": last_sync,
         }
 
     # --- CRUD Operations ---

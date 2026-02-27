@@ -19,7 +19,7 @@ from muninn.core.types import MemoryRecord, MemoryType
 logger = logging.getLogger("Muninn.Consolidation.Merge")
 
 
-def find_merge_candidates(
+async def find_merge_candidates(
     records: List[MemoryRecord],
     vector_search_fn,
     similarity_threshold: float = 0.92,
@@ -52,6 +52,9 @@ def find_merge_candidates(
                 user_id=record_user_id,
                 namespace=record.namespace
             )
+            # v3.22.1 Fix: Support async search function results
+            if hasattr(similar, "__await__"):
+                similar = await similar
             for other_id, score in similar:
                 if other_id == record.id:
                     continue

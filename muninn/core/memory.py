@@ -1437,27 +1437,42 @@ class MuninnMemory:
         providers: Optional[List[str]] = None,
         include_unsupported: bool = False,
         max_results_per_provider: int = 100,
+        use_cache: bool = True,
     ) -> Dict[str, Any]:
         self._check_initialized()
-        # Discovery is read-only: use _require_discovery_pipeline() which does
-        # NOT enforce the multi_source_ingestion feature flag, so users can see
-        # what data is available even before enabling ingestion.
-        ingestion = self._require_discovery_pipeline()
-        normalized_roots = self._normalize_discovery_roots(
-            ingestion=ingestion,
-            roots=roots,
-        )
 
-        discovered = discover_legacy_sources_catalog(
-            roots=normalized_roots,
-            include_unsupported=include_unsupported,
-            max_results_per_provider=max_results_per_provider,
-        )
-        discovered = [
-            item
-            for item in discovered
-            if ingestion.is_path_allowed(Path(str(item.get("path", ""))))
-        ]
+        # v3.25.0: Cache-first discovery for performance and reliability.
+        discovered = []
+        if use_cache and self._metadata:
+            discovered = self._metadata.get_legacy_sources_cache(
+                limit=5000,
+                providers=providers,
+                include_ignored=False,
+            )
+            logger.debug("Pulled %d legacy sources from cache.", len(discovered))
+
+        # Perform live scan only if cache is empty or use_cache=False
+        if not discovered:
+            # Discovery is read-only: use _require_discovery_pipeline() which does
+            # NOT enforce the multi_source_ingestion feature flag, so users can see
+            # what data is available even before enabling ingestion.
+            ingestion = self._require_discovery_pipeline()
+            normalized_roots = self._normalize_discovery_roots(
+                ingestion=ingestion,
+                roots=roots,
+            )
+
+            discovered = discover_legacy_sources_catalog(
+                roots=normalized_roots,
+                include_unsupported=include_unsupported,
+                max_results_per_provider=max_results_per_provider,
+            )
+            # Filter live scan results by allowed roots
+            discovered = [
+                item
+                for item in discovered
+                if ingestion.is_path_allowed(Path(str(item.get("path", ""))))
+            ]
         if providers:
             allowed = {p.strip().lower() for p in providers if p and p.strip()}
             discovered = [

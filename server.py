@@ -221,7 +221,8 @@ class DiscoverLegacySourcesRequest(BaseModel):
     roots: List[str] = Field(default_factory=list)
     providers: List[str] = Field(default_factory=list)
     include_unsupported: bool = False
-    max_results_per_provider: int = Field(default=100, ge=1, le=5000)
+    max_results_per_provider: int = Field(default=50000, ge=1, le=50000)
+    use_cache: bool = True
 
 
 class IngestLegacySourcesRequest(BaseModel):
@@ -230,7 +231,7 @@ class IngestLegacySourcesRequest(BaseModel):
     roots: List[str] = Field(default_factory=list)
     providers: List[str] = Field(default_factory=list)
     include_unsupported: bool = False
-    max_results_per_provider: int = Field(default=100, ge=1, le=5000)
+    max_results_per_provider: int = Field(default=50000, ge=1, le=50000)
     user_id: str = "global_user"
     namespace: str = "global"
     project: str = "global"
@@ -505,23 +506,14 @@ async def dashboard_root():
         active_token = get_token()
         no_auth = not is_security_enabled()
         
-        # Inject active token
-        content = content.replace(
-            'let AUTH_TOKEN = localStorage.getItem(\'muninn_token\') || "";',
-            f'let AUTH_TOKEN = localStorage.getItem(\'muninn_token\') || "{active_token}";'
-        )
+        # Inject active token using robust placeholder
+        content = content.replace("{{MUNINN_TOKEN}}", active_token)
         
         # Inject security status for absolute bypass in UI
         if no_auth:
             content = content.replace(
                 'let SECURITY_ENABLED = true;',
                 'let SECURITY_ENABLED = false;'
-            )
-            # If no auth, we also force AUTH_TOKEN to be the server's dummy token 
-            # to satisfy the health checks in dashboard.html
-            content = content.replace(
-                'let AUTH_TOKEN = localStorage.getItem(\'muninn_token\') || "";',
-                f'let AUTH_TOKEN = "{active_token}"; // Bypassed'
             )
             
     except Exception as e:
@@ -985,10 +977,34 @@ async def discover_legacy_sources_endpoint(req: DiscoverLegacySourcesRequest):
             providers=req.providers,
             include_unsupported=req.include_unsupported,
             max_results_per_provider=req.max_results_per_provider,
+            use_cache=req.use_cache,
         )
         return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error discovering legacy sources: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ingest/legacy/catalog", dependencies=[Depends(verify_token)])
+async def legacy_catalog_endpoint(
+    limit: int = 1000,
+    offset: int = 0,
+    providers: Optional[str] = None,
+):
+    """Retrieve the cached catalog of discovered legacy sources."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        provider_list = [p.strip() for p in providers.split(",")] if providers else None
+        result = await memory.discover_legacy_sources(
+            use_cache=True,
+            providers=provider_list,
+            max_results_per_provider=limit,
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error("Error fetching legacy catalog: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1021,6 +1037,67 @@ async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
         return {"success": True, "data": result}
     except Exception as e:
         logger.error("Error importing legacy sources: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ingest/legacy/import-all", dependencies=[Depends(verify_token)])
+async def ingest_all_legacy_sources_endpoint():
+    """Discover and import ALL legacy sources in one shot."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    try:
+        # Step 1: Discover everything
+        result = await memory.discover_legacy_sources(
+            use_cache=False,
+            max_results_per_provider=50000,
+        )
+
+        sources = result.get("sources", [])
+        if not sources:
+            return {"success": True, "data": {"imported": 0, "total_discovered": 0, "message": "No sources found"}}
+
+        # Step 2: Extract all source IDs
+        all_ids = [s["source_id"] for s in sources if s.get("parser_supported", False)]
+        logger.info("Bulk import: %d parser-supported sources out of %d total", len(all_ids), len(sources))
+
+        if not all_ids:
+            return {"success": True, "data": {"imported": 0, "total_discovered": len(sources), "message": "No parser-supported sources"}}
+
+        # Step 3: Import in batches to avoid overwhelming the pipeline
+        batch_size = 50
+        total_imported = 0
+        errors = []
+
+        for i in range(0, len(all_ids), batch_size):
+            batch = all_ids[i:i + batch_size]
+            try:
+                batch_result = await memory.ingest_legacy_sources(
+                    selected_source_ids=batch,
+                    max_results_per_provider=50000,
+                )
+                count = batch_result.get("count", 0) if isinstance(batch_result, dict) else 0
+                total_imported += count
+                logger.info("Bulk import batch %d/%d: imported %d nodes",
+                           (i // batch_size) + 1,
+                           (len(all_ids) + batch_size - 1) // batch_size,
+                           count)
+            except Exception as batch_err:
+                logger.warning("Bulk import batch %d failed: %s", (i // batch_size) + 1, batch_err)
+                errors.append(str(batch_err))
+
+        return {
+            "success": True,
+            "data": {
+                "imported": total_imported,
+                "total_discovered": len(sources),
+                "total_supported": len(all_ids),
+                "batches": (len(all_ids) + batch_size - 1) // batch_size,
+                "errors": errors[:10] if errors else [],
+            }
+        }
+    except Exception as e:
+        logger.error("Error in bulk legacy import: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -183,8 +183,7 @@ class IngestionManager:
                             if conflicts and self.memory._conflict_resolver:
                                 conflicts.sort(key=lambda c: c.contradiction_score, reverse=True)
                                 conflict = conflicts[0]
-                                resolution = await asyncio.to_thread(
-                                    self.memory._conflict_resolver.resolve,
+                                resolution = await self.memory._conflict_resolver.resolve(
                                     conflict,
                                     new_record=record,
                                     new_embedding=embedding,

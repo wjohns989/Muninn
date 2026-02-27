@@ -292,7 +292,7 @@ def discover_legacy_sources(
     home: Optional[Path] = None,
     roots: Optional[Sequence[str]] = None,
     include_unsupported: bool = False,
-    max_results_per_provider: int = 100,
+    max_results_per_provider: int = 50000,
 ) -> List[Dict[str, object]]:
     user_home = (home or Path.home()).expanduser().resolve()
     root_paths = [Path(r).expanduser().resolve() for r in (roots or [])]

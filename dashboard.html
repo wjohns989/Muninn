@@ -216,7 +216,16 @@
                     <div class="discovery-grid">
                         <div>
                             <label class="label-base">Local Path</label>
-                            <input id="ingest-path" type="text" class="input-base w-full" placeholder="C:\docs\...">
+                            <div style="display:flex;gap:0.5rem;align-items:center">
+                                <input id="ingest-path" type="text" class="input-base" style="flex:1"
+                                    placeholder="C:\docs\...">
+                                <input type="file" id="folder-picker" webkitdirectory style="display:none"
+                                    onchange="document.getElementById('ingest-path').value=this.files[0]?.webkitRelativePath?.split('/')[0] || ''">
+                                <button class="btn-secondary"
+                                    style="padding:0.5rem 0.8rem;font-size:0.85rem;white-space:nowrap"
+                                    onclick="document.getElementById('folder-picker').click()"
+                                    title="Browse for folder">📁 Browse</button>
+                            </div>
                         </div>
                         <div>
                             <label class="label-base">Web URL</label>
@@ -232,8 +241,19 @@
                     <p class="card-description">Scan local
                         environments (Claude, VS Code, Cursor) for fragmented chat context to integrate into the central
                         graph.</p>
-                    <button onclick="discoverLegacySources()" id="scan-btn" class="btn-primary">Scan Local
-                        Filesystem</button>
+                    <div id="legacy-controls"
+                        style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
+                        <button onclick="discoverLegacySources(true)" id="catalog-btn" class="btn-primary">View Cached
+                            Catalog</button>
+                        <button onclick="discoverLegacySources(false)" id="scan-btn" class="btn-secondary">Perform Deep
+                            Scan</button>
+                        <button onclick="importAllLegacy()" id="import-all-btn" class="btn-secondary"
+                            style="background:var(--emerald-600,#059669);border-color:var(--emerald-600,#059669)">⚡
+                            Import All Sources</button>
+                    </div>
+                    <div id="legacy-sync-info" style="font-size: 0.8rem; color: var(--slate-400); margin-bottom: 1rem;">
+                        Target Catalog: <span id="legacy-sync-status">loading...</span>
+                    </div>
                     <div id="legacy-results" class="legacy-results-container">
                         <!-- Legacy items table here -->
                     </div>
@@ -323,7 +343,17 @@
     <script>
         let API_BASE = window.location.protocol === 'file:' ? 'http://localhost:42069' : window.location.origin;
         let SECURITY_ENABLED = true;
-        let AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
+
+        // v3.18.3: Server-injected token takes priority to avoid stale localStorage issues
+        // The server will replace "{{MUNINN_TOKEN}}" with the actual token
+        let AUTH_TOKEN = "{{MUNINN_TOKEN}}";
+        if (AUTH_TOKEN.includes("{{") || !AUTH_TOKEN) {
+            AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
+        } else {
+            // New valid token from server - persist it
+            localStorage.setItem('muninn_token', AUTH_TOKEN);
+        }
+        console.log(`[AUTH] Active Token Hash: ${AUTH_TOKEN.substring(0, 8)}...`);
 
         // XSS prevention: escape HTML entities in user-influenced strings
         function esc(str) {
@@ -460,6 +490,7 @@
 
         // Modal Logic
         function checkAuthOnLoad() {
+            console.log("[AUTH] checkAuthOnLoad triggered");
             if (!SECURITY_ENABLED) {
                 document.getElementById('auth-modal').classList.remove('active');
                 document.getElementById('auth-dot').className = 'status-dot online';
@@ -468,12 +499,14 @@
                 return;
             }
 
-            if (AUTH_TOKEN) {
+            if (AUTH_TOKEN && AUTH_TOKEN !== '""') {
+                console.log("[AUTH] Valid token found, dismissing modal");
                 document.getElementById('auth-modal').classList.remove('active');
                 const tokenInput = document.getElementById('server-token');
                 if (tokenInput) tokenInput.value = AUTH_TOKEN;
                 checkHealth();
             } else {
+                console.log("[AUTH] No token found, showing modal");
                 document.getElementById('auth-modal').classList.add('active');
             }
         }
@@ -501,6 +534,11 @@
             if (activeNav) activeNav.classList.add('active');
 
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
+
+            // Auto-load legacy catalog if switching to ingest
+            if (tabId === 'ingest') {
+                discoverLegacySources(true);
+            }
         }
 
         // Original log function (now `originalLog`)
@@ -593,7 +631,14 @@
                 errLabel.style.color = 'var(--rose-500)';
                 errLabel.textContent = 'Error: ';
                 errEl.appendChild(errLabel);
-                errEl.appendChild(document.createTextNode(data.error));
+
+                let errorMsg = data.error;
+                if (data.error === 'Unauthorized') {
+                    errorMsg = 'Unauthorized. Ensure MUNINN_AUTH_TOKEN is correct and session is active.';
+                    document.getElementById('auth-dot').className = 'status-dot offline';
+                }
+
+                errEl.appendChild(document.createTextNode(errorMsg));
                 resultsDiv.appendChild(errEl);
                 return;
             }
@@ -729,16 +774,21 @@
             pulseNav('ingest', false);
         }
 
-        async function discoverLegacySources() {
-            const btn = document.getElementById('scan-btn');
+        async function discoverLegacySources(useCache = true) {
+            const btn = useCache ? document.getElementById('catalog-btn') : document.getElementById('scan-btn');
             const resDiv = document.getElementById('legacy-results');
-            btn.disabled = true;
-            btn.textContent = "Scanning Volumes...";
-            resDiv.innerHTML = `<div class="skeleton-block skeleton"></div>`;
+            const originalText = btn.textContent;
 
-            const data = await api('/ingest/legacy/discover', 'POST', {});
+            btn.disabled = true;
+            btn.textContent = useCache ? "Retrieving Catalog..." : "Scanning Volumes...";
+            if (!useCache) resDiv.innerHTML = `<div class="skeleton-block skeleton"></div>`;
+
+            const data = await api('/ingest/legacy/discover', 'POST', { use_cache: useCache });
             btn.disabled = false;
-            btn.textContent = "Scan Local Filesystem";
+            btn.textContent = originalText;
+
+            // Update sync info
+            updateLegacyStatus();
 
             if (data.error) {
                 resDiv.textContent = '';
@@ -749,7 +799,11 @@
                 return;
             }
 
-            if (!data.sources || data.sources.length === 0) {
+            // Unwrap the nested response: API returns {success, data: {sources, total_discovered, ...}}
+            const result = data.data || data;
+            const sources = result.sources || [];
+
+            if (sources.length === 0) {
                 resDiv.textContent = '';
                 const emptyDiv = document.createElement('div');
                 emptyDiv.className = 'help-box';
@@ -773,7 +827,7 @@
             table.appendChild(thead);
 
             const tbody = document.createElement('tbody');
-            data.sources.forEach(s => {
+            sources.forEach(s => {
                 const tr = document.createElement('tr');
 
                 const providerTd = document.createElement('td');
@@ -808,7 +862,50 @@
             });
             table.appendChild(tbody);
             resDiv.appendChild(table);
-            log(`Identified ${data.sources.length} viable legacy targets.`);
+            log(`Identified ${sources.length} viable legacy targets.`);
+        }
+
+        async function importAllLegacy() {
+            const btn = document.getElementById('import-all-btn');
+            if (!confirm(`This will discover and import ALL legacy sources into Muninn\'s memory. This may take several minutes. Proceed?`)) return;
+
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '⏳ Importing...';
+            log('Bulk import started — scanning and importing all legacy sources...');
+
+            const data = await api('/ingest/legacy/import-all', 'POST');
+            btn.disabled = false;
+            btn.textContent = originalText;
+
+            if (data.error) {
+                log(`Bulk import failed: ${data.error}`);
+                showToast('Import Failed', 'error');
+                return;
+            }
+
+            const result = data.data || data;
+            log(`Bulk import complete: ${result.imported} nodes from ${result.total_supported} supported sources (${result.total_discovered} total discovered, ${result.batches} batches)`);
+            if (result.errors && result.errors.length > 0) {
+                log(`Import warnings: ${result.errors.length} batch(es) had errors`);
+            }
+            showToast(`Imported ${result.imported} nodes`, 'success');
+            updateStats();
+            updateLegacyStatus();
+        }
+
+        async function updateLegacyStatus() {
+            const statusDiv = document.getElementById('legacy-sync-status');
+            const data = await api('/ingest/legacy/status', 'GET');
+            if (data && data.cache_stats) {
+                const stats = data.cache_stats;
+                let timeStr = 'Never';
+                if (stats.last_sync_time > 0) {
+                    const date = new Date(stats.last_sync_time * 1000);
+                    timeStr = date.toLocaleString();
+                }
+                statusDiv.textContent = `${stats.active_non_ignored} sources (Last Synced: ${timeStr})`;
+            }
         }
 
         async function importLegacy(sourceId) {
@@ -836,6 +933,16 @@
             AUTH_TOKEN = document.getElementById('server-token').value;
             localStorage.setItem('muninn_token', AUTH_TOKEN);
             log("Session authentication token updated.");
+
+            // Clear prior error visuals
+            const authDot = document.getElementById('auth-dot');
+            if (authDot) authDot.className = 'status-dot online';
+
+            const resultsDiv = document.getElementById('search-results');
+            if (resultsDiv && resultsDiv.innerHTML.includes('Unauthorized')) {
+                resultsDiv.innerHTML = '';
+            }
+
             checkHealth();
         }
 

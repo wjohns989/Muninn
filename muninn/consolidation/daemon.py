@@ -267,7 +267,7 @@ class ConsolidationDaemon:
         from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
         # Find candidates using vector similarity
-        def vector_search_fn(vector_id, user_id=None, namespace=None):
+        async def vector_search_fn(vector_id, user_id=None, namespace=None):
             try:
                 # v3.8.0 Isolation: We need the actual vector to search
                 # But since merge happens in background, we rely on find_merge_candidates
@@ -275,7 +275,18 @@ class ConsolidationDaemon:
                 # Optimization: We use the daemon's vector search with strict filters.
                 vec = self.vectors.get_vectors([vector_id]).get(vector_id)
                 if not vec:
+                    # v3.22.1 Compatibility: If retrieval failed, it might be due to outdated index
+                    # Fallback to fresh embedding if available
+                    mem = self.metadata.get(vector_id)
+                    if mem and self._embed_fn:
+                        vec = self._embed_fn(mem.content)
+                
+                if vec is None:
                     return []
+                
+                # Handle async embedding if needed
+                if hasattr(vec, "__await__"):
+                    vec = await vec
                 
                 search_filters = {}
                 if user_id:
@@ -283,18 +294,21 @@ class ConsolidationDaemon:
                 if namespace:
                     search_filters["namespace"] = namespace
                 
+                # Search for similar vectors
                 results = self.vectors.search(
                     query_embedding=vec,
                     limit=5,
                     filters=search_filters
                 )
+                if hasattr(results, "__await__"):
+                    results = await results
                 return results
             except Exception as e:
                 logger.debug(f"Merge vector search failed: {e}")
                 return []
 
         # Find merge candidates across the batch
-        candidates = find_merge_candidates(episodic, vector_search_fn)
+        candidates = await find_merge_candidates(episodic, vector_search_fn)
         merged_count = 0
 
         for primary_id, secondary_id, _ in candidates:
@@ -634,6 +648,9 @@ class ConsolidationDaemon:
                 
                 # Search Top-5 closest neighbors (limit 6 to exclude self)
                 similar = self.vectors.search(query_embedding=vec, limit=6, filters=search_filters)
+                if hasattr(similar, "__await__"):
+                    similar = await similar
+
                 sim_ids = [s[0] for s in similar if s[0] != record.id]
                 neighbor_map[record.id] = sim_ids
                 all_neighbor_ids.update(sim_ids)
@@ -663,7 +680,7 @@ class ConsolidationDaemon:
 
                 conflicts = self._conflict_detector.detect_conflicts(record.content, candidates)
                 for conflict in conflicts:
-                    self._conflict_resolver.resolve(conflict, new_record=record)
+                    await self._conflict_resolver.resolve(conflict, new_record=record)
                     conflicts_resolved += 1
                 audited += 1
                 
