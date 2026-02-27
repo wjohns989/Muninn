@@ -205,6 +205,11 @@ class IngestionPipeline:
         return Path(source).expanduser().resolve()
 
     def is_path_allowed(self, path: Path) -> bool:
+        # Phase 8: Hard exclusion for personal/tainted projects
+        path_str = str(path).lower()
+        if "vscodeprojects\\projectx" in path_str or "vscodeprojects/projectx" in path_str:
+            return False
+            
         return any(_is_relative_to(path, root) for root in self.allowed_roots)
 
     def ensure_allowed_path(self, source: str) -> Path:

@@ -46,7 +46,7 @@ class ConflictResolver:
         self.bm25 = bm25_index
         self.embed_fn = embed_fn
 
-    def resolve(
+    async def resolve(
         self,
         conflict: ConflictResult,
         new_record: Optional[MemoryRecord] = None,
@@ -70,7 +70,7 @@ class ConflictResolver:
         if strategy == ConflictResolution.SUPERSEDE:
             return self._resolve_supersede(conflict, new_record, new_embedding)
         elif strategy == ConflictResolution.MERGE:
-            return self._resolve_merge(conflict, new_record, new_embedding, user_id)
+            return await self._resolve_merge(conflict, new_record, new_embedding, user_id)
         elif strategy == ConflictResolution.KEEP_EXISTING:
             return self._resolve_keep_existing(conflict)
         elif strategy == ConflictResolution.FLAG_FOR_REVIEW:
@@ -118,7 +118,7 @@ class ConflictResolver:
             "action": "Old memory importance reduced; new memory will be stored normally",
         }
 
-    def _resolve_merge(
+    async def _resolve_merge(
         self,
         conflict: ConflictResult,
         new_record: Optional[MemoryRecord],
@@ -161,7 +161,7 @@ class ConflictResolver:
         # Refresh vector and graph indexes so merged content is immediately retrievable
         merged_user_id = user_id or old_record.metadata.get("user_id", "global_user")
         if self.embed_fn:
-            merged_embedding = self.embed_fn(merged_content)
+            merged_embedding = await self.embed_fn(merged_content)
             self.vectors.upsert(
                 memory_id=old_id,
                 embedding=merged_embedding,

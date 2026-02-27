@@ -31,6 +31,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 | v3.23.0 | 23 | Elo-Rated SNIPS Governance |
 | v3.22.0 | 22 | Temporal Knowledge Graph |
 | v3.19.0 | 20 | Multimodal Hive Mind Operations |
+| v3.18.3 | 19 | Bulk legacy import, NLI conflict detection, uncapped discovery |
 | v3.18.1 | 19 | Scout synthesis, hunt mode |
 
 ---
@@ -56,6 +57,8 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 - **ColBERT Multi-Vector**: Native Qdrant multi-vector storage for MaxSim scoring
 - **NL Temporal Query Expansion**: Natural-language time phrases ("last week", "before the refactor") parsed into structured time ranges
 - **Goal Compass**: Retrieval signal for project objectives and constraint drift
+- **NLI Conflict Detection**: Transformer-based contradiction detection (`cross-encoder/nli-deberta-v3-small`) for memory integrity
+- **Bulk Legacy Import**: One-click ingestion of all discovered legacy sources (batched, error-isolated) via dashboard or API
 
 ### Operational Controls
 
@@ -68,7 +71,8 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 ### Multi-Assistant Interop
 
 - **Handoff Bundles**: Export/import memory checkpoints with checksum verification and idempotent replay
-- **Legacy Migration**: Discover and import memories from prior assistant sessions (JSONL chat history, SQLite state)
+- **Legacy Migration**: Discover and import memories from prior assistant sessions (JSONL chat history, SQLite state) — uncapped provider limits
+- **Bulk Import**: `POST /ingest/legacy/import-all` ingests all discovered sources in batches of 50 with per-batch error isolation
 - **Hive Mind Federation**: Push-based low-latency memory synchronization across assistant runtimes
 - **MCP 2025-11 Compliant**: Full protocol negotiation, lifecycle gating, schema annotations
 
@@ -216,7 +220,10 @@ async def main():
 | `DELETE` | `/delete/{memory_id}` | Delete a memory |
 | `POST` | `/ingest` | Ingest files/folders |
 | `POST` | `/ingest/legacy/discover` | Discover legacy session files |
-| `POST` | `/ingest/legacy/import` | Import legacy memories |
+| `POST` | `/ingest/legacy/import` | Import selected legacy memories |
+| `POST` | `/ingest/legacy/import-all` | Discover and import ALL legacy sources (batched) |
+| `GET` | `/ingest/legacy/status` | Legacy discovery scheduler status |
+| `GET` | `/ingest/legacy/catalog` | Paginated cached catalog of discovered sources |
 | `GET` | `/profiles/model` | Get model routing profiles |
 | `POST` | `/profiles/model` | Set model routing profiles |
 | `GET` | `/profiles/model/events` | Profile audit log |

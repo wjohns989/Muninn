@@ -290,6 +290,7 @@ class TestGenerateExplanation:
 # ConflictResolver Tests
 # ──────────────────────────────────────────────
 
+@pytest.mark.asyncio
 class TestConflictResolver:
     """Resolver execution tests."""
 
@@ -313,13 +314,13 @@ class TestConflictResolver:
             suggested_resolution=resolution,
         )
 
-    def test_supersede_reduces_importance(self):
+    async def test_supersede_reduces_importance(self):
         existing = _make_record("The sky is blue.", memory_id="mem-old", importance=0.8)
         resolver = self._make_resolver(existing_record=existing)
         new_record = _make_record("The sky is green.", memory_id="mem-new")
 
         conflict = self._make_conflict(ConflictResolution.SUPERSEDE)
-        result = resolver.resolve(conflict, new_record=new_record)
+        result = await resolver.resolve(conflict, new_record=new_record)
 
         assert result["resolution"] == "supersede"
         assert result["superseded_memory_id"] == "mem-old"
@@ -328,47 +329,47 @@ class TestConflictResolver:
         call_kwargs = resolver.metadata.update.call_args
         assert call_kwargs[1]["importance"] == pytest.approx(0.08, abs=0.01)
 
-    def test_merge_combines_content(self):
+    async def test_merge_combines_content(self):
         existing = _make_record("The sky is blue.", memory_id="mem-old")
         resolver = self._make_resolver(existing_record=existing)
 
         conflict = self._make_conflict(ConflictResolution.MERGE)
-        result = resolver.resolve(conflict)
+        result = await resolver.resolve(conflict)
 
         assert result["resolution"] == "merge"
         assert result["skip_new_storage"] is True
         # Verify metadata was updated with merged content
         resolver.metadata.update.assert_called_once()
 
-    def test_merge_no_existing_record_falls_back_to_flag(self):
+    async def test_merge_no_existing_record_falls_back_to_flag(self):
         resolver = self._make_resolver(existing_record=None)
         conflict = self._make_conflict(ConflictResolution.MERGE)
-        result = resolver.resolve(conflict)
+        result = await resolver.resolve(conflict)
         assert result["resolution"] == "flag_for_review"
 
-    def test_keep_existing_skips_new(self):
+    async def test_keep_existing_skips_new(self):
         resolver = self._make_resolver()
         conflict = self._make_conflict(ConflictResolution.KEEP_EXISTING)
-        result = resolver.resolve(conflict)
+        result = await resolver.resolve(conflict)
         assert result["resolution"] == "keep_existing"
         assert result["skip_new_storage"] is True
         assert result["kept_memory_id"] == "mem-old"
 
-    def test_flag_for_review_allows_new_storage(self):
+    async def test_flag_for_review_allows_new_storage(self):
         resolver = self._make_resolver()
         conflict = self._make_conflict(ConflictResolution.FLAG_FOR_REVIEW)
-        result = resolver.resolve(conflict)
+        result = await resolver.resolve(conflict)
         assert result["resolution"] == "flag_for_review"
         assert result["skip_new_storage"] is False
 
-    def test_flag_contains_conflict_data(self):
+    async def test_flag_contains_conflict_data(self):
         resolver = self._make_resolver()
         conflict = self._make_conflict(ConflictResolution.FLAG_FOR_REVIEW)
-        result = resolver.resolve(conflict)
+        result = await resolver.resolve(conflict)
         assert "conflict" in result
         assert result["conflict"]["contradiction_score"] == 0.8
 
-    def test_unknown_strategy_falls_back_to_flag(self):
+    async def test_unknown_strategy_falls_back_to_flag(self):
         """If a new strategy is added but resolver doesn't handle it, flag."""
         resolver = self._make_resolver()
 
@@ -391,17 +392,17 @@ class TestConflictResolver:
                 }
 
         conflict = UnknownConflict()
-        result = resolver.resolve(conflict)
+        result = await resolver.resolve(conflict)
         assert result["resolution"] == "flag_for_review"
 
-    def test_supersede_marks_metadata(self):
+    async def test_supersede_marks_metadata(self):
         existing = _make_record("old fact", memory_id="mem-old", importance=0.5)
         existing.metadata = {"source": "test"}
         resolver = self._make_resolver(existing_record=existing)
         new_record = _make_record("new fact", memory_id="mem-new")
 
         conflict = self._make_conflict(ConflictResolution.SUPERSEDE, 0.9)
-        resolver.resolve(conflict, new_record=new_record)
+        await resolver.resolve(conflict, new_record=new_record)
 
         call_kwargs = resolver.metadata.update.call_args[1]
         metadata = call_kwargs["metadata"]
@@ -409,38 +410,40 @@ class TestConflictResolver:
         assert metadata["superseded_by"] == "mem-new"
         assert "superseded_at" in metadata
 
-    def test_merge_updates_bm25(self):
+    async def test_merge_updates_bm25(self):
         existing = _make_record("old content", memory_id="mem-old")
         resolver = self._make_resolver(existing_record=existing)
 
         conflict = self._make_conflict(ConflictResolution.MERGE)
-        resolver.resolve(conflict)
+        await resolver.resolve(conflict)
 
         resolver.bm25.add.assert_called_once()
         call_args = resolver.bm25.add.call_args[0]
         assert call_args[0] == "mem-old"
         assert "Updated:" in call_args[1]
 
-    def test_merge_preserves_user_scope_in_vector_payload(self):
+    async def test_merge_preserves_user_scope_in_vector_payload(self):
         existing = _make_record("old content", memory_id="mem-old")
         resolver = self._make_resolver(existing_record=existing)
-        resolver.embed_fn = lambda _content: [0.1, 0.2, 0.3]
+        async def mock_embed(text): return [0.1, 0.2, 0.3]
+        resolver.embed_fn = mock_embed
 
         conflict = self._make_conflict(ConflictResolution.MERGE)
-        resolver.resolve(conflict, user_id="user-123")
+        await resolver.resolve(conflict, user_id="user-123")
 
         resolver.vectors.upsert.assert_called_once()
         vector_payload = resolver.vectors.upsert.call_args[1]["metadata"]
         assert vector_payload["user_id"] == "user-123"
 
-    def test_merge_uses_existing_user_scope_when_user_id_not_passed(self):
+    async def test_merge_uses_existing_user_scope_when_user_id_not_passed(self):
         existing = _make_record("old content", memory_id="mem-old")
         existing.metadata = {"user_id": "user-from-metadata"}
         resolver = self._make_resolver(existing_record=existing)
-        resolver.embed_fn = lambda _content: [0.1, 0.2, 0.3]
+        async def mock_embed(text): return [0.1, 0.2, 0.3]
+        resolver.embed_fn = mock_embed
 
         conflict = self._make_conflict(ConflictResolution.MERGE)
-        resolver.resolve(conflict)
+        await resolver.resolve(conflict)
 
         resolver.vectors.upsert.assert_called_once()
         vector_payload = resolver.vectors.upsert.call_args[1]["metadata"]
