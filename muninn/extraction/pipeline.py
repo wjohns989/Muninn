@@ -15,6 +15,7 @@ Tier hierarchy:
 """
 
 import logging
+import asyncio  # required for async extraction -> to_thread
 from typing import Dict, List, Optional, Tuple
 
 from muninn.core.types import ExtractionResult

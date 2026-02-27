@@ -867,7 +867,8 @@ class SQLiteMetadataStore:
                 try:
                     rank_value = int(rank)
                     if rank_value > 0:
-                        rank_propensity = 1.0 / math.log2(rv + 1.0)
+                        # use the computed rank_value, not undefined 'rv'
+                        rank_propensity = 1.0 / math.log2(rank_value + 1.0)
                 except (TypeError, ValueError):
                     pass
             
