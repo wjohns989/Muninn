@@ -70,12 +70,37 @@ def main(argv: list[str] | None = None) -> int:
     )
     tray_thread.start()
 
-    uvicorn.run(
-        "server:app",
-        host=args.host,
-        port=int(args.port),
-        log_level=args.log_level,
-    )
+    import sys
+    import os
+
+    try:
+        uvicorn.run(
+            "server:app",
+            host=args.host,
+            port=int(args.port),
+            log_level=args.log_level,
+        )
+    except OSError as e:
+        if e.errno in (98, 10048):
+            print(f"\n\033[91m{'='*60}\033[0m")
+            print("\033[91mCRITICAL ERROR: PORT ALREADY IN USE\033[0m")
+            print(f"\033[91m{'='*60}\033[0m")
+            print(f"Huginn failed to start because port {args.port} is already bound.")
+            error_msg = f"Failed to start server on port {args.port}. Port is likely in use."
+            logger.error(error_msg)
+            server_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'muninn_server.log'))
+            print(f"\n[ERROR] Port {args.port} is already in use.")
+            print(f"Please check the server log at: {server_log_path}")
+            print("\nTo forcefully kill the existing process using this port on Windows, use:")
+            print(f"  netstat -ano | findstr :{args.port}")
+            print(f"  taskkill /PID <PID> /F")
+            print("\nTo forcefully kill the existing process using this port on Linux/macOS, use:")
+            print(f"  lsof -i :{args.port}")
+            print(f"  kill -9 <PID>")
+            print(f"\033[91m{'='*60}\033[0m\n")
+            sys.exit(1)
+        else:
+            raise
     return 0
 
 
