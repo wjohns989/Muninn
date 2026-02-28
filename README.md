@@ -13,21 +13,23 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 
 ## 🚩 Status
 
-**Current Version:** v3.23.0 (Phase 23 Complete)
+**Current Version:** v3.24.0 (Phase 26 COMPLETE)
 **Stability:** Production Beta
-**Test Suite:** 1033+ passing, 0 failing
+**Test Suite:** 1422+ passing, 0 failing
 
-### What's New in v3.23.0
+### What's New in v3.24.0
 
+- **Cognitive Architecture (CoALA)**: Integration of a proactive reasoning loop bridging memory with active decision-making.
+- **Knowledge Distillation**: Background synthesis of episodic memories into structured semantic manuals for long-term wisdom.
+- **Epistemic Foraging**: Active inference-driven search to resolve ambiguities and fill information gaps autonomously.
+- **Omission Filtering**: Automated detection of missing context required for successful task execution.
 - **Elo-Rated SNIPS Governance**: Dynamic memory retention system mapping retrieval success to Elo ratings for usage-driven decay.
-- **Temporal Knowledge Graph (TKG)**: Bi-temporal reasoning support with `VALID_DURING` relations and fact shadowing.
-- **Zero-Trust Parser Isolation**: Hardened ingestion security via OS-level subprocess sandboxing for binary files.
-- **Multimodal Hive Mind**: Phase 20 support for cross-assistant shared multimodal memory (Vision, Audio, Sensor).
 
 ### Previous Milestones
 
 | Version | Phase | Key Feature |
 |---------|-------|-------------|
+| v3.24.0 | 26 | Cognitive Architecture Complete |
 | v3.23.0 | 23 | Elo-Rated SNIPS Governance |
 | v3.22.0 | 22 | Temporal Knowledge Graph |
 | v3.19.0 | 20 | Multimodal Hive Mind Operations |
