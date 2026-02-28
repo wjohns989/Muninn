@@ -48,39 +48,35 @@ def get_token() -> str:
     return _GLOBAL_AUTH_TOKEN
 
 def verify_token(token: Optional[str]) -> bool:
-    """Verify if the provided token matches the configured token.
+    """Verify if the provided token matches any configured or runtime token.
 
-    The Mimir API uses **MUNINN_API_KEY** for bearer token authentication.
-    The core security system uses **MUNINN_AUTH_TOKEN** for MCP/internal auth.
-    Behavior is:
+    This verifier accepts any of the configured credentials:
+      - `MUNINN_API_KEY` (HTTP API key)
+      - `MUNINN_AUTH_TOKEN` / `MUNINN_SERVER_AUTH_TOKEN` (core/runtime auth)
+      - the runtime-generated token returned by `get_token()`
 
-      * If ``MUNINN_NO_AUTH=1`` is set, security is disabled entirely.
-      * If **MUNINN_API_KEY** is set, the supplied token must match it exactly.
-      * If **MUNINN_API_KEY** is unset/empty, dev mode: check MUNINN_AUTH_TOKEN.
-      * If neither is set, dev mode: all requests allowed (return True).
+    Security bypass via `MUNINN_NO_AUTH=1` is still respected.
     """
     # global bypass for integration tests / local development
     if not is_security_enabled():
         return True
 
-    # Check MUNINN_API_KEY first (Mimir API authentication)
+    # Require an explicit token to be provided
+    if token is None:
+        return False
+
+    # Check configured API key and auth token (if present). Accept any match.
     env_api_key = os.environ.get("MUNINN_API_KEY")
-    if env_api_key:
-        # API key is explicitly configured, token must match
-        if token is None:
-            return False
-        return secrets.compare_digest(token, env_api_key)
+    if env_api_key and secrets.compare_digest(token, env_api_key):
+        return True
 
-    # MUNINN_API_KEY not set, check core MUNINN_AUTH_TOKEN
     env_auth_token = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
-    if env_auth_token:
-        # Use core auth token
-        if token is None:
-            return False
-        return secrets.compare_digest(token, env_auth_token)
+    if env_auth_token and secrets.compare_digest(token, env_auth_token):
+        return True
 
-    # No auth token configured → dev/test mode: allow all requests
-    return True
+    # Fallback to the runtime/global token (this will initialize one if missing).
+    runtime_token = get_token()
+    return secrets.compare_digest(token, runtime_token)
 
 def is_security_enabled() -> bool:
     """Check if security should be enforced."""

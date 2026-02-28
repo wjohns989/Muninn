@@ -390,7 +390,7 @@ class IngestionPipeline:
                         skipped_sources += 1
                     source_results[idx] = result
                 except concurrent.futures.TimeoutError:
-                    # Handle timeout
+                    # Handle timeout specifically before the generic Exception
                     logger.error(f"Ingestion timed out for {path}")
                     source_results[idx] = IngestionSourceResult(
                         source_path=str(path),
@@ -401,37 +401,13 @@ class IngestionPipeline:
                     skipped_sources += 1
                 except Exception as exc:
                     # Handle pickling error or other worker launch failures
-                    logger.error(f"Ingestion failure for {path}: {exc}")
+                    logger.error(f"Ingestion worker failed for {path}: {exc}")
                     source_results[idx] = IngestionSourceResult(
                         source_path=str(path),
                         source_type=infer_source_type(path),
                         status="failed",
                         errors=[str(exc)],
                     )
-                    skipped_sources += 1
-                except concurrent.futures.TimeoutError:
-                    # Handle timeout
-                    idx = future_map[future]
-                    path = expanded[idx]
-                    logger.error(f"Ingestion timed out for {path}")
-                    source_results.append(IngestionSourceResult(
-                        source_path=str(path),
-                        source_type=infer_source_type(path),
-                        status="failed",
-                        errors=["Parsing timed out"],
-                    ))
-                    skipped_sources += 1
-                except Exception as exc:
-                    # Handle pickling error or other worker launch failures
-                    idx = future_map[future]
-                    path = expanded[idx]
-                    logger.error(f"Ingestion worker failed for {path}: {exc}")
-                    source_results.append(IngestionSourceResult(
-                        source_path=str(path),
-                        source_type=infer_source_type(path),
-                        status="failed",
-                        errors=[f"Worker error: {exc}"],
-                    ))
                     skipped_sources += 1
 
         # Sort results back to original order? 
@@ -442,10 +418,21 @@ class IngestionPipeline:
         # But future_map has the index. We can reconstruct order if we collected tuples.
         # Current implementation appends as they complete.
         
+        # Ensure no None entries remain; convert missing slots to explicit failures.
+        for i, v in enumerate(source_results):
+            if v is None:
+                p = expanded[i]
+                source_results[i] = IngestionSourceResult(
+                    source_path=str(p),
+                    source_type=infer_source_type(p),
+                    status="failed",
+                    errors=["No result produced for source"],
+                )
+
         return IngestionReport(
             total_sources=len(expanded),
             processed_sources=processed_sources,
             skipped_sources=skipped_sources,
             total_chunks=total_chunks,
-            source_results=source_results,
+            source_results=source_results,  # type: ignore[arg-type]
         )
