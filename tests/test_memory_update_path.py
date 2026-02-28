@@ -36,11 +36,15 @@ def test_update_persists_content_with_metadata_update_signature():
     result = asyncio.run(memory.update("mem-1", "new content"))
 
     assert result["event"] == "UPDATE"
-    memory._metadata.update.assert_called_once_with(
-        "mem-1",
-        content="new content",
-        metadata={"user_id": "user-1"},
-    )
+    # The update method passes all changed fields including archived, consolidated, importance, memory_type
+    call_args = memory._metadata.update.call_args
+    assert call_args[0][0] == "mem-1"
+    assert call_args[1]["content"] == "new content"
+    assert call_args[1]["metadata"] == {"user_id": "user-1"}
+    assert "archived" in call_args[1]
+    assert "consolidated" in call_args[1]
+    assert "importance" in call_args[1]
+    assert "memory_type" in call_args[1]
 
 
 def test_update_uses_runtime_model_profile_for_extraction():
