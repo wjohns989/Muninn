@@ -1,0 +1,46 @@
+{
+  "run_id": "20260228_020949",
+  "completed_at": "2026-02-28T02:09:49.419264+00:00",
+  "inputs": {
+    "log_path": "mcp_wrapper.log",
+    "lookback_hours": 24.0,
+    "signature_patterns": [
+      "MCP stdio transport closed while sending JSON-RPC message"
+    ],
+    "min_signature_count": 1,
+    "max_match_samples": 20,
+    "diagnostics_command": "python -m eval.mcp_transport_diagnostics --lookback-hours 24 --max-transport-closed-count 0 --max-deadline-exhaustion-count 0 --max-near-timeout-count 0 --enforce-gate",
+    "always_run_diagnostics": false,
+    "fail_on_diagnostics_error": true,
+    "output": "C:\\Users\\wjohn\\muninn_mcp\\eval\\reports\\mcp_transport_incident_replay_ci.json"
+  },
+  "results": {
+    "scan": {
+      "line_count": 0,
+      "window_line_count": 0,
+      "window_start": "2026-02-27T02:09:49.419264+00:00",
+      "window_end": "2026-02-28T02:09:49.419264+00:00",
+      "log_path_exists": false,
+      "log_file": {
+        "path": "mcp_wrapper.log",
+        "exists": false,
+        "size_bytes": null,
+        "modified_at": null,
+        "sha256": null
+      },
+      "total_signature_count": 0,
+      "counts_by_pattern": {
+        "MCP stdio transport closed while sending JSON-RPC message": 0
+      },
+      "sample_matches": []
+    },
+    "triggered": false,
+    "diagnostics": {
+      "executed": false,
+      "resolved_command": null,
+      "return_code": null,
+      "artifact_path": null,
+      "parsed": null
+    }
+  }
+}
