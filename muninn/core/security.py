@@ -61,15 +61,30 @@ def verify_token(token: Optional[str]) -> bool:
 
     Security bypass via `MUNINN_NO_AUTH=1` is still respected.
     """
-    # If an explicit API key is configured, require it for requests.
+    # If an explicit API key is configured, accept requests authenticated
+    # either with the API key or with the core auth token/runtime token.
+    # This preserves deployments that use distinct credentials for the API
+    # surface and internal server components while still allowing API keys
+    # to be enforced for external callers.
     env_api_key = os.environ.get("MUNINN_API_KEY")
+    env_auth_token = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
+
     if env_api_key is not None and env_api_key.strip() != "":
+        # token must be provided and match either the API key, the core auth
+        # token (if configured), or the runtime-generated token.
         if token is None:
             return False
-        return secrets.compare_digest(token, env_api_key)
+        if secrets.compare_digest(token, env_api_key):
+            return True
+        if env_auth_token is not None and env_auth_token.strip() != "":
+            if secrets.compare_digest(token, env_auth_token):
+                return True
+        # Accept runtime-generated token as well
+        if secrets.compare_digest(token, get_token()):
+            return True
+        return False
 
     # If an explicit core auth token is configured in the environment, require it.
-    env_auth_token = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
     if env_auth_token is not None and env_auth_token.strip() != "":
         if token is None:
             return False
