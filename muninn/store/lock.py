@@ -36,6 +36,7 @@ class StoreLock:
         self.lock_file_path.parent.mkdir(parents=True, exist_ok=True)
         
         flags = portalocker.LOCK_SH if shared else portalocker.LOCK_EX
+        flags |= portalocker.LOCK_NB
         
         try:
             with portalocker.Lock(

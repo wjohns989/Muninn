@@ -19,7 +19,8 @@ def test_search_memory_fallback_triggered_when_empty_and_auto_project(monkeypatc
     """
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
-    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr("muninn.mcp.handlers.ensure_server_running", lambda: True)
     monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     
     # Trace calls to verify logic
@@ -64,7 +65,8 @@ def test_search_memory_fallback_skipped_if_results_found(monkeypatch):
     """Test that fallback is NOT triggered if the first search finds results."""
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
-    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr("muninn.mcp.handlers.ensure_server_running", lambda: True)
     monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     
     calls = []
@@ -99,7 +101,8 @@ def test_search_memory_fallback_skipped_if_project_explicitly_set(monkeypatch):
     """Test that fallback is skipped if the user explicitly provided the project filter."""
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
-    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr("muninn.mcp.handlers.ensure_server_running", lambda: True)
     monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     
     calls = []
@@ -131,7 +134,8 @@ def test_search_memory_fallback_disabled_via_env(monkeypatch):
     """Test that fallback can be disabled via environment variable."""
     sent = []
     monkeypatch.setattr(mcp_wrapper, "send_json_rpc", lambda msg: sent.append(msg))
-    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr("muninn.mcp.handlers.ensure_server_running", lambda: True)
     monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
     monkeypatch.setenv("MUNINN_MCP_SEARCH_PROJECT_FALLBACK", "false")
     

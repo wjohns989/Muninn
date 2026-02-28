@@ -39,7 +39,8 @@ def test_search_memory_project_fallback(monkeypatch):
     # Patch handlers directly as mcp_wrapper facade delegates to it
     monkeypatch.setattr("muninn.mcp.handlers.make_request_with_retry", mock_request)
     monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn", "branch": "main"})
-    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr("muninn.mcp.handlers.ensure_server_running", lambda: True)
     monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda: False)
     monkeypatch.setattr(mcp_wrapper, "_startup_recovery_allowed", lambda epoch: True)
     # Patch handlers directly as mcp_wrapper facade delegates to it
@@ -80,7 +81,8 @@ def test_search_memory_no_fallback_on_manual_filter(monkeypatch):
 
     monkeypatch.setattr("muninn.mcp.handlers.make_request_with_retry", mock_request)
     monkeypatch.setattr("muninn.mcp.handlers.get_git_info", lambda: {"project": "muninn_mcp", "branch": "main"})
-    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: None)
+    monkeypatch.setattr(mcp_wrapper, "ensure_server_running", lambda: True)
+    monkeypatch.setattr("muninn.mcp.handlers.ensure_server_running", lambda: True)
     monkeypatch.setattr(mcp_wrapper, "_backend_circuit_open", lambda: False)
     
     sent_messages = []

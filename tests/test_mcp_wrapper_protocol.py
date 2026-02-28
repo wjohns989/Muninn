@@ -58,6 +58,13 @@ def reset_transport_and_backend_state():
         mcp_wrapper._BACKEND_CIRCUIT_STATE.update(previous)
 
 
+@pytest.fixture(autouse=True)
+def prevent_server_startup(monkeypatch):
+    """Ensure tests don't accidentally spawn a real background server."""
+    monkeypatch.setattr("muninn.mcp.handlers.ensure_server_running", lambda: True)
+    monkeypatch.setattr("mcp_wrapper.ensure_server_running", lambda: True)
+
+
 def test_negotiate_protocol_supported():
     assert mcp_wrapper._negotiate_protocol_version("2025-11-25") == "2025-11-25"
     assert mcp_wrapper._negotiate_protocol_version("2025-06-18") == "2025-06-18"
