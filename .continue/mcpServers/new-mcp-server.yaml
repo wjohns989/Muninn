@@ -1,3 +1,6 @@
+## Template: replace values with your MCP server package/configuration
+## This file is a template for local development. Replace the placeholder
+## package name below with your actual MCP server package before use.
 name: New MCP server
 version: 0.0.1
 schema: v1
@@ -6,5 +9,5 @@ mcpServers:
     command: npx
     args:
       - -y
-      - <your-mcp-server>
+      - your-mcp-server-package-name
     env: {}
