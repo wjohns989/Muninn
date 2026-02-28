@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
+from muninn.store.lock import get_store_lock
 
 logger = logging.getLogger("Muninn.SQLite")
 
@@ -867,7 +868,8 @@ class SQLiteMetadataStore:
                 try:
                     rank_value = int(rank)
                     if rank_value > 0:
-                        rank_propensity = 1.0 / math.log2(rv + 1.0)
+                        # use the computed rank_value, not undefined 'rv'
+                        rank_propensity = 1.0 / math.log2(rank_value + 1.0)
                 except (TypeError, ValueError):
                     pass
             
@@ -1165,36 +1167,39 @@ class SQLiteMetadataStore:
     # --- CRUD Operations ---
 
     def add(self, record: MemoryRecord) -> str:
-        conn = self._get_conn()
-        
-        # Initialize Elo rating if not present
-        if "elo_rating" not in record.metadata:
-            from muninn.scoring.elo import INITIAL_ELO
-            record.metadata["elo_rating"] = INITIAL_ELO
+        # Use an advisory file lock to serialize cross-process writers.
+        lock = get_store_lock(self.db_path.parent)
+        with lock.acquire(shared=False):
+            conn = self._get_conn()
 
-        conn.execute(
-            """INSERT INTO memories (
-                id, content, memory_type, importance, recency_score, access_count,
-                novelty_score, created_at, ingested_at, last_accessed, expires_at,
-                source_agent, project, branch, namespace, provenance,
-                vector_id, embedding_model, consolidated, parent_id,
-                consolidation_gen, metadata, scope, media_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                record.id, record.content, record.memory_type.value,
-                record.importance, record.recency_score, record.access_count,
-                record.novelty_score, record.created_at, record.ingested_at,
-                record.last_accessed, record.expires_at,
-                record.source_agent, record.project, record.branch,
-                record.namespace, record.provenance.value,
-                record.vector_id, record.embedding_model,
-                int(record.consolidated), record.parent_id,
-                record.consolidation_gen, json.dumps(record.metadata),
-                record.scope, record.media_type.value
+            # Initialize Elo rating if not present
+            if "elo_rating" not in record.metadata:
+                from muninn.scoring.elo import INITIAL_ELO
+                record.metadata["elo_rating"] = INITIAL_ELO
+
+            conn.execute(
+                """INSERT INTO memories (
+                    id, content, memory_type, importance, recency_score, access_count,
+                    novelty_score, created_at, ingested_at, last_accessed, expires_at,
+                    source_agent, project, branch, namespace, provenance,
+                    vector_id, embedding_model, consolidated, parent_id,
+                    consolidation_gen, metadata, scope, media_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    record.id, record.content, record.memory_type.value,
+                    record.importance, record.recency_score, record.access_count,
+                    record.novelty_score, record.created_at, record.ingested_at,
+                    record.last_accessed, record.expires_at,
+                    record.source_agent, record.project, record.branch,
+                    record.namespace, record.provenance.value,
+                    record.vector_id, record.embedding_model,
+                    int(record.consolidated), record.parent_id,
+                    record.consolidation_gen, json.dumps(record.metadata),
+                    record.scope, record.media_type.value
+                )
             )
-        )
-        conn.commit()
-        return record.id
+            conn.commit()
+            return record.id
 
     def get(self, memory_id: str) -> Optional[MemoryRecord]:
         conn = self._get_conn()

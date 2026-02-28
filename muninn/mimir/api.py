@@ -45,7 +45,7 @@ from .models import (
 )
 from .relay import MimirRelay
 from .store import MimirStore
-from muninn.core.security import verify_token as core_verify_token
+from muninn.core.security import verify_api_token
 
 logger = logging.getLogger("Muninn.Mimir.api")
 
@@ -116,7 +116,7 @@ async def _verify_token(
     Raises HTTP 401 on failure.
     """
     token = credentials.credentials if credentials else None
-    if not core_verify_token(token):
+    if not verify_api_token(token):
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing Bearer token.",

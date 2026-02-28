@@ -1,0 +1,48 @@
+..........................................ss............................ [  5%]
+........................................................................ [ 10%]
+........................................................................ [ 15%]
+........................................................................ [ 20%]
+........................................................................ [ 25%]
+....................................................F.FFF............F.. [ 30%]
+........................................................................ [ 35%]
+........................................................................ [ 40%]
+........................................................................ [ 45%]
+........................................................................ [ 50%]
+..........................................................s.........s... [ 55%]
+........................................................................ [ 60%]
+........................................................................ [ 65%]
+........................................................................ [ 70%]
+........................................................................ [ 75%]
+........................................................................ [ 80%]
+........................................................................ [ 85%]
+........................................................................ [ 90%]
+.................................FF..................................... [ 95%]
+Fsss.............F...........................................            [100%]
+============================== warnings summary ===============================
+..\AppData\Roaming\Python\Python313\site-packages\huggingface_hub\constants.py:244
+  C:\Users\wjohn\AppData\Roaming\Python\Python313\site-packages\huggingface_hub\constants.py:244: DeprecationWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+    warnings.warn(
+
+..\miniconda3\Lib\site-packages\superclaude\pytest_plugin.py:216
+  C:\Users\wjohn\miniconda3\Lib\site-packages\superclaude\pytest_plugin.py:216: PytestUnknownMarkWarning: Unknown pytest.mark.performance - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    item.add_marker(pytest.mark.performance)
+
+tests/test_snips_retrieval_utility.py::TestDaemonBatchUtilityIntegration::test_phase_decay_uses_batch_retrieval_utility
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+tests/test_snips_retrieval_utility.py::TestDaemonBatchUtilityIntegration::test_phase_decay_uses_batch_retrieval_utility
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_memory_update_path.py::test_update_persists_content_with_metadata_update_signature
+FAILED tests/test_memory_user_profile.py::test_get_user_profile_returns_empty_when_unset
+FAILED tests/test_memory_user_profile.py::test_set_user_profile_merge_patch_updates_nested_fields
+FAILED tests/test_memory_user_profile.py::test_set_user_profile_rejects_non_object_profile
+FAILED tests/test_mimir_api.py::TestAuth::test_correct_bearer_token_is_accepted
+FAILED tests/test_v3_17_0_legacy_scout.py::TestHybridRetrieverMemoryIds::test_bm25_search_filters_by_memory_ids
+FAILED tests/test_v3_17_0_legacy_scout.py::TestHybridRetrieverMemoryIds::test_bm25_search_returns_all_when_no_filter
+FAILED tests/test_v3_21_0_parser_isolation.py::test_sandboxed_timeout_kills_process
+FAILED tests/test_v3_7_0_unified_security.py::test_unified_verify_token_logic
+9 failed, 1413 passed, 7 skipped, 4 warnings in 56.27s
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

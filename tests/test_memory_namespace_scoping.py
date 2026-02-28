@@ -296,6 +296,7 @@ def test_get_all_scoped_by_user_id_and_namespace():
 
     result = asyncio.run(memory.get_all(user_id="user-1", namespace="project-a"))
 
-    memory._metadata.get_all.assert_called_once_with(limit=100, namespace="project-a", user_id="user-1", project=None)
+    # ``get_all`` now accepts an explicit media_type argument (default None)
+    memory._metadata.get_all.assert_called_once_with(limit=100, namespace="project-a", user_id="user-1", project=None, media_type=None)
     assert len(result) == 1
     assert result[0]["id"] == "mem-user"

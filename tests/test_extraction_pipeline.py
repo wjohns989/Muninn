@@ -70,7 +70,9 @@ def test_extract_uses_requested_profile_routes(monkeypatch):
     pipeline._xlam_available = False
     pipeline._ollama_available = False
 
-    result = pipeline.extract("test", model_profile="high_reasoning")
+    # ``extract`` is an async coroutine; run it synchronously for unit tests
+    import asyncio
+    result = asyncio.run(pipeline.extract("test", model_profile="high_reasoning"))
     assert len(result.entities) == 1
     assert result.entities[0].name == "Alpha"
 
@@ -98,6 +100,7 @@ def test_extract_invalid_profile_falls_back_to_default_profile(monkeypatch):
     pipeline._xlam_available = False
     pipeline._ollama_available = False
 
-    result = pipeline.extract("test", model_profile="not-a-profile")
+    import asyncio
+    result = asyncio.run(pipeline.extract("test", model_profile="not-a-profile"))
     assert len(result.entities) == 1
     assert result.entities[0].name == "Beta"

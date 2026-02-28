@@ -121,8 +121,10 @@ class TestExtractionConfig:
         assert cfg.runtime_model_profile == "low_latency"
         assert cfg.ingestion_model_profile == "balanced"
         assert cfg.legacy_ingestion_model_profile == "balanced"
-        assert cfg.ollama_balanced_model == "qwen3:8b"
-        assert cfg.ollama_high_reasoning_model == "qwen3:14b"
+        # defaults should match constants from config module
+        from muninn.core.config import DEFAULT_BALANCED_MODEL, DEFAULT_HIGH_REASONING_MODEL
+        assert cfg.ollama_balanced_model == DEFAULT_BALANCED_MODEL
+        assert cfg.ollama_high_reasoning_model == DEFAULT_HIGH_REASONING_MODEL
         assert cfg.vram_budget_gb is None
 
     def test_custom(self):
@@ -253,9 +255,11 @@ class TestConfigFromEnv:
 
         config = MuninnConfig.from_env()
         assert config.extraction.vram_budget_gb == 16.0
-        assert config.extraction.ollama_model == "llama3.2:3b"
-        assert config.extraction.ollama_balanced_model == "qwen3:8b"
-        assert config.extraction.ollama_high_reasoning_model == "qwen3:14b"
+        # budget logic should fall back to default constants
+        from muninn.core.config import DEFAULT_LOW_LATENCY_MODEL, DEFAULT_BALANCED_MODEL, DEFAULT_HIGH_REASONING_MODEL
+        assert config.extraction.ollama_model == DEFAULT_LOW_LATENCY_MODEL
+        assert config.extraction.ollama_balanced_model == DEFAULT_BALANCED_MODEL
+        assert config.extraction.ollama_high_reasoning_model == DEFAULT_HIGH_REASONING_MODEL
 
 
 class TestVramModelSelection:
@@ -267,9 +271,10 @@ class TestVramModelSelection:
 
     def test_select_profile_models_for_16gb_budget(self):
         selection = _select_profile_models_for_vram(16.0)
-        assert selection["low_latency"] == "llama3.2:3b"
-        assert selection["balanced"] == "qwen3:8b"
-        assert selection["high_reasoning"] == "qwen3:14b"
+        from muninn.core.config import DEFAULT_LOW_LATENCY_MODEL, DEFAULT_BALANCED_MODEL, DEFAULT_HIGH_REASONING_MODEL
+        assert selection["low_latency"] == DEFAULT_LOW_LATENCY_MODEL
+        assert selection["balanced"] == DEFAULT_BALANCED_MODEL
+        assert selection["high_reasoning"] == DEFAULT_HIGH_REASONING_MODEL
 
     def test_env_override_goal_compass(self, monkeypatch):
         monkeypatch.setenv("MUNINN_GOAL_DRIFT_THRESHOLD", "0.61")

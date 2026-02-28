@@ -641,6 +641,7 @@ class MuninnMemory:
         limit: int = 10,
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        project: Optional[str] = None,
         rerank: bool = True,
         filters: Optional[Dict[str, Any]] = None,
         namespaces: Optional[List[str]] = None,
@@ -686,6 +687,8 @@ class MuninnMemory:
 
             if user_id and "user_id" not in effective_filters:
                 effective_filters["user_id"] = user_id
+            if project and "project" not in effective_filters:
+                effective_filters["project"] = project
 
             resolved_namespace = "global"
             if namespaces and len(namespaces) == 1:
@@ -2378,66 +2381,3 @@ class MuninnMemory:
     async def get_federation_manager(self) -> FederationManager:
         self._check_initialized()
         return self._federation
-
-    async def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch editable scoped user profile/context object if present."""
-        self._check_initialized()
-        # Profiles are stored in metadata store
-        return self._metadata.get_user_profile(user_id=user_id)
-
-    async def set_user_profile(
-        self,
-        *,
-        user_id: str,
-        profile: Dict[str, Any],
-        source: str = "unknown",
-        merge: bool = True,
-    ) -> None:
-        """Persist or update an editable scoped user profile/context object."""
-        self._check_initialized()
-        
-        current = None
-        if merge:
-            current_data = self._metadata.get_user_profile(user_id=user_id)
-            if current_data:
-                current = current_data.get("profile", {})
-        
-        if current is not None:
-            updated_profile = {**current, **profile}
-        else:
-            updated_profile = profile
-            
-        self._metadata.set_user_profile(
-            user_id=user_id,
-            profile=updated_profile,
-            source=source,
-        )
-
-    async def record_retrieval_feedback(
-        self,
-        *,
-        user_id: str,
-        namespace: str,
-        project: str,
-        query: str,
-        memory_id: str,
-        outcome: float,
-        rank: Optional[int] = None,
-        sampling_prob: Optional[float] = None,
-        signals: Optional[Dict[str, float]] = None,
-        source: str = "unknown",
-    ) -> int:
-        """Persist retrieval feedback for later weighting calibration."""
-        self._check_initialized()
-        return self._metadata.add_retrieval_feedback(
-            user_id=user_id,
-            namespace=namespace,
-            project=project,
-            query_text=query,
-            memory_id=memory_id,
-            outcome=outcome,
-            rank=rank,
-            sampling_prob=sampling_prob,
-            signals=signals,
-            source=source,
-        )

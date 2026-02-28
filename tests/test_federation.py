@@ -18,7 +18,10 @@ async def test_manifest_generation(mock_memory):
     # Setup mock records
     r1 = MemoryRecord(id="m1", content="Memory 1", created_at=100.0)
     r2 = MemoryRecord(id="m2", content="Memory 2", created_at=200.0)
-    mock_memory.get_all.return_value = [r1, r2]
+    # FederationManager queries the underlying metadata store directly
+    # (see generate_manifest), so ensure the mock object's internal
+    # ``_metadata.get_all`` returns our records.
+    mock_memory._metadata.get_all.return_value = [r1, r2]
     
     fed = FederationManager(mock_memory)
     manifest = await fed.generate_manifest(project="test_proj")
