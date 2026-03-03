@@ -27,12 +27,14 @@ import os
 import sys
 import argparse
 import logging
+from logging.handlers import RotatingFileHandler
 import time
 import asyncio
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 import uvicorn
+import requests
 from fastapi import FastAPI, HTTPException, Depends, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
@@ -69,7 +71,7 @@ from muninn.mimir.store import MimirStore
 
 # Configure detailed logging to file with a robust, absolute path
 server_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'muninn_server.log'))
-file_handler = logging.FileHandler(server_log_path, mode='a')
+file_handler = RotatingFileHandler(server_log_path, maxBytes=10_000_000, backupCount=3)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -462,6 +464,10 @@ app = FastAPI(
 # The router carries its own /mimir prefix and _verify_token dependency;
 # no additional prefix or auth wrapper is needed here.
 app.include_router(mimir_router)
+
+# Register native MCP SSE transport router
+from muninn.mcp.sse import sse_router
+app.include_router(sse_router)
 
 # --- CORS ---
 # Security design: Muninn runs on localhost only and all data-mutating endpoints
@@ -1568,6 +1574,35 @@ async def apply_federation_bundle_endpoint(
 
 # --- Main ---
 
+def _existing_server_healthy(host: str, port: int) -> bool:
+    """
+    Return True when a Muninn-compatible backend is already serving host:port.
+
+    This keeps repeated local launches idempotent for multi-agent setups where
+    one background server is shared across several MCP clients.
+    """
+    url = f"http://{host}:{port}/health"
+    try:
+        response = requests.get(url, timeout=0.75)
+        if response.status_code != 200:
+            return False
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            backend = str(payload.get("backend", "")).lower()
+            status_val = str(payload.get("status", "")).lower()
+            if backend in {"muninn-native", "muninn"}:
+                return True
+            if status_val in {"healthy", "ok", "initializing"}:
+                return True
+        # Any HTTP 200 health responder is treated as ready enough for reuse.
+        return True
+    except requests.RequestException:
+        return False
+
+
 def main():
     config = MuninnConfig.from_env()
 
@@ -1581,6 +1616,18 @@ def main():
 
     import sys
     import os
+
+    if _existing_server_healthy(args.host, args.port):
+        logger.info(
+            "Detected existing Muninn server at http://%s:%d; skipping duplicate startup.",
+            args.host,
+            args.port,
+        )
+        print(
+            f"Muninn already running at http://{args.host}:{args.port}. "
+            "Reusing existing instance."
+        )
+        return
 
     try:
         uvicorn.run(

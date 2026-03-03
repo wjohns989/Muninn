@@ -53,7 +53,7 @@ class TestNoDebugLogWrites:
 
         sent = []
 
-        def fake_worker(task_id, name, args, notif_fn):
+        def fake_worker(session_id, task_id, name, args, notif_fn):
             pass
 
         def fake_send(msg_id, payload):
@@ -66,6 +66,7 @@ class TestNoDebugLogWrites:
             mock_pub.return_value = {"taskId": "t123", "status": "working"}
 
             handle_call_tool_with_task(
+                session_id="stdio",
                 msg_id=1,
                 name="add_memory",
                 arguments={"content": "test"},

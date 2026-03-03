@@ -161,13 +161,13 @@ def handle_list_tools(msg_id: Any, send_result_fn):
         
     send_result_fn(msg_id, {"tools": tools_list})
 
-def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any], task_request: Dict[str, Any], send_result_fn, send_notification_fn=None, worker_fn=None):
+def handle_call_tool_with_task(session_id: str, msg_id: Any, name: str, arguments: Dict[str, Any], task_request: Dict[str, Any], send_result_fn, send_notification_fn=None, worker_fn=None):
     """Create a task for a tool call and return immediately."""
     if worker_fn is None:
         worker_fn = _run_tool_call_task_worker
         
     if send_notification_fn is None:
-        # Fallback for environments where notification sender isn't explicitly provided
+        # Fallback for environments where notification sender isnt explicitly provided
         send_notification_fn = lambda msg: send_result_fn(None, msg)
         
     ttl = task_request.get("ttl")
@@ -176,7 +176,7 @@ def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any]
     # Capture snapshot before starting thread to ensure 'working' status in immediate response
     task_snapshot = public_task(task)
     
-    worker_args = (task["taskId"], name, arguments, send_notification_fn)
+    worker_args = (session_id, task["taskId"], name, arguments, send_notification_fn)
     # Support legacy 3-arg workers (from tests) by dropping notification sender
     try:
         import inspect
@@ -205,8 +205,13 @@ def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any]
     }
     send_result_fn(msg_id, payload)
 
-def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any], send_notification_fn):
+def _run_tool_call_task_worker(session_id: str, task_id: str, name: str, arguments: Dict[str, Any], send_notification_fn):
     """Background worker for task-backed tool calls."""
+    # Crucial Fix: A spawned thread has an empty thread-local storage mapping.
+    # We must forcibly re-inject the session ID so DynamicProxy can route state lookups.
+    from .state import _thread_local
+    _thread_local.mcp_session_id = session_id
+
     # Delay if requested (SOTA pattern)
     delay = float(os.environ.get("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "0")) / 1000.0
     if delay > 0:
@@ -348,8 +353,10 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
             client_caps = _SESSION_STATE.get("client_capabilities", {})
             # If gate is enabled, check if client supports tasks
             if not require_cap or client_caps.get("tasks"):
-                # Redirect to task handler
-                handle_call_tool_with_task(msg_id, name, params.get("arguments", {}), {}, send_result_fn)
+                # Redirect to task handler — grab session_id from thread-local (SSE) or default to stdio
+                from .state import _thread_local as _state_tl
+                sid = getattr(_state_tl, "mcp_session_id", "stdio")
+                handle_call_tool_with_task(sid, msg_id, name, params.get("arguments", {}), {}, send_result_fn)
                 return
 
     arguments = params.get("arguments", {})
