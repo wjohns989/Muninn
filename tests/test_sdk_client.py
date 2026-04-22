@@ -361,6 +361,38 @@ def test_sync_delete_url_encodes_memory_id():
     assert stub.calls[0]["path"] == "/delete/mem%2Falpha%3Fv%3D1"
 
 
+def test_sync_record_retrieval_feedback_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/feedback/retrieval"): _requests_response(
+                200,
+                {"success": True, "data": {"feedback_id": "fb-123"}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.record_retrieval_feedback(
+        query="test query",
+        memory_id="mem-1",
+        outcome=1.0,
+        project="test-project",
+        rank=1,
+        signals={"relevance": 0.9},
+    )
+
+    assert result["feedback_id"] == "fb-123"
+    payload = stub.calls[0]["json"]
+    assert payload["query"] == "test query"
+    assert payload["memory_id"] == "mem-1"
+    assert payload["outcome"] == 1.0
+    assert payload["project"] == "test-project"
+    assert payload["rank"] == 1
+    assert payload["signals"] == {"relevance": 0.9}
+    assert payload["user_id"] == "global_user"
+    assert payload["namespace"] == "global"
+    assert payload["source"] == "manual"
+
+
 def test_sync_api_error_on_http_failure():
     stub = _StubSession(
         {
@@ -579,6 +611,29 @@ async def test_async_periodic_ingestion_control_payloads():
         assert started["started"] is True
         assert run_result["event"] == "PERIODIC_INGESTION_COMPLETED"
         assert stopped["stopped"] is True
+
+
+@pytest.mark.asyncio
+async def test_async_record_retrieval_feedback_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/feedback/retrieval"
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["query"] == "async query"
+        assert body["outcome"] == 0.0
+        assert body["source"] == "sdk_async_test"
+        return httpx.Response(200, json={"success": True, "data": {"feedback_id": "fb-async"}})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.record_retrieval_feedback(
+            query="async query",
+            memory_id="mem-async",
+            outcome=0.0,
+            source="sdk_async_test",
+        )
+        assert result["feedback_id"] == "fb-async"
 
 
 def test_mem0_style_alias_exports():
