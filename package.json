@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.50"
+    "@modelcontextprotocol/sdk": "^1.29.0"
   }
 }
