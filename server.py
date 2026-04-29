@@ -42,7 +42,7 @@ import portalocker
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
-from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
+from muninn.core.security import verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
     MAX_CHUNK_OVERLAP_CHARS,
