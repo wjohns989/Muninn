@@ -75,6 +75,34 @@ def test_sync_add_success_and_payload_shape():
     assert stub.calls[0]["timeout"] == 3.0
 
 
+def test_sync_import_handoff_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/handoff/import"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "HANDOFF_IMPORTED", "added_memories": 10}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.import_handoff(
+        bundle={"version": "1.0", "data": "bunch_of_stuff"},
+        project="muninn",
+        source="handoff_import",
+        user_id="test_user",
+        namespace="test_namespace"
+    )
+
+    assert result["event"] == "HANDOFF_IMPORTED"
+    assert result["added_memories"] == 10
+    payload = stub.calls[0]["json"]
+    assert payload["bundle"] == {"version": "1.0", "data": "bunch_of_stuff"}
+    assert payload["project"] == "muninn"
+    assert payload["source"] == "handoff_import"
+    assert payload["user_id"] == "test_user"
+    assert payload["namespace"] == "test_namespace"
+
+
 def test_sync_ingest_sources_payload():
     stub = _StubSession(
         {
@@ -439,6 +467,36 @@ async def test_async_delete_url_encodes_memory_id():
         client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
         result = await client.delete("mem/alpha?v=1")
         assert result["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_async_import_handoff_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/handoff/import"
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["bundle"] == {"version": "1.0", "data": "bunch_of_stuff"}
+        assert body["project"] == "muninn"
+        assert body["source"] == "handoff_import"
+        assert body["user_id"] == "test_user"
+        assert body["namespace"] == "test_namespace"
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"event": "HANDOFF_IMPORTED", "added_memories": 10}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.import_handoff(
+            bundle={"version": "1.0", "data": "bunch_of_stuff"},
+            project="muninn",
+            source="handoff_import",
+            user_id="test_user",
+            namespace="test_namespace"
+        )
+        assert result["event"] == "HANDOFF_IMPORTED"
+        assert result["added_memories"] == 10
 
 
 @pytest.mark.asyncio
