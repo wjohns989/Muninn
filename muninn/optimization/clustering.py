@@ -73,26 +73,60 @@ class VectorClusterEngine:
                 }
             )
             
-            # Neighbors includes the leader (usually score=1.0)
+            # Determine density-based core points (DBSCAN approach)
             valid_neighbors = []
             for mid, score in neighbors:
                 if mid in processed_ids:
                     continue
-                # Double check metadata to ensure not archived (search filter might not catch metadata JSON fields)
-                # This requires fetching record. Optimization: Do lazy check.
                 valid_neighbors.append(mid)
 
             if len(valid_neighbors) >= min_cluster_size:
-                # 4. Form Cluster
+                # Form Cluster, expanding density reachability
+                cluster_member_ids = set(valid_neighbors)
+                processed_ids.add(leader.id)
+                seeds = set(valid_neighbors)
+                seeds.discard(leader.id)
+
+                while seeds:
+                    current_id = seeds.pop()
+                    if current_id in processed_ids:
+                        continue
+
+                    processed_ids.add(current_id)
+                    curr_vector = self.memory._vectors.get_vector(current_id)
+                    if not curr_vector:
+                        continue
+
+                    curr_neighbors = self.memory._vectors.search(
+                        query_embedding=curr_vector,
+                        limit=50,
+                        score_threshold=similarity_threshold,
+                        filters={
+                            "memory_type": "episodic",
+                            "namespace": leader.namespace
+                        }
+                    )
+
+                    curr_valid_neighbors = []
+                    for mid, score in curr_neighbors:
+                        curr_valid_neighbors.append(mid)
+
+                    if len(curr_valid_neighbors) >= min_cluster_size:
+                        for n_id in curr_valid_neighbors:
+                            if n_id not in cluster_member_ids:
+                                cluster_member_ids.add(n_id)
+                                if n_id not in processed_ids:
+                                    seeds.add(n_id)
+
                 cluster_id = f"cluster_{leader.id[:8]}"
                 topic = f"Cluster around: {leader.content[:50]}..."
                 
                 # Fetch full records for the daemon to use
-                cluster_records = self.memory._metadata.get_by_ids(valid_neighbors)
+                cluster_records = self.memory._metadata.get_by_ids(list(cluster_member_ids))
                 
                 clusters.append({
                     "id": cluster_id,
-                    "memory_ids": valid_neighbors,
+                    "memory_ids": list(cluster_member_ids),
                     "topic": topic,
                     "memories": [r.model_dump() for r in cluster_records],
                     "namespace": leader.namespace,
@@ -100,8 +134,8 @@ class VectorClusterEngine:
                 })
                 
                 # Mark as processed
-                processed_ids.update(valid_neighbors)
-                logger.debug(f"Found cluster {cluster_id} size={len(valid_neighbors)}")
+                processed_ids.update(cluster_member_ids)
+                logger.debug(f"Found cluster {cluster_id} size={len(cluster_member_ids)}")
             else:
                 # Mark leader as processed (noise)
                 processed_ids.add(leader.id)
