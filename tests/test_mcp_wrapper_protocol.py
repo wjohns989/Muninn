@@ -7,6 +7,7 @@ import time
 import pytest
 
 import mcp_wrapper
+from muninn.mcp.state import _BACKEND_CIRCUIT_LOCK, _BACKEND_CIRCUIT_STATE
 
 
 def _sample_task(
@@ -48,14 +49,14 @@ def reset_session_state():
 @pytest.fixture(autouse=True)
 def reset_transport_and_backend_state():
     mcp_wrapper._TRANSPORT_CLOSED.clear()
-    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
-        previous = dict(mcp_wrapper._BACKEND_CIRCUIT_STATE)
-        mcp_wrapper._BACKEND_CIRCUIT_STATE["consecutive_failures"] = 0
-        mcp_wrapper._BACKEND_CIRCUIT_STATE["open_until_epoch"] = 0.0
+    with _BACKEND_CIRCUIT_LOCK:
+        previous = dict(_BACKEND_CIRCUIT_STATE)
+        _BACKEND_CIRCUIT_STATE["consecutive_failures"] = 0
+        _BACKEND_CIRCUIT_STATE["open_until_epoch"] = 0.0
     yield
     mcp_wrapper._TRANSPORT_CLOSED.clear()
-    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
-        mcp_wrapper._BACKEND_CIRCUIT_STATE.update(previous)
+    with _BACKEND_CIRCUIT_LOCK:
+        _BACKEND_CIRCUIT_STATE.update(previous)
 
 
 @pytest.fixture(autouse=True)
@@ -801,11 +802,12 @@ def test_make_request_with_retry_fast_fails_when_circuit_is_open(monkeypatch):
 
     # Patch muninn.mcp.requests.requests because make_request_with_retry is imported from there
     monkeypatch.setattr("muninn.mcp.requests.requests.request", _never_called)
-    with mcp_wrapper._BACKEND_CIRCUIT_LOCK:
-        mcp_wrapper._BACKEND_CIRCUIT_STATE["consecutive_failures"] = (
-            mcp_wrapper._BACKEND_CIRCUIT_FAILURE_THRESHOLD
+    from muninn.mcp.state import _BACKEND_CIRCUIT_FAILURE_THRESHOLD
+    with _BACKEND_CIRCUIT_LOCK:
+        _BACKEND_CIRCUIT_STATE["consecutive_failures"] = (
+            _BACKEND_CIRCUIT_FAILURE_THRESHOLD
         )
-        mcp_wrapper._BACKEND_CIRCUIT_STATE["open_until_epoch"] = time.time() + 10
+        _BACKEND_CIRCUIT_STATE["open_until_epoch"] = time.time() + 10
 
     with pytest.raises(mcp_wrapper._BackendCircuitOpenError):
         mcp_wrapper.make_request_with_retry("GET", "http://localhost:42069/health", timeout=0.1)

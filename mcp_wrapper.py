@@ -15,12 +15,7 @@ import requests
 from muninn.mcp.state import (
     _REAL_SESSION_STATE,
     _TRANSPORT_CLOSED,
-    _BACKEND_CIRCUIT_LOCK,
-    _BACKEND_CIRCUIT_STATE,
-    _RPC_WRITE_LOCK,
-    _thread_local,
-    _DISPATCH_EXECUTOR_LOCK,
-    is_backend_circuit_open
+    _thread_local
 )
 
 _SESSION_STATE = _REAL_SESSION_STATE
