@@ -6,7 +6,7 @@ Provides server lifecycle management, status monitoring, and quick access to das
 """
 
 import pystray
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import subprocess
 import webbrowser
 import os
