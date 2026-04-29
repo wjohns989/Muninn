@@ -3,7 +3,22 @@
 import pytest
 import time
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
-from muninn.scoring.importance import calculate_importance
+from muninn.scoring.importance import calculate_importance, calculate_frequency
+
+
+class TestCalculateFrequency:
+    def test_access_count_zero(self):
+        """Test boundary case: 0 access count."""
+        assert calculate_frequency(0) == 0.0
+
+    def test_access_count_equals_max_expected(self):
+        """Test boundary case: access count equals max expected."""
+        assert calculate_frequency(100, max_expected=100) == 1.0
+
+    def test_access_count_greater_than_max_expected(self):
+        """Test boundary case: access count greater than max expected."""
+        assert calculate_frequency(150, max_expected=100) == 1.0
+        assert calculate_frequency(1000, max_expected=100) == 1.0
 
 
 class TestCalculateImportance:
