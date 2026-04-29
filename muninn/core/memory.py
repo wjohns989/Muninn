@@ -1868,11 +1868,11 @@ class MuninnMemory:
                 self._bm25.remove(mid)
 
             # 5. Clean up graph references
-            for mid in memory_ids:
+            if memory_ids:
                 try:
-                    self._graph.delete_memory_references(mid)
-                except Exception:
-                    logger.debug("Graph cleanup skipped for %s", mid)
+                    self._graph.delete_memories_batch(memory_ids)
+                except Exception as e:
+                    logger.debug("Graph batch cleanup failed: %s", e)
 
         logger.info("Deleted %d memories for user %s", count, user_id)
         return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
