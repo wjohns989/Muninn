@@ -1377,10 +1377,9 @@ class SQLiteMetadataStore:
             return
         conn = self._get_conn()
         now = time.time()
-        placeholders = ",".join("?" for _ in memory_ids)
-        conn.execute(
-            f"UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id IN ({placeholders})",
-            [now] + memory_ids
+        conn.executemany(
+            "UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?",
+            [(now, memory_id) for memory_id in memory_ids]
         )
         conn.commit()
 
