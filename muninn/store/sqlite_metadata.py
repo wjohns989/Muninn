@@ -1062,43 +1062,49 @@ class SQLiteMetadataStore:
         """
         conn = self._get_conn()
         now = time.time()
-        new_count = 0
-        updated_count = 0
 
         # 1. Get existing IDs to detect what's new
         rows = conn.execute("SELECT source_id FROM legacy_sources_cache").fetchall()
         existing_ids = {row[0] for row in rows}
 
+        updates = []
+        inserts = []
+
         for src in sources:
             sid = src["source_id"]
             if sid in existing_ids:
-                conn.execute(
-                    "UPDATE legacy_sources_cache SET last_seen_at = ? WHERE source_id = ?",
-                    (now, sid),
-                )
-                updated_count += 1
+                updates.append((now, sid))
             else:
-                conn.execute(
-                    """
-                    INSERT INTO legacy_sources_cache (
-                        source_id, provider, path, category, first_seen_at, last_seen_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        sid,
-                        src["provider"],
-                        src["path"],
-                        src["category"],
-                        now,
-                        now,
-                    ),
-                )
-                new_count += 1
+                inserts.append((
+                    sid,
+                    src["provider"],
+                    src["path"],
+                    src["category"],
+                    now,
+                    now,
+                ))
+                existing_ids.add(sid)
+
+        if updates:
+            conn.executemany(
+                "UPDATE legacy_sources_cache SET last_seen_at = ? WHERE source_id = ?",
+                updates,
+            )
+
+        if inserts:
+            conn.executemany(
+                """
+                INSERT INTO legacy_sources_cache (
+                    source_id, provider, path, category, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                inserts,
+            )
 
         conn.commit()
         return {
-            "new": new_count,
-            "updated": updated_count,
+            "new": len(inserts),
+            "updated": len(updates),
             "total": len(sources),
         }
 
