@@ -1359,8 +1359,12 @@ class SQLiteMetadataStore:
         if namespace:
             conditions.append("namespace = ?")
             params.append(namespace)
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        row = conn.execute(f"SELECT COUNT(*) FROM memories {where}", params).fetchone()
+
+        query = "SELECT COUNT(*) FROM memories"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        row = conn.execute(query, params).fetchone()
         return row[0] if row else 0
 
     def record_access(self, memory_id: str):
