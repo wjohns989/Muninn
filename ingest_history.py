@@ -59,7 +59,7 @@ def _print_sources(sources: List[Dict]) -> None:
         )
 
 
-def main() -> int:
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Discover and import legacy assistant/MCP memory sources")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Muninn server base URL")
     parser.add_argument("--discover-only", action="store_true", help="Only run discovery, do not import")
@@ -88,16 +88,10 @@ def main() -> int:
     parser.add_argument("--chunk-overlap", type=int, default=None)
     parser.add_argument("--min-chunk", type=int, default=None)
     parser.add_argument("--max-file-size-bytes", type=int, default=None)
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    discover_only = args.discover_only or args.dry_run
 
-    provider_filter = list(args.provider)
-    if args.agent:
-        provider_filter.extend(AGENT_PROVIDER_MAP[args.agent])
-    provider_filter = [item for item in provider_filter if item]
-    provider_filter = sorted(set(provider_filter))
-
+def _run_discovery(args: argparse.Namespace, provider_filter: List[str]) -> Dict | None:
     try:
         discover_payload = {
             "roots": args.root,
@@ -108,7 +102,7 @@ def main() -> int:
         discovery = _request_json("POST", args.base_url, "/ingest/legacy/discover", discover_payload)
     except Exception as exc:
         print(f"ERROR: discovery failed: {exc}")
-        return 1
+        return None
 
     print(
         json.dumps(
@@ -123,27 +117,10 @@ def main() -> int:
         )
     )
     _print_sources(discovery.get("sources", []))
+    return discovery
 
-    if discover_only:
-        return 0
 
-    selected_source_ids = list(args.source_id)
-    selected_paths = list(args.path)
-    if args.all_discovered:
-        selected_source_ids.extend(
-            item["source_id"]
-            for item in discovery.get("sources", [])
-            if item.get("parser_supported") is True
-        )
-    selected_source_ids = sorted(set(selected_source_ids))
-    selected_paths = sorted(set(selected_paths))
-
-    if not selected_source_ids and not selected_paths:
-        print(
-            "ERROR: no import selection provided. Use --source-id/--path or --all-discovered."
-        )
-        return 2
-
+def _run_import(args: argparse.Namespace, provider_filter: List[str], selected_source_ids: List[str], selected_paths: List[str]) -> int:
     import_payload = {
         "selected_source_ids": selected_source_ids,
         "selected_paths": selected_paths,
@@ -173,6 +150,44 @@ def main() -> int:
 
     print(json.dumps(result, indent=2))
     return 0
+
+
+def main() -> int:
+    args = _parse_args()
+
+    discover_only = args.discover_only or args.dry_run
+
+    provider_filter = list(args.provider)
+    if args.agent:
+        provider_filter.extend(AGENT_PROVIDER_MAP[args.agent])
+    provider_filter = [item for item in provider_filter if item]
+    provider_filter = sorted(set(provider_filter))
+
+    discovery = _run_discovery(args, provider_filter)
+    if discovery is None:
+        return 1
+
+    if discover_only:
+        return 0
+
+    selected_source_ids = list(args.source_id)
+    selected_paths = list(args.path)
+    if args.all_discovered:
+        selected_source_ids.extend(
+            item["source_id"]
+            for item in discovery.get("sources", [])
+            if item.get("parser_supported") is True
+        )
+    selected_source_ids = sorted(set(selected_source_ids))
+    selected_paths = sorted(set(selected_paths))
+
+    if not selected_source_ids and not selected_paths:
+        print(
+            "ERROR: no import selection provided. Use --source-id/--path or --all-discovered."
+        )
+        return 2
+
+    return _run_import(args, provider_filter, selected_source_ids, selected_paths)
 
 
 if __name__ == "__main__":
