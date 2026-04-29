@@ -37,7 +37,6 @@ from fastapi import FastAPI, HTTPException, Depends, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
-import secrets
 import portalocker
 
 from muninn.core.memory import MuninnMemory
