@@ -15,4 +15,3 @@ def test_version_single_source_of_truth():
 
     assert pyproject["project"]["version"] == __version__
     assert server.app.version == __version__
-    assert mcp_wrapper.__version__ == __version__

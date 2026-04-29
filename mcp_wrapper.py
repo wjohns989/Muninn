@@ -169,8 +169,6 @@ def _read_operator_model_profile(env_var: str) -> Optional[str]:
     )
     return None
 
-from muninn.version import __version__
-
 def _build_initialize_instructions(startup_warnings: Optional[List[str]] = None) -> str:
     base_instructions = (
         "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
