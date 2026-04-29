@@ -1222,6 +1222,13 @@ class SQLiteMetadataStore:
         if "consolidated" in kwargs and isinstance(kwargs["consolidated"], bool):
             kwargs["consolidated"] = int(kwargs["consolidated"])
 
+        if not hasattr(self, '_valid_columns'):
+            self._valid_columns = {row['name'] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
+
+        invalid_keys = [k for k in kwargs.keys() if k not in self._valid_columns]
+        if invalid_keys:
+            raise ValueError(f"Invalid columns for update: {invalid_keys}")
+
         set_clause = ", ".join(f"{k} = ?" for k in kwargs.keys())
         values = list(kwargs.values()) + [memory_id]
         cursor = conn.execute(f"UPDATE memories SET {set_clause} WHERE id = ?", values)
