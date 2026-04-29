@@ -1,6 +1,7 @@
 import sys
 import subprocess
 import os
+import shutil
 
 def main():
     # Capture original args (skip script name)
@@ -24,7 +25,14 @@ def main():
         cmd = args[0]
         if os.name == 'nt' and cmd.lower() == 'npx':
             cmd = 'npx.cmd'
-            args[0] = cmd
+
+        # Securely resolve absolute path of executable
+        resolved_cmd = shutil.which(cmd)
+        if not resolved_cmd:
+            print(f"Error: Command '{cmd}' not found in PATH.")
+            sys.exit(1)
+
+        args[0] = resolved_cmd
 
         process = subprocess.Popen(
             args,
