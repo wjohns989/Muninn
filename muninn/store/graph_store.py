@@ -643,6 +643,18 @@ class GraphStore:
             logger.debug(f"Delete memory references: {e}")
             return False
 
+    def delete_memories_batch(self, memory_ids: List[str]) -> bool:
+        """Remove all graph references for multiple memories."""
+        if not memory_ids:
+            return True
+        conn = self._get_conn()
+        try:
+            conn.execute("MATCH (m:Memory) WHERE m.id IN $ids DETACH DELETE m", {"ids": memory_ids})
+            return True
+        except Exception as e:
+            logger.debug(f"Batch delete memory references: {e}")
+            return False
+
     def close(self):
         # We cannot easily close all thread-local connections, but Kuzu handles cleanup
         # when the database object is destroyed or process exits.

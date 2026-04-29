@@ -9,7 +9,7 @@ embedding models might miss (e.g., version numbers, UUIDs, paths).
 import math
 import re
 import logging
-from typing import List, Tuple, Dict, Optional, Set
+from typing import List, Tuple, Dict, Optional, Set, Iterable
 from collections import defaultdict
 
 logger = logging.getLogger("Muninn.BM25")
@@ -117,6 +117,36 @@ class BM25Index:
             del self._metadata[doc_id]
         self._n -= 1
         self._recompute_avg_dl()
+
+    def remove_batch(self, doc_ids: Iterable[str]) -> None:
+        """Remove multiple documents from the index optimally."""
+        removed_any = False
+        for doc_id in doc_ids:
+            if doc_id not in self._docs:
+                continue
+
+            removed_any = True
+            tokens = self._docs[doc_id]
+            seen_terms: Set[str] = set()
+            for token in tokens:
+                if token in self._inverted:
+                    self._inverted[token].discard(doc_id)
+                    if not self._inverted[token]:
+                        del self._inverted[token]
+                if token not in seen_terms:
+                    self._df[token] -= 1
+                    if self._df[token] <= 0:
+                        del self._df[token]
+                    seen_terms.add(token)
+
+            del self._docs[doc_id]
+            del self._doc_lengths[doc_id]
+            if doc_id in self._metadata:
+                del self._metadata[doc_id]
+            self._n -= 1
+
+        if removed_any:
+            self._recompute_avg_dl()
 
     def search(
         self,
