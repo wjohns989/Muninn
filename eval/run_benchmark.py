@@ -522,6 +522,106 @@ def _sign_report(data: Dict[str, Any], key: str) -> str:
 # Core runner
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _perform_health_check(
+    mode: str,
+    server_url: str,
+    auth_token: str,
+    run_id: str,
+    timestamp: str,
+    commit_sha: Optional[str],
+    total_t0: float,
+    output_path: Optional[Path],
+) -> Optional[BenchmarkRunReport]:
+    """Check server health in production mode and return an early failure report if unreachable."""
+    if mode != "production":
+        return None
+
+    if not _check_server_health(server_url, auth_token):
+        elapsed = time.monotonic() - total_t0
+        report = BenchmarkRunReport(
+            run_id=run_id,
+            mode=mode,
+            timestamp_utc=timestamp,
+            server_url=server_url,
+            overall_passed=False,
+            longmemeval=None,
+            structmemeval=None,
+            gates={},
+            commit_sha=commit_sha,
+            elapsed_total_seconds=elapsed,
+            error=f"Muninn server not reachable at {server_url}",
+        )
+        if output_path:
+            _write_report(output_path, report)
+        return report
+    return None
+
+
+def _execute_adapters(
+    mode: str,
+    server_url: str,
+    auth_token: str,
+    dataset_lme: Optional[Path],
+    dataset_sme: Optional[Path],
+    limit: Optional[int],
+    adapter_timeout: float,
+    skip_lme: bool,
+    skip_sme: bool,
+) -> tuple[Optional[AdapterResult], Optional[AdapterResult]]:
+    """Execute the configured benchmark adapters and return their results."""
+    adapter_mode = "selftest" if mode == "dry-run" else "production"
+
+    with tempfile.TemporaryDirectory(prefix="muninn_bench_") as tmpdir:
+        lme_out = Path(tmpdir) / "lme_report.json"
+        sme_out = Path(tmpdir) / "sme_report.json"
+
+        lme_result: Optional[AdapterResult] = None
+        if not skip_lme:
+            lme_result = _run_longmemeval(
+                mode=adapter_mode,
+                server_url=server_url,
+                auth_token=auth_token,
+                dataset_path=dataset_lme,
+                output_path=lme_out,
+                limit=limit,
+                timeout=adapter_timeout,
+            )
+
+        sme_result: Optional[AdapterResult] = None
+        if not skip_sme:
+            sme_result = _run_structmemeval(
+                mode=adapter_mode,
+                server_url=server_url,
+                auth_token=auth_token,
+                dataset_path=dataset_sme,
+                output_path=sme_out,
+                limit=limit,
+                timeout=adapter_timeout,
+            )
+
+    return lme_result, sme_result
+
+
+def _determine_overall_pass(
+    lme_gate: Dict[str, Any],
+    sme_gate: Dict[str, Any],
+    lme_result: Optional[AdapterResult],
+    sme_result: Optional[AdapterResult],
+    require_lme: bool,
+    require_sme: bool,
+    skip_lme: bool,
+    skip_sme: bool,
+) -> bool:
+    """Determine the overall pass/fail status based on gate evaluations and selftests."""
+    return all([
+        lme_gate["passed"] if require_lme else True,
+        sme_gate["passed"] if require_sme else True,
+        # In dry-run, selftest failures are hard failures
+        (lme_result.passed if lme_result and not skip_lme else True),
+        (sme_result.passed if sme_result and not skip_sme else True),
+    ])
+
+
 def run_benchmark(
     *,
     mode: str,
@@ -567,97 +667,49 @@ def run_benchmark(
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit_sha = _get_commit_sha(_REPO_ROOT)
 
-    # Ensure output directory exists
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Health check for production mode
-    if mode == "production":
-        if not auth_token:
-            auth_token = os.environ.get("MUNINN_AUTH_TOKEN", "")
-        if not _check_server_health(server_url, auth_token):
-            elapsed = time.monotonic() - total_t0
-            report = BenchmarkRunReport(
-                run_id=run_id,
-                mode=mode,
-                timestamp_utc=timestamp,
-                server_url=server_url,
-                overall_passed=False,
-                longmemeval=None,
-                structmemeval=None,
-                gates={},
-                commit_sha=commit_sha,
-                elapsed_total_seconds=elapsed,
-                error=f"Muninn server not reachable at {server_url}",
-            )
-            if output_path:
-                _write_report(output_path, report)
-            return report
+    effective_auth_token = auth_token
+    if mode == "production" and not effective_auth_token:
+        effective_auth_token = os.environ.get("MUNINN_AUTH_TOKEN", "")
 
-    # Determine effective mode for adapters
-    adapter_mode = "selftest" if mode == "dry-run" else "production"
+    early_report = _perform_health_check(
+        mode=mode,
+        server_url=server_url,
+        auth_token=effective_auth_token,
+        run_id=run_id,
+        timestamp=timestamp,
+        commit_sha=commit_sha,
+        total_t0=total_t0,
+        output_path=output_path,
+    )
+    if early_report:
+        return early_report
 
-    # Temporary output files for adapter reports
-    with tempfile.TemporaryDirectory(prefix="muninn_bench_") as tmpdir:
-        lme_out = Path(tmpdir) / "lme_report.json"
-        sme_out = Path(tmpdir) / "sme_report.json"
+    lme_result, sme_result = _execute_adapters(
+        mode=mode,
+        server_url=server_url,
+        auth_token=effective_auth_token,
+        dataset_lme=dataset_lme,
+        dataset_sme=dataset_sme,
+        limit=limit,
+        adapter_timeout=adapter_timeout,
+        skip_lme=skip_lme,
+        skip_sme=skip_sme,
+    )
 
-        # Run LongMemEval adapter
-        lme_result: Optional[AdapterResult] = None
-        if not skip_lme:
-            lme_result = _run_longmemeval(
-                mode=adapter_mode,
-                server_url=server_url,
-                auth_token=auth_token,
-                dataset_path=dataset_lme,
-                output_path=lme_out,
-                limit=limit,
-                timeout=adapter_timeout,
-            )
-
-        # Run StructMemEval adapter
-        sme_result: Optional[AdapterResult] = None
-        if not skip_sme:
-            sme_result = _run_structmemeval(
-                mode=adapter_mode,
-                server_url=server_url,
-                auth_token=auth_token,
-                dataset_path=dataset_sme,
-                output_path=sme_out,
-                limit=limit,
-                timeout=adapter_timeout,
-            )
-
-    # Evaluate gates
     lme_gate = _evaluate_lme_gate(
-        lme_result,
-        min_ndcg=min_lme_ndcg,
-        min_recall=min_lme_recall,
-        require=require_lme,
+        lme_result, min_ndcg=min_lme_ndcg, min_recall=min_lme_recall, require=require_lme
     )
     sme_gate = _evaluate_sme_gate(
-        sme_result,
-        min_em=min_sme_em,
-        require=require_sme,
+        sme_result, min_em=min_sme_em, require=require_sme
     )
 
-    gates = {
-        "longmemeval": lme_gate,
-        "structmemeval": sme_gate,
-    }
-
-    # Overall pass requires all mandatory gates to pass
-    overall_passed = all([
-        lme_gate["passed"] if require_lme else True,
-        sme_gate["passed"] if require_sme else True,
-        # In dry-run, selftest failures are hard failures
-        (lme_result.passed if lme_result and not skip_lme else True),
-        (sme_result.passed if sme_result and not skip_sme else True),
-    ])
-
-    elapsed_total = time.monotonic() - total_t0
+    overall_passed = _determine_overall_pass(
+        lme_gate, sme_gate, lme_result, sme_result, require_lme, require_sme, skip_lme, skip_sme
+    )
 
     report = BenchmarkRunReport(
         run_id=run_id,
@@ -667,12 +719,11 @@ def run_benchmark(
         overall_passed=overall_passed,
         longmemeval=lme_result,
         structmemeval=sme_result,
-        gates=gates,
+        gates={"longmemeval": lme_gate, "structmemeval": sme_gate},
         commit_sha=commit_sha,
-        elapsed_total_seconds=elapsed_total,
+        elapsed_total_seconds=time.monotonic() - total_t0,
     )
 
-    # Sign if key provided
     if signing_key:
         report.signature = _sign_report(_serialize_report(report), signing_key)
 
