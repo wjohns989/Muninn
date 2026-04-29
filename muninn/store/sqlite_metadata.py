@@ -1263,8 +1263,14 @@ class SQLiteMetadataStore:
             conditions.append(self._user_id_condition())
             params.append(self._user_id_param(user_id))
 
+        # Strict validation: prevent any future injection into conditions
+        allowed_conditions = {"namespace = ?", self._user_id_condition()}
+        for condition in conditions:
+            if condition not in allowed_conditions:
+                raise ValueError("Unsafe SQL condition detected")
+
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        cursor = conn.execute(f"DELETE FROM memories {where}", params)
+        cursor = conn.execute(f"DELETE FROM memories {where}", params)  # nosec B608
         count = cursor.rowcount
         conn.commit()
         return count
