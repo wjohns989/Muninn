@@ -129,7 +129,6 @@ _BACKEND_CIRCUIT_FAILURE_THRESHOLD = 5
 
 # Exceptions for tests
 from muninn.mcp.lifecycle import BackendCircuitOpenError as _BackendCircuitOpenError
-from muninn.mcp.requests import _RequestDeadlineExceededError
 
 # Facade Functions (Legacy Signature Support)
 
