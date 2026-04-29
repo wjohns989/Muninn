@@ -239,6 +239,29 @@ def test_sync_get_model_profile_events_payload():
     assert stub.calls[0]["params"]["limit"] == 10
 
 
+def test_sync_get_model_profile_alerts_empty_params():
+    stub = _StubSession(
+        {
+            ("GET", "/profiles/model/alerts"): _requests_response(
+                200,
+                {
+                    "success": True,
+                    "data": {
+                        "event": "MODEL_PROFILE_ALERT_EVALUATION",
+                        "alerts_count": 0,
+                    },
+                },
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.get_model_profile_alerts()
+
+    assert result["event"] == "MODEL_PROFILE_ALERT_EVALUATION"
+    assert stub.calls[0]["method"] == "GET"
+    assert stub.calls[0]["params"] is None
+
+
 def test_sync_get_model_profile_alerts_payload():
     stub = _StubSession(
         {
@@ -524,6 +547,24 @@ async def test_async_get_model_profile_events_payload():
         client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
         result = await client.get_model_profile_events(limit=7)
         assert result["event"] == "MODEL_PROFILE_EVENTS"
+
+
+@pytest.mark.asyncio
+async def test_async_get_model_profile_alerts_empty_params():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/profiles/model/alerts"
+        assert not request.url.params
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"event": "MODEL_PROFILE_ALERT_EVALUATION", "alerts_count": 0}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.get_model_profile_alerts()
+        assert result["event"] == "MODEL_PROFILE_ALERT_EVALUATION"
 
 
 @pytest.mark.asyncio
