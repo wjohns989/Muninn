@@ -3,7 +3,7 @@
 import pytest
 import time
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
-from muninn.scoring.importance import calculate_importance
+from muninn.scoring.importance import calculate_importance, calculate_provenance_weight, PROVENANCE_WEIGHTS
 
 
 class TestCalculateImportance:
@@ -65,3 +65,13 @@ class TestImportanceWithGraphCentrality:
         score_no_cent = calculate_importance(rec, centrality=0.0)
         score_hi_cent = calculate_importance(rec, centrality=0.9)
         assert score_hi_cent >= score_no_cent
+
+
+class TestProvenanceWeight:
+    def test_known_provenance_weights(self):
+        for prov, expected_weight in PROVENANCE_WEIGHTS.items():
+            assert calculate_provenance_weight(prov) == expected_weight
+
+    def test_unknown_provenance_weight(self):
+        # Fallback is defined as 0.5 in calculate_provenance_weight.
+        assert calculate_provenance_weight("UNKNOWN_PROVENANCE") == 0.5
