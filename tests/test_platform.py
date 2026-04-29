@@ -10,6 +10,10 @@ from muninn.platform import (
     IS_WINDOWS,
     IS_MACOS,
     IS_LINUX,
+    _resolve_dir,
+    _fallback_user_data_dir,
+    _fallback_user_config_dir,
+    _fallback_user_log_dir,
     get_data_dir,
     get_config_dir,
     get_log_dir,
@@ -54,6 +58,92 @@ class TestDockerDetection:
             # May or may not be in Docker depending on CI, just test it runs
             result = is_running_in_docker()
             assert isinstance(result, bool)
+
+
+class TestResolveDir:
+    """Test base directory resolution logic."""
+
+    def test_resolve_dir_env_var(self):
+        with patch.dict(os.environ, {"MUNINN_TEST_DIR": "/test/path"}):
+            result = _resolve_dir("MUNINN_TEST_DIR", "dummy_fn", lambda: "fallback")
+            assert result == Path("/test/path")
+
+    def test_resolve_dir_platformdirs(self, monkeypatch):
+        monkeypatch.delenv("MUNINN_TEST_DIR", raising=False)
+        with patch("builtins.__import__") as mock_import:
+            # We must only mock 'platformdirs', otherwise pytest dependencies fail
+            orig_import = __import__
+            def side_effect(name, *args, **kwargs):
+                if name == "platformdirs":
+                    class MockPlatformdirs:
+                        @staticmethod
+                        def test_dir_fn(app_name, app_author):
+                            return f"/platformdirs/{app_name}"
+                    return MockPlatformdirs()
+                return orig_import(name, *args, **kwargs)
+            mock_import.side_effect = side_effect
+
+            result = _resolve_dir("MUNINN_TEST_DIR", "test_dir_fn", lambda: "fallback")
+            assert result == Path("/platformdirs/muninn")
+
+    def test_resolve_dir_fallback(self, monkeypatch):
+        monkeypatch.delenv("MUNINN_TEST_DIR", raising=False)
+        with patch("builtins.__import__") as mock_import:
+            orig_import = __import__
+            def side_effect(name, *args, **kwargs):
+                if name == "platformdirs":
+                    raise ImportError("No module named 'platformdirs'")
+                return orig_import(name, *args, **kwargs)
+            mock_import.side_effect = side_effect
+
+            result = _resolve_dir("MUNINN_TEST_DIR", "test_dir_fn", lambda: "/fallback/dir")
+            assert result == Path("/fallback/dir")
+
+
+class TestFallbackDirs:
+    """Test manual OS-specific fallback directories."""
+
+    def test_fallback_user_data_dir(self):
+        with patch("muninn.platform.IS_WINDOWS", True):
+            with patch.dict(os.environ, {"LOCALAPPDATA": "C:\\Users\\Test\\AppData\\Local"}):
+                assert "muninn" in _fallback_user_data_dir()
+                assert "AppData" in _fallback_user_data_dir()
+
+        with patch("muninn.platform.IS_WINDOWS", False), patch("muninn.platform.IS_MACOS", True):
+            assert "Library" in _fallback_user_data_dir()
+            assert "Application Support" in _fallback_user_data_dir()
+
+        with patch("muninn.platform.IS_WINDOWS", False), patch("muninn.platform.IS_MACOS", False):
+            with patch.dict(os.environ, {"XDG_DATA_HOME": "/home/test/.local/share"}):
+                assert ".local/share/muninn" in _fallback_user_data_dir().replace("\\", "/")
+
+    def test_fallback_user_config_dir(self):
+        with patch("muninn.platform.IS_WINDOWS", True):
+            with patch.dict(os.environ, {"APPDATA": "C:\\Users\\Test\\AppData\\Roaming"}):
+                assert "muninn" in _fallback_user_config_dir()
+                assert "AppData" in _fallback_user_config_dir()
+
+        with patch("muninn.platform.IS_WINDOWS", False), patch("muninn.platform.IS_MACOS", True):
+            assert "Library" in _fallback_user_config_dir()
+            assert "Preferences" in _fallback_user_config_dir()
+
+        with patch("muninn.platform.IS_WINDOWS", False), patch("muninn.platform.IS_MACOS", False):
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": "/home/test/.config"}):
+                assert ".config/muninn" in _fallback_user_config_dir().replace("\\", "/")
+
+    def test_fallback_user_log_dir(self):
+        with patch("muninn.platform.IS_WINDOWS", True):
+            with patch.dict(os.environ, {"LOCALAPPDATA": "C:\\Users\\Test\\AppData\\Local"}):
+                assert "muninn" in _fallback_user_log_dir()
+                assert "Logs" in _fallback_user_log_dir()
+
+        with patch("muninn.platform.IS_WINDOWS", False), patch("muninn.platform.IS_MACOS", True):
+            assert "Library" in _fallback_user_log_dir()
+            assert "Logs" in _fallback_user_log_dir()
+
+        with patch("muninn.platform.IS_WINDOWS", False), patch("muninn.platform.IS_MACOS", False):
+            with patch.dict(os.environ, {"XDG_STATE_HOME": "/home/test/.local/state"}):
+                assert ".local/state/muninn/log" in _fallback_user_log_dir().replace("\\", "/")
 
 
 class TestDataDir:
