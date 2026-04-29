@@ -3,7 +3,7 @@
 import pytest
 import time
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
-from muninn.scoring.importance import calculate_importance
+from muninn.scoring.importance import calculate_importance, calculate_novelty
 
 
 class TestCalculateImportance:
@@ -65,3 +65,24 @@ class TestImportanceWithGraphCentrality:
         score_no_cent = calculate_importance(rec, centrality=0.0)
         score_hi_cent = calculate_importance(rec, centrality=0.9)
         assert score_hi_cent >= score_no_cent
+
+
+class TestCalculateNovelty:
+    def test_standard_values(self):
+        # High similarity -> low novelty
+        assert calculate_novelty(0.9) == pytest.approx(0.1)
+        # Low similarity -> high novelty
+        assert calculate_novelty(0.2) == pytest.approx(0.8)
+        # Exact match -> no novelty
+        assert calculate_novelty(1.0) == pytest.approx(0.0)
+        # Completely orthogonal -> maximum novelty
+        assert calculate_novelty(0.0) == pytest.approx(1.0)
+
+    def test_clamping_upper_bound(self):
+        # Negative similarity (e.g., opposite meaning) shouldn't push novelty above 1.0
+        assert calculate_novelty(-0.5) == pytest.approx(1.0)
+        assert calculate_novelty(-1.0) == pytest.approx(1.0)
+
+    def test_clamping_lower_bound(self):
+        # Similarity above 1.0 (shouldn't happen in cosine sim, but robust to inputs) shouldn't push novelty below 0.0
+        assert calculate_novelty(1.5) == pytest.approx(0.0)
