@@ -167,7 +167,7 @@ def handle_call_tool_with_task(session_id: str, msg_id: Any, name: str, argument
         worker_fn = _run_tool_call_task_worker
         
     if send_notification_fn is None:
-        # Fallback for environments where notification sender isnt explicitly provided
+        # Fallback for environments where notification sender isn't explicitly provided
         send_notification_fn = lambda msg: send_result_fn(None, msg)
         
     ttl = task_request.get("ttl")
