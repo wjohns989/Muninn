@@ -45,15 +45,19 @@ class TestPlatformDetection:
 class TestDockerDetection:
     """Test Docker environment detection."""
 
-    def test_docker_env_var(self):
-        with patch.dict(os.environ, {"MUNINN_DOCKER": "1"}):
+    @patch("muninn.platform.Path.exists")
+    def test_is_running_in_docker_true(self, mock_exists):
+        mock_exists.return_value = True
+        with patch.dict(os.environ, {"MUNINN_DOCKER": "0"}, clear=True):
             assert is_running_in_docker() is True
 
-    def test_not_docker_by_default(self):
-        with patch.dict(os.environ, {}, clear=True):
-            # May or may not be in Docker depending on CI, just test it runs
-            result = is_running_in_docker()
-            assert isinstance(result, bool)
+    @patch("muninn.platform.Path.exists")
+    def test_is_running_in_docker_false(self, mock_exists):
+        mock_exists.return_value = False
+        # Mocking open and os.environ locally so it doesn't fail on the full repo code
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            with patch.dict(os.environ, {}, clear=True):
+                assert is_running_in_docker() is False
 
 
 class TestDataDir:
