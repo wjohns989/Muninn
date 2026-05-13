@@ -14,12 +14,12 @@ Tier hierarchy:
   Merge: Union entities/relations, deduplicate by lowercase name
 """
 
-import logging
 import asyncio  # required for async extraction -> to_thread
+import logging
 from typing import Dict, List, Optional, Tuple
 
-from muninn.core.types import ExtractionResult
 from muninn.core.feature_flags import get_flags
+from muninn.core.types import ExtractionResult
 from muninn.extraction.rules import rule_based_extract
 
 logger = logging.getLogger("Muninn.Extract")
@@ -62,6 +62,7 @@ class ExtractionPipeline:
         if flags.is_enabled("instructor_extraction") and instructor_base_url:
             try:
                 from muninn.extraction.instructor_extractor import InstructorExtractor
+
                 route_specs_by_profile = {
                     profile: self._build_instructor_route_specs(
                         profile=profile,
@@ -101,11 +102,12 @@ class ExtractionPipeline:
             except Exception as e:
                 logger.warning("Instructor extractor init failed: %s", e)
 
-        # Probe legacy tiers
-        if xlam_url:
-            self._xlam_available = self._check_xlam()
-        if ollama_url:
-            self._ollama_available = self._check_ollama()
+    async def initialize(self) -> None:
+        """Asynchronously initialize the extraction pipeline, probing available tiers."""
+        if self.xlam_url:
+            self._xlam_available = await self._check_xlam()
+        if self.ollama_url:
+            self._ollama_available = await self._check_ollama()
 
         tier = "Tier 1 (rules only)"
         if self._has_available_instructor_route(self.model_profile):
@@ -176,19 +178,23 @@ class ExtractionPipeline:
         routes = self._instructor_routes_by_profile.get(profile, [])
         return any(extractor.is_available for _, extractor in routes)
 
-    def _check_xlam(self) -> bool:
+    async def _check_xlam(self) -> bool:
         try:
-            import requests
-            resp = requests.get(f"{self.xlam_url}/v1/models", timeout=2)
-            return resp.status_code == 200
+            import httpx
+
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"{self.xlam_url}/v1/models")
+                return resp.status_code == 200
         except Exception:
             return False
 
-    def _check_ollama(self) -> bool:
+    async def _check_ollama(self) -> bool:
         try:
-            import requests
-            resp = requests.get(self.ollama_url, timeout=1)
-            return resp.status_code == 200
+            import httpx
+
+            async with httpx.AsyncClient(timeout=1.0) as client:
+                resp = await client.get(self.ollama_url)
+                return resp.status_code == 200
         except Exception:
             return False
 
@@ -218,11 +224,7 @@ class ExtractionPipeline:
         if not use_llm:
             return result
 
-        selected_profile = (
-            model_profile
-            if model_profile in SUPPORTED_MODEL_PROFILES
-            else self.model_profile
-        )
+        selected_profile = model_profile if model_profile in SUPPORTED_MODEL_PROFILES else self.model_profile
         if selected_profile not in SUPPORTED_MODEL_PROFILES:
             selected_profile = "balanced"
 
@@ -261,8 +263,10 @@ class ExtractionPipeline:
         xLAM chain-of-extraction using PA-Tool aligned schemas.
         Implements 6-step sequential extraction pipeline.
         """
-        import requests
         import json
+
+        import requests
+
         from muninn.core.types import Entity, Relation
 
         entities = []
@@ -276,8 +280,11 @@ class ExtractionPipeline:
                 json={
                     "model": self.xlam_model,
                     "messages": [
-                        {"role": "system", "content": "Extract named entities from the text. Return a JSON array of objects with 'name' and 'entity_type' fields."},
-                        {"role": "user", "content": f"Extract entities from: {text[:2000]}"}
+                        {
+                            "role": "system",
+                            "content": "Extract named entities from the text. Return a JSON array of objects with 'name' and 'entity_type' fields.",
+                        },
+                        {"role": "user", "content": f"Extract entities from: {text[:2000]}"},
                     ],
                     "temperature": 0.1,
                     "max_tokens": 500,
@@ -292,10 +299,12 @@ class ExtractionPipeline:
                     if isinstance(parsed, list):
                         for item in parsed:
                             if isinstance(item, dict) and "name" in item:
-                                entities.append(Entity(
-                                    name=item["name"],
-                                    entity_type=item.get("entity_type", "concept"),
-                                ))
+                                entities.append(
+                                    Entity(
+                                        name=item["name"],
+                                        entity_type=item.get("entity_type", "concept"),
+                                    )
+                                )
                 except json.JSONDecodeError:
                     pass
         except Exception as e:
@@ -310,8 +319,14 @@ class ExtractionPipeline:
                     json={
                         "model": self.xlam_model,
                         "messages": [
-                            {"role": "system", "content": "Extract relationships between entities. Return a JSON array of objects with 'subject', 'predicate', and 'object' fields."},
-                            {"role": "user", "content": f"Entities: {entity_names}\nText: {text[:2000]}\nExtract relationships:"}
+                            {
+                                "role": "system",
+                                "content": "Extract relationships between entities. Return a JSON array of objects with 'subject', 'predicate', and 'object' fields.",
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Entities: {entity_names}\nText: {text[:2000]}\nExtract relationships:",
+                            },
                         ],
                         "temperature": 0.1,
                         "max_tokens": 500,
@@ -324,12 +339,16 @@ class ExtractionPipeline:
                         parsed = json.loads(content)
                         if isinstance(parsed, list):
                             for item in parsed:
-                                if isinstance(item, dict) and all(k in item for k in ("subject", "predicate", "object")):
-                                    relations.append(Relation(
-                                        subject=item["subject"],
-                                        predicate=item["predicate"],
-                                        object=item["object"],
-                                    ))
+                                if isinstance(item, dict) and all(
+                                    k in item for k in ("subject", "predicate", "object")
+                                ):
+                                    relations.append(
+                                        Relation(
+                                            subject=item["subject"],
+                                            predicate=item["predicate"],
+                                            object=item["object"],
+                                        )
+                                    )
                     except json.JSONDecodeError:
                         pass
             except Exception as e:
@@ -343,7 +362,7 @@ class ExtractionPipeline:
                     "model": self.xlam_model,
                     "messages": [
                         {"role": "system", "content": "Summarize the key facts in one concise sentence."},
-                        {"role": "user", "content": text[:2000]}
+                        {"role": "user", "content": text[:2000]},
                     ],
                     "temperature": 0.1,
                     "max_tokens": 100,
