@@ -10,8 +10,8 @@ Uses "Valid Time" (when the fact is true in the world) vs "Transaction Time"
 """
 
 import logging
-import time
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from muninn.store.graph_store import GraphStore
 
 logger = logging.getLogger("Muninn.TemporalKG")
@@ -56,13 +56,14 @@ class TemporalKnowledgeGraph:
         # Ensure entities exist
         self.graph.add_entity(subject, "unknown")
         self.graph.add_entity(obj, "unknown")
-        
+
         end = valid_end if valid_end is not None else float("inf")
-        
+
         try:
             conn.execute(
                 "MATCH (a:Entity {name: $subj}), (b:Entity {name: $obj}) "
-                "CREATE (a)-[:VALID_DURING {predicate: $pred, start_time: $start, end_time: $valid_until, source_memory: $source_mem}]->(b)",
+                "CREATE (a)-[:VALID_DURING {predicate: $pred, start_time: $start, "
+                "end_time: $valid_until, source_memory: $source_mem}]->(b)",
                 {
                     "subj": subject,
                     "obj": obj,
@@ -166,15 +167,15 @@ class TemporalKnowledgeGraph:
         """
         valid_t1 = self.query_valid_at(t1, limit=1000)
         valid_t2 = self.query_valid_at(t2, limit=1000)
-        
+
         # Simple tuple set logic
         set_t1 = {(f["subject"], f["predicate"], f["object"]) for f in valid_t1}
         set_t2 = {(f["subject"], f["predicate"], f["object"]) for f in valid_t2}
-        
+
         added_keys = set_t2 - set_t1
         removed_keys = set_t1 - set_t2
-        
+
         added = [f for f in valid_t2 if (f["subject"], f["predicate"], f["object"]) in added_keys]
         removed = [f for f in valid_t1 if (f["subject"], f["predicate"], f["object"]) in removed_keys]
-        
+
         return {"added": added, "removed": removed}
