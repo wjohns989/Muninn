@@ -4,13 +4,13 @@ Muninn Graph Store
 Kuzu-based knowledge graph for entity relationships and graph-enhanced retrieval.
 """
 
-import logging
-import time
 import json
-import threading
-from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+import logging
 import math
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import kuzu
 
@@ -68,7 +68,7 @@ class GraphStore:
                     # Kuzu workaround: drop and recreate since it's a PK change
                     try:
                         conn.execute("DROP TABLE Entity")
-                        self._initialize() # Re-run to create new table
+                        self._initialize()  # Re-run to create new table
                     except Exception as drop_err:
                         logger.error(f"Failed to migrate Entity table: {drop_err}")
 
@@ -145,13 +145,7 @@ class GraphStore:
 
         logger.info(f"Graph store initialized at {self.db_path}")
 
-    def add_entity(
-        self, 
-        name: str, 
-        entity_type: str, 
-        user_id: str = "global", 
-        namespace: str = "global"
-    ) -> bool:
+    def add_entity(self, name: str, entity_type: str, user_id: str = "global", namespace: str = "global") -> bool:
         conn = self._get_conn()
         now = time.time()
         # Create a scoped unique ID
@@ -163,10 +157,7 @@ class GraphStore:
                 "ON CREATE SET e.name = $name, e.user_id = $uid, e.namespace = $ns, "
                 "e.entity_type = $type, e.first_seen = $now, e.last_seen = $now, e.mention_count = 1 "
                 "ON MATCH SET e.last_seen = $now, e.mention_count = e.mention_count + 1",
-                {
-                    "id": entity_id, "name": name, "uid": user_id, "ns": namespace,
-                    "type": entity_type, "now": now
-                }
+                {"id": entity_id, "name": name, "uid": user_id, "ns": namespace, "type": entity_type, "now": now},
             )
             return True
         except Exception as e:
@@ -185,7 +176,7 @@ class GraphStore:
     ) -> bool:
         conn = self._get_conn()
         now = time.time()
-        
+
         s_id = f"{user_id}/{namespace}/{subject}"
         o_id = f"{user_id}/{namespace}/{obj}"
 
@@ -199,9 +190,13 @@ class GraphStore:
                 "CREATE (a)-[:RELATES_TO {predicate: $pred, confidence: $conf, "
                 "source_memory: $src, created_at: $now}]->(b)",
                 {
-                    "s_id": s_id, "o_id": o_id, "pred": predicate,
-                    "conf": confidence, "src": source_memory_id or "", "now": now
-                }
+                    "s_id": s_id,
+                    "o_id": o_id,
+                    "pred": predicate,
+                    "conf": confidence,
+                    "src": source_memory_id or "",
+                    "now": now,
+                },
             )
             return True
         except Exception as e:
@@ -222,7 +217,7 @@ class GraphStore:
                 "MERGE (m:Memory {id: $id}) "
                 "ON CREATE SET m.summary = $summary, m.created_at = $now, m.user_id = $uid, m.namespace = $ns "
                 "ON MATCH SET m.summary = $summary, m.user_id = $uid, m.namespace = $ns",
-                {"id": memory_id, "summary": summary[:500], "now": now, "uid": user_id, "ns": namespace}
+                {"id": memory_id, "summary": summary[:500], "now": now, "uid": user_id, "ns": namespace},
             )
             return True
         except Exception as e:
@@ -230,24 +225,23 @@ class GraphStore:
             return False
 
     def link_memory_to_entity(
-        self, 
-        memory_id: str, 
-        entity_name: str, 
+        self,
+        memory_id: str,
+        entity_name: str,
         role: str = "mention",
         user_id: str = "global",
-        namespace: str = "global"
+        namespace: str = "global",
     ) -> bool:
         conn = self._get_conn()
         e_id = f"{user_id}/{namespace}/{entity_name}"
-        
+
         # Ensure entity exists in this scope
         self.add_entity(entity_name, "unknown", user_id, namespace)
-        
+
         try:
             conn.execute(
-                "MATCH (m:Memory {id: $mid}), (e:Entity {id: $eid}) "
-                "CREATE (m)-[:MENTIONS {role: $role}]->(e)",
-                {"mid": memory_id, "eid": e_id, "role": role}
+                "MATCH (m:Memory {id: $mid}), (e:Entity {id: $eid}) CREATE (m)-[:MENTIONS {role: $role}]->(e)",
+                {"mid": memory_id, "eid": e_id, "role": role},
             )
             return True
         except Exception as e:
@@ -255,11 +249,7 @@ class GraphStore:
             return False
 
     def find_related_memories(
-        self, 
-        query_entities: List[str], 
-        limit: int = 20,
-        user_id: str = "global",
-        namespace: str = "global"
+        self, query_entities: List[str], limit: int = 20, user_id: str = "global", namespace: str = "global"
     ) -> List[str]:
         """Find memory IDs related to given entity names via graph traversal (scoped)."""
         if not query_entities:
@@ -273,9 +263,8 @@ class GraphStore:
             try:
                 # Direct mentions (Strictly scoped by entity ID)
                 result = conn.execute(
-                    "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $eid}) "
-                    "RETURN m.id LIMIT $limit",
-                    {"eid": e_id, "limit": limit}
+                    "MATCH (m:Memory)-[:MENTIONS]->(e:Entity {id: $eid}) RETURN m.id LIMIT $limit",
+                    {"eid": e_id, "limit": limit},
                 )
                 while result.has_next():
                     row = result.get_next()
@@ -285,7 +274,7 @@ class GraphStore:
                 result = conn.execute(
                     "MATCH (m:Memory)-[:MENTIONS]->(e1:Entity)-[:RELATES_TO]-(e2:Entity {name: $name}) "
                     "RETURN DISTINCT m.id LIMIT $limit",
-                    {"name": entity_name, "limit": limit}
+                    {"name": entity_name, "limit": limit},
                 )
                 while result.has_next():
                     row = result.get_next()
@@ -306,6 +295,7 @@ class GraphStore:
         Integrated Graph + Summary search with multi-tenant isolation.
         """
         from muninn.extraction.rules import extract_entities_rule_based
+
         keywords_raw = extract_entities_rule_based(query)
         if keywords_raw:
             keywords = [e.name for e in keywords_raw]
@@ -342,12 +332,14 @@ class GraphStore:
                     res = conn.execute(query_str, s1_params)
                     while res.has_next():
                         row = res.get_next()
-                        results.append({
-                            "id": row[0],
-                            "summary": row[1],
-                            "match": f"entity:{row[2]}",
-                            "score": 1.0,
-                        })
+                        results.append(
+                            {
+                                "id": row[0],
+                                "summary": row[1],
+                                "match": f"entity:{row[2]}",
+                                "score": 1.0,
+                            }
+                        )
                 except Exception as e:
                     logger.debug(f"Graph entity search for '{kw}': {e}")
 
@@ -365,12 +357,14 @@ class GraphStore:
                     res = conn.execute(query_str, s2_params)
                     while res.has_next():
                         row = res.get_next()
-                        results.append({
-                            "id": row[0],
-                            "summary": row[1],
-                            "match": "summary",
-                            "score": 0.8,
-                        })
+                        results.append(
+                            {
+                                "id": row[0],
+                                "summary": row[1],
+                                "match": "summary",
+                                "score": 0.8,
+                            }
+                        )
                 except Exception as e:
                     logger.debug(f"Graph summary search for '{kw}': {e}")
 
@@ -383,20 +377,13 @@ class GraphStore:
 
         unique = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
         return unique[:limit]
-    def get_entity_centrality(
-        self, 
-        entity_name: str, 
-        user_id: str = "global", 
-        namespace: str = "global"
-    ) -> float:
+
+    def get_entity_centrality(self, entity_name: str, user_id: str = "global", namespace: str = "global") -> float:
         """Get degree centrality of an entity (normalized by max possible degree) within a scope."""
         conn = self._get_conn()
         e_id = f"{user_id}/{namespace}/{entity_name}"
         try:
-            result = conn.execute(
-                "MATCH (e:Entity {id: $eid})-[r:RELATES_TO]-() RETURN COUNT(r)",
-                {"eid": e_id}
-            )
+            result = conn.execute("MATCH (e:Entity {id: $eid})-[r:RELATES_TO]-() RETURN COUNT(r)", {"eid": e_id})
             if result.has_next():
                 degree = result.get_next()[0]
                 return min(1.0, math.log1p(degree) / math.log1p(100))
@@ -412,10 +399,7 @@ class GraphStore:
         """
         conn = self._get_conn()
         try:
-            result = conn.execute(
-                "MATCH (m:Memory {id: $id})-[r]-() RETURN COUNT(r)",
-                {"id": memory_id}
-            )
+            result = conn.execute("MATCH (m:Memory {id: $id})-[r]-() RETURN COUNT(r)", {"id": memory_id})
             if result.has_next():
                 degree = result.get_next()[0]
                 # Normalize: log scale capped at 1.0, baseline of 20 relations = 1.0
@@ -468,14 +452,11 @@ class GraphStore:
         return 0
 
     def get_all_entities(
-        self, 
-        limit: int = 100,
-        user_id: Optional[str] = None,
-        namespace: Optional[str] = None
+        self, limit: int = 100, user_id: Optional[str] = None, namespace: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         entities = []
-        
+
         where_clause = "WHERE 1=1"
         params = {"limit": limit}
         if user_id:
@@ -496,15 +477,71 @@ class GraphStore:
             result = conn.execute(query, params)
             while result.has_next():
                 row = result.get_next()
-                entities.append({
-                    "name": row[0],
-                    "entity_type": row[1],
-                    "mention_count": row[2],
-                    "namespace": row[3],
-                })
+                entities.append(
+                    {
+                        "name": row[0],
+                        "entity_type": row[1],
+                        "mention_count": row[2],
+                        "namespace": row[3],
+                    }
+                )
         except Exception as e:
             logger.debug(f"Get all entities: {e}")
         return entities
+
+    def add_chain_links_batch(self, links: List[Any]) -> int:
+        """
+        Add directed memory-to-memory chain edges in batch using UNWIND.
+        """
+        if not links:
+            return 0
+        conn = self._get_conn()
+        now = time.time()
+
+        # Group by relation type since we can't parameterize relation type in cypher
+        batches = {"PRECEDES": [], "CAUSES": []}
+
+        for link in links:
+            rel = str(link.relation_type or "PRECEDES").upper()
+            if rel not in batches:
+                continue
+            if link.predecessor_id == link.successor_id:
+                continue
+
+            payload = json.dumps(link.shared_entities or [], ensure_ascii=False)
+            conf = max(0.0, min(1.0, float(link.confidence)))
+            hours = float(link.hours_apart) if link.hours_apart is not None else None
+            reason = (link.reason or "")[:500]
+
+            batches[rel].append(
+                {
+                    "pred": link.predecessor_id,
+                    "succ": link.successor_id,
+                    "conf": conf,
+                    "reason": reason,
+                    "shared": payload,
+                    "hours": hours,
+                    "now": now,
+                }
+            )
+
+        persisted = 0
+        for rel, batch in batches.items():
+            if not batch:
+                continue
+            try:
+                conn.execute(
+                    f"UNWIND $batch AS link "
+                    f"MATCH (a:Memory {{id: link.pred}}), (b:Memory {{id: link.succ}}) "
+                    f"CREATE (a)-[:{rel} {{confidence: link.conf, reason: link.reason, "
+                    f"shared_entities_json: link.shared, hours_apart: link.hours, created_at: link.now}}]->(b)",
+                    {"batch": batch},
+                )
+                persisted += len(batch)
+            except Exception as e:
+                logger.debug(f"Chain relation batch creation ({rel}): {e}")
+
+        return persisted
 
     def add_chain_link(
         self,
