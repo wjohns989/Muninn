@@ -164,13 +164,25 @@ class TestPlatformInfo:
     def test_required_keys(self):
         info = get_platform_info()
         required = ["os", "python", "is_windows", "is_macos", "is_linux",
-                     "is_docker", "data_dir", "config_dir", "log_dir"]
+                     "is_docker", "data_dir", "config_dir", "log_dir",
+                     "system", "release", "machine", "python_version"]
         for key in required:
             assert key in info, f"Missing key: {key}"
 
     def test_os_matches_sys(self):
         info = get_platform_info()
         assert info["os"] == sys.platform
+
+    @patch("platform.system", return_value="MockOS")
+    @patch("platform.release", return_value="1.0.0")
+    @patch("platform.machine", return_value="mock_arch")
+    @patch("platform.python_version", return_value="3.14.0")
+    def test_platform_mocked_values(self, mock_py_ver, mock_machine, mock_release, mock_system):
+        info = get_platform_info()
+        assert info["system"] == "MockOS"
+        assert info["release"] == "1.0.0"
+        assert info["machine"] == "mock_arch"
+        assert info["python_version"] == "3.14.0"
 
 
 class TestEnsureDirectories:
