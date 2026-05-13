@@ -13,21 +13,21 @@ Runs periodically (default: every 6 hours) through 5 phases:
 """
 
 import asyncio
-import time
 import logging
+import time
 from typing import Optional
 
-from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
-from muninn.core.config import ConsolidationConfig
-from muninn.store.sqlite_metadata import SQLiteMetadataStore
-from muninn.store.vector_store import VectorStore
-from muninn.store.graph_store import GraphStore
-from muninn.retrieval.bm25 import BM25Index
-from muninn.scoring.importance import calculate_importance, batch_update_importance
 from muninn.consolidation.merge import find_merge_candidates, merge_memories
 from muninn.consolidation.promote import find_promotion_candidates, promote_memory
+from muninn.core.config import ConsolidationConfig
 from muninn.core.types import MemoryType
+from muninn.retrieval.bm25 import BM25Index
+from muninn.scoring.importance import calculate_importance
+from muninn.store.graph_store import GraphStore
+from muninn.store.sqlite_metadata import SQLiteMetadataStore
+from muninn.store.vector_store import VectorStore
 
 logger = logging.getLogger("Muninn.Consolidation")
 
@@ -63,10 +63,11 @@ class ConsolidationDaemon:
         self._running = False
         self._last_cycle: Optional[float] = None
         self._cycle_count = 0
-        
+
         # Phase 9 integrity components (v3.6.0)
         from muninn.conflict.detector import ConflictDetector
         from muninn.conflict.resolver import ConflictResolver
+
         self._conflict_detector = ConflictDetector(
             contradiction_threshold=self.config.integrity_contradiction_threshold
         )
@@ -75,7 +76,7 @@ class ConsolidationDaemon:
             vector_store=self.vectors,
             graph_store=self.graph,
             bm25_index=self.bm25,
-            embed_fn=self._embed_fn
+            embed_fn=self._embed_fn,
         )
 
     async def start(self) -> None:
@@ -161,8 +162,7 @@ class ConsolidationDaemon:
         results["elapsed_seconds"] = round(elapsed, 2)
         self._last_cycle = time.time()
 
-        logger.info("=== Consolidation cycle #%d completed in %.2fs ===",
-                     self._cycle_count, elapsed)
+        logger.info("=== Consolidation cycle #%d completed in %.2fs ===", self._cycle_count, elapsed)
         return results
 
     async def _run_loop(self) -> None:
@@ -200,9 +200,7 @@ class ConsolidationDaemon:
         # (avoids N+1 per-record pattern that would issue one SQL call per memory)
         record_ids = [r.id for r in records]
         centrality_map = self.graph.get_memory_node_degrees_batch(record_ids)
-        utility_map = self.metadata.get_batch_retrieval_utility(
-            record_ids, lookback_days=30, estimator="snips"
-        )
+        utility_map = self.metadata.get_batch_retrieval_utility(record_ids, lookback_days=30, estimator="snips")
 
         for record in records:
             # Get centrality from pre-fetched map
@@ -244,8 +242,7 @@ class ConsolidationDaemon:
                     expired += 1
 
         elapsed = time.time() - t0
-        result = {"updated": updated, "decayed": decayed, "expired": expired,
-                  "elapsed": round(elapsed, 2)}
+        result = {"updated": updated, "decayed": decayed, "expired": expired, "elapsed": round(elapsed, 2)}
         logger.info("Phase DECAY: %s", result)
         return result
 
@@ -264,14 +261,13 @@ class ConsolidationDaemon:
         if not episodic:
             return {"merged": 0, "elapsed": 0.0}
 
-        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
         # Find candidates using vector similarity
         async def vector_search_fn(vector_id, user_id=None, namespace=None):
             try:
                 # v3.8.0 Isolation: We need the actual vector to search
                 # But since merge happens in background, we rely on find_merge_candidates
-                # to respect the passed records. 
+                # to respect the passed records.
                 # Optimization: We use the daemon's vector search with strict filters.
                 vec = self.vectors.get_vectors([vector_id]).get(vector_id)
                 if not vec:
@@ -280,26 +276,22 @@ class ConsolidationDaemon:
                     mem = self.metadata.get(vector_id)
                     if mem and self._embed_fn:
                         vec = self._embed_fn(mem.content)
-                
+
                 if vec is None:
                     return []
-                
+
                 # Handle async embedding if needed
                 if hasattr(vec, "__await__"):
                     vec = await vec
-                
+
                 search_filters = {}
                 if user_id:
                     search_filters["user_id"] = user_id
                 if namespace:
                     search_filters["namespace"] = namespace
-                
+
                 # Search for similar vectors
-                results = self.vectors.search(
-                    query_embedding=vec,
-                    limit=5,
-                    filters=search_filters
-                )
+                results = self.vectors.search(query_embedding=vec, limit=5, filters=search_filters)
                 if hasattr(results, "__await__"):
                     results = await results
                 return results
@@ -311,82 +303,94 @@ class ConsolidationDaemon:
         candidates = await find_merge_candidates(episodic, vector_search_fn)
         merged_count = 0
 
+        # Optimization: Pre-compute the temporal contradiction dependencies before the loop
+        instructor_ext = None
+        synthesize_temporal_contradiction = None
+        if (
+            hasattr(self, "extractor")
+            and self.extractor
+            and getattr(self.extractor, "_instructor_routes_by_profile", None)
+        ):
+            # Get the first available instructor
+            for route_label, ext in self.extractor._instructor_routes_by_profile.get(self.extractor.model_profile, []):
+                if ext.is_available:
+                    instructor_ext = ext
+                    break
+
+            if instructor_ext:
+                from muninn.extraction.temporal_synthesis import synthesize_temporal_contradiction
+
         for primary_id, secondary_id, _ in candidates:
             primary = self.metadata.get(primary_id)
             secondary = self.metadata.get(secondary_id)
-            
+
             if not primary or not secondary:
                 continue
-            
+
             # CRITICAL SAFETY check: Never merge across namespaces
             primary_uid = (primary.metadata or {}).get("user_id")
             secondary_uid = (secondary.metadata or {}).get("user_id")
             if primary_uid != secondary_uid or primary.namespace != secondary.namespace:
                 logger.warning(
                     "BLOCKED cross-namespace merge attempt: %s (%s/%s) vs %s (%s/%s)",
-                    primary.id, primary_uid, primary.namespace,
-                    secondary.id, secondary_uid, secondary.namespace
+                    primary.id,
+                    primary_uid,
+                    primary.namespace,
+                    secondary.id,
+                    secondary_uid,
+                    secondary.namespace,
                 )
                 continue
 
             # v3.22.0 Temporal Knowledge Graph & Shadowing
             # Check for semantic contradictions using LLM synthesis
             is_contradiction = False
-            if hasattr(self, "extractor") and self.extractor and getattr(self.extractor, "_instructor_routes_by_profile", None):
-                from muninn.extraction.temporal_synthesis import synthesize_temporal_contradiction
-                
-                # Get the first available instructor
-                instructor_ext = None
-                for route_label, ext in self.extractor._instructor_routes_by_profile.get(self.extractor.model_profile, []):
-                    if ext.is_available:
-                        instructor_ext = ext
-                        break
-                        
-                if instructor_ext:
-                    # To minimize false positives and LLM calls, only check if their content is meaningfully different
-                    if primary.content.strip() != secondary.content.strip():
-                        try:
-                            resolution = synthesize_temporal_contradiction(
-                                extractor=instructor_ext,
-                                fact_a_text=secondary.content,
-                                fact_b_text=primary.content
+
+            if instructor_ext and synthesize_temporal_contradiction:
+                # To minimize false positives and LLM calls, only check if their content is meaningfully different
+                if primary.content.strip() != secondary.content.strip():
+                    try:
+                        resolution = synthesize_temporal_contradiction(
+                            extractor=instructor_ext, fact_a_text=secondary.content, fact_b_text=primary.content
+                        )
+
+                        if resolution and resolution.contradiction_confirmed:
+                            is_contradiction = True
+                            # Shadow the older fact and keep the newer fact active.
+                            if secondary.created_at < primary.created_at:
+                                target_to_shadow = secondary
+                                superseding = primary
+                            else:
+                                target_to_shadow = primary
+                                superseding = secondary
+
+                            logger.info(
+                                "Phase MERGE: Temporal contradiction detected between %s and %s. Shadowing older %s.",
+                                primary.id,
+                                secondary.id,
+                                target_to_shadow.id,
                             )
-                            
-                            if resolution and resolution.contradiction_confirmed:
-                                is_contradiction = True
-                                # Shadow the older fact and keep the newer fact active.
-                                if secondary.created_at < primary.created_at:
-                                    target_to_shadow = secondary
-                                    superseding = primary
-                                else:
-                                    target_to_shadow = primary
-                                    superseding = secondary
-                                
-                                logger.info(
-                                    "Phase MERGE: Temporal contradiction detected between %s and %s. Shadowing older %s.",
-                                    primary.id, secondary.id, target_to_shadow.id
+
+                            # Use temporal_kg to shadow the edges of the outdated fact
+                            if hasattr(self.graph, "shadow_memory_edges"):
+                                self.graph.shadow_memory_edges(
+                                    memory_id=target_to_shadow.id, superseded_at=superseding.created_at
                                 )
-                                
-                                # Use temporal_kg to shadow the edges of the outdated fact
-                                if hasattr(self.graph, "shadow_memory_edges"):
-                                    self.graph.shadow_memory_edges(
-                                        memory_id=target_to_shadow.id, 
-                                        superseded_at=superseding.created_at
-                                    )
-                                
-                                # Archive the outdated episodic memory so it doesn't pollute standard Vector / BM25 queries (preserving historical record in graph)
-                                target_metadata = target_to_shadow.metadata.copy()
-                                target_metadata["temporal_shadowed_by"] = superseding.id
-                                target_metadata["superseded_at"] = time.time()
-                                target_to_shadow.importance = target_to_shadow.importance * 0.1
-                                self.metadata.update_metadata(target_to_shadow.id, target_metadata)
-                                self.metadata.update(target_to_shadow)
-                                
-                                self.vectors.delete([target_to_shadow.id])
-                                self.bm25.remove(target_to_shadow.id)
-                        except Exception as e:
-                            logger.warning(f"Temporal synthesis failed during MERGE: {e}")
-            
+
+                            # Archive the outdated episodic memory so it doesn't pollute standard Vector / BM25 queries
+                            # (preserving historical record in graph)
+                            target_metadata = target_to_shadow.metadata.copy()
+                            target_metadata["temporal_shadowed_by"] = superseding.id
+                            target_metadata["superseded_at"] = time.time()
+                            target_to_shadow.importance = target_to_shadow.importance * 0.1
+                            self.metadata.update_metadata(target_to_shadow.id, target_metadata)
+                            self.metadata.update(target_to_shadow)
+
+                            self.vectors.delete([target_to_shadow.id])
+                            self.bm25.remove(target_to_shadow.id)
+                    except Exception as e:
+                        logger.warning(f"Temporal synthesis failed during MERGE: {e}")
+
             if is_contradiction:
                 # Since they contradict chronologically, we cannot merge them. The older fact is now archived.
                 continue
@@ -400,18 +404,12 @@ class ConsolidationDaemon:
             self.graph.delete_memory_references(secondary.id)
             # Graph update: primary node summary changes
             merged_uid = (merged.metadata or {}).get("user_id")
-            self.graph.add_memory_node(
-                merged.id,
-                merged.content[:500],
-                user_id=merged_uid,
-                namespace=merged.namespace
-            )
-            
+            self.graph.add_memory_node(merged.id, merged.content[:500], user_id=merged_uid, namespace=merged.namespace)
+
             merged_count += 1
 
         elapsed = time.time() - t0
-        result = {"merged": merged_count, "candidates_checked": len(episodic),
-                  "elapsed": round(elapsed, 2)}
+        result = {"merged": merged_count, "candidates_checked": len(episodic), "elapsed": round(elapsed, 2)}
         logger.info("Phase MERGE: %s", result)
         return result
 
@@ -517,11 +515,11 @@ class ConsolidationDaemon:
         """
         if self.colbert_indexer is None:
             return {"status": "skipped", "reason": "no_colbert_indexer", "elapsed": 0.0}
-            
+
         t0 = time.time()
         drift = 0.0
         re_clustered = False
-        
+
         try:
             # Sample from the ColBERT token collection — centroid relevance must
             # be measured in token-embedding space, not in main memory embedding space.
@@ -539,24 +537,24 @@ class ConsolidationDaemon:
             if colbert_count < 100:
                 return {"status": "skipped", "reason": "too_few_colbert_tokens", "count": colbert_count}
 
-            scroll_result = client.scroll(
-                collection_name=token_collection,
-                limit=sample_size,
-                with_vectors=True
-            )
+            scroll_result = client.scroll(collection_name=token_collection, limit=sample_size, with_vectors=True)
             points = scroll_result[0] if scroll_result else []
-            
+
             if len(points) >= 100:
                 import numpy as np
+
                 sample_vectors = np.array([p.vector for p in points if p.vector is not None]).astype(np.float32)
-                
+
                 if len(sample_vectors) > 0:
                     drift = self.colbert_indexer.check_centroid_relevance(sample_vectors)
                     logger.info("Phase MAINTENANCE: ColBERT drift detected: %.4f", drift)
-                    
+
                     if drift > self.config.colbert_drift_threshold:
-                        logger.warning("Phase MAINTENANCE: Drift %.4f exceeds threshold %.4f. Re-clustering...", 
-                                       drift, self.config.colbert_drift_threshold)
+                        logger.warning(
+                            "Phase MAINTENANCE: Drift %.4f exceeds threshold %.4f. Re-clustering...",
+                            drift,
+                            self.config.colbert_drift_threshold,
+                        )
                         re_clustered = self.colbert_indexer.recluster_centroids(sample_vectors)
         except Exception as e:
             logger.error("Phase MAINTENANCE: ColBERT maintenance failed: %s", e)
@@ -574,7 +572,7 @@ class ConsolidationDaemon:
         """
         t0 = time.time()
         optimized = False
-        
+
         try:
             count = self.vectors.count()
             if count >= self.config.quantization_threshold_points:
@@ -585,13 +583,12 @@ class ConsolidationDaemon:
                     return {"status": "skipped", "reason": "already_quantized", "elapsed": 0.0}
 
                 from qdrant_client import models
+
                 logger.info("Phase OPTIMIZATION: Collection size (%d) qualifies for Scalar Quantization tuning.", count)
                 optimized = await self.vectors.update_collection_quantization(
                     quantization_config=models.ScalarQuantization(
                         scalar=models.ScalarQuantizationConfig(
-                            type=models.ScalarType.INT8,
-                            quantile=0.99,
-                            always_ram=True
+                            type=models.ScalarType.INT8, quantile=0.99, always_ram=True
                         )
                     )
                 )
@@ -609,15 +606,14 @@ class ConsolidationDaemon:
         - Audit high-importance recent memories for contradictions
         - Resolve detected conflicts automatically
         """
-        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
-        
+
         if not self._conflict_detector.is_available:
             return {"status": "skipped", "reason": "nli_model_unavailable", "elapsed": 0.0}
-            
+
         t0 = time.time()
         audited = 0
         conflicts_resolved = 0
-        
+
         try:
             # Audit top-K important recent memories
             records = self.metadata.get_for_consolidation(limit=50)
@@ -627,16 +623,16 @@ class ConsolidationDaemon:
             # v3.6.2 Phase Optimization: Batch vector and metadata retrieval
             record_ids = [r.id for r in records]
             vector_map = self.vectors.get_vectors(record_ids)
-            
+
             # neighbor_map: record_id -> List[neighbor_id]
             neighbor_map = {}
             all_neighbor_ids = set()
-            
+
             for record in records:
                 vec = vector_map.get(record.id)
                 if not vec:
                     continue
-                
+
                 # v3.6.2/v3.8.0 Security Fix: Enforce user and namespace scoping in semantic search
                 # candidates must belong to the same user AND namespace as the record being audited
                 record_user_id = (record.metadata or {}).get("user_id")
@@ -645,7 +641,7 @@ class ConsolidationDaemon:
                     search_filters["user_id"] = record_user_id
                 if record.namespace:
                     search_filters["namespace"] = record.namespace
-                
+
                 # Search Top-5 closest neighbors (limit 6 to exclude self)
                 similar = self.vectors.search(query_embedding=vec, limit=6, filters=search_filters)
                 if hasattr(similar, "__await__"):
@@ -674,7 +670,7 @@ class ConsolidationDaemon:
             for record in records:
                 sim_ids = neighbor_map.get(record.id, [])
                 candidates = [cand_map[sid] for sid in sim_ids if sid in cand_map]
-                
+
                 if not candidates:
                     continue
 
@@ -683,7 +679,7 @@ class ConsolidationDaemon:
                     await self._conflict_resolver.resolve(conflict, new_record=record)
                     conflicts_resolved += 1
                 audited += 1
-                
+
         except Exception as e:
             logger.error("Phase INTEGRITY: Integrity audit failed: %s", e)
 
