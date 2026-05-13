@@ -229,6 +229,119 @@ class GraphStore:
             logger.debug(f"Memory node creation: {e}")
             return False
 
+    def add_entities_and_relations_batch(
+        self,
+        memory_id: str,
+        entities: List[Any],
+        relations: List[Any],
+        user_id: str = "global",
+        namespace: str = "global"
+    ) -> bool:
+        """Batch insert entities, memory-entity links, and entity relations."""
+        conn = self._get_conn()
+        now = time.time()
+
+        # 1. Prepare entities batch
+        entities_batch = []
+        seen_entities = set()
+
+        # Normal entities
+        for entity in entities:
+            name = getattr(entity, 'name', None)
+            if not isinstance(name, str) or not name.strip():
+                continue
+            e_id = f"{user_id}/{namespace}/{name}"
+            if e_id not in seen_entities:
+                entities_batch.append({
+                    "id": e_id,
+                    "name": name,
+                    "uid": user_id,
+                    "ns": namespace,
+                    "type": getattr(entity, 'entity_type', 'unknown')
+                })
+                seen_entities.add(e_id)
+
+        # Implicit entities from relations
+        for relation in relations:
+            for subj_obj in ('subject', 'object'):
+                name = getattr(relation, subj_obj, None)
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                e_id = f"{user_id}/{namespace}/{name}"
+                if e_id not in seen_entities:
+                    entities_batch.append({
+                        "id": e_id,
+                        "name": name,
+                        "uid": user_id,
+                        "ns": namespace,
+                        "type": "concept"
+                    })
+                    seen_entities.add(e_id)
+
+        # 2. Prepare mentions batch
+        mentions_batch = []
+        for entity in entities:
+            name = getattr(entity, 'name', None)
+            if not isinstance(name, str) or not name.strip():
+                continue
+            e_id = f"{user_id}/{namespace}/{name}"
+            mentions_batch.append({
+                "mid": memory_id,
+                "eid": e_id,
+                "role": "mentions"
+            })
+
+        # 3. Prepare relations batch
+        relations_batch = []
+        for relation in relations:
+            sub = getattr(relation, 'subject', None)
+            obj = getattr(relation, 'object', None)
+            if not isinstance(sub, str) or not sub.strip() or not isinstance(obj, str) or not obj.strip():
+                continue
+            s_id = f"{user_id}/{namespace}/{sub}"
+            o_id = f"{user_id}/{namespace}/{obj}"
+            relations_batch.append({
+                "s_id": s_id,
+                "o_id": o_id,
+                "pred": getattr(relation, 'predicate', 'unknown'),
+                "conf": getattr(relation, 'confidence', 1.0),
+                "src": memory_id,
+                "now": now
+            })
+
+        try:
+            # Execute batches
+            if entities_batch:
+                conn.execute(
+                    "UNWIND $entities AS entity "
+                    "MERGE (e:Entity {id: entity.id}) "
+                    "ON CREATE SET e.name = entity.name, e.user_id = entity.uid, e.namespace = entity.ns, "
+                    "e.entity_type = entity.type, e.first_seen = $now, e.last_seen = $now, e.mention_count = 1 "
+                    "ON MATCH SET e.last_seen = $now, e.mention_count = e.mention_count + 1",
+                    {"entities": entities_batch, "now": now}
+                )
+
+            if mentions_batch:
+                conn.execute(
+                    "UNWIND $mentions AS m_info "
+                    "MATCH (m:Memory {id: m_info.mid}), (e:Entity {id: m_info.eid}) "
+                    "CREATE (m)-[:MENTIONS {role: m_info.role}]->(e)",
+                    {"mentions": mentions_batch}
+                )
+
+            if relations_batch:
+                conn.execute(
+                    "UNWIND $relations AS r_info "
+                    "MATCH (a:Entity {id: r_info.s_id}), (b:Entity {id: r_info.o_id}) "
+                    "CREATE (a)-[:RELATES_TO {predicate: r_info.pred, confidence: r_info.conf, "
+                    "source_memory: r_info.src, created_at: r_info.now}]->(b)",
+                    {"relations": relations_batch}
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Batch entities and relations insertion failed: {e}")
+            return False
+
     def link_memory_to_entity(
         self, 
         memory_id: str, 

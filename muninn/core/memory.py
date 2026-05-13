@@ -561,21 +561,13 @@ class MuninnMemory:
                         extraction.summary or content[:200],
                         user_id=uid, namespace=ns
                     )
-                    for entity in extraction.entities:
-                        self._graph.add_entity(entity.name, entity.entity_type, uid, ns)
-                        self._graph.link_memory_to_entity(record.id, entity.name, "mentions", uid, ns)
-                    for relation in extraction.relations:
-                        self._graph.add_entity(relation.subject, "concept", uid, ns)
-                        self._graph.add_entity(relation.object, "concept", uid, ns)
-                        self._graph.create_relation(
-                            relation.subject,
-                            relation.predicate,
-                            relation.object,
-                            record.id,
-                            relation.confidence,
-                            user_id=uid,
-                            namespace=ns,
-                        )
+                    self._graph.add_entities_and_relations_batch(
+                        record.id,
+                        extraction.entities,
+                        extraction.relations,
+                        uid,
+                        ns
+                    )
 
                 def _write_bm25():
                     self._bm25.add(record.id, content, user_id=user_id, namespace=namespace)
@@ -1769,21 +1761,13 @@ class MuninnMemory:
                         extraction.summary or data[:200],
                         user_id=uid, namespace=ns
                     )
-                    for entity in extraction.entities:
-                        self._graph.add_entity(entity.name, entity.entity_type, uid, ns)
-                        self._graph.link_memory_to_entity(record.id, entity.name, "mentions", uid, ns)
-                    for relation in extraction.relations:
-                        self._graph.add_entity(relation.subject, "concept", uid, ns)
-                        self._graph.add_entity(relation.object, "concept", uid, ns)
-                        self._graph.create_relation(
-                            relation.subject,
-                            relation.predicate,
-                            relation.object,
-                            record.id,
-                            relation.confidence,
-                            user_id=uid,
-                            namespace=ns,
-                        )
+                    self._graph.add_entities_and_relations_batch(
+                        record.id,
+                        extraction.entities,
+                        extraction.relations,
+                        uid,
+                        ns
+                    )
                 
             def _update_bm25():
                 if data is not None:
