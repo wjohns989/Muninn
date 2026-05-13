@@ -1,40 +1,61 @@
 import os
 
 DEFAULT_HTTP_TIMEOUT = float(os.getenv("MUNINN_MCP_HTTP_TIMEOUT_SEC", "40"))
-import time
+import asyncio
 import logging
 import threading
-import json
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, Union
+import time
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from muninn.version import __version__ as _MUNINN_VERSION
 
-from .state import _SESSION_STATE
 from .definitions import (
-    SUPPORTED_PROTOCOL_VERSIONS, TOOLS_SCHEMAS, JSON_SCHEMA_2020_12,
-    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS,
-    SUPPORTED_MODEL_PROFILES, MIMIR_TOOLS,
+    DESTRUCTIVE_TOOLS,
+    IDEMPOTENT_TOOLS,
+    JSON_SCHEMA_2020_12,
+    READ_ONLY_TOOLS,
+    TOOLS_SCHEMAS,
 )
+from .lifecycle import SERVER_URL, check_and_start_ollama, ensure_server_running, is_circuit_open
+from .requests import make_request_with_retry
+from .state import _SESSION_STATE
 from .tasks import (
-    create_task, lookup_task_locked, purge_and_retain_tasks_locked, 
-    get_registry, public_task, encode_task_cursor, decode_task_cursor,
-    TASK_TERMINAL_STATUSES, TASKS_LIST_PAGE_SIZE, TASK_CURSOR_PREFIX,
-    set_task_state_locked, emit_task_status_notification
+    TASK_TERMINAL_STATUSES,
+    TASKS_LIST_PAGE_SIZE,
+    create_task,
+    decode_task_cursor,
+    emit_task_status_notification,
+    encode_task_cursor,
+    get_registry,
+    lookup_task_locked,
+    public_task,
+    purge_and_retain_tasks_locked,
+    set_task_state_locked,
 )
 from .utils import (
-    get_git_info, inject_operator_profile_metadata, format_tool_result_text, 
-    truncate_tool_text, env_flag, negotiated_protocol_version, build_initialize_instructions,
-    _read_operator_model_profile, get_tool_call_deadline_epoch, remaining_deadline_seconds,
-    startup_recovery_allowed
+    _read_operator_model_profile,
+    build_initialize_instructions,
+    env_flag,
+    format_tool_result_text,
+    get_git_info,
+    get_tool_call_deadline_epoch,
+    inject_operator_profile_metadata,
+    negotiated_protocol_version,
+    startup_recovery_allowed,
+    truncate_tool_text,
 )
-from .lifecycle import ensure_server_running, is_circuit_open, SERVER_URL, check_and_start_ollama
-from .requests import make_request_with_retry
 
 logger = logging.getLogger("Muninn.mcp.handlers")
 
 _thread_local = threading.local()
+
+_task_loop = asyncio.new_event_loop()
+def _start_task_loop():
+    asyncio.set_event_loop(_task_loop)
+    _task_loop.run_forever()
+
+threading.Thread(target=_start_task_loop, daemon=True, name="MuninnTaskLoop").start()
 
 
 def _parse_positive_float_env(name: str, default: float, *, lower: float, upper: float) -> float:
@@ -62,7 +83,7 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
 
     requested_version = params.get("protocolVersion")
     negotiated_version = negotiated_protocol_version(requested_version)
-    
+
     if not negotiated_version:
         send_error_fn(msg_id, -32602, f"Unsupported protocol version {requested_version}")
         return
@@ -71,7 +92,7 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
     _SESSION_STATE["protocol_version"] = negotiated_version
     _SESSION_STATE["client_capabilities"] = params.get("capabilities", {})
     _SESSION_STATE["client_info"] = params.get("clientInfo", {})
-    
+
     # Elicitation modes
     client_meta = params.get("_meta", {})
     if isinstance(client_meta, dict):
@@ -100,11 +121,11 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
             if isinstance(elicitation.get("form"), dict): modes.append("form")
             if isinstance(elicitation.get("url"), dict): modes.append("url")
             _SESSION_STATE["client_elicitation_modes"] = tuple(modes)
-    
+
     # Operator model profile
     session_profile = _read_operator_model_profile("MUNINN_OPERATOR_MODEL_PROFILE")
     _SESSION_STATE["operator_model_profile"] = session_profile
-    
+
     # Send result
     result = {
         "protocolVersion": negotiated_version,
@@ -131,9 +152,8 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
 
 def handle_list_tools(msg_id: Any, send_result_fn):
     """List available tools with schemas and hints."""
-    from muninn.core.security import get_token
     # In Phase 10, Listing tools is allowed, but execution requires token parity.
-    
+
     tools_list = []
     for schema_def in TOOLS_SCHEMAS:
         name = schema_def["name"]
@@ -145,7 +165,7 @@ def handle_list_tools(msg_id: Any, send_result_fn):
         # Add JSON schema and hints for SOTA clients
         if isinstance(tool_def["inputSchema"], dict) and "$schema" not in tool_def["inputSchema"]:
             tool_def["inputSchema"]["$schema"] = JSON_SCHEMA_2020_12
-        
+
         # Mapping hints to legacy annotations
         read_only = name in READ_ONLY_TOOLS
         annotations = {
@@ -156,26 +176,26 @@ def handle_list_tools(msg_id: Any, send_result_fn):
         }
         tool_def["annotations"] = annotations
         tool_def["execution"] = {"taskSupport": "optional"}
-            
+
         tools_list.append(tool_def)
-        
+
     send_result_fn(msg_id, {"tools": tools_list})
 
 def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any], task_request: Dict[str, Any], send_result_fn, send_notification_fn=None, worker_fn=None):
     """Create a task for a tool call and return immediately."""
     if worker_fn is None:
         worker_fn = _run_tool_call_task_worker
-        
+
     if send_notification_fn is None:
         # Fallback for environments where notification sender isn't explicitly provided
         send_notification_fn = lambda msg: send_result_fn(None, msg)
-        
+
     ttl = task_request.get("ttl")
     task = create_task(name, ttl_ms=ttl)
-    
+
     # Capture snapshot before starting thread to ensure 'working' status in immediate response
     task_snapshot = public_task(task)
-    
+
     worker_args = (task["taskId"], name, arguments, send_notification_fn)
     # Support legacy 3-arg workers (from tests) by dropping notification sender
     try:
@@ -186,11 +206,14 @@ def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any]
     except Exception:
         pass
 
-    threading.Thread(
-        target=worker_fn,
-        args=worker_args,
-        daemon=True
-    ).start()
+    if asyncio.iscoroutinefunction(worker_fn):
+        asyncio.run_coroutine_threadsafe(worker_fn(*worker_args), _task_loop)
+    else:
+        threading.Thread(
+            target=worker_fn,
+            args=worker_args,
+            daemon=True
+        ).start()
 
     logger.debug("Task accepted: tool=%s task_id=%s", name, task["taskId"])
 
@@ -205,13 +228,13 @@ def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any]
     }
     send_result_fn(msg_id, payload)
 
-def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any], send_notification_fn):
+async def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any], send_notification_fn):
     """Background worker for task-backed tool calls."""
     # Delay if requested (SOTA pattern)
     delay = float(os.environ.get("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "0")) / 1000.0
     if delay > 0:
-        time.sleep(delay)
-        
+        await asyncio.sleep(delay)
+
     task = lookup_task_locked(task_id)
     if not task:
         logger.error("Task worker started for unknown task: %s", task_id)
@@ -219,7 +242,7 @@ def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any
 
     try:
         deadline = time.time() + (task["ttl"] / 1000.0)
-        res = _do_call_tool_logic(name, arguments, deadline)
+        res = await asyncio.to_thread(_do_call_tool_logic, name, arguments, deadline)
         if res is None:
              set_task_state_locked(task, status="failed", error={"code": -32601, "message": f"Method not found: {name}"})
         else:
@@ -264,7 +287,7 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any], send_error_fn, s
     wait_started_at = time.monotonic()
 
     from .state import _TASKS_CONDITION
-    from .tasks import lookup_task_locked, TASK_TERMINAL_STATUSES, related_task_meta
+    from .tasks import TASK_TERMINAL_STATUSES, lookup_task_locked, related_task_meta
 
     with _TASKS_CONDITION:
         while True:
@@ -272,11 +295,11 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any], send_error_fn, s
             if not task:
                 send_error_fn(msg_id, -32602, "Invalid params: unknown taskId")
                 return
-            
+
             status = task.get("status")
             if status in TASK_TERMINAL_STATUSES or status == "input_required":
                 break
-            
+
             if not should_block:
                 send_error_fn(msg_id, -32002, f"Task result is not ready (status: {status}). Poll or use blocking mode.")
                 return
@@ -289,7 +312,7 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any], send_error_fn, s
                     send_error_fn(msg_id, -32002, "Task result not ready within host-safe budget.")
                     return
                 wait_timeout = min(wait_timeout, remaining)
-            
+
             _TASKS_CONDITION.wait(timeout=wait_timeout)
 
         # Terminal state reached
@@ -316,7 +339,7 @@ def handle_get_task_result(msg_id: Any, params: Dict[str, Any], send_error_fn, s
         result_with_meta["_meta"] = meta
     else:
         result_with_meta["_meta"] = related_task_meta(task_id)
-    
+
     send_result_fn(msg_id, result_with_meta)
 
 def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn):
@@ -334,7 +357,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
     if not isinstance(name, str) or not name:
         send_error_fn(msg_id, -32602, "Invalid params: tools/call requires non-empty string name")
         return
-        
+
     task_request = params.get("task")
     if task_request is not None and not isinstance(task_request, dict):
         send_error_fn(msg_id, -32602, "Invalid params: task must be an object")
@@ -354,7 +377,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
 
     arguments = params.get("arguments", {})
     deadline = get_tool_call_deadline_epoch()
-    
+
     # Validation for specific tools that need early exit
     if name == "delete_all_memories" and not arguments.get("confirm", False):
         send_error_fn(msg_id, -32602, "Must set 'confirm: true' to delete all memories")
@@ -389,7 +412,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
         send_result_fn(msg_id, {
             "content": [{"type": "text", "text": truncated_text}]
         })
-        
+
         # Update metrics for success
         tool_metrics["response_count"] += 1
         # Simplified size tracking
@@ -406,12 +429,12 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
         # Telemetry logging matching the original wrapper
         elapsed_ms = (time.monotonic() - tool_call_started_monotonic) * 1000.0
         outcome = "error" if tool_metrics["saw_error"] else ("success" if tool_metrics["response_count"] > 0 else "no_response")
-        
+
         logger.info(
             "Tool call telemetry: name=%s id=%r outcome=%s elapsed_ms=%.1f responses=%d "
             "response_bytes_total=%d response_bytes_max=%d",
-            name, msg_id, outcome, elapsed_ms, 
-            tool_metrics["response_count"], tool_metrics["response_bytes_total"], 
+            name, msg_id, outcome, elapsed_ms,
+            tool_metrics["response_count"], tool_metrics["response_bytes_total"],
             tool_metrics["response_bytes_max"]
         )
         setattr(_thread_local, "tool_call_metrics", None)
@@ -450,7 +473,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "apply_federation_bundle": _do_apply_federation_bundle,
         "mimir_relay": _do_mimir_relay,
     }
-    
+
     handler = dispatch.get(name)
     if not handler:
         return None
@@ -890,7 +913,7 @@ def handle_list_tasks(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
 
     cursor = params.get("cursor")
     limit = min(params.get("limit", TASKS_LIST_PAGE_SIZE), TASKS_LIST_PAGE_SIZE)
-    
+
     try:
         offset = decode_task_cursor(cursor) if cursor else 0
     except ValueError as e:
@@ -899,17 +922,17 @@ def handle_list_tasks(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
 
     registry = get_registry()
     purge_and_retain_tasks_locked(time.time())
-    
+
     all_tasks = sorted(registry.values(), key=lambda t: t.get("createdAt", ""), reverse=True)
     page = all_tasks[offset : offset + limit]
-    
+
     next_cursor = encode_task_cursor(offset + limit) if offset + limit < len(all_tasks) else None
     send_result = {
         "tasks": [public_task(t) for t in page],
     }
     if next_cursor:
         send_result["nextCursor"] = next_cursor
-        
+
     send_result_fn(msg_id, send_result)
 
 def handle_get_task(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn):
@@ -936,7 +959,7 @@ def handle_cancel_task(msg_id: Any, params: Dict[str, Any], send_error_fn, send_
     if not task:
         send_error_fn(msg_id, -32002, f"Task not found: {task_id}")
         return
-    
+
     if task["status"] in TASK_TERMINAL_STATUSES:
         send_error_fn(msg_id, -32602, f"Task {task_id} is already in terminal state {task['status']}")
         return
@@ -946,5 +969,5 @@ def handle_cancel_task(msg_id: Any, params: Dict[str, Any], send_error_fn, send_
         logger.info("Cancelled task %s", task_id)
         if send_notification_fn:
             emit_task_status_notification(task, send_notification_fn)
-        
+
     send_result_fn(msg_id, {"task": public_task(task)})
