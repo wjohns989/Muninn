@@ -4,13 +4,16 @@ Muninn Graph Store
 Kuzu-based knowledge graph for entity relationships and graph-enhanced retrieval.
 """
 
-import logging
-import time
 import json
-import threading
-from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+import logging
 import math
+import threading
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from muninn.chains.detector import MemoryChainLink
 
 import kuzu
 
@@ -146,10 +149,10 @@ class GraphStore:
         logger.info(f"Graph store initialized at {self.db_path}")
 
     def add_entity(
-        self, 
-        name: str, 
-        entity_type: str, 
-        user_id: str = "global", 
+        self,
+        name: str,
+        entity_type: str,
+        user_id: str = "global",
         namespace: str = "global"
     ) -> bool:
         conn = self._get_conn()
@@ -185,7 +188,7 @@ class GraphStore:
     ) -> bool:
         conn = self._get_conn()
         now = time.time()
-        
+
         s_id = f"{user_id}/{namespace}/{subject}"
         o_id = f"{user_id}/{namespace}/{obj}"
 
@@ -230,19 +233,19 @@ class GraphStore:
             return False
 
     def link_memory_to_entity(
-        self, 
-        memory_id: str, 
-        entity_name: str, 
+        self,
+        memory_id: str,
+        entity_name: str,
         role: str = "mention",
         user_id: str = "global",
         namespace: str = "global"
     ) -> bool:
         conn = self._get_conn()
         e_id = f"{user_id}/{namespace}/{entity_name}"
-        
+
         # Ensure entity exists in this scope
         self.add_entity(entity_name, "unknown", user_id, namespace)
-        
+
         try:
             conn.execute(
                 "MATCH (m:Memory {id: $mid}), (e:Entity {id: $eid}) "
@@ -254,9 +257,73 @@ class GraphStore:
             logger.debug(f"Memory-entity link: {e}")
             return False
 
+    def add_chain_links_batch(self, links: 'Iterable[MemoryChainLink]') -> int:
+        """
+        Batch add directed memory-to-memory chain edges.
+        Returns the number of links successfully created.
+        """
+        from collections import defaultdict
+
+        conn = self._get_conn()
+        now = time.time()
+
+        # Group valid links by relation type
+        grouped_data = defaultdict(list)
+
+        for link in links:
+            rel = str(link.relation_type or "PRECEDES").upper()
+            if rel not in {"PRECEDES", "CAUSES"}:
+                continue
+            if link.predecessor_id == link.successor_id:
+                continue
+
+            conf = max(0.0, min(1.0, float(link.confidence)))
+            hours = float(link.hours_apart) if link.hours_apart is not None else None
+            payload = json.dumps(link.shared_entities or [], ensure_ascii=False)
+
+            grouped_data[rel].append({
+                "pred": link.predecessor_id,
+                "succ": link.successor_id,
+                "conf": conf,
+                "reason": (link.reason or "")[:500],
+                "shared": payload,
+                "hours": hours,
+                "now": now,
+            })
+
+        persisted = 0
+        for rel, data in grouped_data.items():
+            if not data:
+                continue
+
+            try:
+                conn.execute(
+                    f"UNWIND $data AS d MATCH (a:Memory {{id: d.pred}}), (b:Memory {{id: d.succ}}) "
+                    f"CREATE (a)-[:{rel} {{confidence: d.conf, reason: d.reason, "
+                    f"shared_entities_json: d.shared, hours_apart: d.hours, created_at: d.now}}]->(b)",
+                    {"data": data}
+                )
+                persisted += len(data)
+            except Exception as e:
+                logger.debug(f"Batch add memory chain links for {rel}: {e}")
+                # Fallback to individual inserts if batch fails
+                for row in data:
+                    try:
+                        conn.execute(
+                            f"MATCH (a:Memory {{id: $pred}}), (b:Memory {{id: $succ}}) "
+                            f"CREATE (a)-[:{rel} {{confidence: $conf, reason: $reason, "
+                            f"shared_entities_json: $shared, hours_apart: $hours, created_at: $now}}]->(b)",
+                            row
+                        )
+                        persisted += 1
+                    except Exception as inner_e:
+                        logger.debug(f"Fallback individual add memory chain link: {inner_e}")
+
+        return persisted
+
     def find_related_memories(
-        self, 
-        query_entities: List[str], 
+        self,
+        query_entities: List[str],
         limit: int = 20,
         user_id: str = "global",
         namespace: str = "global"
@@ -384,9 +451,9 @@ class GraphStore:
         unique = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
         return unique[:limit]
     def get_entity_centrality(
-        self, 
-        entity_name: str, 
-        user_id: str = "global", 
+        self,
+        entity_name: str,
+        user_id: str = "global",
         namespace: str = "global"
     ) -> float:
         """Get degree centrality of an entity (normalized by max possible degree) within a scope."""
@@ -468,14 +535,14 @@ class GraphStore:
         return 0
 
     def get_all_entities(
-        self, 
+        self,
         limit: int = 100,
         user_id: Optional[str] = None,
         namespace: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         entities = []
-        
+
         where_clause = "WHERE 1=1"
         params = {"limit": limit}
         if user_id:
