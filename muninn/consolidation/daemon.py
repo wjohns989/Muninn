@@ -204,22 +204,18 @@ class ConsolidationDaemon:
             record_ids, lookback_days=30, estimator="snips"
         )
 
+        c_get = centrality_map.get
+        u_get = utility_map.get
+
         for record in records:
-            # Get centrality from pre-fetched map
-            centrality = centrality_map.get(record.id, 0.0)
-
-            # Get max similarity for novelty calculation
-            max_sim = 0.0  # Would need vector lookup — simplified for now
-
-            # SNIPS retrieval utility from pre-fetched batch map
-            ret_util = utility_map.get(record.id, 0.0)
+            rid = record.id
 
             # Recalculate importance
             new_importance = calculate_importance(
                 record,
-                max_similarity=max_sim,
-                centrality=centrality,
-                retrieval_utility=ret_util,
+                max_similarity=0.0, # Would need vector lookup — simplified for now
+                centrality=c_get(rid, 0.0),
+                retrieval_utility=u_get(rid, 0.0),
             )
 
             if new_importance != record.importance:
