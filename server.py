@@ -473,9 +473,16 @@ app.include_router(mimir_router)
 # NOT send automatically; no cross-site request forgery is possible.
 # allow_methods is restricted to the verbs actually used by the server.
 from fastapi.middleware.cors import CORSMiddleware
+
+_cors_origins_str = os.environ.get(
+    "MUNINN_CORS_ORIGINS",
+    "http://localhost,http://localhost:42069,http://127.0.0.1,http://127.0.0.1:42069",
+)
+_cors_origins = [origin.strip() for origin in _cors_origins_str.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
