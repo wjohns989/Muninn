@@ -72,3 +72,26 @@ class TestRuleBasedExtract:
         result = rule_based_extract("Edit the file src/main.py to fix the bug")
         entity_names = [e.name for e in result.entities]
         assert any("main.py" in n for n in entity_names)
+
+class TestExtractEntitiesRuleBased:
+    def test_extracts_emails(self):
+        from muninn.extraction.rules import extract_entities_rule_based
+        text = "Please contact me at jules@example.com or support@company.co.uk."
+        entities = extract_entities_rule_based(text)
+
+        entity_names = [e.name for e in entities]
+        assert "jules@example.com" in entity_names
+        assert "support@company.co.uk" in entity_names
+
+        person_entities = [e for e in entities if e.entity_type == "person"]
+        assert len(person_entities) >= 2
+
+    def test_no_extraction_when_no_match(self):
+        from muninn.extraction.rules import extract_entities_rule_based
+        text = "This is a plain text sentence without any email addresses."
+        entities = extract_entities_rule_based(text)
+
+        # We know from the snippet that it extracts emails (and maybe other things not explicitly seen).
+        # We ensure it doesn't extract emails when none are present.
+        person_entities = [e for e in entities if e.entity_type == "person"]
+        assert len(person_entities) == 0
