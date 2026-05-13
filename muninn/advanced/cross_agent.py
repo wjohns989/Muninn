@@ -9,7 +9,6 @@ Cloud hosted vs. IDE assistant).
 
 import asyncio
 import hashlib
-import json
 import logging
 from typing import Dict, Any, List, Optional, Set, TYPE_CHECKING
 import httpx
