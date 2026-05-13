@@ -11,7 +11,7 @@ import os
 import sqlite3
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 from urllib.parse import quote
 
 from muninn.ingestion.models import IngestionChunk
@@ -189,24 +189,43 @@ def _parse_json(path: Path) -> str:
 
 
 def _parse_jsonl(path: Path) -> str:
-    lines: List[str] = []
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for raw in handle:
-            raw_line = raw.strip()
-            if not raw_line:
-                continue
-            try:
-                payload = json.loads(raw_line)
-            except json.JSONDecodeError:
-                lines.append(raw_line)
-                continue
+    raw_content = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not raw_content:
+        return ""
 
+    raw_lines = [line.strip() for line in raw_content.splitlines() if line.strip()]
+    if not raw_lines:
+        return ""
+
+    lines: List[str] = []
+
+    # Fast path: bulk parse
+    bulk_json = "[" + ",".join(raw_lines) + "]"
+    try:
+        payloads = json.loads(bulk_json)
+        for payload in payloads:
             extracted: List[str] = []
             _extract_chat_lines(payload, extracted)
             if extracted:
                 lines.extend(extracted)
             else:
                 lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return _truncate_output("\n".join(lines))
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback path: loop
+    for raw_line in raw_lines:
+        try:
+            payload = json.loads(raw_line)
+            extracted = []
+            _extract_chat_lines(payload, extracted)
+            if extracted:
+                lines.extend(extracted)
+            else:
+                lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        except json.JSONDecodeError:
+            lines.append(raw_line)
 
     return _truncate_output("\n".join(lines))
 
@@ -232,12 +251,14 @@ def _parse_html(path: Path) -> str:
 def _parse_pdf(path: Path) -> str:
     """Parse a PDF file via the subprocess sandbox for process isolation (Phase 17)."""
     from muninn.ingestion.sandbox import sandboxed_parse_binary
+
     return sandboxed_parse_binary(path, "pdf", timeout=30.0)
 
 
 def _parse_docx(path: Path) -> str:
     """Parse a DOCX file via the subprocess sandbox for process isolation (Phase 17)."""
     from muninn.ingestion.sandbox import sandboxed_parse_binary
+
     return sandboxed_parse_binary(path, "docx", timeout=30.0)
 
 
@@ -258,7 +279,10 @@ def _parse_sqlite(path: Path) -> str:
         preferred = [
             name
             for name in table_names
-            if any(token in name.lower() for token in ("chat", "conversation", "message", "session", "copilot", "ai", "prompt"))
+            if any(
+                token in name.lower()
+                for token in ("chat", "conversation", "message", "session", "copilot", "ai", "prompt")
+            )
         ]
         ordered_tables = preferred + [name for name in table_names if name not in preferred]
         ordered_tables = ordered_tables[:12]
@@ -298,7 +322,10 @@ def _parse_sqlite(path: Path) -> str:
                     if len(value_text) > 2000:
                         value_text = value_text[:2000] + "..."
                     key_lower = str(key).lower()
-                    if any(token in key_lower for token in ("content", "text", "prompt", "response", "message", "body", "value")):
+                    if any(
+                        token in key_lower
+                        for token in ("content", "text", "prompt", "response", "message", "body", "value")
+                    ):
                         fallback_texts.append(f"[{key}] {value_text}")
                 if fallback_texts:
                     lines.extend(fallback_texts)
