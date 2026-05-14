@@ -190,23 +190,42 @@ def _parse_json(path: Path) -> str:
 
 def _parse_jsonl(path: Path) -> str:
     lines: List[str] = []
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for raw in handle:
-            raw_line = raw.strip()
-            if not raw_line:
-                continue
-            try:
-                payload = json.loads(raw_line)
-            except json.JSONDecodeError:
-                lines.append(raw_line)
-                continue
 
+    raw_text = path.read_text(encoding="utf-8", errors="replace")
+    valid_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not valid_lines:
+        return ""
+
+    # Fast path: bulk parse
+    try:
+        bulk_str = "[" + ",".join(valid_lines) + "]"
+        payloads = json.loads(bulk_str)
+        for payload in payloads:
             extracted: List[str] = []
             _extract_chat_lines(payload, extracted)
             if extracted:
                 lines.extend(extracted)
             else:
                 lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return _truncate_output("\n".join(lines))
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback to line-by-line parsing
+    lines.clear()
+    for raw_line in valid_lines:
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError:
+            lines.append(raw_line)
+            continue
+
+        extracted: List[str] = []
+        _extract_chat_lines(payload, extracted)
+        if extracted:
+            lines.extend(extracted)
+        else:
+            lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
     return _truncate_output("\n".join(lines))
 
