@@ -46,6 +46,7 @@ def is_running_in_docker() -> bool:
 
 def get_platform_info() -> Dict[str, Any]:
     """Return platform diagnostic information for health endpoints."""
+    import platform
     return {
         "os": sys.platform,
         "python": sys.version,
@@ -56,6 +57,10 @@ def get_platform_info() -> Dict[str, Any]:
         "data_dir": str(get_data_dir()),
         "config_dir": str(get_config_dir()),
         "log_dir": str(get_log_dir()),
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "python_version": platform.python_version(),
     }
 
 
