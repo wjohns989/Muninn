@@ -202,6 +202,18 @@ class VectorStore:
         )
         return True
 
+    def delete_batch(self, memory_ids: List[str]) -> bool:
+        """Delete multiple vectors by memory_ids."""
+        if not memory_ids:
+            return True
+        client = self._get_client()
+        point_ids = [str(uuid.uuid5(uuid.NAMESPACE_DNS, mid)) for mid in memory_ids]
+        client.delete(
+            collection_name=self.collection_name,
+            points_selector=point_ids,
+        )
+        return True
+
     def delete_all(self) -> bool:
         """Delete and recreate the collection."""
         client = self._get_client()
