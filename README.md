@@ -117,7 +117,7 @@ curl http://localhost:42069/health
 
 | Mode | Command | Description |
 |------|---------|-------------|
-| **Muninn MCP** | `python mcp_wrapper.py` | stdio MCP server for active assistant/IDE sessions |
+| **Muninn MCP** | shared `http://127.0.0.1:42069/mcp` | Streamable HTTP MCP on the one machine-wide server |
 | **Huginn Standalone** | `python muninn_standalone.py` | Browser-first UX for direct ingestion/search/admin |
 | **REST API** | `python server.py` | FastAPI backend at `http://localhost:42069` |
 | **Packaged App** | `python scripts/build_standalone.py` | PyInstaller executable (Huginn Control Center) |
@@ -128,7 +128,30 @@ All modes use the same memory engine and data directory.
 
 ## MCP Client Configuration
 
-Claude Code (recommended — bakes auth token into registration):
+The preferred machine-wide topology is one verified `server.py` process and
+HTTP clients connected to `http://127.0.0.1:42069/mcp`. Clients must not
+auto-start private stdio copies when the shared endpoint is configured.
+
+Generic Streamable HTTP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "muninn": {
+      "type": "http",
+      "url": "http://127.0.0.1:42069/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MUNINN_AUTH_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+The legacy stdio wrapper remains available for clients without Streamable HTTP
+support, but it connects to the existing backend and is not a second store owner.
+
+Legacy wrapper registration:
 
 ```bash
 claude mcp add -s user muninn \
@@ -161,6 +184,7 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | Tool | Description |
 |------|-------------|
 | `add_memory` | Store a memory with optional `scope`, `project`, `namespace`, `media_type` |
+| `add_image_memory` | Store a local image plus a searchable description and optional memory links |
 | `search_memory` | Hybrid 5-signal search with `media_type` filtering and recall traces |
 | `get_all_memories` | Paginated memory listing with filters |
 | `update_memory` | Update content or metadata of an existing memory |
@@ -214,9 +238,12 @@ async def main():
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Server health + memory/vector/graph counts |
+| `GET` | `/health` | Counts plus content-free resource, cache, and MCP transport utilization |
 | `POST` | `/add` | Add a memory (supports `media_type`) |
+| `POST` | `/add-image` | Copy an image into managed local storage and add its description |
+| `GET` | `/images/{stored_name}` | Authenticated access to a managed image |
 | `POST` | `/search` | Hybrid search (supports `media_type` filtering) |
+| `POST` | `/mcp` | MCP Streamable HTTP transport |
 | `GET` | `/get_all` | Paginated memory listing |
 | `PUT` | `/update` | Update a memory |
 | `DELETE` | `/delete/{memory_id}` | Delete a memory |
@@ -260,6 +287,39 @@ Key environment variables:
 | `MUNINN_FEDERATION_PEERS` | - | Comma-separated list of peer base URLs |
 | `MUNINN_FEDERATION_SYNC_ON_ADD` | off | `=1` enables real-time push-on-add to peers |
 | `MUNINN_TEMPORAL_QUERY_EXPANSION` | off | `=1` enables NL time-phrase parsing in search |
+| `MUNINN_RERANKER_ENABLED` | on | `=false` disables cross-encoder reranking |
+| `MUNINN_RERANKER_MODEL` | `jinaai/jina-reranker-v1-turbo-en` | FastEmbed cross-encoder model; set the prior `jinaai/jina-reranker-v1-tiny-en` to roll back ranking behavior |
+| `MUNINN_CONSOLIDATION_INTEGRITY_RESOURCE_MODE` | `cycle` | Load NLI integrity resources only for a consolidation cycle; `persistent` restores legacy eager lifetime |
+| `MUNINN_RETRIEVAL_FEEDBACK_CACHE_MAX_ENTRIES` | `1024` | Hard bound for adaptive retrieval-feedback cache entries |
+| `MUNINN_INGESTION_MAX_WORKERS` | `2` | Process-worker bound for multi-source ingestion (`1`-`8`) |
+| `MUNINN_IMAGE_MAX_BYTES` | `104857600` | Maximum source image size copied into managed storage |
+| `MUNINN_MCP_HTTP_MAX_SESSIONS` | `128` | Streamable HTTP session capacity |
+| `MUNINN_MCP_HTTP_SESSION_TTL_SEC` | `3600` | Idle Streamable HTTP session expiry |
+| `MUNINN_MCP_HTTP_MAX_BATCH_SIZE` | `100` | JSON-RPC batch bound |
+| `MUNINN_MCP_HTTP_MAX_REQUEST_BYTES` | `1048576` | Streamable HTTP request-body bound |
+| `MUNINN_MCP_HTTP_MAX_INFLIGHT` | `64` | Process-wide Streamable HTTP dispatch bound |
+| `MUNINN_MCP_HTTP_MAX_INFLIGHT_PER_SESSION` | `8` | Per-session Streamable HTTP dispatch bound |
+| `MUNINN_MCP_SSE_MAX_SESSIONS` | `128` | Legacy SSE session capacity |
+| `MUNINN_MCP_SSE_QUEUE_SIZE` | `256` | Per-session legacy SSE response queue bound |
+| `MUNINN_MCP_SSE_MAX_INFLIGHT` | `8` | Per-session legacy SSE dispatch-task bound |
+
+`config.template.yaml` contains conservative, relative-path defaults. Keep real
+tokens and machine-specific data paths in private environment/configuration files.
+
+### Reproducible memory profiling
+
+The benchmark harness refuses port `42069`, strips credentials, disables
+external model calls, and creates every store beneath a temporary directory:
+
+```bash
+python -m eval.memory_profile_benchmark \
+  --output eval/reports/memory/local-report.json \
+  --soak-seconds 1800 \
+  --idle-soak-seconds 1800
+```
+
+Generated reports are intentionally ignored because they can contain local
+temporary paths. Publish only reviewed aggregate measurements.
 
 ---
 

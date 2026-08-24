@@ -26,7 +26,7 @@ class Reranker:
     at the cost of being non-parallelizable (O(n) forward passes).
     """
 
-    def __init__(self, model_name: str = "jinaai/jina-reranker-v1-tiny-en"):
+    def __init__(self, model_name: str = "jinaai/jina-reranker-v1-turbo-en"):
         self._model = None
         self._model_name = model_name
         self._available = False
@@ -93,3 +93,12 @@ class Reranker:
         except Exception as e:
             logger.error("Reranking failed: %s — returning unranked", e)
             return [(doc_ids[i], 1.0 - i * 0.01) for i in range(min(limit, len(documents)))]
+
+    def close(self) -> None:
+        """Release the cross-encoder and its native inference session."""
+        model = self._model
+        close = getattr(model, "close", None)
+        if callable(close):
+            close()
+        self._model = None
+        self._available = False

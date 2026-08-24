@@ -53,7 +53,7 @@ class TestNoDebugLogWrites:
 
         sent = []
 
-        def fake_worker(task_id, name, args, notif_fn):
+        def fake_worker(session_id, task_id, name, args, notif_fn):
             pass
 
         def fake_send(msg_id, payload):
@@ -66,6 +66,7 @@ class TestNoDebugLogWrites:
             mock_pub.return_value = {"taskId": "t123", "status": "working"}
 
             handle_call_tool_with_task(
+                session_id="stdio",
                 msg_id=1,
                 name="add_memory",
                 arguments={"content": "test"},
@@ -113,6 +114,13 @@ class TestCalculateFrequencyClamp:
             cur = calculate_frequency(n, max_expected=100)
             assert cur >= prev, f"Not monotone at n={n}"
             prev = cur
+
+    def test_non_positive_max_expected_is_bounded(self):
+        from muninn.scoring.importance import calculate_frequency
+
+        assert calculate_frequency(0, max_expected=0) == 0.0
+        assert calculate_frequency(1, max_expected=0) == 1.0
+        assert calculate_frequency(10, max_expected=-1) == 1.0
 
 
 # ---------------------------------------------------------------------------

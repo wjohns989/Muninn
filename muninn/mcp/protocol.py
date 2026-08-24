@@ -2,7 +2,13 @@
 Muninn MCP Protocol Constants & Schemas
 """
 
-SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2024-11-05")
+SUPPORTED_PROTOCOL_VERSIONS = (
+    "2025-11-25",
+    "2025-11-05",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+)
 JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 SUPPORTED_MODEL_PROFILES = ("low_latency", "balanced", "high_reasoning")
 

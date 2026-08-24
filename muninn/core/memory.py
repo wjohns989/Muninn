@@ -25,6 +25,8 @@ import uuid
 import time
 import logging
 import os
+import inspect
+from collections import OrderedDict
 from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
 
@@ -125,7 +127,9 @@ class MuninnMemory:
         self._embed_model = None
         self._initialized = False
         self._user_scope_migration_complete = False
-        self._feedback_multiplier_cache: Dict[Tuple[str, str, str], Tuple[float, Dict[str, float]]] = {}
+        self._feedback_multiplier_cache: OrderedDict[
+            Tuple[str, str, str], Tuple[float, Dict[str, float]]
+        ] = OrderedDict()
 
     async def initialize(self) -> None:
         """
@@ -240,6 +244,7 @@ class MuninnMemory:
                 chunk_size_chars=self.config.ingestion.chunk_size_chars,
                 chunk_overlap_chars=self.config.ingestion.chunk_overlap_chars,
                 min_chunk_chars=self.config.ingestion.min_chunk_chars,
+                max_workers=self.config.ingestion.max_workers,
                 allowed_roots=self.config.ingestion.allowed_roots,
                 vision_config=self.config.vision.model_dump() if self.config.vision.enabled else None,
                 audio_config=self.config.audio.model_dump() if self.config.audio.enabled else None,
@@ -337,12 +342,65 @@ class MuninnMemory:
 
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems."""
-        if self._consolidation:
-            await self._consolidation.stop()
-        logger.info("Muninn shut down")
+        consolidation = getattr(self, "_consolidation", None)
+        if consolidation:
+            try:
+                await consolidation.stop()
+            except Exception as exc:
+                logger.warning("Consolidation shutdown cleanup failed: %s", exc)
+
+        bm25 = getattr(self, "_bm25", None)
+        if bm25 is not None:
+            try:
+                bm25.clear()
+            except Exception as exc:
+                logger.warning("BM25 shutdown cleanup failed: %s", exc)
+
+        # Release native model sessions before embedded databases.  Each step is
+        # isolated so one backend failure cannot prevent the remaining stores
+        # from flushing and closing.
+        for name in (
+            "_conflict_detector",
+            "_conflict_resolver",
+            "_reranker",
+            "_embed_model",
+            "_colbert_indexer",
+            "_graph",
+            "_vectors",
+            "_metadata",
+        ):
+            resource = getattr(self, name, None)
+            try:
+                close = getattr(resource, "close", None)
+                if callable(close):
+                    close_result = close()
+                    if inspect.isawaitable(close_result):
+                        await close_result
+            except Exception as exc:
+                logger.warning("%s shutdown cleanup failed: %s", name, exc)
+            finally:
+                setattr(self, name, None)
+
+        for name in (
+            "_bm25",
+            "_extraction",
+            "_retriever",
+            "_scout",
+            "_consolidation",
+            "_goal_compass",
+            "_ingestion",
+            "_chain_detector",
+            "_dedup",
+            "_ingestion_manager",
+            "_temporal_kg",
+            "_federation",
+        ):
+            setattr(self, name, None)
+
         self._initialized = False
         self._user_scope_migration_complete = False
         self._feedback_multiplier_cache.clear()
+        logger.info("Muninn shut down and released runtime resources")
 
     # ==========================================
     # Core Memory Operations (mem0-compatible API)
@@ -868,7 +926,10 @@ class MuninnMemory:
         now = time.time()
         cached = self._feedback_multiplier_cache.get(cache_key)
         if cached and cached[0] > now:
+            self._feedback_multiplier_cache.move_to_end(cache_key)
             return dict(cached[1])
+        if cached:
+            self._feedback_multiplier_cache.pop(cache_key, None)
 
         multipliers = self._metadata.get_feedback_signal_multipliers(
             user_id=user_id,
@@ -885,6 +946,10 @@ class MuninnMemory:
         )
         ttl = max(1, int(self.config.retrieval_feedback.cache_ttl_seconds))
         self._feedback_multiplier_cache[cache_key] = (now + ttl, dict(multipliers))
+        self._feedback_multiplier_cache.move_to_end(cache_key)
+        max_entries = max(1, int(self.config.retrieval_feedback.cache_max_entries))
+        while len(self._feedback_multiplier_cache) > max_entries:
+            self._feedback_multiplier_cache.popitem(last=False)
         return multipliers
 
     async def record_retrieval_feedback(
@@ -1694,6 +1759,8 @@ class MuninnMemory:
             return {"error": f"Memory {memory_id} not found"}
 
         old_content = record.content
+        entity_names = list((record.metadata or {}).get("entity_names", []))
+        chain_links_created = 0
         if data is not None:
             record.content = data
 
@@ -1803,18 +1870,19 @@ class MuninnMemory:
                 asyncio.to_thread(_update_colbert),
             )
 
-            chain_links_created = await asyncio.to_thread(
-                self._upsert_memory_chain_links,
-                successor_record=record,
-                successor_content=data,
-                successor_entity_names=entity_names,
-            )
+            if data is not None:
+                chain_links_created = await asyncio.to_thread(
+                    self._upsert_memory_chain_links,
+                    successor_record=record,
+                    successor_content=data,
+                    successor_entity_names=entity_names,
+                )
 
         logger.info("Updated memory %s (chains=%d)", memory_id, chain_links_created)
 
         return {
             "id": record.id,
-            "content": data,
+            "content": record.content,
             "previous_content": old_content,
             "memory_type": record.memory_type.value,
             "media_type": record.media_type.value,
@@ -1827,6 +1895,7 @@ class MuninnMemory:
     async def delete(self, memory_id: str) -> Dict[str, str]:
         """Delete a memory from all stores."""
         self._check_initialized()
+        record = await asyncio.to_thread(self._metadata.get, memory_id)
 
         async with self._write_lock:
             await asyncio.gather(
@@ -1834,6 +1903,18 @@ class MuninnMemory:
                 asyncio.to_thread(self._vectors.delete, memory_id),
                 asyncio.to_thread(self._graph.delete_memory_references, memory_id),
                 asyncio.to_thread(self._bm25.remove, memory_id),
+            )
+
+        stored_name = (
+            (record.metadata or {}).get("image_stored_name") if record is not None else None
+        )
+        if stored_name:
+            from muninn.media.image_memory import cleanup_managed_images
+
+            await cleanup_managed_images(
+                metadata_store=self._metadata,
+                images_dir=Path(self.config.data_dir) / "images",
+                stored_names=[stored_name],
             )
 
         logger.info("Deleted memory %s", memory_id)
@@ -1850,29 +1931,51 @@ class MuninnMemory:
 
         async with self._write_lock:
             # 1. Collect IDs to delete from vector / BM25 stores
-            records = self._metadata.get_all(user_id=user_id, limit=100_000)
+            records = await asyncio.to_thread(
+                self._metadata.get_all,
+                user_id=user_id,
+                limit=100_000,
+            )
             memory_ids = [r.id for r in records]
 
-            # 2. User-scoped deletion in SQLite
-            count = self._metadata.delete_all(user_id=user_id)
+            def _delete_user_records() -> int:
+                # 2. User-scoped deletion in SQLite
+                deleted = self._metadata.delete_all(user_id=user_id)
 
-            # 3. Remove matching vectors individually (best-effort)
-            for mid in memory_ids:
-                try:
-                    self._vectors.delete(mid)
-                except Exception:
-                    logger.debug("Vector delete skipped for %s", mid)
+                # 3. Remove matching vectors individually (best-effort)
+                for mid in memory_ids:
+                    try:
+                        self._vectors.delete(mid)
+                    except Exception:
+                        logger.debug("Vector delete skipped for %s", mid)
 
-            # 4. Remove matching BM25 documents individually
-            for mid in memory_ids:
-                self._bm25.remove(mid)
+                # 4. Remove matching BM25 documents individually
+                for mid in memory_ids:
+                    self._bm25.remove(mid)
 
-            # 5. Clean up graph references
-            for mid in memory_ids:
-                try:
-                    self._graph.delete_memory_references(mid)
-                except Exception:
-                    logger.debug("Graph cleanup skipped for %s", mid)
+                # 5. Clean up graph references
+                for mid in memory_ids:
+                    try:
+                        self._graph.delete_memory_references(mid)
+                    except Exception:
+                        logger.debug("Graph cleanup skipped for %s", mid)
+                return deleted
+
+            count = await asyncio.to_thread(_delete_user_records)
+
+        stored_names = [
+            (record.metadata or {}).get("image_stored_name")
+            for record in records
+            if (record.metadata or {}).get("image_stored_name")
+        ]
+        if stored_names:
+            from muninn.media.image_memory import cleanup_managed_images
+
+            await cleanup_managed_images(
+                metadata_store=self._metadata,
+                images_dir=Path(self.config.data_dir) / "images",
+                stored_names=stored_names,
+            )
 
         logger.info("Deleted %d memories for user %s", count, user_id)
         return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
@@ -1902,6 +2005,22 @@ class MuninnMemory:
             "bm25_size": self._bm25.size,
             "reranker": "active" if (self._reranker and self._reranker.is_available) else "inactive",
             "consolidation": self._consolidation.status if self._consolidation else {"running": False},
+            "runtime_resources": {
+                "embedding": {
+                    "provider": self.config.embedding.provider,
+                    "loaded": self._embed_model is not None,
+                },
+                "reranker_loaded": bool(self._reranker and self._reranker.is_available),
+                "conflict_detector_loaded": bool(
+                    self._conflict_detector and self._conflict_detector.is_available
+                ),
+                "feedback_cache": {
+                    "entries": len(self._feedback_multiplier_cache),
+                    "max_entries": self.config.retrieval_feedback.cache_max_entries,
+                    "ttl_seconds": self.config.retrieval_feedback.cache_ttl_seconds,
+                },
+                "ingestion_max_workers": self.config.ingestion.max_workers,
+            },
             "backend": "muninn-native",
         }
 
