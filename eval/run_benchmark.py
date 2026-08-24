@@ -166,6 +166,83 @@ def _get_commit_sha(repo_root: Path, *, timeout: float = 5.0) -> Optional[str]:
 # Subprocess adapter runner
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _run_adapter_subprocess(
+    cmd: list[str],
+    *,
+    adapter_id: str,
+    adapter_name: str,
+    mode: str,
+    dataset_path: Optional[Path],
+    output_path: Path,
+    timeout: float,
+) -> AdapterResult:
+    """Run an adapter subprocess and parse its raw JSON output."""
+    t0 = time.monotonic()
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(_REPO_ROOT),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - t0
+        return AdapterResult(
+            adapter=adapter_id,
+            mode=mode,
+            passed=False,
+            metrics={},
+            dataset_path=str(dataset_path) if dataset_path else None,
+            case_count=0,
+            elapsed_seconds=elapsed,
+            error=f"{adapter_name} adapter timed out after {timeout:.0f}s",
+        )
+
+    elapsed = time.monotonic() - t0
+
+    if result.returncode != 0:
+        return AdapterResult(
+            adapter=adapter_id,
+            mode=mode,
+            passed=False,
+            metrics={},
+            dataset_path=str(dataset_path) if dataset_path else None,
+            case_count=0,
+            elapsed_seconds=elapsed,
+            error=f"{adapter_name} adapter exited {result.returncode}: {result.stderr[:500]}",
+        )
+
+    raw_report: Optional[Dict[str, Any]] = None
+    if output_path.exists():
+        try:
+            raw_report = json.loads(output_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if raw_report is None:
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    raw_report = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+    return AdapterResult(
+        adapter=adapter_id,
+        mode=mode,
+        passed=True,
+        metrics={},
+        dataset_path=str(dataset_path) if dataset_path else None,
+        case_count=0,
+        elapsed_seconds=elapsed,
+        raw_report=raw_report,
+    )
+
+
 def _run_longmemeval(
     *,
     mode: str,
@@ -177,8 +254,6 @@ def _run_longmemeval(
     timeout: float,
 ) -> AdapterResult:
     """Run the LongMemEval adapter as a subprocess and parse its JSON output."""
-    t0 = time.monotonic()
-
     cmd = [sys.executable, "-m", "eval.longmemeval_adapter"]
     if mode == "selftest":
         cmd += ["--selftest", "--server-url", server_url]
@@ -194,82 +269,27 @@ def _run_longmemeval(
         if limit is not None:
             cmd += ["--limit", str(limit)]
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(_REPO_ROOT),
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - t0
-        return AdapterResult(
-            adapter="longmemeval",
-            mode=mode,
-            passed=False,
-            metrics={},
-            dataset_path=str(dataset_path) if dataset_path else None,
-            case_count=0,
-            elapsed_seconds=elapsed,
-            error=f"LongMemEval adapter timed out after {timeout:.0f}s",
-        )
-
-    elapsed = time.monotonic() - t0
-
-    if result.returncode != 0:
-        return AdapterResult(
-            adapter="longmemeval",
-            mode=mode,
-            passed=False,
-            metrics={},
-            dataset_path=str(dataset_path) if dataset_path else None,
-            case_count=0,
-            elapsed_seconds=elapsed,
-            error=f"LongMemEval adapter exited {result.returncode}: {result.stderr[:500]}",
-        )
-
-    # In selftest mode, extract metrics from stdout (JSON line)
-    raw_report: Optional[Dict[str, Any]] = None
-    if mode == "selftest":
-        for line in (result.stdout or "").splitlines():
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    raw_report = json.loads(line)
-                    break
-                except json.JSONDecodeError:
-                    continue
-    else:
-        if output_path.exists():
-            try:
-                raw_report = json.loads(output_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    metrics: Dict[str, Any] = {}
-    case_count = 0
-    passed = False
-    if raw_report:
-        metrics = {
-            "mean_ndcg_at_k": raw_report.get("mean_ndcg_at_k", raw_report.get("mean_ndcg_at_10")),
-            "mean_recall_at_k": raw_report.get("mean_recall_at_k", raw_report.get("mean_recall_at_10")),
-            "k": raw_report.get("k", 10),
-        }
-        case_count = raw_report.get("total_cases", 0)
-    # Selftest passes if exit code is 0; gate logic handles metric validation.
-    passed = result.returncode == 0
-
-    return AdapterResult(
-        adapter="longmemeval",
+    res = _run_adapter_subprocess(
+        cmd=cmd,
+        adapter_id="longmemeval",
+        adapter_name="LongMemEval",
         mode=mode,
-        passed=passed,
-        metrics=metrics,
-        dataset_path=str(dataset_path) if dataset_path else None,
-        case_count=case_count,
-        elapsed_seconds=elapsed,
-        raw_report=raw_report,
+        dataset_path=dataset_path,
+        output_path=output_path,
+        timeout=timeout,
     )
+
+    if not res.passed or not res.raw_report:
+        return res
+
+    raw_report = res.raw_report
+    res.metrics = {
+        "mean_ndcg_at_k": raw_report.get("mean_ndcg_at_k", raw_report.get("mean_ndcg_at_10")),
+        "mean_recall_at_k": raw_report.get("mean_recall_at_k", raw_report.get("mean_recall_at_10")),
+        "k": raw_report.get("k", 10),
+    }
+    res.case_count = raw_report.get("total_cases", 0)
+    return res
 
 
 def _run_structmemeval(
@@ -283,8 +303,6 @@ def _run_structmemeval(
     timeout: float,
 ) -> AdapterResult:
     """Run the StructMemEval adapter as a subprocess and parse its JSON output."""
-    t0 = time.monotonic()
-
     cmd = [sys.executable, "-m", "eval.structmemeval_adapter"]
     if mode == "selftest":
         cmd.append("--selftest")
@@ -300,82 +318,27 @@ def _run_structmemeval(
         if limit is not None:
             cmd.extend(["--limit", str(limit)])
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(_REPO_ROOT),
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - t0
-        return AdapterResult(
-            adapter="structmemeval",
-            mode=mode,
-            passed=False,
-            metrics={},
-            dataset_path=str(dataset_path) if dataset_path else None,
-            case_count=0,
-            elapsed_seconds=elapsed,
-            error=f"StructMemEval adapter timed out after {timeout:.0f}s",
-        )
-
-    elapsed = time.monotonic() - t0
-
-    if result.returncode != 0:
-        return AdapterResult(
-            adapter="structmemeval",
-            mode=mode,
-            passed=False,
-            metrics={},
-            dataset_path=str(dataset_path) if dataset_path else None,
-            case_count=0,
-            elapsed_seconds=elapsed,
-            error=f"StructMemEval adapter exited {result.returncode}: {result.stderr[:500]}",
-        )
-
-    raw_report: Optional[Dict[str, Any]] = None
-    if output_path.exists():
-        try:
-            raw_report = json.loads(output_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    if raw_report is None:
-        # Try parsing stdout for selftest
-        for line in (result.stdout or "").splitlines():
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    raw_report = json.loads(line)
-                    break
-                except json.JSONDecodeError:
-                    continue
-
-    metrics: Dict[str, Any] = {}
-    case_count = 0
-    # Selftest passes if exit code is 0; gate logic handles metric validation.
-    passed = result.returncode == 0
-    if raw_report:
-        # Use the aggregate (mean_*) keys that the adapter writes at report top-level.
-        metrics = {
-            "mean_exact_match": raw_report.get("mean_exact_match"),
-            "mean_token_f1": raw_report.get("mean_token_f1"),
-            "mean_mrr_at_k": raw_report.get("mean_mrr_at_k"),
-        }
-        case_count = raw_report.get("total_cases", 0)
-
-    return AdapterResult(
-        adapter="structmemeval",
+    res = _run_adapter_subprocess(
+        cmd=cmd,
+        adapter_id="structmemeval",
+        adapter_name="StructMemEval",
         mode=mode,
-        passed=passed,
-        metrics=metrics,
-        dataset_path=str(dataset_path) if dataset_path else None,
-        case_count=case_count,
-        elapsed_seconds=elapsed,
-        raw_report=raw_report,
+        dataset_path=dataset_path,
+        output_path=output_path,
+        timeout=timeout,
     )
+
+    if not res.passed or not res.raw_report:
+        return res
+
+    raw_report = res.raw_report
+    res.metrics = {
+        "mean_exact_match": raw_report.get("mean_exact_match"),
+        "mean_token_f1": raw_report.get("mean_token_f1"),
+        "mean_mrr_at_k": raw_report.get("mean_mrr_at_k"),
+    }
+    res.case_count = raw_report.get("total_cases", 0)
+    return res
 
 
 # ─────────────────────────────────────────────────────────────────────────────
