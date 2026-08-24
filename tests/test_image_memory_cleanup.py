@@ -98,7 +98,7 @@ def test_delete_succeeds_when_managed_image_unlink_fails(
 
     assert result == {"id": "image-memory", "event": "DELETE"}
     assert image_path.exists()
-    assert "managed image cleanup failed" in caplog.text.lower()
+    assert "manual file cleanup may be required" in caplog.text.lower()
 
 
 def test_sqlite_reports_only_managed_image_names_still_referenced(tmp_path) -> None:

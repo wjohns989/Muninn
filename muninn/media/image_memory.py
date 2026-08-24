@@ -71,7 +71,8 @@ def _remove_managed_files(
                 candidate.unlink()
             except OSError as exc:
                 logger.warning(
-                    "Managed image cleanup failed (%s); file retained for later retry",
+                    "Managed image cleanup failed (%s); memory deletion remains "
+                    "committed and manual file cleanup may be required",
                     type(exc).__name__,
                 )
             else:
