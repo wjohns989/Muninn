@@ -21,37 +21,39 @@ while providing significantly richer capabilities.
 import asyncio
 import hashlib
 import json
-import uuid
-import time
 import logging
 import os
-from typing import List, Optional, Dict, Any, Tuple
+import time
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
+from muninn.advanced.cross_agent import FederationManager
+from muninn.advanced.temporal_kg import TemporalKnowledgeGraph
+from muninn.chains import MemoryChainDetector
+from muninn.consolidation.daemon import ConsolidationDaemon
+from muninn.core.config import SUPPORTED_MODEL_PROFILES, MuninnConfig
+from muninn.core.feature_flags import get_flags
+from muninn.core.ingestion_manager import IngestionManager
 from muninn.core.types import (
-    MemoryRecord, MemoryType, Provenance, SearchResult,
-    ExtractionResult, Entity, Relation,
+    ExtractionResult,
+    MemoryRecord,
+    MemoryType,
+    Provenance,
+    SearchResult,
 )
-from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
+from muninn.extraction.pipeline import ExtractionPipeline
+from muninn.goal import GoalCompass
+from muninn.ingestion import IngestionPipeline
+from muninn.ingestion import discover_legacy_sources as discover_legacy_sources_catalog
+from muninn.ingestion.parser import infer_source_type
+from muninn.observability import OTelGenAITracer
+from muninn.retrieval.bm25 import BM25Index
+from muninn.retrieval.hybrid import HybridRetriever
+from muninn.retrieval.reranker import Reranker
+from muninn.retrieval.scout import MuninnScout
+from muninn.store.graph_store import GraphStore
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 from muninn.store.vector_store import VectorStore
-from muninn.store.graph_store import GraphStore
-from muninn.retrieval.bm25 import BM25Index
-from muninn.retrieval.reranker import Reranker
-from muninn.retrieval.hybrid import HybridRetriever
-from muninn.retrieval.scout import MuninnScout
-from muninn.extraction.pipeline import ExtractionPipeline
-from muninn.scoring.importance import calculate_importance, calculate_novelty
-from muninn.consolidation.daemon import ConsolidationDaemon
-from muninn.goal import GoalCompass
-from muninn.observability import OTelGenAITracer
-from muninn.chains import MemoryChainDetector
-from muninn.ingestion import IngestionPipeline, discover_legacy_sources as discover_legacy_sources_catalog
-from muninn.ingestion.parser import infer_source_type
-from muninn.core.ingestion_manager import IngestionManager
-from muninn.advanced.temporal_kg import TemporalKnowledgeGraph
-from muninn.advanced.cross_agent import FederationManager
-from muninn.core.feature_flags import get_flags
 
 logger = logging.getLogger("Muninn")
 
@@ -109,7 +111,7 @@ class MuninnMemory:
         self._chain_detector: Optional[MemoryChainDetector] = None
 
         # Phase 2 engines (v3.2.0)
-        self._dedup = None           # SemanticDedup
+        self._dedup = None  # SemanticDedup
         self._conflict_detector = None  # ConflictDetector
         self._conflict_resolver = None  # ConflictResolver
 
@@ -166,13 +168,12 @@ class MuninnMemory:
             ollama_high_reasoning_model=self.config.extraction.ollama_high_reasoning_model,
             model_profile=self.config.extraction.model_profile,
             instructor_base_url=(
-                self.config.extraction.instructor_base_url
-                if self.config.extraction.enable_instructor
-                else None
+                self.config.extraction.instructor_base_url if self.config.extraction.enable_instructor else None
             ),
             instructor_model=self.config.extraction.instructor_model,
             instructor_api_key=self.config.extraction.instructor_api_key,
         )
+        await self._extraction.initialize()
 
         # Read feature flags once; used for all gated subsystem initialization below.
         flags = get_flags()
@@ -181,10 +182,8 @@ class MuninnMemory:
         # Initialize ColBERT (Phase 6)
         if flags.is_enabled("colbert"):
             from muninn.retrieval.colbert_index import ColBERTIndexer
-            self._colbert_indexer = ColBERTIndexer(
-                vector_store=self._vectors,
-                collection_name="muninn_colbert_tokens"
-            )
+
+            self._colbert_indexer = ColBERTIndexer(vector_store=self._vectors, collection_name="muninn_colbert_tokens")
             logger.info("ColBERT indexing enabled")
         else:
             self._colbert_indexer = None
@@ -266,6 +265,7 @@ class MuninnMemory:
 
         if flags.is_enabled("semantic_dedup"):
             from muninn.dedup.semantic_dedup import SemanticDedup
+
             self._dedup = SemanticDedup(
                 threshold=self.config.semantic_dedup.threshold,
                 content_overlap_threshold=self.config.semantic_dedup.content_overlap_threshold,
@@ -276,6 +276,7 @@ class MuninnMemory:
             try:
                 from muninn.conflict.detector import ConflictDetector
                 from muninn.conflict.resolver import ConflictResolver
+
                 self._conflict_detector = ConflictDetector(
                     model_name=self.config.conflict_detection.model_name,
                     contradiction_threshold=self.config.conflict_detection.contradiction_threshold,
@@ -384,12 +385,7 @@ class MuninnMemory:
         successor_entity_names: List[str],
     ) -> int:
         """Detect and persist memory-chain links for a memory record."""
-        if (
-            self._chain_detector is None
-            or self._metadata is None
-            or self._graph is None
-            or not successor_entity_names
-        ):
+        if self._chain_detector is None or self._metadata is None or self._graph is None or not successor_entity_names:
             return 0
 
         metadata = successor_record.metadata or {}
@@ -476,8 +472,8 @@ class MuninnMemory:
             # Handle terminal early returns (DEDUP_SKIP, CONFLICT_SKIP)
             # Note: DEDUP_SIGNAL_UPDATE is handled below as it may fall through to ADD.
             if (
-                processed.get("id") is None 
-                and "event" in processed 
+                processed.get("id") is None
+                and "event" in processed
                 and processed["event"] not in ("PROCESS_COMPLETE", "DEDUP_SIGNAL_UPDATE")
             ):
                 return processed
@@ -487,14 +483,16 @@ class MuninnMemory:
                 dedup_result = processed["dedup"]
                 embedding = processed["embedding"]
                 record = processed["record"]
-                
+
                 merged_successfully = False
                 async with self._write_lock:
                     existing = await asyncio.to_thread(self._metadata.get, dedup_result.existing_memory_id)
                     if existing and self._record_matches_scope(existing, namespace, user_id):
                         merged_content = self._dedup.merge_content(content, existing.content)
                         await asyncio.gather(
-                            asyncio.to_thread(self._metadata.update, dedup_result.existing_memory_id, content=merged_content),
+                            asyncio.to_thread(
+                                self._metadata.update, dedup_result.existing_memory_id, content=merged_content
+                            ),
                             asyncio.to_thread(
                                 self._vectors.upsert,
                                 memory_id=dedup_result.existing_memory_id,
@@ -511,10 +509,12 @@ class MuninnMemory:
                                     "media_type": existing.media_type.value,
                                 },
                             ),
-                            asyncio.to_thread(self._bm25.add, dedup_result.existing_memory_id, merged_content, user_id, namespace)
+                            asyncio.to_thread(
+                                self._bm25.add, dedup_result.existing_memory_id, merged_content, user_id, namespace
+                            ),
                         )
                         merged_successfully = True
-                
+
                 if merged_successfully:
                     return {
                         "id": dedup_result.existing_memory_id,
@@ -533,6 +533,7 @@ class MuninnMemory:
 
             # Acquire write lock only for the persistence phase
             async with self._write_lock:
+
                 def _write_metadata():
                     self._metadata.add(record)
 
@@ -557,9 +558,7 @@ class MuninnMemory:
                     uid = record.metadata.get("user_id", "global")
                     ns = record.namespace
                     self._graph.add_memory_node(
-                        record.id, 
-                        extraction.summary or content[:200],
-                        user_id=uid, namespace=ns
+                        record.id, extraction.summary or content[:200], user_id=uid, namespace=ns
                     )
                     for entity in extraction.entities:
                         self._graph.add_entity(entity.name, entity.entity_type, uid, ns)
@@ -612,7 +611,7 @@ class MuninnMemory:
             }
             if conflict_info:
                 result["conflict"] = conflict_info
-            
+
             if self._goal_compass is not None and record.project:
                 drift = await self._goal_compass.evaluate_drift(
                     text=content,
@@ -680,7 +679,7 @@ class MuninnMemory:
                 {"query_preview": self._otel.maybe_content(query)},
             )
             effective_filters = dict(filters or {})
-            
+
             # v3.24.0: Default to excluding archived memories
             if "archived" not in effective_filters:
                 effective_filters["archived"] = False
@@ -715,11 +714,7 @@ class MuninnMemory:
                         project=resolved_project,
                     )
             flags = get_flags()
-            if (
-                flags.is_enabled("retrieval_feedback")
-                and self.config.retrieval_feedback.enabled
-                and resolved_project
-            ):
+            if flags.is_enabled("retrieval_feedback") and self.config.retrieval_feedback.enabled and resolved_project:
                 feedback_signal_multipliers = self._get_feedback_signal_multipliers_cached(
                     user_id=user_id,
                     namespace=resolved_namespace,
@@ -752,7 +747,7 @@ class MuninnMemory:
                     "created_at": r.memory.created_at,
                     "metadata": r.memory.metadata,
                     "source": r.source,
-                    "trace": r.trace.to_dict() if r.trace else None
+                    "trace": r.trace.to_dict() if r.trace else None,
                 }
                 if explain and r.trace is not None:
                     item["trace"] = r.trace.model_dump()
@@ -803,17 +798,19 @@ class MuninnMemory:
 
             output = []
             for r in results:
-                output.append({
-                    "id": r.memory.id,
-                    "memory": r.memory.content,
-                    "score": r.score,
-                    "namespace": r.memory.namespace,
-                    "memory_type": r.memory.memory_type.value,
-                    "media_type": r.memory.media_type.value,
-                    "importance": r.memory.importance,
-                    "metadata": r.memory.metadata,
-                    "source": r.source,
-                })
+                output.append(
+                    {
+                        "id": r.memory.id,
+                        "memory": r.memory.content,
+                        "score": r.score,
+                        "namespace": r.memory.namespace,
+                        "memory_type": r.memory.memory_type.value,
+                        "media_type": r.memory.media_type.value,
+                        "importance": r.memory.importance,
+                        "metadata": r.memory.metadata,
+                        "source": r.source,
+                    }
+                )
             return output
 
     async def get_all(
@@ -918,7 +915,8 @@ class MuninnMemory:
             )
 
             # Update Elo rating based on feedback outcome
-            from muninn.scoring.elo import calculate_elo_update, INITIAL_ELO
+            from muninn.scoring.elo import INITIAL_ELO, calculate_elo_update
+
             record = await asyncio.to_thread(self._metadata.get, memory_id)
             if record:
                 current_elo = record.metadata.get("elo_rating", INITIAL_ELO) if record.metadata else INITIAL_ELO
@@ -935,9 +933,7 @@ class MuninnMemory:
             "namespace": namespace,
             "rank": int(rank) if isinstance(rank, int) and rank > 0 else None,
             "sampling_prob": (
-                max(0.0, min(1.0, float(sampling_prob)))
-                if isinstance(sampling_prob, (int, float))
-                else None
+                max(0.0, min(1.0, float(sampling_prob))) if isinstance(sampling_prob, (int, float)) else None
             ),
             "source": source,
         }
@@ -955,10 +951,7 @@ class MuninnMemory:
         """
         merged = dict(base)
         for key, value in patch.items():
-            if (
-                isinstance(value, dict)
-                and isinstance(merged.get(key), dict)
-            ):
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
                 merged[key] = cls._merge_profile_patch(
                     merged[key],  # type: ignore[arg-type]
                     value,
@@ -983,15 +976,9 @@ class MuninnMemory:
         async with self._write_lock:
             existing = self._metadata.get_user_profile(user_id=user_id)
             current_profile = (
-                dict(existing.get("profile", {}))
-                if existing and isinstance(existing.get("profile"), dict)
-                else {}
+                dict(existing.get("profile", {})) if existing and isinstance(existing.get("profile"), dict) else {}
             )
-            next_profile = (
-                self._merge_profile_patch(current_profile, profile)
-                if merge
-                else dict(profile)
-            )
+            next_profile = self._merge_profile_patch(current_profile, profile) if merge else dict(profile)
 
             self._metadata.set_user_profile(
                 user_id=user_id,
@@ -1047,7 +1034,7 @@ class MuninnMemory:
             raise RuntimeError("Goal compass is disabled by feature flag")
         if not goal_statement.strip():
             raise ValueError("goal_statement cannot be empty")
-        
+
         async with self._write_lock:
             return await self._goal_compass.set_goal(
                 user_id=user_id,
@@ -1313,10 +1300,10 @@ class MuninnMemory:
             chunk_metadata = dict(base_metadata)
             chunk_metadata.update(source_context)
             chunk_metadata.update(chunk.metadata)
-            
+
             # Map chunk.source_type to media_type if possible
             media_type = chunk.source_type if chunk.source_type in ["image", "audio", "video"] else "text"
-            
+
             async with semaphore:
                 try:
                     add_result = await self.add(
@@ -1327,7 +1314,7 @@ class MuninnMemory:
                         provenance=Provenance.INGESTED,
                         media_type=media_type,
                     )
-                    
+
                     if add_result.get("event") in {"DEDUP_SKIP", "CONFLICT_SKIP"}:
                         skipped_chunks += 1
                         record_ref["chunks_skipped"] += 1
@@ -1337,9 +1324,7 @@ class MuninnMemory:
                 except Exception as exc:
                     failed_chunks += 1
                     record_ref["chunks_failed"] += 1
-                    record_ref["errors"].append(
-                        f"chunk[{chunk.chunk_index}] add failed: {exc}"
-                    )
+                    record_ref["errors"].append(f"chunk[{chunk.chunk_index}] add failed: {exc}")
 
         for source_result in report.source_results:
             source_record: Dict[str, Any] = {
@@ -1354,17 +1339,14 @@ class MuninnMemory:
                 "chunks_failed": 0,
             }
             source_payloads.append(source_record)
-            
+
             if source_result.status != "processed":
                 continue
 
             source_context = source_context_by_path.get(source_result.source_path, {})
-            
+
             # Create tasks for all chunks in this source
-            tasks = [
-                _add_chunk_task(chunk, source_context, source_record)
-                for chunk in source_result.chunks
-            ]
+            tasks = [_add_chunk_task(chunk, source_context, source_record) for chunk in source_result.chunks]
             if tasks:
                 await asyncio.gather(*tasks)
 
@@ -1407,7 +1389,7 @@ class MuninnMemory:
         ingestion = self._require_ingestion_pipeline()
 
         report = await asyncio.to_thread(
-            ingestion.get_report if hasattr(ingestion, 'get_report') else ingestion.ingest,
+            ingestion.get_report if hasattr(ingestion, "get_report") else ingestion.ingest,
             sources,
             recursive=recursive,
             chronological_order=chronological_order,
@@ -1471,18 +1453,10 @@ class MuninnMemory:
                 max_results_per_provider=max_results_per_provider,
             )
             # Filter live scan results by allowed roots
-            discovered = [
-                item
-                for item in discovered
-                if ingestion.is_path_allowed(Path(str(item.get("path", ""))))
-            ]
+            discovered = [item for item in discovered if ingestion.is_path_allowed(Path(str(item.get("path", ""))))]
         if providers:
             allowed = {p.strip().lower() for p in providers if p and p.strip()}
-            discovered = [
-                item
-                for item in discovered
-                if str(item.get("provider", "")).lower() in allowed
-            ]
+            discovered = [item for item in discovered if str(item.get("provider", "")).lower() in allowed]
 
         provider_counts: Dict[str, int] = {}
         parser_supported = 0
@@ -1533,18 +1507,10 @@ class MuninnMemory:
             include_unsupported=True,
             max_results_per_provider=max_results_per_provider,
         )
-        catalog = [
-            item
-            for item in catalog
-            if ingestion.is_path_allowed(Path(str(item.get("path", ""))))
-        ]
+        catalog = [item for item in catalog if ingestion.is_path_allowed(Path(str(item.get("path", ""))))]
         if providers:
             allowed = {p.strip().lower() for p in providers if p and p.strip()}
-            catalog = [
-                item
-                for item in catalog
-                if str(item.get("provider", "")).lower() in allowed
-            ]
+            catalog = [item for item in catalog if str(item.get("provider", "")).lower() in allowed]
 
         by_id = {str(item["source_id"]): item for item in catalog}
         by_path = {str(item["path"]): item for item in catalog}
@@ -1607,16 +1573,8 @@ class MuninnMemory:
         if not selected:
             raise ValueError("No legacy sources selected. Provide selected_source_ids and/or selected_paths.")
 
-        supported_selected = [
-            item
-            for item in selected
-            if item.get("parser_supported") is True
-        ]
-        unsupported_selected = [
-            item
-            for item in selected
-            if item.get("parser_supported") is not True
-        ]
+        supported_selected = [item for item in selected if item.get("parser_supported") is True]
+        unsupported_selected = [item for item in selected if item.get("parser_supported") is not True]
         unsupported_payload = unsupported_selected if include_unsupported else []
 
         sources = [str(item["path"]) for item in supported_selected]
@@ -1728,6 +1686,7 @@ class MuninnMemory:
 
         # Update stores
         async with self._write_lock:
+
             def _update_metadata():
                 # Pass all changed fields to SQL store
                 update_fields = {"content": record.content, "metadata": record.metadata}
@@ -1753,22 +1712,21 @@ class MuninnMemory:
                     )
                 else:
                     # Just update payload metadata if needed
-                    self._vectors.set_payload(record.id, {
-                        "memory_type": record.memory_type.value,
-                        "importance": record.importance,
-                        "archived": record.archived
-                    })
+                    self._vectors.set_payload(
+                        record.id,
+                        {
+                            "memory_type": record.memory_type.value,
+                            "importance": record.importance,
+                            "archived": record.archived,
+                        },
+                    )
 
             def _update_graph():
                 if data is not None:
                     uid = record.metadata.get("user_id", "global")
                     ns = record.namespace
                     self._graph.delete_memory_references(record.id)
-                    self._graph.add_memory_node(
-                        record.id, 
-                        extraction.summary or data[:200],
-                        user_id=uid, namespace=ns
-                    )
+                    self._graph.add_memory_node(record.id, extraction.summary or data[:200], user_id=uid, namespace=ns)
                     for entity in extraction.entities:
                         self._graph.add_entity(entity.name, entity.entity_type, uid, ns)
                         self._graph.link_memory_to_entity(record.id, entity.name, "mentions", uid, ns)
@@ -1784,7 +1742,7 @@ class MuninnMemory:
                             user_id=uid,
                             namespace=ns,
                         )
-                
+
             def _update_bm25():
                 if data is not None:
                     uid = (record.metadata or {}).get("user_id", "global")
@@ -1958,10 +1916,7 @@ class MuninnMemory:
                 continue
             candidate = raw_value.strip()
             if candidate not in SUPPORTED_MODEL_PROFILES:
-                raise ValueError(
-                    f"Unsupported {field_name} '{raw_value}'. "
-                    f"Expected one of {SUPPORTED_MODEL_PROFILES}."
-                )
+                raise ValueError(f"Unsupported {field_name} '{raw_value}'. Expected one of {SUPPORTED_MODEL_PROFILES}.")
 
             current = str(getattr(extraction, field_name))
             if current != candidate:
@@ -2049,10 +2004,7 @@ class MuninnMemory:
                 }
             )
 
-        if (
-            stats.get("top_source")
-            and stats["top_source_count"] >= config["source_churn_threshold"]
-        ):
+        if stats.get("top_source") and stats["top_source_count"] >= config["source_churn_threshold"]:
             alerts.append(
                 {
                     "code": "PROFILE_POLICY_SOURCE_CHURN",
@@ -2218,7 +2170,12 @@ class MuninnMemory:
         """Initialize the embedding model."""
         try:
             from fastembed import TextEmbedding
-            model_id = f"nomic-ai/{self.config.embedding.model}-v1.5" if "nomic" in self.config.embedding.model else self.config.embedding.model
+
+            model_id = (
+                f"nomic-ai/{self.config.embedding.model}-v1.5"
+                if "nomic" in self.config.embedding.model
+                else self.config.embedding.model
+            )
             self._embed_model = TextEmbedding(model_name=model_id)
             logger.info("Embedding model loaded: fastembed/%s", self.config.embedding.model)
         except ImportError:
@@ -2227,7 +2184,9 @@ class MuninnMemory:
         except Exception as e:
             msg = str(e)
             if "NO_SUCHFILE" in msg or "size" in msg.lower():
-                logger.warning("FastEmbed cache corruption detected (see logs). Run 'python fix_fastembed.py' to repair. — falling back to Ollama")
+                logger.warning(
+                    "FastEmbed cache corruption detected (see logs). Run 'python fix_fastembed.py' to repair. — falling back to Ollama"
+                )
             else:
                 logger.warning("FastEmbed init failed: %s — falling back to Ollama", msg)
             self._embed_model = None
@@ -2239,6 +2198,7 @@ class MuninnMemory:
             def _run_fastembed():
                 embeddings = list(self._embed_model.embed([text]))
                 return embeddings[0].tolist()
+
             return await asyncio.to_thread(_run_fastembed)
         else:
             # Ollama fallback (already using httpx but wrapped in sync func, let's offload it or make it async if possible)
@@ -2248,6 +2208,7 @@ class MuninnMemory:
     def _ollama_embed(self, text: str) -> List[float]:
         """Generate embedding via Ollama API."""
         import httpx
+
         try:
             response = httpx.post(
                 f"{self.config.embedding.ollama_url}/api/embeddings",
@@ -2372,7 +2333,7 @@ class MuninnMemory:
         self._check_initialized()
         if not self._temporal_kg:
             return []
-        
+
         ts = float(timestamp) if timestamp is not None else time.time()
         # This is a read operation, usually fast, but we can offload if needed.
         # Kuzu reads are blocking, so offload to thread.
