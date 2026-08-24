@@ -1752,10 +1752,13 @@ def _existing_server_healthy(host: str, port: int) -> bool:
             status_val = str(payload.get("status", "")).lower()
             if backend in {"muninn-native", "muninn"}:
                 return True
-            if status_val in {"healthy", "ok", "initializing"}:
+            legacy_signature = {"memory_count", "vector_count", "graph_nodes"}
+            if (
+                status_val in {"healthy", "ok", "initializing"}
+                and len(legacy_signature.intersection(payload)) >= 2
+            ):
                 return True
-        # Any HTTP 200 health responder is treated as ready enough for reuse.
-        return True
+        return False
     except requests.RequestException:
         return False
 

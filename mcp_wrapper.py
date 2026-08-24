@@ -236,9 +236,9 @@ def handle_read_resource(msg_id: Any, params: Dict[str, Any]):
 def handle_call_tool_with_task(msg_id: Any, name: str, args: Dict[str, Any], task_request: Dict[str, Any]):
     """Facade for task-backed tool calls (stdio transport — no session isolation)."""
     return _handle_call_tool_with_task(
-        "stdio", msg_id, name, args, task_request, _legacy_send_result, 
+        "default", msg_id, name, args, task_request, _legacy_send_result,
         send_notification_fn=send_json_rpc,
-        worker_fn=_run_tool_call_task_worker
+        worker_fn=_run_tool_call_task_worker,
     )
 
 def _run_tool_call_task_worker(session_id: str, task_id: str, name: str, arguments: Dict[str, Any], *args) -> None:
