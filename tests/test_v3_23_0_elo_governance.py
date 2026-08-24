@@ -7,7 +7,7 @@ from muninn.core.memory import MuninnMemory
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
 from muninn.scoring.importance import calculate_recency
-from muninn.scoring.elo import elo_to_half_life_multiplier, INITIAL_ELO
+from muninn.scoring.elo import calculate_elo_update, elo_to_half_life_multiplier, INITIAL_ELO
 
 @pytest.fixture
 def temp_metadata_store(tmp_path):
@@ -100,3 +100,26 @@ def test_calculate_recency_with_elo():
     # Low Elo -> < 7.0 half life -> lower recency score
     low_elo_recency = calculate_recency(created_at, half_life_days=7.0, elo_rating=800)
     assert low_elo_recency < standard_recency
+
+def test_calculate_elo_update_edge_cases():
+    """Test calculate_elo_update with edge cases."""
+    # Floor limit: rating cannot fall below 100.0
+    # Simulate a terrible outcome with an extremely low starting rating to hit the floor
+    new_rating_floor = calculate_elo_update(current_rating=105.0, outcome=-100.0)
+    assert new_rating_floor == 100.0
+
+    # Ceiling limit: rating cannot exceed 3000.0
+    # Simulate a fantastic outcome with an extremely high starting rating to hit the ceiling
+    new_rating_ceiling = calculate_elo_update(current_rating=2995.0, outcome=100.0)
+    assert new_rating_ceiling == 3000.0
+
+    # Large rating differences
+    # High baseline relative to current rating -> high expected outcome -> small reward for success
+    small_reward = calculate_elo_update(current_rating=1200.0, outcome=1.0, baseline_rating=3000.0)
+    # Expected score is close to 0, so reward should be close to k_factor
+    assert small_reward > 1200.0
+
+    # Low baseline relative to current rating -> high expected score -> large penalty for failure
+    large_penalty = calculate_elo_update(current_rating=3000.0, outcome=0.0, baseline_rating=1200.0)
+    # Expected score is close to 1, so penalty should be close to k_factor
+    assert large_penalty < 3000.0
