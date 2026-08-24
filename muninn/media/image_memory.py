@@ -67,8 +67,16 @@ def _remove_managed_files(
             logger.warning("Skipped managed image outside storage root")
             continue
         if candidate.is_file():
-            candidate.unlink()
-            removed.append(stored_name)
+            try:
+                candidate.unlink()
+            except OSError as exc:
+                logger.warning(
+                    "Managed image cleanup failed (%s); memory deletion remains "
+                    "committed and manual file cleanup may be required",
+                    type(exc).__name__,
+                )
+            else:
+                removed.append(stored_name)
     return removed
 
 
