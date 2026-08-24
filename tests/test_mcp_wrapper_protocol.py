@@ -5,6 +5,7 @@ import threading
 import time
 
 import pytest
+import requests
 
 import mcp_wrapper
 
@@ -1022,7 +1023,7 @@ def test_compact_tool_response_payload_truncates_long_string(monkeypatch):
 
 def test_public_tool_error_message_redacts_connection_details():
     msg = mcp_wrapper._public_tool_error_message(
-        mcp_wrapper.requests.ConnectionError("socket timeout to 10.0.0.7")
+        requests.ConnectionError("socket timeout to 10.0.0.7")
     )
     assert "10.0.0.7" not in msg
     assert "Unable to reach backend service" in msg
@@ -1066,7 +1067,7 @@ def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low
         return True
 
     def _always_fail(_method, _url, **_kwargs):
-        raise mcp_wrapper.requests.ConnectionError("boom")
+        raise requests.ConnectionError("boom")
 
     monkeypatch.setenv("MUNINN_MCP_STARTUP_RECOVERY_MIN_BUDGET_SEC", "1")
     monkeypatch.setattr(mcp_wrapper, "ensure_server_running", _ensure)
@@ -1074,7 +1075,7 @@ def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low
     # Patch requests.request
     monkeypatch.setattr("muninn.mcp.requests.requests.request", _always_fail)
 
-    with pytest.raises((mcp_wrapper.requests.ConnectionError, mcp_wrapper._RequestDeadlineExceededError)):
+    with pytest.raises((requests.ConnectionError, mcp_wrapper._RequestDeadlineExceededError)):
         mcp_wrapper.make_request_with_retry(
             "GET",
             "http://localhost:42069/health",

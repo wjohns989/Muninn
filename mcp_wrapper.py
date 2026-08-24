@@ -8,7 +8,6 @@ import os
 import logging
 import threading
 from typing import Any, Dict, Optional, List
-import requests
 
 # Global state for legacy test monkeypatching. 
 # These are kept in sync with muninn.mcp via Dynamic State Resolvers in state.py.
