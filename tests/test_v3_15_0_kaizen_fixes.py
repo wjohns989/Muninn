@@ -115,6 +115,13 @@ class TestCalculateFrequencyClamp:
             assert cur >= prev, f"Not monotone at n={n}"
             prev = cur
 
+    def test_non_positive_max_expected_is_bounded(self):
+        from muninn.scoring.importance import calculate_frequency
+
+        assert calculate_frequency(0, max_expected=0) == 0.0
+        assert calculate_frequency(1, max_expected=0) == 1.0
+        assert calculate_frequency(10, max_expected=-1) == 1.0
+
 
 # ---------------------------------------------------------------------------
 # P2: scoring/importance.py — calculate_importance partial weight dict

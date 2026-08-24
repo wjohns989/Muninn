@@ -63,7 +63,9 @@ def calculate_frequency(access_count: int, max_expected: int = 100) -> float:
     breaks the [0,1] component contract assumed by the weighted sum in
     calculate_importance().
     """
-    return min(1.0, math.log1p(access_count) / math.log1p(max_expected))
+    if max_expected <= 0:
+        return 1.0 if access_count > 0 else 0.0
+    return min(1.0, math.log1p(max(0, access_count)) / math.log1p(max_expected))
 
 
 def calculate_novelty(similarity_to_existing: float) -> float:
