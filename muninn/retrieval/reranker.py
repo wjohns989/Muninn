@@ -26,7 +26,7 @@ class Reranker:
     at the cost of being non-parallelizable (O(n) forward passes).
     """
 
-    def __init__(self, model_name: str = "jinaai/jina-reranker-v1-tiny-en"):
+    def __init__(self, model_name: str = "jinaai/jina-reranker-v1-turbo-en"):
         self._model = None
         self._model_name = model_name
         self._available = False
