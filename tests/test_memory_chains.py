@@ -87,7 +87,7 @@ def test_add_persists_chain_links_when_detector_enabled():
     memory._vectors = MagicMock()
     memory._vectors.count.return_value = 0
     memory._graph = MagicMock()
-    memory._graph.add_chain_link.return_value = True
+    memory._graph.add_chain_links_batch.return_value = 1
     memory._bm25 = MagicMock()
     memory._goal_compass = None
     memory._ingestion_manager = IngestionManager(memory)
@@ -103,7 +103,7 @@ def test_add_persists_chain_links_when_detector_enabled():
 
     assert result["event"] == "ADD"
     assert result["chain_links_created"] >= 1
-    assert memory._graph.add_chain_link.call_count >= 1
+    assert memory._graph.add_chain_links_batch.call_count >= 1
 
     stored_record = memory._metadata.add.call_args.args[0]
     assert stored_record.metadata["entity_names"] == ["Redis", "Queue"]
