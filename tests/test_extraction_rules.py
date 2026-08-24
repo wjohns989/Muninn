@@ -72,3 +72,36 @@ class TestRuleBasedExtract:
         result = rule_based_extract("Edit the file src/main.py to fix the bug")
         entity_names = [e.name for e in result.entities]
         assert any("main.py" in n for n in entity_names)
+
+    def test_rule_based_extract_integration(self):
+        text = "I prefer Python. The meeting is on 2025-10-12. Email me at test@example.com."
+        result = rule_based_extract(text)
+
+        # Assert entities
+        entity_names = [e.name for e in result.entities]
+        assert "Python" in entity_names
+        assert "test@example.com" in entity_names
+
+        # Assert preference relations
+        prefers_rels = [r for r in result.relations if r.predicate == "prefers"]
+        assert len(prefers_rels) > 0
+        assert prefers_rels[0].subject == "user"
+        assert prefers_rels[0].object == "Python"
+
+        # Assert temporal_context
+        assert "2025-10-12" in result.temporal_context
+
+    def test_rule_based_extract_dependency_relations(self):
+        text = "Django depends on Python."
+        result = rule_based_extract(text)
+
+        # Assert entities
+        entity_names = [e.name for e in result.entities]
+        assert "Django" in entity_names
+        assert "Python" in entity_names
+
+        # Assert dependency relations
+        depends_rels = [r for r in result.relations if r.predicate == "depends_on"]
+        assert len(depends_rels) > 0
+        assert depends_rels[0].subject == "Django"
+        assert depends_rels[0].object == "Python"
