@@ -29,75 +29,117 @@ logger = logging.getLogger("Muninn.Mimir.policy")
 
 # Each entry is (pattern, replacement_label).
 # Patterns are compiled once at import time.
-_STRICT_PATTERNS: List[Tuple[re.Pattern, str]] = []
-_BALANCED_PATTERNS: List[Tuple[re.Pattern, str]] = []
-
-
-def _compile(patterns: list[tuple[str, str]]) -> list[tuple[re.Pattern, str]]:
-    return [(re.compile(p, re.IGNORECASE | re.MULTILINE), label) for p, label in patterns]
-
 
 # ---------- Strict patterns (catches everything that looks secret-like) ----
-_STRICT_RAW: list[tuple[str, str]] = [
+_STRICT_PATTERNS: List[Tuple[re.Pattern, str]] = [
     # OpenAI / Anthropic / generic API keys
-    (r"sk-[A-Za-z0-9\-_]{20,}", "[REDACTED_API_KEY]"),
+    (re.compile(r"sk-[A-Za-z0-9\-_]{20,}", re.IGNORECASE | re.MULTILINE), "[REDACTED_API_KEY]"),
     # Bearer tokens in Authorization headers
-    (r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]+=*", "bearer [REDACTED_TOKEN]"),
+    (re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]+=*", re.IGNORECASE | re.MULTILINE), "bearer [REDACTED_TOKEN]"),
     # Generic API key assignments  (api_key = "...", API_KEY=...)
-    (r"(?i)(api[_\-]?key|apikey|api[_\-]?token)\s*[:=]\s*['\"]?[A-Za-z0-9\-_.~+/]{16,}['\"]?",
-     r"\1=[REDACTED_API_KEY]"),
+    (
+        re.compile(
+            r"(?i)(api[_\-]?key|apikey|api[_\-]?token)\s*[:=]\s*['\"]?[A-Za-z0-9\-_.~+/]{16,}['\"]?",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        r"\1=[REDACTED_API_KEY]",
+    ),
     # AWS-style access keys
-    (r"(?<![A-Z0-9])(AKIA|ASIA|AROA|AIDA)[0-9A-Z]{16}(?![A-Z0-9])", "[REDACTED_AWS_KEY]"),
+    (
+        re.compile(r"(?<![A-Z0-9])(AKIA|ASIA|AROA|AIDA)[0-9A-Z]{16}(?![A-Z0-9])", re.IGNORECASE | re.MULTILINE),
+        "[REDACTED_AWS_KEY]",
+    ),
     # AWS secret access keys
-    (r"(?i)aws[_\-]?secret[_\-]?access[_\-]?key\s*[:=]\s*[A-Za-z0-9/+]{40}", "[REDACTED_AWS_SECRET]"),
+    (
+        re.compile(
+            r"(?i)aws[_\-]?secret[_\-]?access[_\-]?key\s*[:=]\s*[A-Za-z0-9/+]{40}", re.IGNORECASE | re.MULTILINE
+        ),
+        "[REDACTED_AWS_SECRET]",
+    ),
     # PEM private keys
-    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
-     "[REDACTED_PRIVATE_KEY]"),
+    (
+        re.compile(
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", re.IGNORECASE | re.MULTILINE
+        ),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
     # PEM certificates (full blocks)
-    (r"-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----",
-     "[REDACTED_CERTIFICATE]"),
+    (
+        re.compile(r"-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----", re.IGNORECASE | re.MULTILINE),
+        "[REDACTED_CERTIFICATE]",
+    ),
     # JWT tokens (header.payload.signature)
-    (r"eyJ[A-Za-z0-9\-_]{2,}\.eyJ[A-Za-z0-9\-_]{2,}\.[A-Za-z0-9\-_]{2,}", "[REDACTED_JWT]"),
+    (
+        re.compile(r"eyJ[A-Za-z0-9\-_]{2,}\.eyJ[A-Za-z0-9\-_]{2,}\.[A-Za-z0-9\-_]{2,}", re.IGNORECASE | re.MULTILINE),
+        "[REDACTED_JWT]",
+    ),
     # GitHub tokens (classic + fine-grained)
-    (r"gh[pousr]_[A-Za-z0-9]{36}", "[REDACTED_GITHUB_TOKEN]"),
-    (r"github_pat_[A-Za-z0-9_]{82}", "[REDACTED_GITHUB_PAT]"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36}", re.IGNORECASE | re.MULTILINE), "[REDACTED_GITHUB_TOKEN]"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{82}", re.IGNORECASE | re.MULTILINE), "[REDACTED_GITHUB_PAT]"),
     # npm auth tokens
-    (r"npm_[A-Za-z0-9]{36}", "[REDACTED_NPM_TOKEN]"),
+    (re.compile(r"npm_[A-Za-z0-9]{36}", re.IGNORECASE | re.MULTILINE), "[REDACTED_NPM_TOKEN]"),
     # PyPI tokens
-    (r"pypi-[A-Za-z0-9\-_]{70,}", "[REDACTED_PYPI_TOKEN]"),
+    (re.compile(r"pypi-[A-Za-z0-9\-_]{70,}", re.IGNORECASE | re.MULTILINE), "[REDACTED_PYPI_TOKEN]"),
     # Generic password assignments
-    (r"(?i)(password|passwd|pwd)\s*[:=]\s*['\"]?[^\s'\"]{8,}['\"]?", r"\1=[REDACTED_PASSWORD]"),
+    (
+        re.compile(r"(?i)(password|passwd|pwd)\s*[:=]\s*['\"]?[^\s'\"]{8,}['\"]?", re.IGNORECASE | re.MULTILINE),
+        r"\1=[REDACTED_PASSWORD]",
+    ),
     # Connection strings with embedded credentials
-    (r"(?i)(postgresql|mysql|mongodb|redis)://[^:\s]+:[^@\s]+@[^\s]+", r"\1://[REDACTED_CONN_STRING]"),
+    (
+        re.compile(r"(?i)(postgresql|mysql|mongodb|redis)://[^:\s]+:[^@\s]+@[^\s]+", re.IGNORECASE | re.MULTILINE),
+        r"\1://[REDACTED_CONN_STRING]",
+    ),
     # SSH private keys (raw header detection)
-    (r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?-----END OPENSSH PRIVATE KEY-----",
-     "[REDACTED_SSH_PRIVATE_KEY]"),
+    (
+        re.compile(
+            r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?-----END OPENSSH PRIVATE KEY-----",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        "[REDACTED_SSH_PRIVATE_KEY]",
+    ),
     # Generic 40+ hex strings that look like secrets (SHA-style tokens)
-    (r"(?<![0-9a-fA-F])[0-9a-fA-F]{40,}(?![0-9a-fA-F])", "[REDACTED_HEX_SECRET]"),
+    (
+        re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40,}(?![0-9a-fA-F])", re.IGNORECASE | re.MULTILINE),
+        "[REDACTED_HEX_SECRET]",
+    ),
 ]
 
 # ---------- Balanced patterns (high-signal patterns only) ------------------
-_BALANCED_RAW: list[tuple[str, str]] = [
-    (r"sk-[A-Za-z0-9\-_]{20,}", "[REDACTED_API_KEY]"),
-    (r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]+=*", "bearer [REDACTED_TOKEN]"),
-    (r"(?<![A-Z0-9])(AKIA|ASIA|AROA|AIDA)[0-9A-Z]{16}(?![A-Z0-9])", "[REDACTED_AWS_KEY]"),
-    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
-     "[REDACTED_PRIVATE_KEY]"),
-    (r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?-----END OPENSSH PRIVATE KEY-----",
-     "[REDACTED_SSH_PRIVATE_KEY]"),
-    (r"eyJ[A-Za-z0-9\-_]{2,}\.eyJ[A-Za-z0-9\-_]{2,}\.[A-Za-z0-9\-_]{2,}", "[REDACTED_JWT]"),
-    (r"gh[pousr]_[A-Za-z0-9]{36}", "[REDACTED_GITHUB_TOKEN]"),
-    (r"github_pat_[A-Za-z0-9_]{82}", "[REDACTED_GITHUB_PAT]"),
-    (r"pypi-[A-Za-z0-9\-_]{70,}", "[REDACTED_PYPI_TOKEN]"),
+_BALANCED_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    (re.compile(r"sk-[A-Za-z0-9\-_]{20,}", re.IGNORECASE | re.MULTILINE), "[REDACTED_API_KEY]"),
+    (re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]+=*", re.IGNORECASE | re.MULTILINE), "bearer [REDACTED_TOKEN]"),
+    (
+        re.compile(r"(?<![A-Z0-9])(AKIA|ASIA|AROA|AIDA)[0-9A-Z]{16}(?![A-Z0-9])", re.IGNORECASE | re.MULTILINE),
+        "[REDACTED_AWS_KEY]",
+    ),
+    (
+        re.compile(
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", re.IGNORECASE | re.MULTILINE
+        ),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
+    (
+        re.compile(
+            r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?-----END OPENSSH PRIVATE KEY-----",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        "[REDACTED_SSH_PRIVATE_KEY]",
+    ),
+    (
+        re.compile(r"eyJ[A-Za-z0-9\-_]{2,}\.eyJ[A-Za-z0-9\-_]{2,}\.[A-Za-z0-9\-_]{2,}", re.IGNORECASE | re.MULTILINE),
+        "[REDACTED_JWT]",
+    ),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36}", re.IGNORECASE | re.MULTILINE), "[REDACTED_GITHUB_TOKEN]"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{82}", re.IGNORECASE | re.MULTILINE), "[REDACTED_GITHUB_PAT]"),
+    (re.compile(r"pypi-[A-Za-z0-9\-_]{70,}", re.IGNORECASE | re.MULTILINE), "[REDACTED_PYPI_TOKEN]"),
 ]
-
-_STRICT_PATTERNS = _compile(_STRICT_RAW)
-_BALANCED_PATTERNS = _compile(_BALANCED_RAW)
 
 
 # ---------------------------------------------------------------------------
 # PolicyEngine
 # ---------------------------------------------------------------------------
+
 
 class PolicyError(Exception):
     """Raised when a relay request violates a configured policy."""
@@ -126,10 +168,7 @@ class PolicyEngine:
         if envelope.hop.count >= envelope.hop.max:
             raise PolicyError(
                 code="HOP_LIMIT_EXCEEDED",
-                message=(
-                    f"Hop limit reached: count={envelope.hop.count} "
-                    f">= max={envelope.hop.max}. Relay aborted."
-                ),
+                message=(f"Hop limit reached: count={envelope.hop.count} >= max={envelope.hop.max}. Relay aborted."),
             )
 
     @staticmethod
@@ -138,10 +177,7 @@ class PolicyEngine:
         if next_agent in envelope.hop.path:
             raise PolicyError(
                 code="HOP_LOOP_DETECTED",
-                message=(
-                    f"Loop detected: '{next_agent}' already in relay path "
-                    f"{envelope.hop.path}. Relay aborted."
-                ),
+                message=(f"Loop detected: '{next_agent}' already in relay path {envelope.hop.path}. Relay aborted."),
             )
 
     # ------------------------------------------------------------------
@@ -158,9 +194,7 @@ class PolicyEngine:
         if level == IRPRedactionPolicy.OFF:
             return text, 0
 
-        patterns = (
-            _STRICT_PATTERNS if level == IRPRedactionPolicy.STRICT else _BALANCED_PATTERNS
-        )
+        patterns = _STRICT_PATTERNS if level == IRPRedactionPolicy.STRICT else _BALANCED_PATTERNS
 
         count = 0
         result = text
@@ -207,10 +241,7 @@ class PolicyEngine:
         if length > envelope.policy.max_prompt_chars:
             raise PolicyError(
                 code="PROMPT_TOO_LARGE",
-                message=(
-                    f"Instruction length {length} exceeds policy limit "
-                    f"{envelope.policy.max_prompt_chars} chars."
-                ),
+                message=(f"Instruction length {length} exceeds policy limit {envelope.policy.max_prompt_chars} chars."),
             )
 
     @staticmethod
@@ -219,10 +250,7 @@ class PolicyEngine:
         if len(text) > policy.max_output_chars:
             raise PolicyError(
                 code="OUTPUT_TOO_LARGE",
-                message=(
-                    f"Provider output ({len(text)} chars) exceeds policy limit "
-                    f"{policy.max_output_chars} chars."
-                ),
+                message=(f"Provider output ({len(text)} chars) exceeds policy limit {policy.max_output_chars} chars."),
             )
 
     # ------------------------------------------------------------------
@@ -246,10 +274,7 @@ class PolicyEngine:
         if total_calls > 0:
             raise PolicyError(
                 code="TOOL_USAGE_VIOLATION",
-                message=(
-                    f"Provider '{result.provider}' used {total_calls} tool call(s) "
-                    "but policy.tools='forbidden'."
-                ),
+                message=(f"Provider '{result.provider}' used {total_calls} tool call(s) but policy.tools='forbidden'."),
             )
 
     # ------------------------------------------------------------------
@@ -271,9 +296,7 @@ class PolicyEngine:
         if target != "auto" and target not in allowed_targets:
             raise PolicyError(
                 code="TARGET_NOT_ALLOWED",
-                message=(
-                    f"Target '{target}' is not in the allowed targets list: {allowed_targets}."
-                ),
+                message=(f"Target '{target}' is not in the allowed targets list: {allowed_targets}."),
             )
 
     # ------------------------------------------------------------------
