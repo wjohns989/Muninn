@@ -2,7 +2,13 @@ from typing import List, Dict, Any
 
 JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
-SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2024-11-05")
+SUPPORTED_PROTOCOL_VERSIONS = (
+    "2025-11-25",
+    "2025-11-05",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+)
 SUPPORTED_MODEL_PROFILES = ("low_latency", "balanced", "high_reasoning")
 
 TOOLS_SCHEMAS: List[Dict[str, Any]] = [
@@ -28,6 +34,23 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                 }
             },
             "required": ["content"]
+        }
+    },
+    {
+        "name": "add_image_memory",
+        "description": "Store a local image in managed storage with an agent-provided searchable description and optional links to text memories.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image_path": {"type": "string", "description": "Absolute local image path."},
+                "description": {"type": "string", "description": "Detailed searchable image description."},
+                "project": {"type": "string"},
+                "namespace": {"type": "string", "default": "global"},
+                "scope": {"type": "string", "enum": ["project", "global"], "default": "project"},
+                "metadata": {"type": "object"},
+                "linked_memory_ids": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["image_path", "description"]
         }
     },
     {

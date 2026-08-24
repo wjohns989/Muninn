@@ -98,6 +98,7 @@ class TestConsolidationConfig:
         assert cfg.merge_similarity == 0.92
         assert cfg.promote_access_count == 5
         assert cfg.working_memory_ttl_hours == 24.0
+        assert cfg.integrity_resource_mode == "cycle"
 
     def test_custom(self):
         cfg = ConsolidationConfig(
@@ -168,6 +169,7 @@ class TestRetrievalFeedbackConfig:
         assert cfg.min_effective_samples == 2.0
         assert cfg.default_sampling_prob == 1.0
         assert cfg.cache_ttl_seconds == 30
+        assert cfg.cache_max_entries == 1024
         assert cfg.multiplier_floor == 0.75
         assert cfg.multiplier_ceiling == 1.25
 
@@ -179,6 +181,7 @@ class TestIngestionConfig:
         assert cfg.chunk_size_chars == 1200
         assert cfg.chunk_overlap_chars == 150
         assert cfg.min_chunk_chars == 120
+        assert cfg.max_workers == 2
         assert cfg.allowed_roots == []
 
 
@@ -224,6 +227,11 @@ class TestConfigFromEnv:
         monkeypatch.setenv("MUNINN_CONSOLIDATION_ENABLED", "false")
         config = MuninnConfig.from_env()
         assert config.consolidation.enabled is False
+
+    def test_env_preserve_integrity_resources(self, monkeypatch):
+        monkeypatch.setenv("MUNINN_CONSOLIDATION_INTEGRITY_RESOURCE_MODE", "persistent")
+        config = MuninnConfig.from_env()
+        assert config.consolidation.integrity_resource_mode == "persistent"
 
     def test_env_override_extraction_profile(self, monkeypatch):
         monkeypatch.setenv("MUNINN_MODEL_PROFILE", "high_reasoning")
@@ -294,6 +302,7 @@ class TestVramModelSelection:
         monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_MIN_EFFECTIVE_SAMPLES", "4.0")
         monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_DEFAULT_SAMPLING_PROB", "0.9")
         monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_CACHE_TTL", "45")
+        monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_CACHE_MAX_ENTRIES", "256")
         monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_FLOOR", "0.8")
         monkeypatch.setenv("MUNINN_RETRIEVAL_FEEDBACK_CEILING", "1.2")
         config = MuninnConfig.from_env()
@@ -305,6 +314,7 @@ class TestVramModelSelection:
         assert config.retrieval_feedback.min_effective_samples == 4.0
         assert config.retrieval_feedback.default_sampling_prob == 0.9
         assert config.retrieval_feedback.cache_ttl_seconds == 45
+        assert config.retrieval_feedback.cache_max_entries == 256
         assert config.retrieval_feedback.multiplier_floor == 0.8
         assert config.retrieval_feedback.multiplier_ceiling == 1.2
 
@@ -313,6 +323,7 @@ class TestVramModelSelection:
         monkeypatch.setenv("MUNINN_INGESTION_CHUNK_SIZE_CHARS", "800")
         monkeypatch.setenv("MUNINN_INGESTION_CHUNK_OVERLAP_CHARS", "80")
         monkeypatch.setenv("MUNINN_INGESTION_MIN_CHUNK_CHARS", "60")
+        monkeypatch.setenv("MUNINN_INGESTION_MAX_WORKERS", "4")
         monkeypatch.setenv(
             "MUNINN_INGESTION_ALLOWED_ROOTS",
             f"/tmp{os.pathsep}/var/tmp",
@@ -322,6 +333,7 @@ class TestVramModelSelection:
         assert config.ingestion.chunk_size_chars == 800
         assert config.ingestion.chunk_overlap_chars == 80
         assert config.ingestion.min_chunk_chars == 60
+        assert config.ingestion.max_workers == 4
         assert config.ingestion.allowed_roots == ["/tmp", "/var/tmp"]
 
     def test_env_override_memory_chains(self, monkeypatch):

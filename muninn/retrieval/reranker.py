@@ -93,3 +93,12 @@ class Reranker:
         except Exception as e:
             logger.error("Reranking failed: %s — returning unranked", e)
             return [(doc_ids[i], 1.0 - i * 0.01) for i in range(min(limit, len(documents)))]
+
+    def close(self) -> None:
+        """Release the cross-encoder and its native inference session."""
+        model = self._model
+        close = getattr(model, "close", None)
+        if callable(close):
+            close()
+        self._model = None
+        self._available = False
