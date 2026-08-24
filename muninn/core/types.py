@@ -6,11 +6,13 @@ Pydantic models and enums for the Muninn memory framework.
 v3.1.0: Added RecallTrace support in SearchResult for explainable recall.
 """
 
-import uuid
 import time
+import uuid
 from enum import Enum
-from typing import Literal, Optional, Dict, Any, List
+from typing import Any, Dict, List, Literal, Optional
+
 from pydantic import BaseModel, Field
+
 from muninn.core.recall_trace import RecallTrace
 
 
@@ -88,6 +90,7 @@ class SearchResult(BaseModel):
     memory: MemoryRecord
     score: float = 0.0
     source: str = "vector"  # vector|graph|bm25|temporal|hybrid|hybrid+rerank
+    linked_images: List[Dict[str, Any]] = Field(default_factory=list)
     trace: Optional[RecallTrace] = Field(
         default=None,
         description="RecallTrace explaining why this memory was retrieved (v3.1.0). "
@@ -143,6 +146,19 @@ class SearchMemoryRequest(BaseModel):
         default=False,
         description="When True, include RecallTrace explaining retrieval signals (v3.1.0).",
     )
+
+
+class AddImageMemoryRequest(BaseModel):
+    """Store an image with an agent-provided searchable description."""
+
+    image_path: str
+    description: str
+    project: Optional[str] = None
+    namespace: str = "global"
+    scope: Literal["project", "global"] = "project"
+    metadata: Optional[Dict[str, Any]] = None
+    linked_memory_ids: Optional[List[str]] = None
+    user_id: Optional[str] = "global_user"
 
 
 class UpdateMemoryRequest(BaseModel):

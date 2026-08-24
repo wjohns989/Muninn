@@ -54,6 +54,20 @@ def _write_timeout_seconds() -> float:
     return _parse_positive_float_env("MUNINN_MCP_WRITE_TIMEOUT_SEC", 40.0, lower=0.1, upper=180.0)
 
 
+def _initialize_capabilities_for_protocol(protocol_version: str) -> Dict[str, Any]:
+    """Advertise only capabilities defined for the negotiated MCP version."""
+    capabilities: Dict[str, Any] = {"tools": {"listChanged": False}}
+    if protocol_version == "2025-11-25":
+        capabilities["io.modelcontextprotocol.elicitation"] = {"modes": ["form"]}
+        capabilities["tasks"] = {
+            "list": {},
+            "cancel": {},
+            "requests": {"tools/call": {}},
+            "notifications": {"status": {}},
+        }
+    return capabilities
+
+
 def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn, startup_warnings: Optional[List[str]] = None):
     """Handle protocol negotiation and server initialization."""
     if not isinstance(params, dict):
@@ -68,6 +82,9 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
         return
 
     _SESSION_STATE["negotiated"] = True
+    # Several current hosts treat the initialize response as readiness and do
+    # not send notifications/initialized before their first tools/list probe.
+    _SESSION_STATE["initialized"] = True
     _SESSION_STATE["protocol_version"] = negotiated_version
     _SESSION_STATE["client_capabilities"] = params.get("capabilities", {})
     _SESSION_STATE["client_info"] = params.get("clientInfo", {})
@@ -108,22 +125,7 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
     # Send result
     result = {
         "protocolVersion": negotiated_version,
-        "capabilities": {
-            "io.modelcontextprotocol.elicitation": {"modes": ["form"]},
-            "tools": {
-                "listChanged": False
-            },
-            "tasks": {
-                "list": {},
-                "cancel": {},
-                "requests": {
-                    "tools/call": {},
-                },
-                "notifications": {
-                    "status": {},
-                },
-            }
-        },
+        "capabilities": _initialize_capabilities_for_protocol(negotiated_version),
         "serverInfo": {"name": "muninn-mcp", "version": _MUNINN_VERSION},
         "instructions": build_initialize_instructions(startup_warnings)
     }
@@ -426,6 +428,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
     """Dispatch to internal tool implementations."""
     dispatch = {
         "add_memory": _do_add_memory,
+        "add_image_memory": _do_add_image_memory,
         "search_memory": _do_search_memory,
         "hunt_memory": _do_hunt_memory,
         "get_all_memories": _do_get_all_memories,
@@ -492,6 +495,39 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
         timeout=_write_timeout_seconds(),
     )
     return resp.json()
+
+
+def _do_add_image_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    image_path = args.get("image_path")
+    description = args.get("description")
+    if not image_path or not description:
+        return {"success": False, "error": "image_path and description are required"}
+
+    git = get_git_info()
+    metadata = inject_operator_profile_metadata(args.get("metadata", {}), operation="add")
+    metadata.setdefault("project", args.get("project") or git["project"])
+    metadata.setdefault("branch", git["branch"])
+    scope = args.get("scope", "project")
+    if scope not in ("project", "global"):
+        scope = "project"
+    payload = {
+        "image_path": image_path,
+        "description": description,
+        "project": args.get("project") or git["project"],
+        "namespace": args.get("namespace", "global"),
+        "scope": scope,
+        "metadata": metadata,
+        "linked_memory_ids": args.get("linked_memory_ids"),
+        "user_id": "global_user",
+    }
+    response = make_request_with_retry(
+        "POST",
+        f"{SERVER_URL}/add-image",
+        deadline_epoch=deadline,
+        json=payload,
+        timeout=_write_timeout_seconds(),
+    )
+    return response.json()
 
 def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     """Convenience tool: create a scope='project' memory tagged with the current git project.

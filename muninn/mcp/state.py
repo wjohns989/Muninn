@@ -41,6 +41,10 @@ class _DynamicProxy(dict):
         self._attr = facade_attr_name
     
     def _resolve(self):
+        # Explicit HTTP/SSE session routing must never be shadowed by the legacy
+        # stdio wrapper facade; otherwise every network client shares "default".
+        if get_current_session_id() != "default":
+            return self._fallback_getter()
         try:
             import mcp_wrapper
             # If wrapper exists, it likely monkeypatched something locally.
