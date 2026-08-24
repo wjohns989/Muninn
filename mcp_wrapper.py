@@ -8,7 +8,6 @@ import os
 import logging
 import threading
 from typing import Any, Dict, Optional, List
-import requests
 
 # Global state for legacy test monkeypatching. 
 # These are kept in sync with muninn.mcp via Dynamic State Resolvers in state.py.
@@ -110,7 +109,8 @@ from muninn.mcp.handlers import (
     handle_get_task_result as _handle_get_task_result,
     handle_cancel_task as _handle_cancel_task,
     get_tool_call_deadline_epoch as _get_tool_call_deadline_epoch,
-    startup_recovery_allowed as _startup_recovery_allowed
+    startup_recovery_allowed as _startup_recovery_allowed,
+    _run_tool_call_task_worker as _internal_worker
 )
 from muninn.mcp.server import McpServer
 
@@ -243,7 +243,6 @@ def handle_call_tool_with_task(msg_id: Any, name: str, args: Dict[str, Any], tas
 
 def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any], *args) -> None:
     """Facade for background worker, allowing test monkeypatching."""
-    from muninn.mcp.handlers import _run_tool_call_task_worker as _internal_worker
     # If 4th arg is provided, pass it. Otherwise use _legacy_send_result
     send_notif = args[0] if args else _legacy_send_result
     return _internal_worker(task_id, name, arguments, send_notif)
