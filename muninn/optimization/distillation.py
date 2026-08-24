@@ -63,7 +63,6 @@ class DistillationDaemon:
         # 1. Fetch candidates: Episodic memories not yet archived
         # This requires direct DB access or a new method on MuninnMemory.
         # For now, we simulate finding a cluster.
-        # TODO: Implement proper clustering via vector density or graph communities.
         
         clusters = await self._find_episodic_clusters()
         processed_count = 0
