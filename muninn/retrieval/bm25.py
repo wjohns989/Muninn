@@ -6,28 +6,92 @@ Complements vector search by catching exact terms that
 embedding models might miss (e.g., version numbers, UUIDs, paths).
 """
 
+import logging
 import math
 import re
-import logging
-from typing import List, Tuple, Dict, Optional, Set
 from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("Muninn.BM25")
 
 # BM25 tuning constants
-K1 = 1.2   # Term frequency saturation
-B = 0.75   # Length normalization
+K1 = 1.2  # Term frequency saturation
+B = 0.75  # Length normalization
 
 # Stopwords for English (minimal set — avoids external deps)
 STOPWORDS: Set[str] = {
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "is", "it", "as", "was", "are", "be",
-    "this", "that", "which", "has", "have", "had", "not", "no", "do",
-    "does", "did", "will", "would", "could", "should", "may", "might",
-    "can", "i", "you", "he", "she", "we", "they", "me", "my", "your",
-    "its", "our", "their", "what", "who", "how", "when", "where", "so",
-    "if", "then", "than", "just", "about", "into", "also", "more",
-    "been", "being", "some", "any", "all", "each", "very",
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+    "by",
+    "from",
+    "is",
+    "it",
+    "as",
+    "was",
+    "are",
+    "be",
+    "this",
+    "that",
+    "which",
+    "has",
+    "have",
+    "had",
+    "not",
+    "no",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "can",
+    "i",
+    "you",
+    "he",
+    "she",
+    "we",
+    "they",
+    "me",
+    "my",
+    "your",
+    "its",
+    "our",
+    "their",
+    "what",
+    "who",
+    "how",
+    "when",
+    "where",
+    "so",
+    "if",
+    "then",
+    "than",
+    "just",
+    "about",
+    "into",
+    "also",
+    "more",
+    "been",
+    "being",
+    "some",
+    "any",
+    "all",
+    "each",
+    "very",
 }
 
 # Pattern for tokenization — split on non-alphanumeric except hyphens/dots/underscores
@@ -143,22 +207,36 @@ class BM25Index:
         # Optimization: Pre-filter potential namespaces to a set
         ns_filter = set(namespaces) if namespaces else None
 
-        for term in query_tokens:
-            if term not in self._df:
-                continue
+        # Optimization: Pre-fetch valid query terms to avoid re-evaluating terms not in the index
+        valid_terms = [term for term in query_tokens if term in self._df]
+        if not valid_terms:
+            return []
 
+        # Optimization: Resolve allowed documents before the main loop to avoid N+1 metadata lookups
+        allowed_docs: Optional[Set[str]] = None
+        if user_id or ns_filter:
+            doc_ids_to_score = set()
+            for term in valid_terms:
+                doc_ids_to_score.update(self._inverted[term])
+
+            allowed_docs = set()
+            for doc_id in doc_ids_to_score:
+                doc_user, doc_ns = self._metadata.get(doc_id, ("global", "global"))
+                if user_id and doc_user != user_id:
+                    continue
+                if ns_filter and doc_ns not in ns_filter:
+                    continue
+                allowed_docs.add(doc_id)
+
+        for term in valid_terms:
             df = self._df[term]
             # IDF component: log((N - df + 0.5) / (df + 0.5) + 1)
             idf = math.log((self._n - df + 0.5) / (df + 0.5) + 1.0)
 
-            for doc_id in self._inverted.get(term, set()):
+            for doc_id in self._inverted[term]:
                 # Strict isolation check
-                if user_id or ns_filter:
-                    doc_user, doc_ns = self._metadata.get(doc_id, ("global", "global"))
-                    if user_id and doc_user != user_id:
-                        continue
-                    if ns_filter and doc_ns not in ns_filter:
-                        continue
+                if allowed_docs is not None and doc_id not in allowed_docs:
+                    continue
 
                 # Term frequency in this document
                 tf = self._docs[doc_id].count(term)
@@ -204,8 +282,7 @@ class BM25Index:
             self._n += 1
 
         self._recompute_avg_dl()
-        logger.info("BM25 index rebuilt: %d documents, %d unique terms",
-                     self._n, len(self._df))
+        logger.info("BM25 index rebuilt: %d documents, %d unique terms", self._n, len(self._df))
 
     @property
     def size(self) -> int:
