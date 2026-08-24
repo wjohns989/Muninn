@@ -128,9 +128,43 @@ class AdapterReport:
     results: List[CaseResult] = field(default_factory=list)
 
 
+@dataclass
+class AdapterConfig:
+    """Configuration for the LongMemEval adapter."""
+    k: int = 10
+    limit: Optional[int] = None
+    cleanup: bool = True
+    namespace: str = "longmemeval"
+    method: str = "search"
+    depth: int = 2
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataset parsing
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_case_line(raw: str, line_no: int, path: Path) -> Optional[QuestionCase]:
+    line = raw.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError as exc:
+        logger.warning("Skipping malformed JSON at %s line %d: %s", path, line_no, exc)
+        return None
+    if not isinstance(obj, dict):
+        logger.warning("Skipping non-object at %s line %d", path, line_no)
+        return None
+    sessions = obj.get("sessions")
+    return QuestionCase(
+        question_id=str(obj.get("question_id", f"q{line_no}")),
+        question_type=str(obj.get("question_type", "unknown")),
+        question=str(obj.get("question", "")),
+        expected_answer=str(obj.get("expected_answer", "")),
+        question_date=str(obj.get("question_date", "")),
+        sessions=sessions if isinstance(sessions, list) else [],
+    )
+
 
 def parse_dataset(path: Path) -> List[QuestionCase]:
     """
@@ -141,26 +175,9 @@ def parse_dataset(path: Path) -> List[QuestionCase]:
     cases: List[QuestionCase] = []
     with path.open("r", encoding="utf-8") as fh:
         for line_no, raw in enumerate(fh, start=1):
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as exc:
-                logger.warning("Skipping malformed JSON at %s line %d: %s", path, line_no, exc)
-                continue
-            if not isinstance(obj, dict):
-                logger.warning("Skipping non-object at %s line %d", path, line_no)
-                continue
-            sessions = obj.get("sessions")
-            cases.append(QuestionCase(
-                question_id=str(obj.get("question_id", f"q{line_no}")),
-                question_type=str(obj.get("question_type", "unknown")),
-                question=str(obj.get("question", "")),
-                expected_answer=str(obj.get("expected_answer", "")),
-                question_date=str(obj.get("question_date", "")),
-                sessions=sessions if isinstance(sessions, list) else [],
-            ))
+            case = _parse_case_line(raw, line_no, path)
+            if case:
+                cases.append(case)
     return cases
 
 
@@ -370,21 +387,16 @@ class LongMemEvalAdapter:
     def __init__(
         self,
         client: MuninnHTTPClient,
-        *,
-        k: int = 10,
-        limit: Optional[int] = None,
-        namespace: str = "longmemeval",
-        cleanup: bool = True,
-        method: str = "search",
-        depth: int = 2,
+        config: Optional[AdapterConfig] = None,
     ):
         self._client = client
-        self.k = k
-        self.limit = limit
-        self.namespace = namespace
-        self.cleanup = cleanup
-        self.method = method
-        self.depth = depth
+        self.config = config or AdapterConfig()
+        self.k = self.config.k
+        self.limit = self.config.limit
+        self.namespace = self.config.namespace
+        self.cleanup = self.config.cleanup
+        self.method = self.config.method
+        self.depth = self.config.depth
 
     def _user_id(self, question_id: str) -> str:
         """Derive an isolated user_id; capped to prevent oversized identifiers."""
@@ -496,25 +508,7 @@ class LongMemEvalAdapter:
             relevant_ids=relevant_ids,
         )
 
-    def run(self, cases: List[QuestionCase]) -> AdapterReport:
-        """Run the full evaluation and return a consolidated AdapterReport."""
-        if self.limit is not None:
-            cases = cases[: self.limit]
-
-        results: List[CaseResult] = []
-        skipped = 0
-
-        for i, case in enumerate(cases, start=1):
-            logger.info(
-                "[%d/%d] %s  type=%s",
-                i, len(cases), case.question_id, case.question_type,
-            )
-            result = self.evaluate_case(case)
-            if result is None:
-                skipped += 1
-            else:
-                results.append(result)
-
+    def _build_report(self, cases: List[QuestionCase], results: List[CaseResult], skipped: int) -> AdapterReport:
         # ── Aggregate metrics ──────────────────────────────────────────────
         ndcgs = [r.ndcg_at_k for r in results]
         recalls = [r.recall_at_k for r in results]
@@ -555,6 +549,27 @@ class LongMemEvalAdapter:
             by_question_type=by_type_summary,
             results=results,
         )
+
+    def run(self, cases: List[QuestionCase]) -> AdapterReport:
+        """Run the full evaluation and return a consolidated AdapterReport."""
+        if self.limit is not None:
+            cases = cases[: self.limit]
+
+        results: List[CaseResult] = []
+        skipped = 0
+
+        for i, case in enumerate(cases, start=1):
+            logger.info(
+                "[%d/%d] %s  type=%s",
+                i, len(cases), case.question_id, case.question_type,
+            )
+            result = self.evaluate_case(case)
+            if result is None:
+                skipped += 1
+            else:
+                results.append(result)
+
+        return self._build_report(cases, results, skipped)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -664,7 +679,8 @@ def run_selftest(server_url: str, auth_token: str) -> AdapterReport:
     adapter pipeline can be validated without the full LongMemEval dataset.
     """
     client = MuninnHTTPClient(server_url, auth_token)
-    adapter = LongMemEvalAdapter(client, k=5, cleanup=True, namespace="lme_selftest")
+    config = AdapterConfig(k=5, cleanup=True, namespace="lme_selftest")
+    adapter = LongMemEvalAdapter(client, config=config)
     cases = [
         QuestionCase(
             question_id=c["question_id"],
@@ -689,12 +705,7 @@ def run_adapter(
     dataset_path: Path,
     server_url: str = "http://localhost:42069",
     auth_token: str = "",
-    k: int = 10,
-    limit: Optional[int] = None,
-    cleanup: bool = True,
-    namespace: str = "longmemeval",
-    method: str = "search",
-    depth: int = 2,
+    config: Optional[AdapterConfig] = None,
 ) -> AdapterReport:
     """
     Evaluate a LongMemEval JSONL dataset against a running Muninn server.
@@ -703,12 +714,7 @@ def run_adapter(
         dataset_path: Path to the LongMemEval JSONL file.
         server_url:   Muninn server base URL.
         auth_token:   Muninn auth token (falls back to MUNINN_AUTH_TOKEN env var).
-        k:            Cutoff for nDCG@k and Recall@k.
-        limit:        Maximum number of cases to evaluate (None = all).
-        cleanup:      Delete ingested data after each case (default: True).
-        namespace:    Muninn namespace for evaluation isolation.
-        method:       Retrieval method — 'search' or 'hunt'.
-        depth:        Expansion depth for 'hunt' method.
+        config:       AdapterConfig instance.
 
     Returns:
         AdapterReport with aggregate and per-case metrics.
@@ -716,9 +722,7 @@ def run_adapter(
     effective_token = auth_token or os.environ.get("MUNINN_AUTH_TOKEN", "")
     cases = parse_dataset(dataset_path)
     client = MuninnHTTPClient(server_url, effective_token)
-    adapter = LongMemEvalAdapter(
-        client, k=k, limit=limit, cleanup=cleanup, namespace=namespace, method=method, depth=depth
-    )
+    adapter = LongMemEvalAdapter(client, config=config)
     report = adapter.run(cases)
     report.dataset_path = str(dataset_path)
     return report
@@ -850,16 +854,19 @@ def main(argv=None) -> None:
         if not args.dataset.exists():
             logger.error("Dataset file not found: %s", args.dataset)
             raise SystemExit(1)
-        report = run_adapter(
-            dataset_path=args.dataset,
-            server_url=args.server_url,
-            auth_token=auth_token,
+        config = AdapterConfig(
             k=args.k,
             limit=args.limit,
             cleanup=args.cleanup,
             namespace=args.namespace,
             method=args.method,
             depth=args.depth,
+        )
+        report = run_adapter(
+            dataset_path=args.dataset,
+            server_url=args.server_url,
+            auth_token=auth_token,
+            config=config,
         )
     else:
         logger.error("Provide --dataset <path> or --selftest.")
