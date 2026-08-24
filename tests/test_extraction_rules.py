@@ -72,3 +72,29 @@ class TestRuleBasedExtract:
         result = rule_based_extract("Edit the file src/main.py to fix the bug")
         entity_names = [e.name for e in result.entities]
         assert any("main.py" in n for n in entity_names)
+
+    def test_rule_based_extract_complete_pipeline(self):
+        """Test rule_based_extract with a complete input that tests all extraction parts."""
+        text = "I prefer Python. Python requires Docker. I built this on 2024-01-01."
+        result = rule_based_extract(text)
+
+        assert isinstance(result, ExtractionResult)
+
+        # Test Entities
+        entity_names = [e.name for e in result.entities]
+        assert "Python" in entity_names
+        assert "Docker" in entity_names
+
+        # Test Relations
+        assert len(result.relations) == 2
+
+        pref_relation = next(r for r in result.relations if r.predicate == "prefers")
+        assert pref_relation.subject == "user"
+        assert pref_relation.object == "Python"
+
+        dep_relation = next(r for r in result.relations if r.predicate == "depends_on")
+        assert dep_relation.subject == "Python"
+        assert dep_relation.object == "Docker"
+
+        # Test Temporal Context
+        assert result.temporal_context == "2024-01-01"
