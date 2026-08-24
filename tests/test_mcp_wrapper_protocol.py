@@ -7,6 +7,7 @@ import time
 import pytest
 
 import mcp_wrapper
+from muninn.mcp.requests import _RequestDeadlineExceededError
 
 
 def _sample_task(
@@ -878,7 +879,7 @@ def test_make_request_with_retry_fails_before_request_when_deadline_exhausted(mo
     # Patch muninn.mcp.requests.requests
     monkeypatch.setattr("muninn.mcp.requests.requests.request", _never_called)
 
-    with pytest.raises(mcp_wrapper._RequestDeadlineExceededError):
+    with pytest.raises(_RequestDeadlineExceededError):
         mcp_wrapper.make_request_with_retry(
             "GET",
             "http://localhost:42069/health",
@@ -1074,7 +1075,7 @@ def test_make_request_with_retry_skips_startup_recovery_when_deadline_budget_low
     # Patch requests.request
     monkeypatch.setattr("muninn.mcp.requests.requests.request", _always_fail)
 
-    with pytest.raises((mcp_wrapper.requests.ConnectionError, mcp_wrapper._RequestDeadlineExceededError)):
+    with pytest.raises((mcp_wrapper.requests.ConnectionError, _RequestDeadlineExceededError)):
         mcp_wrapper.make_request_with_retry(
             "GET",
             "http://localhost:42069/health",
