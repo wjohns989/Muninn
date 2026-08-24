@@ -147,7 +147,14 @@ class TestRerankerConfig:
     def test_defaults(self):
         cfg = RerankerConfig()
         assert cfg.enabled is True
-        assert cfg.model == "jinaai/jina-reranker-v1-tiny-en"
+        assert cfg.model == "jinaai/jina-reranker-v1-turbo-en"
+
+    def test_env_model_override(self, monkeypatch):
+        monkeypatch.setenv("MUNINN_RERANKER_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2")
+
+        cfg = MuninnConfig.from_env()
+
+        assert cfg.reranker.model == "Xenova/ms-marco-MiniLM-L-6-v2"
 
 
 class TestGoalCompassConfig:

@@ -287,6 +287,8 @@ Key environment variables:
 | `MUNINN_FEDERATION_PEERS` | - | Comma-separated list of peer base URLs |
 | `MUNINN_FEDERATION_SYNC_ON_ADD` | off | `=1` enables real-time push-on-add to peers |
 | `MUNINN_TEMPORAL_QUERY_EXPANSION` | off | `=1` enables NL time-phrase parsing in search |
+| `MUNINN_RERANKER_ENABLED` | on | `=false` disables cross-encoder reranking |
+| `MUNINN_RERANKER_MODEL` | `jinaai/jina-reranker-v1-turbo-en` | FastEmbed cross-encoder model; set the prior `jinaai/jina-reranker-v1-tiny-en` to roll back ranking behavior |
 | `MUNINN_CONSOLIDATION_INTEGRITY_RESOURCE_MODE` | `cycle` | Load NLI integrity resources only for a consolidation cycle; `persistent` restores legacy eager lifetime |
 | `MUNINN_RETRIEVAL_FEEDBACK_CACHE_MAX_ENTRIES` | `1024` | Hard bound for adaptive retrieval-feedback cache entries |
 | `MUNINN_INGESTION_MAX_WORKERS` | `2` | Process-worker bound for multi-source ingestion (`1`-`8`) |

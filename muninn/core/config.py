@@ -254,7 +254,7 @@ class AudioConfig(BaseModel):
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
-    model: str = "jinaai/jina-reranker-v1-tiny-en"
+    model: str = "jinaai/jina-reranker-v1-turbo-en"
 
 
 class ConsolidationConfig(BaseModel):
@@ -320,6 +320,7 @@ class MuninnConfig(BaseModel):
         - MUNINN_XLAM_URL: xLAM server URL
         - MUNINN_XLAM_ENABLED: Enable/disable xLAM extraction
         - MUNINN_RERANKER_ENABLED: Enable/disable reranker
+        - MUNINN_RERANKER_MODEL: FastEmbed cross-encoder model identifier
         - MUNINN_CONSOLIDATION_ENABLED: Enable/disable consolidation
         - MUNINN_CONSOLIDATION_INTERVAL: Hours between consolidation cycles
         """
@@ -390,6 +391,10 @@ class MuninnConfig(BaseModel):
             ),
             reranker=RerankerConfig(
                 enabled=os.environ.get("MUNINN_RERANKER_ENABLED", "true").lower() == "true",
+                model=os.environ.get(
+                    "MUNINN_RERANKER_MODEL",
+                    "jinaai/jina-reranker-v1-turbo-en",
+                ),
             ),
             consolidation=ConsolidationConfig(
                 enabled=os.environ.get("MUNINN_CONSOLIDATION_ENABLED", "true").lower() == "true",
