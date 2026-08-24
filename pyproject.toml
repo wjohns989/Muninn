@@ -46,6 +46,7 @@ dependencies = [
     "kuzu>=0.4.0",
     # v3.1.0: Cross-platform path resolution
     "platformdirs>=4.0.0",
+    "scikit-learn>=1.7.2",
 ]
 
 [project.optional-dependencies]
