@@ -1,10 +1,53 @@
 """Tests for multi-source ingestion parsing and fail-open behavior."""
 
 from pathlib import Path
+import concurrent.futures
+from unittest.mock import patch
 
 import pytest
 
 from muninn.ingestion.pipeline import IngestionPipeline
+
+
+def test_ingestion_limits_submitted_futures_to_configured_workers(tmp_path):
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"source-{index}.txt"
+        path.write_text(f"synthetic ingestion content {index}", encoding="utf-8")
+        paths.append(str(path))
+
+    observed_batch_sizes = []
+    real_as_completed = concurrent.futures.as_completed
+
+    class InlineExecutor:
+        def __init__(self, max_workers):
+            assert max_workers == 2
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, fn, *args):
+            future = concurrent.futures.Future()
+            future.set_result(fn(*args))
+            return future
+
+    def recording_as_completed(futures):
+        futures = list(futures)
+        observed_batch_sizes.append(len(futures))
+        return real_as_completed(futures)
+
+    pipeline = IngestionPipeline(allowed_roots=[str(tmp_path)], max_workers=2)
+    with (
+        patch("muninn.ingestion.pipeline.concurrent.futures.ProcessPoolExecutor", InlineExecutor),
+        patch("muninn.ingestion.pipeline.concurrent.futures.as_completed", recording_as_completed),
+    ):
+        report = pipeline.ingest(paths)
+
+    assert report.processed_sources == 5
+    assert max(observed_batch_sizes) <= 2
 
 
 def test_ingestion_pipeline_processes_supported_files(tmp_path):

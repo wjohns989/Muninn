@@ -129,6 +129,16 @@ class ConflictDetector:
         """Whether the NLI model is loaded and ready."""
         return self._available
 
+    def close(self) -> None:
+        """Release tokenizer/model references and their native allocations."""
+        model = self._model
+        close = getattr(model, "close", None)
+        if callable(close):
+            close()
+        self._model = None
+        self._tokenizer = None
+        self._available = False
+
     def detect_conflicts(
         self,
         new_content: str,

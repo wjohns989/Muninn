@@ -64,19 +64,45 @@ class ConsolidationDaemon:
         self._last_cycle: Optional[float] = None
         self._cycle_count = 0
         
-        # Phase 9 integrity components (v3.6.0)
+        # Phase 9 integrity components (v3.6.0). The NLI session is the largest
+        # optional CPU resource, so cycle mode owns it only while the phase runs.
+        self._conflict_detector = None
+        self._conflict_resolver = None
+        if self.config.integrity_resource_mode == "persistent":
+            self._initialize_integrity_components()
+
+    def _initialize_integrity_components(self) -> None:
+        if self._conflict_detector is not None and self._conflict_resolver is not None:
+            return
         from muninn.conflict.detector import ConflictDetector
         from muninn.conflict.resolver import ConflictResolver
-        self._conflict_detector = ConflictDetector(
-            contradiction_threshold=self.config.integrity_contradiction_threshold
-        )
-        self._conflict_resolver = ConflictResolver(
-            metadata_store=self.metadata,
-            vector_store=self.vectors,
-            graph_store=self.graph,
-            bm25_index=self.bm25,
-            embed_fn=self._embed_fn
-        )
+
+        if self._conflict_detector is None:
+            self._conflict_detector = ConflictDetector(
+                contradiction_threshold=self.config.integrity_contradiction_threshold
+            )
+        if self._conflict_resolver is None:
+            self._conflict_resolver = ConflictResolver(
+                metadata_store=self.metadata,
+                vector_store=self.vectors,
+                graph_store=self.graph,
+                bm25_index=self.bm25,
+                embed_fn=self._embed_fn,
+            )
+
+    def _release_integrity_components(self) -> None:
+        had_resources = self._conflict_detector is not None or self._conflict_resolver is not None
+        for resource in (self._conflict_detector, self._conflict_resolver):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:
+                    logger.warning("Integrity resource cleanup failed: %s", exc)
+        self._conflict_detector = None
+        self._conflict_resolver = None
+        if had_resources:
+            logger.info("Released consolidation integrity resources")
 
     async def start(self) -> None:
         """Start the consolidation daemon."""
@@ -102,6 +128,7 @@ class ConsolidationDaemon:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        self._release_integrity_components()
         logger.info("Consolidation daemon stopped")
 
     async def run_cycle(self) -> dict:
@@ -604,6 +631,20 @@ class ConsolidationDaemon:
         return result
 
     async def _phase_integrity(self) -> dict:
+        """Run integrity auditing with cycle-scoped or persistent resources."""
+        owns_cycle_resources = (
+            self.config.integrity_resource_mode == "cycle"
+            and self._conflict_detector is None
+            and self._conflict_resolver is None
+        )
+        try:
+            self._initialize_integrity_components()
+            return await self._phase_integrity_loaded()
+        finally:
+            if owns_cycle_resources:
+                self._release_integrity_components()
+
+    async def _phase_integrity_loaded(self) -> dict:
         """
         Phase 8: INTEGRITY (NLI Conflict Detection)
         - Audit high-importance recent memories for contradictions
@@ -700,4 +741,6 @@ class ConsolidationDaemon:
             "cycle_count": self._cycle_count,
             "last_cycle": self._last_cycle,
             "interval_hours": self.config.interval_hours,
+            "integrity_resource_mode": self.config.integrity_resource_mode,
+            "integrity_resources_loaded": self._conflict_detector is not None,
         }
