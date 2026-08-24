@@ -60,12 +60,7 @@ class DistillationDaemon:
         logger.info("Starting distillation cycle...")
         start_time = time.time()
         
-        # 1. Fetch candidates: Episodic memories not yet archived
-        # This requires direct DB access or a new method on MuninnMemory.
-        # For now, we simulate finding a cluster.
-        # TODO: Implement proper clustering via vector density or graph communities.
-        
-        clusters = await self._find_episodic_clusters()
+        clusters = await self.cluster_engine.find_episodic_clusters()
         processed_count = 0
         
         for cluster in clusters:
@@ -86,12 +81,6 @@ class DistillationDaemon:
             "processed": processed_count, 
             "duration": duration
         }
-
-    async def _find_episodic_clusters(self) -> List[Dict[str, Any]]:
-        """
-        Identify groups of related episodic memories.
-        """
-        return await self.cluster_engine.find_episodic_clusters()
 
     async def _synthesize_cluster(self, cluster: Dict[str, Any]) -> Optional[str]:
         """Use ExtractionPipeline to rewrite memories into a manual."""
