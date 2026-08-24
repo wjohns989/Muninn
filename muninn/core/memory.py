@@ -1856,23 +1856,23 @@ class MuninnMemory:
             # 2. User-scoped deletion in SQLite
             count = self._metadata.delete_all(user_id=user_id)
 
-            # 3. Remove matching vectors individually (best-effort)
-            for mid in memory_ids:
+            # 3. Remove matching vectors in batch (best-effort)
+            if memory_ids:
                 try:
-                    self._vectors.delete(mid)
+                    self._vectors.delete_batch(memory_ids)
                 except Exception:
-                    logger.debug("Vector delete skipped for %s", mid)
+                    logger.debug("Batch vector delete skipped for %s", memory_ids)
 
-            # 4. Remove matching BM25 documents individually
-            for mid in memory_ids:
-                self._bm25.remove(mid)
+            # 4. Remove matching BM25 documents in batch
+            if memory_ids:
+                self._bm25.remove_batch(memory_ids)
 
-            # 5. Clean up graph references
-            for mid in memory_ids:
+            # 5. Clean up graph references in batch
+            if memory_ids:
                 try:
-                    self._graph.delete_memory_references(mid)
+                    self._graph.delete_memories_batch(memory_ids)
                 except Exception:
-                    logger.debug("Graph cleanup skipped for %s", mid)
+                    logger.debug("Batch graph cleanup skipped for %s", memory_ids)
 
         logger.info("Deleted %d memories for user %s", count, user_id)
         return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
