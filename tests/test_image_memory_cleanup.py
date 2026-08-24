@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -72,6 +73,32 @@ def test_delete_all_cleans_managed_images_for_deleted_user(tmp_path) -> None:
 
     assert result["deleted_count"] == 2
     assert not any(image_path.exists() for image_path in image_paths)
+
+
+def test_delete_succeeds_when_managed_image_unlink_fails(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    memory = _mock_memory(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    image_path = images_dir / "locked.png"
+    image_path.write_bytes(b"synthetic-image")
+    memory._metadata.get.return_value = _image_record("image-memory", image_path.name)
+    memory._metadata.get_referenced_image_names.return_value = set()
+    original_unlink = Path.unlink
+
+    def fail_managed_unlink(path: Path, *args, **kwargs):
+        if path == image_path:
+            raise PermissionError("synthetic locked file")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_managed_unlink)
+
+    result = asyncio.run(memory.delete("image-memory"))
+
+    assert result == {"id": "image-memory", "event": "DELETE"}
+    assert image_path.exists()
+    assert "managed image cleanup failed" in caplog.text.lower()
 
 
 def test_sqlite_reports_only_managed_image_names_still_referenced(tmp_path) -> None:
