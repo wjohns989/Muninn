@@ -152,25 +152,48 @@ class GraphStore:
         user_id: str = "global", 
         namespace: str = "global"
     ) -> bool:
+        return self.add_entities_batch([
+            {
+                "name": name,
+                "entity_type": entity_type,
+                "user_id": user_id,
+                "namespace": namespace
+            }
+        ])
+
+    def add_entities_batch(self, entities: List[Dict[str, Any]]) -> bool:
+        """Batch insert or update multiple entities."""
+        if not entities:
+            return True
+
         conn = self._get_conn()
         now = time.time()
-        # Create a scoped unique ID
-        entity_id = f"{user_id}/{namespace}/{name}"
+
+        entities_params = []
+        for e in entities:
+            uid = e.get("user_id", "global")
+            ns = e.get("namespace", "global")
+            name = e["name"]
+            e_id = f"{uid}/{ns}/{name}"
+            entities_params.append({
+                "id": e_id,
+                "name": name,
+                "type": e.get("entity_type", "unknown"),
+                "now": now,
+                "uid": uid,
+                "ns": ns
+            })
+
         try:
-            # Try to merge (upsert)
-            conn.execute(
-                "MERGE (e:Entity {id: $id}) "
-                "ON CREATE SET e.name = $name, e.user_id = $uid, e.namespace = $ns, "
-                "e.entity_type = $type, e.first_seen = $now, e.last_seen = $now, e.mention_count = 1 "
-                "ON MATCH SET e.last_seen = $now, e.mention_count = e.mention_count + 1",
-                {
-                    "id": entity_id, "name": name, "uid": user_id, "ns": namespace,
-                    "type": entity_type, "now": now
-                }
-            )
+            conn.execute("""
+                UNWIND $entities AS e
+                MERGE (n:Entity {id: e.id})
+                ON CREATE SET n.name = e.name, n.user_id = e.uid, n.namespace = e.ns, n.entity_type = e.type, n.first_seen = e.now, n.last_seen = e.now, n.mention_count = 1
+                ON MATCH SET n.last_seen = e.now, n.mention_count = n.mention_count + 1
+            """, {"entities": entities_params})
             return True
         except Exception as e:
-            logger.debug(f"Entity creation: {e}")
+            logger.debug(f"Batch add entities failed: {e}")
             return False
 
     def create_relation(
