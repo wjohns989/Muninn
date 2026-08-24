@@ -1,4 +1,5 @@
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -60,3 +61,74 @@ def test_persistent_integrity_mode_preserves_legacy_eager_loading():
     resolver_class.assert_called_once()
     assert daemon._conflict_detector is detector_class.return_value
     assert daemon._conflict_resolver is resolver_class.return_value
+
+
+@pytest.mark.asyncio
+async def test_overlapping_consolidation_cycles_are_serialized():
+    daemon = _make_daemon()
+    first_cycle_entered = asyncio.Event()
+    release_first_cycle = asyncio.Event()
+
+    async def controlled_decay():
+        first_cycle_entered.set()
+        await release_first_cycle.wait()
+        return {}
+
+    daemon._phase_decay = AsyncMock(side_effect=controlled_decay)
+    for phase_name in (
+        "_phase_merge",
+        "_phase_promote",
+        "_phase_replay",
+        "_phase_statistics",
+        "_phase_maintenance",
+        "_phase_optimization",
+        "_phase_integrity",
+    ):
+        setattr(daemon, phase_name, AsyncMock(return_value={}))
+
+    first = asyncio.create_task(daemon.run_cycle())
+    await first_cycle_entered.wait()
+    second = asyncio.create_task(daemon.run_cycle())
+    await asyncio.sleep(0)
+
+    assert daemon._phase_decay.await_count == 1
+
+    release_first_cycle.set()
+    await asyncio.gather(first, second)
+    assert daemon._phase_decay.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_active_cycle_before_releasing_integrity_resources():
+    daemon = _make_daemon()
+    cycle_entered = asyncio.Event()
+    release_cycle = asyncio.Event()
+
+    async def controlled_decay():
+        cycle_entered.set()
+        await release_cycle.wait()
+        return {}
+
+    daemon._phase_decay = AsyncMock(side_effect=controlled_decay)
+    for phase_name in (
+        "_phase_merge",
+        "_phase_promote",
+        "_phase_replay",
+        "_phase_statistics",
+        "_phase_maintenance",
+        "_phase_optimization",
+        "_phase_integrity",
+    ):
+        setattr(daemon, phase_name, AsyncMock(return_value={}))
+    daemon._release_integrity_components = MagicMock()
+
+    cycle = asyncio.create_task(daemon.run_cycle())
+    await cycle_entered.wait()
+    stop = asyncio.create_task(daemon.stop())
+    await asyncio.sleep(0)
+
+    daemon._release_integrity_components.assert_not_called()
+
+    release_cycle.set()
+    await asyncio.gather(cycle, stop)
+    daemon._release_integrity_components.assert_called_once_with()

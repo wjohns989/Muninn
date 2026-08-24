@@ -46,6 +46,58 @@ def _prepare_managed_copy(source: Path, images_dir: Path) -> tuple[Path, str, bo
     return destination, image_hash, True
 
 
+def _remove_managed_files(
+    images_dir: Path,
+    stored_names: Sequence[str],
+    referenced_names: set[str],
+) -> list[str]:
+    """Remove only unreferenced files contained directly in managed storage."""
+    images_dir = images_dir.resolve()
+    removed: list[str] = []
+    for stored_name in dict.fromkeys(stored_names):
+        if not stored_name or Path(stored_name).name != stored_name:
+            logger.warning("Skipped unsafe managed image filename during cleanup")
+            continue
+        if stored_name in referenced_names:
+            continue
+        candidate = (images_dir / stored_name).resolve()
+        try:
+            candidate.relative_to(images_dir)
+        except ValueError:
+            logger.warning("Skipped managed image outside storage root")
+            continue
+        if candidate.is_file():
+            candidate.unlink()
+            removed.append(stored_name)
+    return removed
+
+
+async def cleanup_managed_images(
+    *,
+    metadata_store: Any,
+    images_dir: Path,
+    stored_names: Sequence[str],
+) -> list[str]:
+    """Delete managed files after their final memory reference is removed."""
+    candidates = list(dict.fromkeys(name for name in stored_names if name))
+    if not candidates:
+        return []
+    async with _IMAGE_STORAGE_LOCK:
+        referenced_names = await asyncio.to_thread(
+            metadata_store.get_referenced_image_names,
+            candidates,
+        )
+        removed = await asyncio.to_thread(
+            _remove_managed_files,
+            images_dir,
+            candidates,
+            referenced_names,
+        )
+    if removed:
+        logger.info("Removed %d unreferenced managed image file(s)", len(removed))
+    return removed
+
+
 async def store_image_memory(
     *,
     memory: Any,

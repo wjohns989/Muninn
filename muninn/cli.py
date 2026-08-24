@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import sys
 from dataclasses import dataclass
@@ -208,10 +209,10 @@ def _patch_codex_toml(
     def _upsert_env_line(existing: list[str], key: str, value: str) -> tuple[list[str], bool]:
         updated = False
         replaced = False
-        prefix = f"{key} = "
-        target = f'{prefix}"{value}"'
+        target = f'{key} = "{value}"'
+        assignment = re.compile(rf"^\s*{re.escape(key)}\s*=")
         for i, line in enumerate(existing):
-            if line.strip().startswith(prefix):
+            if assignment.match(line):
                 if line.strip() != target:
                     existing[i] = target
                     updated = True
@@ -223,7 +224,7 @@ def _patch_codex_toml(
         return existing, updated
 
     muninn_body = lines[muninn_idx + 1 : muninn_end]
-    is_streamable_http = any(line.strip().startswith("url =") for line in muninn_body)
+    is_streamable_http = any(re.match(r"^\s*url\s*=", line) for line in muninn_body)
 
     if is_streamable_http:
         changed = False
@@ -353,10 +354,12 @@ def _collect_codex_muninn_entries(config_path: Path) -> list[_DoctorServerEntry]
     bearer_token_env_var = None
     for line in lines[muninn_idx + 1 : muninn_end]:
         stripped = line.strip()
-        if stripped.startswith("url ="):
-            server_url = stripped.split("=", 1)[1].strip().strip('"')
-        elif stripped.startswith("bearer_token_env_var ="):
-            bearer_token_env_var = stripped.split("=", 1)[1].strip().strip('"')
+        url_match = re.match(r'^url\s*=\s*"([^"]*)"', stripped)
+        bearer_match = re.match(r'^bearer_token_env_var\s*=\s*"([^"]*)"', stripped)
+        if url_match:
+            server_url = url_match.group(1)
+        elif bearer_match:
+            bearer_token_env_var = bearer_match.group(1)
 
     if server_url is not None:
         normalized_url = server_url.rstrip("/")
@@ -473,7 +476,9 @@ def cmd_rotate_token(args: argparse.Namespace) -> int:
     codex_modified = _patch_codex_toml(
         _CODEX_CONFIG_PATH,
         new_token=new_token,
-        new_server_url=target_server_url,
+        # Token rotation must not silently replace a custom HTTP endpoint.
+        # ``doctor --repair`` remains the explicit URL convergence operation.
+        new_server_url=None,
         dry_run=dry_run,
     )
     if codex_modified:

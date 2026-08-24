@@ -1,7 +1,7 @@
-import sys
-import subprocess
-import os
 import json
+import os
+import subprocess
+import sys
 import threading
 
 # MCP resource methods Codex probes that most servers don't implement.
@@ -34,6 +34,48 @@ def _forward_child_stdout(child_stdout) -> None:
         log_path = os.path.join(os.path.expanduser("~"), ".mcp_wrapper_error.log")
         with open(log_path, "a") as f:
             f.write(f"[{datetime.datetime.now().isoformat()}] Forward thread error: {e}\n")
+
+
+def _read_client_message(stream):
+    """Read one JSONL or Content-Length-framed MCP message without truncation."""
+    first_line = stream.readline()
+    if not first_line:
+        return None
+    if not first_line.lower().startswith(b"content-length:"):
+        return first_line, first_line, False
+
+    headers = [first_line]
+    try:
+        content_length = int(first_line.split(b":", 1)[1].strip())
+    except (IndexError, ValueError) as exc:
+        raise ValueError("Invalid Content-Length header") from exc
+    if content_length < 0:
+        raise ValueError("Invalid negative Content-Length")
+
+    while True:
+        header_line = stream.readline()
+        if not header_line:
+            raise EOFError("Incomplete MCP headers")
+        headers.append(header_line)
+        if header_line in {b"\r\n", b"\n"}:
+            break
+
+    body = stream.read(content_length)
+    if len(body) != content_length:
+        raise EOFError("Incomplete MCP body")
+    return b"".join(headers) + body, body, True
+
+
+def _encode_intercept_response(message: dict, *, framed: bool) -> bytes:
+    payload = json.dumps(message).encode("utf-8")
+    if framed:
+        return (
+            b"Content-Length: "
+            + str(len(payload)).encode("ascii")
+            + b"\r\n\r\n"
+            + payload
+        )
+    return payload + b"\n"
 
 
 def main():
@@ -90,25 +132,30 @@ def main():
         )
         fwd.start()
 
-        # Read MCP messages from the client. Intercept targeted requests early ONLY if in codex_mode.
-        for raw_line in sys.stdin.buffer:
+        # Read framing-aware MCP messages. Content-Length bodies need not end in
+        # a newline, so line iteration can otherwise stall or corrupt requests.
+        while True:
+            parsed_message = _read_client_message(sys.stdin.buffer)
+            if parsed_message is None:
+                break
+            raw_message, payload, is_framed = parsed_message
             intercepted = False
-            
+
             if codex_mode:
                 try:
-                    msg = json.loads(raw_line)
+                    msg = json.loads(payload)
                     method = msg.get("method", "")
                     msg_id = msg.get("id")
 
                     if method in _INTERCEPTS and msg_id is not None:
                         # Respond directly with a valid empty result, protecting Codex
-                        resp = (
-                            json.dumps({
+                        resp = _encode_intercept_response(
+                            {
                                 "jsonrpc": "2.0",
                                 "id": msg_id,
                                 "result": _INTERCEPTS[method],
-                            })
-                            .encode("utf-8") + b"\n"
+                            },
+                            framed=is_framed,
                         )
                         _write_stdout(resp)
                         intercepted = True
@@ -117,7 +164,7 @@ def main():
 
             if not intercepted:
                 try:
-                    proc.stdin.write(raw_line)
+                    proc.stdin.write(raw_message)
                     proc.stdin.flush()
                 except BrokenPipeError:
                     break

@@ -63,6 +63,7 @@ class ConsolidationDaemon:
         self._running = False
         self._last_cycle: Optional[float] = None
         self._cycle_count = 0
+        self._cycle_lock = asyncio.Lock()
         
         # Phase 9 integrity components (v3.6.0). The NLI session is the largest
         # optional CPU resource, so cycle mode owns it only while the phase runs.
@@ -128,10 +129,16 @@ class ConsolidationDaemon:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        self._release_integrity_components()
+        async with self._cycle_lock:
+            self._release_integrity_components()
         logger.info("Consolidation daemon stopped")
 
     async def run_cycle(self) -> dict:
+        """Execute one cycle at a time to protect shared stores and resources."""
+        async with self._cycle_lock:
+            return await self._run_cycle_serialized()
+
+    async def _run_cycle_serialized(self) -> dict:
         """
         Execute a single consolidation cycle (all 5 phases).
 

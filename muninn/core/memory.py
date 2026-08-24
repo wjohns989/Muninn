@@ -1759,6 +1759,8 @@ class MuninnMemory:
             return {"error": f"Memory {memory_id} not found"}
 
         old_content = record.content
+        entity_names = list((record.metadata or {}).get("entity_names", []))
+        chain_links_created = 0
         if data is not None:
             record.content = data
 
@@ -1868,18 +1870,19 @@ class MuninnMemory:
                 asyncio.to_thread(_update_colbert),
             )
 
-            chain_links_created = await asyncio.to_thread(
-                self._upsert_memory_chain_links,
-                successor_record=record,
-                successor_content=data,
-                successor_entity_names=entity_names,
-            )
+            if data is not None:
+                chain_links_created = await asyncio.to_thread(
+                    self._upsert_memory_chain_links,
+                    successor_record=record,
+                    successor_content=data,
+                    successor_entity_names=entity_names,
+                )
 
         logger.info("Updated memory %s (chains=%d)", memory_id, chain_links_created)
 
         return {
             "id": record.id,
-            "content": data,
+            "content": record.content,
             "previous_content": old_content,
             "memory_type": record.memory_type.value,
             "media_type": record.media_type.value,
@@ -1892,6 +1895,7 @@ class MuninnMemory:
     async def delete(self, memory_id: str) -> Dict[str, str]:
         """Delete a memory from all stores."""
         self._check_initialized()
+        record = await asyncio.to_thread(self._metadata.get, memory_id)
 
         async with self._write_lock:
             await asyncio.gather(
@@ -1899,6 +1903,18 @@ class MuninnMemory:
                 asyncio.to_thread(self._vectors.delete, memory_id),
                 asyncio.to_thread(self._graph.delete_memory_references, memory_id),
                 asyncio.to_thread(self._bm25.remove, memory_id),
+            )
+
+        stored_name = (
+            (record.metadata or {}).get("image_stored_name") if record is not None else None
+        )
+        if stored_name:
+            from muninn.media.image_memory import cleanup_managed_images
+
+            await cleanup_managed_images(
+                metadata_store=self._metadata,
+                images_dir=Path(self.config.data_dir) / "images",
+                stored_names=[stored_name],
             )
 
         logger.info("Deleted memory %s", memory_id)
@@ -1915,29 +1931,51 @@ class MuninnMemory:
 
         async with self._write_lock:
             # 1. Collect IDs to delete from vector / BM25 stores
-            records = self._metadata.get_all(user_id=user_id, limit=100_000)
+            records = await asyncio.to_thread(
+                self._metadata.get_all,
+                user_id=user_id,
+                limit=100_000,
+            )
             memory_ids = [r.id for r in records]
 
-            # 2. User-scoped deletion in SQLite
-            count = self._metadata.delete_all(user_id=user_id)
+            def _delete_user_records() -> int:
+                # 2. User-scoped deletion in SQLite
+                deleted = self._metadata.delete_all(user_id=user_id)
 
-            # 3. Remove matching vectors individually (best-effort)
-            for mid in memory_ids:
-                try:
-                    self._vectors.delete(mid)
-                except Exception:
-                    logger.debug("Vector delete skipped for %s", mid)
+                # 3. Remove matching vectors individually (best-effort)
+                for mid in memory_ids:
+                    try:
+                        self._vectors.delete(mid)
+                    except Exception:
+                        logger.debug("Vector delete skipped for %s", mid)
 
-            # 4. Remove matching BM25 documents individually
-            for mid in memory_ids:
-                self._bm25.remove(mid)
+                # 4. Remove matching BM25 documents individually
+                for mid in memory_ids:
+                    self._bm25.remove(mid)
 
-            # 5. Clean up graph references
-            for mid in memory_ids:
-                try:
-                    self._graph.delete_memory_references(mid)
-                except Exception:
-                    logger.debug("Graph cleanup skipped for %s", mid)
+                # 5. Clean up graph references
+                for mid in memory_ids:
+                    try:
+                        self._graph.delete_memory_references(mid)
+                    except Exception:
+                        logger.debug("Graph cleanup skipped for %s", mid)
+                return deleted
+
+            count = await asyncio.to_thread(_delete_user_records)
+
+        stored_names = [
+            (record.metadata or {}).get("image_stored_name")
+            for record in records
+            if (record.metadata or {}).get("image_stored_name")
+        ]
+        if stored_names:
+            from muninn.media.image_memory import cleanup_managed_images
+
+            await cleanup_managed_images(
+                metadata_store=self._metadata,
+                images_dir=Path(self.config.data_dir) / "images",
+                stored_names=stored_names,
+            )
 
         logger.info("Deleted %d memories for user %s", count, user_id)
         return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
