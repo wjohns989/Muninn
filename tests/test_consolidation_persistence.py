@@ -59,7 +59,7 @@ async def test_promote_persists_new_memory_type(tmp_path):
     ids=["primary-survives", "secondary-survives"],
 )
 @pytest.mark.asyncio
-async def test_merge_persists_survivor_and_deletes_only_absorbed(
+async def test_merge_persists_survivor_and_archives_absorbed(
     tmp_path, monkeypatch, primary_importance, secondary_importance
 ):
     daemon = _daemon(tmp_path)
@@ -79,7 +79,13 @@ async def test_merge_persists_survivor_and_deletes_only_absorbed(
     assert "deploys run on Fridays" in survivor.content
     assert "rollbacks use blue-green" in survivor.content
     assert survivor.consolidated is True
-    assert daemon.metadata.get(absorbed_id) is None
+    assert survivor.archived is False
+    absorbed = daemon.metadata.get(absorbed_id)
+    assert absorbed.archived is True
+    assert absorbed.parent_id == survivor_id
+    assert absorbed.metadata["archived_reason"] == "merged"
+    daemon.vectors.delete.assert_called_once_with([absorbed_id])
+    daemon.bm25.remove.assert_called_once_with(absorbed_id)
 
 
 @pytest.mark.asyncio
@@ -104,3 +110,180 @@ async def test_retrieval_feedback_slows_decay_after_consolidation(tmp_path):
     await daemon._phase_decay()
 
     assert daemon.metadata.get("helpful").importance > daemon.metadata.get("ignored").importance
+
+
+def _config(**overrides):
+    from muninn.core.config import ConsolidationConfig
+
+    return ConsolidationConfig(**overrides)
+
+
+def _real_daemon(tmp_path, **config):
+    graph = MagicMock()
+    graph.get_memory_node_degrees_batch.side_effect = lambda ids: {i: 0.0 for i in ids}
+    return ConsolidationDaemon(
+        config=_config(**config),
+        metadata=SQLiteMetadataStore(tmp_path / "meta.db"),
+        vectors=MagicMock(),
+        graph=graph,
+        bm25=MagicMock(),
+        images_dir=tmp_path / "images",
+    )
+
+
+@pytest.mark.asyncio
+async def test_dry_run_proposes_changes_without_writing(tmp_path):
+    daemon = _real_daemon(tmp_path, dry_run=True, decay_threshold=0.99)
+    daemon.metadata.add(_record("m1", "any fact", importance=0.5))
+
+    result = await daemon._phase_decay()
+
+    stored = daemon.metadata.get("m1")
+    assert result["decayed"] == 1
+    assert stored.importance == 0.5 and stored.archived is False
+    daemon.vectors.delete.assert_not_called()
+    actions = daemon.status["proposed_actions"]
+    assert {"phase": "decay", "action": "archive", "memory_id": "m1",
+            "reason": "below_decay_threshold", "parent_id": None} in actions
+    assert daemon.metadata.get_meta("consolidation_cursor:decay") is None
+
+
+@pytest.mark.asyncio
+async def test_decay_pages_through_every_memory(tmp_path):
+    daemon = _real_daemon(tmp_path, batch_size=100)
+    for i in range(250):
+        daemon.metadata.add(_record(f"m{i:03d}", f"fact {i}", importance=0.999))
+
+    await daemon._phase_decay()
+    await daemon._phase_decay()
+    untouched = [r for r in daemon.metadata.get_all(limit=1000) if r.importance == 0.999]
+    assert len(untouched) == 50
+
+    await daemon._phase_decay()
+    assert all(r.importance != 0.999 for r in daemon.metadata.get_all(limit=1000))
+    assert daemon.metadata.get_meta("consolidation_cursor:decay") == ""
+
+
+@pytest.mark.asyncio
+async def test_decay_archives_redundant_stale_memory_using_stored_novelty(tmp_path):
+    from muninn.core.types import Provenance
+
+    daemon = _real_daemon(tmp_path)
+    old = time.time() - 3650 * 86400
+    daemon.metadata.add(_record("dup", "restated fact", provenance=Provenance.INGESTED,
+                                novelty_score=0.02, created_at=old))
+    daemon.metadata.add(_record("unique", "distinct fact", provenance=Provenance.INGESTED,
+                                novelty_score=1.0, created_at=old))
+
+    result = await daemon._phase_decay()
+
+    assert result["decayed"] == 1
+    assert daemon.metadata.get("dup").archived is True
+    assert daemon.metadata.get("unique").archived is False
+
+
+@pytest.mark.asyncio
+async def test_expired_working_memory_is_removed_from_every_store(tmp_path):
+    daemon = _real_daemon(tmp_path, working_memory_ttl_hours=1)
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "abc.png").write_bytes(b"png")
+    daemon.metadata.add(_record(
+        "w1", "scratch", memory_type=MemoryType.WORKING, created_at=time.time() - 7200,
+        metadata={"user_id": "u1", "image_stored_name": "abc.png"},
+    ))
+
+    result = await daemon._phase_decay()
+
+    assert result["expired"] == 1
+    assert daemon.metadata.get("w1") is None
+    daemon.bm25.remove.assert_called_once_with("w1")
+    daemon.graph.delete_memory_references.assert_called_once_with("w1")
+    assert not (images / "abc.png").exists()
+
+
+@pytest.mark.asyncio
+async def test_restore_reindexes_archived_memory(tmp_path):
+    from types import SimpleNamespace
+
+    from muninn.core.memory import MuninnMemory
+
+    store = SQLiteMetadataStore(tmp_path / "meta.db")
+    store.add(_record("a1", "archived fact"))
+    store.update("a1", archived=True,
+                 metadata={"user_id": "u1", "archived_reason": "merged", "archived_at": 1.0})
+    fake = SimpleNamespace(_metadata=store, _check_initialized=lambda: None, update=AsyncMock())
+
+    result = await MuninnMemory.restore(fake, "a1")
+
+    assert result == {"id": "a1", "restored": True, "event": "RESTORE"}
+    kwargs = fake.update.await_args.kwargs
+    assert kwargs["data"] == "archived fact" and kwargs["archived"] is False
+    assert "archived_reason" not in kwargs["metadata"] and "restored_at" in kwargs["metadata"]
+    assert await MuninnMemory.restore(fake, "missing") == {"error": "Memory missing not found"}
+
+
+@pytest.mark.asyncio
+async def test_replay_reembeds_live_memories_with_real_signature(tmp_path):
+    from unittest.mock import create_autospec
+
+    from muninn.store.vector_store import VectorStore
+
+    daemon = _real_daemon(tmp_path)
+    daemon.vectors = create_autospec(VectorStore, instance=True)
+    daemon._embed_fn = lambda text: [0.1, 0.2, 0.3, 0.4]
+    daemon.metadata.add(_record("hot", "important fact", importance=0.9))
+    daemon.metadata.add(_record("gone", "archived fact", importance=0.95))
+    daemon.metadata.update("gone", archived=True)
+
+    result = await daemon._phase_replay()
+
+    assert result["re_embedded"] == 1
+    daemon.vectors.update_vector.assert_called_once_with("hot", [0.1, 0.2, 0.3, 0.4])
+
+
+def test_update_vector_preserves_scope_payload(tmp_path):
+    from muninn.store.vector_store import VectorStore
+
+    vs = VectorStore(tmp_path / "vectors", embedding_dims=4)
+    try:
+        vs.upsert("m1", [1.0, 0.0, 0.0, 0.0], {"user_id": "u1", "project": "p1", "scope": "project"})
+        vs.update_vector("m1", [0.0, 1.0, 0.0, 0.0])
+
+        hits = vs.search([0.0, 1.0, 0.0, 0.0], 5, filters={"user_id": "u1", "project": "p1"})
+        assert hits and hits[0][0] == "m1" and hits[0][1] > 0.99
+    finally:
+        vs._get_client().close()
+
+
+@pytest.mark.asyncio
+async def test_replay_reembeds_live_memories_with_real_signature(tmp_path):
+    from unittest.mock import create_autospec
+
+    from muninn.store.vector_store import VectorStore
+
+    daemon = _real_daemon(tmp_path)
+    daemon.vectors = create_autospec(VectorStore, instance=True)
+    daemon._embed_fn = lambda text: [0.1, 0.2, 0.3, 0.4]
+    daemon.metadata.add(_record("hot", "important fact", importance=0.9))
+    daemon.metadata.add(_record("gone", "archived fact", importance=0.95))
+    daemon.metadata.update("gone", archived=True)
+
+    result = await daemon._phase_replay()
+
+    assert result["re_embedded"] == 1
+    daemon.vectors.update_vector.assert_called_once_with("hot", [0.1, 0.2, 0.3, 0.4])
+
+
+def test_update_vector_preserves_scope_payload(tmp_path):
+    from muninn.store.vector_store import VectorStore
+
+    vs = VectorStore(tmp_path / "vectors", embedding_dims=4)
+    try:
+        vs.upsert("m1", [1.0, 0.0, 0.0, 0.0], {"user_id": "u1", "project": "p1", "scope": "project"})
+        vs.update_vector("m1", [0.0, 1.0, 0.0, 0.0])
+
+        hits = vs.search([0.0, 1.0, 0.0, 0.0], 5, filters={"user_id": "u1", "project": "p1"})
+        assert hits and hits[0][0] == "m1" and hits[0][1] > 0.99
+    finally:
+        vs._get_client().close()

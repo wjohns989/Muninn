@@ -265,6 +265,11 @@ class ConsolidationConfig(BaseModel):
     merge_similarity: float = 0.92
     promote_access_count: int = 5
     working_memory_ttl_hours: float = 24.0
+    # Records visited per phase per cycle; a persisted cursor pages through
+    # the whole store across cycles.
+    batch_size: int = 500
+    # Compute and report proposed changes without writing any store.
+    dry_run: bool = False
     
     # Phase 9: Maintenance & Integrity (v3.6.0)
     colbert_drift_threshold: float = 0.15
@@ -402,6 +407,9 @@ class MuninnConfig(BaseModel):
                 integrity_resource_mode=os.environ.get(
                     "MUNINN_CONSOLIDATION_INTEGRITY_RESOURCE_MODE", "cycle"
                 ).strip().lower(),
+                batch_size=max(1, int(os.environ.get("MUNINN_CONSOLIDATION_BATCH_SIZE", "500"))),
+                dry_run=os.environ.get("MUNINN_CONSOLIDATION_DRY_RUN", "false").strip().lower()
+                in ("1", "true", "yes", "on"),
             ),
             conflict_detection=ConflictDetectionConfig(
                 model_name=os.environ.get(

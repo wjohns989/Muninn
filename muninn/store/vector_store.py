@@ -82,6 +82,17 @@ class VectorStore:
         )
         return point_id
 
+    def update_vector(self, memory_id: str, embedding: List[float]) -> None:
+        """Replace a point's vector while keeping its payload (scope, user, project)."""
+        from qdrant_client.models import PointVectors
+
+        client = self._get_client()
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
+        client.update_vectors(
+            collection_name=self.collection_name,
+            points=[PointVectors(id=point_id, vector=embedding)],
+        )
+
     def search(
         self,
         query_embedding: List[float],

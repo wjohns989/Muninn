@@ -1414,7 +1414,15 @@ class SQLiteMetadataStore:
         importance_min: Optional[float] = None,
         consolidated: Optional[bool] = None,
         limit: int = 100,
+        archived: Optional[bool] = None,
+        after_id: Optional[str] = None,
     ) -> List[MemoryRecord]:
+        """Fetch consolidation candidates.
+
+        By default returns the most important memories first. With ``after_id``
+        it pages through the whole table in id order instead, so a cursor can
+        visit every memory across cycles rather than only the top ``limit``.
+        """
         conn = self._get_conn()
         conditions = []
         params: list = []
@@ -1434,9 +1442,16 @@ class SQLiteMetadataStore:
         if consolidated is not None:
             conditions.append("consolidated = ?")
             params.append(int(consolidated))
+        if archived is not None:
+            conditions.append("archived = ?")
+            params.append(int(archived))
+        if after_id is not None:
+            conditions.append("id > ?")
+            params.append(after_id)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        query = f"SELECT * FROM memories {where} ORDER BY importance DESC LIMIT ?"
+        order = "id ASC" if after_id is not None else "importance DESC"
+        query = f"SELECT * FROM memories {where} ORDER BY {order} LIMIT ?"
         params.append(limit)
 
         rows = conn.execute(query, params).fetchall()

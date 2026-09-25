@@ -1391,6 +1391,17 @@ async def update_memory_endpoint(req: UpdateMemoryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/restore/{memory_id}", dependencies=[Depends(verify_token)])
+async def restore_memory_endpoint(memory_id: str):
+    """Restore a memory that consolidation archived (merge, decay or temporal shadow)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    result = await memory.restore(memory_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return {"success": True, "data": result}
+
+
 @app.delete("/delete/{memory_id}", dependencies=[Depends(verify_token)])
 async def delete_memory_endpoint(memory_id: str):
     """Delete a specific memory."""

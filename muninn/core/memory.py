@@ -222,6 +222,7 @@ class MuninnMemory:
             embed_fn=self._embed,
             colbert_indexer=self._colbert_indexer,
             extractor=self._extraction,
+            images_dir=Path(self.config.data_dir) / "images",
         )
 
         if flags.is_enabled("goal_compass"):
@@ -1742,6 +1743,22 @@ class MuninnMemory:
             }
         )
         return result
+
+    async def restore(self, memory_id: str) -> Dict[str, Any]:
+        """Bring an archived memory back into search by re-indexing its content."""
+        self._check_initialized()
+        record = await asyncio.to_thread(self._metadata.get, memory_id)
+        if record is None:
+            return {"error": f"Memory {memory_id} not found"}
+        if not record.archived:
+            return {"id": memory_id, "restored": False, "reason": "not_archived"}
+        metadata = dict(record.metadata or {})
+        metadata.pop("archived_reason", None)
+        metadata.pop("archived_at", None)
+        metadata["restored_at"] = time.time()
+        await self.update(memory_id, data=record.content, archived=False, metadata=metadata)
+        logger.info("Restored archived memory %s", memory_id)
+        return {"id": memory_id, "restored": True, "event": "RESTORE"}
 
     async def update(self, memory_id: str, data: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """

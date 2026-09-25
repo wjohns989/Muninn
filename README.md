@@ -247,6 +247,7 @@ async def main():
 | `GET` | `/get_all` | Paginated memory listing |
 | `PUT` | `/update` | Update a memory |
 | `DELETE` | `/delete/{memory_id}` | Delete a memory |
+| `POST` | `/restore/{memory_id}` | Restore a memory that consolidation archived (merge, decay, temporal shadow) |
 | `POST` | `/ingest` | Ingest files/folders |
 | `POST` | `/ingest/legacy/discover` | Discover legacy session files |
 | `POST` | `/ingest/legacy/import` | Import selected legacy memories |
@@ -287,6 +288,8 @@ Key environment variables:
 | `MUNINN_FEDERATION_PEERS` | - | Comma-separated list of peer base URLs |
 | `MUNINN_FEDERATION_SYNC_ON_ADD` | off | `=1` enables real-time push-on-add to peers |
 | `MUNINN_TEMPORAL_QUERY_EXPANSION` | off | `=1` enables NL time-phrase parsing in search |
+| `MUNINN_CONSOLIDATION_DRY_RUN` | off | `=1` computes consolidation changes and lists them in `/consolidation/status` without writing any store |
+| `MUNINN_CONSOLIDATION_BATCH_SIZE` | `500` | Memories visited per phase per cycle; a persisted cursor pages through the whole store |
 | `MUNINN_SESSION_INHIBITION` | on | Demote memories already returned in the same agent session (requires `session_id` on search; MCP sends it) |
 | `MUNINN_SESSION_INHIBITION_RANK_PENALTY` | `3` | Positions a repeated memory moves down in the final ranked pool |
 | `MUNINN_SESSION_INHIBITION_TTL_SEC` | `1800` | How long a returned memory stays inhibited within a session |
