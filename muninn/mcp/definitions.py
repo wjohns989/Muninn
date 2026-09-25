@@ -79,6 +79,14 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                     "type": "string",
                     "enum": ["text", "image", "audio", "video", "sensor"],
                     "description": "Filter results by media type (Phase 20)."
+                },
+                "session_id": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": (
+                        "Optional conversation key. Memories already returned under the same key "
+                        "are ranked lower, so repeated searches surface new context."
+                    ),
                 }
             },
             "required": ["query"]

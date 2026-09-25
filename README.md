@@ -151,6 +151,13 @@ Generic Streamable HTTP client configuration:
 The legacy stdio wrapper remains available for clients without Streamable HTTP
 support, but it connects to the existing backend and is not a second store owner.
 
+The endpoint is dual-era: clients on MCP 2026-07-28 send stateless requests
+(protocol version, client info and capabilities in `params._meta`, mirrored in the
+`MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers) and can call
+`server/discover`; clients on 2025-11-25 and earlier keep using `initialize` and
+`Mcp-Session-Id`. Stateless clients that want session inhibition pass a
+`session_id` argument to `search_memory`.
+
 Legacy wrapper registration:
 
 ```bash

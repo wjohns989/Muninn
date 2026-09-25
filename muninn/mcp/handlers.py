@@ -568,10 +568,13 @@ def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float])
 _STDIO_SEARCH_SESSION_ID = f"stdio-{uuid.uuid4().hex}"
 
 
-def _search_session_id() -> str:
+def _search_session_id() -> Optional[str]:
     from .state import get_current_session_id
 
     session_id = get_current_session_id()
+    if session_id.startswith("stateless-"):
+        # MCP 2026-07-28 has no sessions; each request's context is throwaway.
+        return None
     return _STDIO_SEARCH_SESSION_ID if session_id in ("default", "stdio") else session_id
 
 
@@ -591,7 +594,7 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
         "filters": filters,
         "explain": args.get("explain", False),
         "media_type": args.get("media_type"),
-        "session_id": _search_session_id(),
+        "session_id": args.get("session_id") or _search_session_id(),
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     result = resp.json()
