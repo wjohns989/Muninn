@@ -161,3 +161,25 @@ def test_mcp_search_forwards_http_session_id(monkeypatch):
         del _thread_local.mcp_session_id
 
     assert captured["session_id"] == "http-session-1"
+
+
+def test_health_reports_content_free_inhibition_utilization():
+    from types import SimpleNamespace
+
+    from muninn.core.memory import MuninnMemory
+
+    inhibitor = SessionInhibitor(max_sessions=4)
+    inhibitor.record("s1", ["secret-memory-id"])
+    fake = SimpleNamespace(_retriever=SimpleNamespace(_session_inhibitor=inhibitor))
+
+    status = MuninnMemory._session_inhibition_status(fake)
+
+    assert status == {
+        "enabled": True,
+        "sessions": 1,
+        "max_sessions": 4,
+        "max_ids_per_session": 200,
+        "ttl_seconds": 1800.0,
+        "rank_penalty": 3,
+    }
+    assert MuninnMemory._session_inhibition_status(SimpleNamespace(_retriever=None)) == {"enabled": False}

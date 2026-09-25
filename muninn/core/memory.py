@@ -1983,6 +1983,20 @@ class MuninnMemory:
         logger.info("Deleted %d memories for user %s", count, user_id)
         return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
 
+    def _session_inhibition_status(self) -> Dict[str, Any]:
+        """Content-free utilization of the bounded session-inhibition state."""
+        inhibitor = getattr(self._retriever, "_session_inhibitor", None) if self._retriever else None
+        if inhibitor is None:
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "sessions": len(inhibitor),
+            "max_sessions": inhibitor.max_sessions,
+            "max_ids_per_session": inhibitor.max_ids_per_session,
+            "ttl_seconds": inhibitor.ttl_seconds,
+            "rank_penalty": inhibitor.rank_penalty,
+        }
+
     async def health(self) -> Dict[str, Any]:
         """Return system health status."""
         self._check_initialized()
@@ -2023,6 +2037,7 @@ class MuninnMemory:
                     "ttl_seconds": self.config.retrieval_feedback.cache_ttl_seconds,
                 },
                 "ingestion_max_workers": self.config.ingestion.max_workers,
+                "session_inhibition": self._session_inhibition_status(),
             },
             "backend": "muninn-native",
         }

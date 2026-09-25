@@ -107,6 +107,7 @@ scripts/               build_standalone.py (PyInstaller), benchmark_colbert_qual
 | `SOTA_PLUS_PLAN.md` | Phase 10–26 history; all phases marked done |
 | `GEMINI.md` | Agent development conventions |
 | `HANDOFF.md`, `REMEDIATION_HANDOFF.md`, `FINAL_REMEDIATION_REPORT.md`, `CHANGELOG_REMEDIATION.md`, `SESSION_COMPLETE.md`, `PR_UPDATE.md` | Historical (Feb 2026) |
+| `docs/plans/2026-09-25-post-codex-hardening-plan.md` | **Current plan** (P0–P3 after the Codex August work) |
 | `docs/` (branch `feature/sota-plus-archive` only) | `SOTA_EXPERIMENTAL_REVIEW.md`, `plans/` (Phase 4–5 designs), `MUNINN_2026_VISION_AND_ROADMAP.md` |
 | `eval/README.md`, `CITATIONS.md` | Benchmark docs, references |
 
@@ -129,14 +130,14 @@ scripts/               build_standalone.py (PyInstaller), benchmark_colbert_qual
 | P1: CoALA session inhibition | **Done.** `muninn/retrieval/session_inhibition.py`; active when search carries `session_id` (MCP sends it) |
 | Clean-install import failure | **Fixed.** `aiohttp` declared as a dependency |
 
-Open follow-ups: consolidation decay still uses `max_similarity=0` (novelty is always 1.0 during decay); `tests/test_concurrency.py` fails (embedded Qdrant/Kuzu reject multi-process access); `test_mcp_http_transport` route introspection breaks on FastAPI ≥0.141; CI does not run the full suite.
+Next work is planned in `docs/plans/2026-09-25-post-codex-hardening-plan.md`: consolidation only visits the 500 most important memories, replay never re-embeds, decay's delete threshold is unreachable, CI runs no unit tests, plus Codex's pending release verification.
 
-### Pull requests (55 open after cleanup)
+### Pull requests (54 open after cleanup)
 
-PR #57 merged. 21 PRs closed with reasons (17 duplicate/superseded, 4 security PRs that fixed non-issues: #66, #67, #76, #108).
+PR #57 merged. 22 PRs closed with reasons (18 duplicate/superseded, including both JSONL bulk-read PRs per Codex's #137 disposition; 4 security PRs that fixed non-issues: #66, #67, #76, #108).
 
 **Still conflicting with `main` (need rebase):** #59, #105, #115, #116, #119, #125, #126, #127, #129
 
-**Kept from duplicate clusters:** #118 (JSONL; note it concatenates lines into one JSON array, which changes parsing for lines like `1, 2`), #119, #129, #59, #94, #90, #92 + #96, #113, #62
+**Kept from duplicate clusters:** #119, #129, #59, #94, #90, #92 + #96, #113, #62
 
 **Security:** #65 (column allow-list for `update()`) left open as optional hardening; `update()` keys are internal-only today.
