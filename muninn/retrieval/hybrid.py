@@ -332,7 +332,10 @@ class HybridRetriever:
                 results = self._build_results(candidates[:pool_limit], record_map, traces)
 
             if inhibit:
+                seen = self._session_inhibitor.seen(session_id)
                 results = self._session_inhibitor.rerank(session_id, results, key=lambda r: r.memory.id)[:limit]
+                for result in results:
+                    result.inhibited = result.memory.id in seen
                 self._session_inhibitor.record(session_id, (r.memory.id for r in results))
 
         # --- Record access for accessed memories (Batch Optimized) ---

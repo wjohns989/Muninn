@@ -30,3 +30,23 @@ async def test_import_all_sums_added_memories_across_batches(monkeypatch):
     first_batch = fake_memory.ingest_legacy_sources.await_args_list[0].kwargs["selected_source_ids"]
     assert len(first_batch) == 50
     assert "unsupported" not in first_batch
+
+
+@pytest.mark.asyncio
+async def test_ingest_reports_disabled_feature_as_409(monkeypatch):
+    from fastapi import HTTPException
+
+    import server
+    from muninn.core.feature_flags import FeatureDisabledError
+
+    fake_memory = SimpleNamespace(
+        ingest_sources=AsyncMock(side_effect=FeatureDisabledError(
+            "Feature 'multi_source_ingestion' is disabled. Set MUNINN_MULTI_SOURCE_INGESTION=1 to enable."))
+    )
+    monkeypatch.setattr(server, "memory", fake_memory)
+
+    with pytest.raises(HTTPException) as caught:
+        await server.ingest_sources_endpoint(server.IngestSourcesRequest(sources=["x"]))
+
+    assert caught.value.status_code == 409
+    assert "MUNINN_MULTI_SOURCE_INGESTION=1" in caught.value.detail

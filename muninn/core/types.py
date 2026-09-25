@@ -91,6 +91,9 @@ class SearchResult(BaseModel):
     score: float = 0.0
     source: str = "vector"  # vector|graph|bm25|temporal|hybrid|hybrid+rerank
     linked_images: List[Dict[str, Any]] = Field(default_factory=list)
+    # Set when session inhibition moved this result down because it was
+    # already returned earlier in the same session.
+    inhibited: bool = False
     trace: Optional[RecallTrace] = Field(
         default=None,
         description="RecallTrace explaining why this memory was retrieved (v3.1.0). "

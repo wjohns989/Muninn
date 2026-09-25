@@ -819,6 +819,8 @@ class MuninnMemory:
                 }
                 if explain and r.trace is not None:
                     item["trace"] = r.trace.model_dump()
+                if r.inhibited:
+                    item["inhibited"] = True
                 if goal_alignment is not None:
                     item["goal_similarity"] = goal_alignment["similarity"]
                     if goal_alignment["is_drift"]:

@@ -183,3 +183,25 @@ def test_health_reports_content_free_inhibition_utilization():
         "rank_penalty": 3,
     }
     assert MuninnMemory._session_inhibition_status(SimpleNamespace(_retriever=None)) == {"enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_demoted_results_are_marked_inhibited():
+    records = [MemoryRecord(id=f"m{i}", content=f"memory {i}", importance=0.5) for i in range(6)]
+    retriever = _retriever(records, SessionInhibitor(rank_penalty=3))
+
+    first = await retriever.search("q", limit=3, rerank=False, session_id="s1")
+    second = await retriever.search("q", limit=3, rerank=False, session_id="s1")
+
+    assert not any(r.inhibited for r in first)
+    assert {r.memory.id: r.inhibited for r in second} == {"m3": False, "m0": True, "m4": False}
+
+
+def test_sdk_search_payload_includes_session_only_when_given():
+    from muninn.sdk.client import MuninnClient
+
+    client = MuninnClient.__new__(MuninnClient)
+    base = dict(query="q", user_id="u", agent_id=None, limit=5, rerank=True,
+                filters=None, namespaces=None, explain=False)
+    assert "session_id" not in client._search_payload(**base)
+    assert client._search_payload(**base, session_id="conv-1")["session_id"] == "conv-1"

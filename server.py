@@ -48,6 +48,7 @@ load_project_env(Path(__file__).parent)
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
+from muninn.core.feature_flags import FeatureDisabledError
 from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
@@ -1125,6 +1126,9 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
         return {"success": True, "data": result}
     except HTTPException:
         raise
+    except FeatureDisabledError as e:
+        # A configuration state, not a server fault: say which flag enables it.
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error("Error ingesting sources: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
