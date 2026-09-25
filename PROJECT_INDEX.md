@@ -103,10 +103,9 @@ scripts/               build_standalone.py (PyInstaller), benchmark_colbert_qual
 | Doc | Status |
 |---|---|
 | `README.md` | Current. [dev] adds the HTTP topology, image memory, and resource env vars |
-| `HANDOFF_SOTA_READY.md` **[dev]** | **Latest handoff/roadmap** (v3.24.0 → next steps) |
+| `docs/archive/` | Historical handoffs (`HANDOFF.md`, `HANDOFF_SOTA_READY.md`) and remediation reports |
 | `SOTA_PLUS_PLAN.md` | Phase 10–26 history; all phases marked done |
 | `GEMINI.md` | Agent development conventions |
-| `HANDOFF.md`, `REMEDIATION_HANDOFF.md`, `FINAL_REMEDIATION_REPORT.md`, `CHANGELOG_REMEDIATION.md`, `SESSION_COMPLETE.md`, `PR_UPDATE.md` | Historical (Feb 2026) |
 | `docs/plans/2026-09-25-post-codex-hardening-plan.md` | **Current plan** (P0–P3 after the Codex August work) |
 | `docs/` (branch `feature/sota-plus-archive` only) | `SOTA_EXPERIMENTAL_REVIEW.md`, `plans/` (Phase 4–5 designs), `MUNINN_2026_VISION_AND_ROADMAP.md` |
 | `eval/README.md`, `CITATIONS.md` | Benchmark docs, references |
@@ -120,7 +119,7 @@ scripts/               build_standalone.py (PyInstaller), benchmark_colbert_qual
 
 ## 📌 Status Snapshot (2026-09-25)
 
-### Current plan (`HANDOFF_SOTA_READY.md` + `docs/SOTA_EXPERIMENTAL_REVIEW.md`)
+### Current plan (from `docs/archive/HANDOFF_SOTA_READY.md` + `docs/SOTA_EXPERIMENTAL_REVIEW.md`)
 
 | Item | State |
 |---|---|

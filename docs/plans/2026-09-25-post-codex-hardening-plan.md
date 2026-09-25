@@ -39,12 +39,21 @@ machine paths, credentials or runtime artifacts committed; a rollback note per c
 | 2. Replay | **Fixed**: `update_vector` preserves payload; archived rows skipped |
 | 3. Decay threshold / retention | **Fixed**: stored novelty; decay, merge and temporal shadow archive (reversible, `POST /restore/{id}`); dry-run mode |
 | 4. Deletes leaking index entries and files | **Fixed** for working-memory TTL (the only remaining hard delete) |
-| 5. Merged survivor re-indexing | Open |
+| 5. Merged survivor re-indexing | **Fixed**: survivor re-embedded, payload content and BM25 updated |
 | 6. CI | **Done**: `tests.yml` (full suite on locked deps + clean-install import check, which also surfaced undeclared `sse-starlette`) |
 | 7. Test hygiene | **Done** |
-| 8. `/ingest` 500 on disabled flag | Open |
+| 8. `/ingest` 500 on disabled flag | **Fixed**: 409 with the flag to set |
 | Self-supervised adaptive importance | **Done**: see below |
-| 9–13 | Open |
+| BM25 after restart | **Fixed** (found this round): the startup rebuild dropped user/namespace scope, so user-scoped searches skipped every pre-restart memory; it also stopped at 10,000 records |
+| Consolidation crash on archive/merge | **Fixed** (found this round): `VectorStore.delete` rejected the list the daemon passes; covered by a real-store contract test |
+| Learner feedback loop | **Fixed**: the learned score decides retention only; ranking keeps the hand-weighted importance |
+| Reindex / legacy import / legacy detection | **Done**: `python -m muninn.cli reindex|import`, `/admin/*`, `legacy_stores` in `/health` |
+| MCP 2026-07-28 | **Done**: dual-era endpoint (stateless modern requests, `server/discover`, header validation; legacy sessions unchanged) |
+| 9. Benchmarks with real vectors | Open |
+| 10. Session inhibition follow-ups | **Done**: `inhibited` flag on results, SDK `session_id`, explicit `session_id` tool argument |
+| 11. Feedback weighting | Open (measure once the learner has data) |
+| 12–13. Release, PR backlog | Open |
+| Kùzu replacement, embedding upgrade, lint pass, branch pruning | Open (see "Next cycle") |
 
 ### Self-supervised adaptive importance
 
@@ -212,10 +221,10 @@ Tooling to build (always operating on a backup copy, dry-run by default):
   `.gitignore` for the relative data dir and images; untracked outputs containing a real profile path.
   History contains no secrets; three old commits contain a Windows profile path, which only a history
   rewrite on `main` would remove (not recommended).
-- **Root clutter:** move the historical reports (`CHANGELOG_REMEDIATION.md`, `FINAL_REMEDIATION_REPORT.md`,
-  `REMEDIATION_HANDOFF.md`, `SESSION_COMPLETE.md`, `PR_UPDATE.md`, `HANDOFF.md`) to `docs/archive/`; review
-  `fix_fastembed.py`, `ingest_history.py` (hard-coded pre-3.0 paths and port 8000) and the root
-  `package.json` (Node Claude Agent SDK, unused by the Python code).
+- **Root clutter (done):** historical handoffs and remediation reports moved to `docs/archive/`;
+  the unused root `package.json`/`package-lock.json` (Node Claude Agent SDK) removed. `fix_fastembed.py`
+  (referenced by the engine for corrupt FastEmbed caches) and `ingest_history.py` (current, port 42069)
+  stay.
 - **Lint:** 1,173 auto-fixable Ruff findings (whitespace, unsorted/unused imports). One mechanical PR,
   then Ruff in CI so it stays clean.
 - **Branches:** 110 remote branches, most from closed or merged PRs. Delete after review.
