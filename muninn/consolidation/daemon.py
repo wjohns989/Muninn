@@ -215,6 +215,10 @@ class ConsolidationDaemon:
             except asyncio.CancelledError:
                 break
 
+    def _persist(self, record, *fields: str) -> None:
+        """Write the named fields of an in-memory record back to the metadata store."""
+        self.metadata.update(record.id, **{field: getattr(record, field) for field in fields})
+
     # --- Phase Implementations ---
 
     async def _phase_decay(self) -> dict:
@@ -258,7 +262,7 @@ class ConsolidationDaemon:
 
             if new_importance != record.importance:
                 record.importance = new_importance
-                self.metadata.update(record)
+                self._persist(record, "importance")
                 updated += 1
 
             # Soft-delete below threshold
@@ -414,7 +418,7 @@ class ConsolidationDaemon:
                                 target_metadata["superseded_at"] = time.time()
                                 target_to_shadow.importance = target_to_shadow.importance * 0.1
                                 self.metadata.update_metadata(target_to_shadow.id, target_metadata)
-                                self.metadata.update(target_to_shadow)
+                                self._persist(target_to_shadow, "importance")
                                 
                                 self.vectors.delete([target_to_shadow.id])
                                 self.bm25.remove(target_to_shadow.id)
@@ -426,12 +430,19 @@ class ConsolidationDaemon:
                 continue
 
             merged = merge_memories(primary, secondary)
+            # merge_memories keeps whichever record has higher importance.
+            absorbed_id = primary.id if merged.id == secondary.id else secondary.id
 
             # Update stores
-            self.metadata.update(merged)
-            self.metadata.delete(secondary.id)
-            self.vectors.delete([secondary.id])
-            self.graph.delete_memory_references(secondary.id)
+            self._persist(
+                merged,
+                "content", "created_at", "last_accessed", "access_count",
+                "metadata", "consolidation_gen", "consolidated",
+            )
+            self.metadata.delete(absorbed_id)
+            self.vectors.delete([absorbed_id])
+            self.graph.delete_memory_references(absorbed_id)
+            self.bm25.remove(absorbed_id)
             # Graph update: primary node summary changes
             merged_uid = (merged.metadata or {}).get("user_id")
             self.graph.add_memory_node(
@@ -465,7 +476,7 @@ class ConsolidationDaemon:
             record = self.metadata.get(mem_id)
             if record:
                 updated = promote_memory(record, new_type)
-                self.metadata.update(updated)
+                self._persist(updated, "memory_type", "consolidated", "consolidation_gen", "importance")
                 promoted += 1
 
         elapsed = time.time() - t0

@@ -516,11 +516,8 @@ class TestDaemonPhaseDecayBatch:
 
         await daemon._phase_decay()
 
-        # update() or update_importance() must have been called on metadata
-        # (daemon calls self.metadata.update(record) after recalculation)
-        # No crash is the minimum requirement; update may or may not be called
-        # depending on whether new_importance != old importance
-        assert True  # No exception = pass
+        daemon.metadata.update.assert_called_once_with("target", importance=record.importance)
+        assert record.importance != 0.99
 
 
 # ===========================================================================
