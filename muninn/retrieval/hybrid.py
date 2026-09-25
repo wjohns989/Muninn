@@ -338,7 +338,7 @@ class HybridRetriever:
         # --- Record access for accessed memories (Batch Optimized) ---
             if results:
                 accessed_ids = [r.memory.id for r in results]
-                self.metadata.record_access_batch(accessed_ids)
+                self.metadata.record_access_batch(accessed_ids, session_id=session_id)
 
             elapsed = time.time() - t0
             logger.debug("Hybrid search completed: %d results in %.3fs", len(results), elapsed)

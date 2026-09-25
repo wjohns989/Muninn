@@ -13,6 +13,8 @@ Runs periodically (default: every 6 hours) through 5 phases:
 """
 
 import asyncio
+import json
+import random
 import time
 import logging
 from collections import deque
@@ -27,11 +29,14 @@ from muninn.store.vector_store import VectorStore
 from muninn.store.graph_store import GraphStore
 from muninn.retrieval.bm25 import BM25Index
 from muninn.scoring.importance import calculate_importance, batch_update_importance
+from muninn.scoring.adaptive import AdaptiveImportanceModel, build_features, outcome_label
 from muninn.consolidation.merge import find_merge_candidates, merge_memories
 from muninn.consolidation.promote import find_promotion_candidates, promote_memory
 from muninn.core.types import MemoryRecord, MemoryType
 
 logger = logging.getLogger("Muninn.Consolidation")
+
+ADAPTIVE_STATE_KEY = "adaptive_importance_state"
 
 
 class ConsolidationDaemon:
@@ -73,6 +78,17 @@ class ConsolidationDaemon:
         self._batch_size = batch_size if isinstance(batch_size, int) and batch_size > 0 else 500
         # Content-free record of what a dry run would have changed (ids only).
         self._proposed_actions: deque = deque(maxlen=500)
+
+        # Self-supervised importance (see muninn.scoring.adaptive).
+        self._clock = time.time
+        mode = getattr(config, "importance_model", "legacy")
+        self._importance_mode = mode if mode in ("auto", "shadow", "legacy") else "legacy"
+        self._adaptive: Optional[AdaptiveImportanceModel] = None
+        if self._importance_mode != "legacy":
+            self._adaptive = AdaptiveImportanceModel(min_examples=int(config.adaptive_min_examples))
+            self._adaptive.load_json(self.metadata.get_meta(ADAPTIVE_STATE_KEY))
+            self._horizon_seconds = float(config.adaptive_horizon_days) * 86400.0
+            self._samples_per_cycle = int(config.adaptive_samples_per_cycle)
         
         # Phase 9 integrity components (v3.6.0). The NLI session is the largest
         # optional CPU resource, so cycle mode owns it only while the phase runs.
@@ -164,6 +180,9 @@ class ConsolidationDaemon:
         }
 
         try:
+            # Phase 0: LEARN (resolve self-labelled importance predictions)
+            results["phases"]["learn"] = await self._phase_learn()
+
             # Phase 1: DECAY
             decay_result = await self._phase_decay()
             results["phases"]["decay"] = decay_result
@@ -298,6 +317,53 @@ class ConsolidationDaemon:
 
     # --- Phase Implementations ---
 
+    async def _phase_learn(self) -> dict:
+        """
+        Phase 0: LEARN
+        - Resolve importance predictions whose horizon has passed, labelling each
+          from the access log (was it retrieved again by a new session?)
+        - Score each prediction against its outcome, then update the model
+        - Prune access events older than the learning window
+        """
+        if self._adaptive is None:
+            return {"skipped": "legacy"}
+        if self._dry_run:
+            return {"skipped": "dry_run"}
+        t0 = time.time()
+        now = self._clock()
+        due = self.metadata.pop_due_importance_predictions(now - self._horizon_seconds, limit=2000)
+        memory_ids = list({row["memory_id"] for row in due})
+        live = {
+            record.id
+            for record in self.metadata.get_by_ids(memory_ids)
+            if not record.archived
+        }
+        events = self.metadata.get_access_events(memory_ids)
+        resolved = positives = censored = 0
+        for row in due:
+            # A memory archived or deleted during its window could not be retrieved;
+            # counting it as a negative would let the model confirm its own decisions.
+            if row["memory_id"] not in live:
+                censored += 1
+                continue
+            label = outcome_label(events[row["memory_id"]], row["predicted_at"], self._horizon_seconds)
+            self._adaptive.observe(json.loads(row["features"]), row["p_model"], row["legacy_score"], label)
+            resolved += 1
+            positives += label
+        if resolved:
+            self.metadata.set_meta(ADAPTIVE_STATE_KEY, self._adaptive.to_json())
+        pruned = self.metadata.prune_access_events(now - max(4 * self._horizon_seconds, 90 * 86400.0))
+        result = {
+            "resolved": resolved,
+            "positives": positives,
+            "censored": censored,
+            "model_active": self._adaptive.active,
+            "pruned_events": pruned,
+            "elapsed": round(time.time() - t0, 2),
+        }
+        logger.info("Phase LEARN: %s", result)
+        return result
+
     async def _phase_decay(self) -> dict:
         """
         Phase 1: DECAY
@@ -318,6 +384,10 @@ class ConsolidationDaemon:
         utility_map = self.metadata.get_batch_retrieval_utility(
             record_ids, lookback_days=30, estimator="snips"
         )
+        now = self._clock()
+        events_map = self.metadata.get_access_events(record_ids, until=now) if self._adaptive else {}
+        predictions = []
+        learned = 0
 
         ttl_seconds = self.config.working_memory_ttl_hours * 3600
         for record in records:
@@ -344,6 +414,26 @@ class ConsolidationDaemon:
                 retrieval_utility=ret_util,
             )
 
+            if self._adaptive is not None:
+                events = events_map.get(record.id, [])
+                features = build_features(
+                    record,
+                    [ts for ts, _ in events],
+                    len({sid for _, sid in events if sid is not None}),
+                    now,
+                )
+                probability = self._adaptive.predict(features)
+                predictions.append((record.id, now, json.dumps(features), probability, new_importance))
+                # Use the learned score only once it has beaten legacy on self-labelled
+                # outcomes, and only for memories old enough to have a track record.
+                if (
+                    self._importance_mode == "auto"
+                    and self._adaptive.active
+                    and now - record.created_at >= self._horizon_seconds
+                ):
+                    new_importance = self._adaptive.importance(probability)
+                    learned += 1
+
             if new_importance != record.importance:
                 record.importance = new_importance
                 self._persist(record, "importance")
@@ -353,9 +443,13 @@ class ConsolidationDaemon:
                 self._archive(record, "decay", "below_decay_threshold")
                 decayed += 1
 
+        if predictions and not self._dry_run:
+            sample = random.sample(predictions, min(self._samples_per_cycle, len(predictions)))
+            self.metadata.add_importance_predictions(sample)
+
         elapsed = time.time() - t0
         result = {"updated": updated, "decayed": decayed, "expired": expired,
-                  "elapsed": round(elapsed, 2)}
+                  "learned_scores": learned, "elapsed": round(elapsed, 2)}
         logger.info("Phase DECAY: %s", result)
         return result
 
@@ -833,4 +927,15 @@ class ConsolidationDaemon:
             "integrity_resources_loaded": self._conflict_detector is not None,
             "dry_run": self._dry_run,
             "proposed_actions": list(self._proposed_actions) if self._dry_run else [],
+            "adaptive_importance": self._adaptive_status(),
+        }
+
+    def _adaptive_status(self) -> dict:
+        if self._adaptive is None:
+            return {"mode": "legacy"}
+        return {
+            "mode": self._importance_mode,
+            "horizon_days": round(self._horizon_seconds / 86400.0, 3),
+            "pending_predictions": self.metadata.count_importance_predictions(),
+            **self._adaptive.status(),
         }

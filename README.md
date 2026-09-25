@@ -290,6 +290,10 @@ Key environment variables:
 | `MUNINN_TEMPORAL_QUERY_EXPANSION` | off | `=1` enables NL time-phrase parsing in search |
 | `MUNINN_CONSOLIDATION_DRY_RUN` | off | `=1` computes consolidation changes and lists them in `/consolidation/status` without writing any store |
 | `MUNINN_CONSOLIDATION_BATCH_SIZE` | `500` | Memories visited per phase per cycle; a persisted cursor pages through the whole store |
+| `MUNINN_IMPORTANCE_MODEL` | `auto` | Self-supervised importance: `auto` learns continuously and uses the learned model only while it beats the hand-weighted score on its own outcomes; `shadow` learns and reports only; `legacy` disables learning |
+| `MUNINN_ADAPTIVE_HORIZON_DAYS` | `7` | Window in which a memory must be re-retrieved by a new session to count as needed |
+| `MUNINN_ADAPTIVE_SAMPLES_PER_CYCLE` | `200` | Predictions recorded per consolidation cycle for later self-labelling |
+| `MUNINN_ADAPTIVE_MIN_EXAMPLES` | `200` | Resolved outcomes required before the learned model may take over |
 | `MUNINN_SESSION_INHIBITION` | on | Demote memories already returned in the same agent session (requires `session_id` on search; MCP sends it) |
 | `MUNINN_SESSION_INHIBITION_RANK_PENALTY` | `3` | Positions a repeated memory moves down in the final ranked pool |
 | `MUNINN_SESSION_INHIBITION_TTL_SEC` | `1800` | How long a returned memory stays inhibited within a session |
