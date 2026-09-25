@@ -8,7 +8,7 @@ Wraps qdrant-client with Muninn-specific operations.
 import logging
 import uuid
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -92,12 +92,6 @@ class VectorStore:
             collection_name=self.collection_name,
             points=[PointVectors(id=point_id, vector=embedding)],
         )
-
-    def set_payload(self, memory_id: str, fields: Dict[str, Any]) -> None:
-        """Merge fields into a point's payload without touching its vector."""
-        client = self._get_client()
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
-        client.set_payload(collection_name=self.collection_name, payload=fields, points=[point_id])
 
     def search(
         self,
@@ -214,13 +208,15 @@ class VectorStore:
         )
         return True
 
-    def delete(self, memory_id: str) -> bool:
-        """Delete a vector by memory_id."""
+    def delete(self, memory_ids: Union[str, Iterable[str]]) -> bool:
+        """Delete vectors by memory_id (one id or several)."""
+        ids = [memory_ids] if isinstance(memory_ids, str) else list(memory_ids)
+        if not ids:
+            return False
         client = self._get_client()
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
         client.delete(
             collection_name=self.collection_name,
-            points_selector=[point_id],
+            points_selector=[str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id)) for memory_id in ids],
         )
         return True
 
