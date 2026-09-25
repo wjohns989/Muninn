@@ -15,8 +15,8 @@ from muninn.version import __version__ as _MUNINN_VERSION
 from .state import _SESSION_STATE
 from .definitions import (
     SUPPORTED_PROTOCOL_VERSIONS, TOOLS_SCHEMAS, JSON_SCHEMA_2020_12,
-    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS,
-    SUPPORTED_MODEL_PROFILES, MIMIR_TOOLS,
+    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS, OPEN_WORLD_TOOLS,
+    SUPPORTED_MODEL_PROFILES, MIMIR_TOOLS, TOOLSETS, resolve_toolset, toolset_schemas, tool_title,
 )
 from .tasks import (
     create_task, lookup_task_locked, purge_and_retain_tasks_locked, 
@@ -132,36 +132,38 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
     }
     send_result_fn(msg_id, result)
 
-def handle_list_tools(msg_id: Any, send_result_fn):
-    """List available tools with schemas and hints."""
-    from muninn.core.security import get_token
-    # In Phase 10, Listing tools is allowed, but execution requires token parity.
-    
-    tools_list = []
-    for schema_def in TOOLS_SCHEMAS:
-        name = schema_def["name"]
-        tool_def = {
-            "name": name,
-            "description": schema_def["description"],
-            "inputSchema": schema_def["inputSchema"]
-        }
-        # Add JSON schema and hints for SOTA clients
-        if isinstance(tool_def["inputSchema"], dict) and "$schema" not in tool_def["inputSchema"]:
-            tool_def["inputSchema"]["$schema"] = JSON_SCHEMA_2020_12
-        
-        # Mapping hints to legacy annotations
-        read_only = name in READ_ONLY_TOOLS
-        annotations = {
+def active_toolset() -> str:
+    """Toolset for this session: the transport's choice, else MUNINN_MCP_TOOLSET, else full."""
+    chosen = _SESSION_STATE.get("toolset")
+    return resolve_toolset(chosen or os.environ.get("MUNINN_MCP_TOOLSET"))
+
+
+def tool_definition(schema_def: Dict[str, Any]) -> Dict[str, Any]:
+    name = schema_def["name"]
+    input_schema = dict(schema_def["inputSchema"])
+    input_schema.setdefault("$schema", JSON_SCHEMA_2020_12)
+    read_only = name in READ_ONLY_TOOLS
+    return {
+        "name": name,
+        "title": tool_title(name),
+        "description": schema_def["description"],
+        "inputSchema": input_schema,
+        "annotations": {
+            "title": tool_title(name),
             "readOnlyHint": read_only,
             "destructiveHint": name in DESTRUCTIVE_TOOLS,
             "idempotentHint": name in IDEMPOTENT_TOOLS or read_only,
-            "openWorldHint": True,
-        }
-        tool_def["annotations"] = annotations
-        tool_def["execution"] = {"taskSupport": "optional"}
-            
-        tools_list.append(tool_def)
-        
+            # Everything but mimir_relay stays inside the local memory store.
+            "openWorldHint": name in OPEN_WORLD_TOOLS,
+        },
+        "execution": {"taskSupport": "optional"},
+        **({"outputSchema": schema_def["outputSchema"]} if "outputSchema" in schema_def else {}),
+    }
+
+
+def handle_list_tools(msg_id: Any, send_result_fn):
+    """List the tools in the session's toolset with schemas and hints."""
+    tools_list = [tool_definition(schema_def) for schema_def in toolset_schemas(active_toolset())]
     send_result_fn(msg_id, {"tools": tools_list})
 
 def handle_call_tool_with_task(session_id: str, msg_id: Any, name: str, arguments: Dict[str, Any], task_request: Dict[str, Any], send_result_fn, send_notification_fn=None, worker_fn=None):
@@ -367,7 +369,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
     
     # Validation for specific tools that need early exit
     if name == "delete_all_memories" and not arguments.get("confirm", False):
-        send_error_fn(msg_id, -32602, "Must set 'confirm: true' to delete all memories")
+        send_result_fn(msg_id, tool_error_result("Must set 'confirm: true' to delete all memories"))
         return
 
     # Metrics tracking (integrated into threading)
@@ -392,13 +394,22 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
             send_error_fn(msg_id, -32601, f"Method not found: {name}")
             return
 
-        # Truncate if needed (SOTA pattern)
-        text_response = format_tool_result_text(res, name)
+        structured = None
+        if name in STRUCTURED_TOOLS and res.get("success"):
+            # Exact JSON: the preview compactor would cut these nested shapes.
+            structured = res["data"]
+            text_response = json.dumps(structured)
+        else:
+            text_response = format_tool_result_text(res, name)
         truncated_text = truncate_tool_text(text_response, name)
 
-        send_result_fn(msg_id, {
-            "content": [{"type": "text", "text": truncated_text}]
-        })
+        result = {"content": [{"type": "text", "text": truncated_text}]}
+        if structured is not None:
+            result["structuredContent"] = structured
+        if not res.get("success"):
+            result["isError"] = True
+            tool_metrics["saw_error"] = True
+        send_result_fn(msg_id, result)
         
         # Update metrics for success
         tool_metrics["response_count"] += 1
@@ -409,9 +420,9 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
     except Exception as e:
         logger.exception("Tool execution failed: %s", name)
         tool_metrics["saw_error"] = True
-        # Use a more user-friendly error message if available
-        err_msg = str(e)
-        send_error_fn(msg_id, -32603, str(e))
+        # MCP 2025-11-25: execution and input-validation failures are tool
+        # results with isError so the model can read them and self-correct.
+        send_result_fn(msg_id, tool_error_result(str(e) or type(e).__name__))
     finally:
         # Telemetry logging matching the original wrapper
         elapsed_ms = (time.monotonic() - tool_call_started_monotonic) * 1000.0
@@ -425,8 +436,14 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
             tool_metrics["response_bytes_max"]
         )
         setattr(_thread_local, "tool_call_metrics", None)
+def tool_error_result(message: str) -> Dict[str, Any]:
+    return {"content": [{"type": "text", "text": f"Error: {message}"}], "isError": True}
+
+
 def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional[float]) -> Optional[Dict[str, Any]]:
     """Dispatch to internal tool implementations."""
+    if name not in TOOLSETS[active_toolset()]:
+        return None
     dispatch = {
         "add_memory": _do_add_memory,
         "add_image_memory": _do_add_image_memory,
@@ -437,6 +454,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "delete_memory": _do_delete_memory,
         "delete_all_memories": _do_delete_all_memories,
         "set_project_instruction": _do_set_project_instruction,
+        "set_project_goal": _do_set_project_goal,
         "get_project_goal": _do_get_project_goal,
         "set_user_profile": _do_set_user_profile,
         "get_user_profile": _do_get_user_profile,
@@ -460,6 +478,12 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "create_federation_bundle": _do_create_federation_bundle,
         "apply_federation_bundle": _do_apply_federation_bundle,
         "mimir_relay": _do_mimir_relay,
+        "detect_information_gaps": _do_detect_information_gaps,
+        "trigger_distillation": _do_trigger_distillation,
+        "correct_fact": _do_correct_fact,
+        "forage_knowledge": _do_forage_knowledge,
+        "search": _do_chatgpt_search,
+        "fetch": _do_chatgpt_fetch,
     }
     
     handler = dispatch.get(name)
@@ -876,6 +900,96 @@ def _do_apply_federation_bundle(args: Dict[str, Any], deadline: Optional[float])
     resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/apply", deadline_epoch=deadline, json=payload, timeout=30)
     return resp.json()
 
+
+def _do_detect_information_gaps(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {
+        "query": args.get("query"),
+        "context": args.get("context"),
+        "user_id": "global_user",
+        "limit": args.get("limit", 10),
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/reasoning/detect-gaps", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
+    return resp.json()
+
+def _do_trigger_distillation(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"force": bool(args.get("force", True))}
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/optimization/distill", deadline_epoch=deadline, json=payload, timeout=_write_timeout_seconds())
+    return resp.json()
+
+def _do_correct_fact(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"memory_id": args.get("memory_id"), "correction": args.get("correction")}
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/optimization/correct", deadline_epoch=deadline, json=payload, timeout=_write_timeout_seconds())
+    return resp.json()
+
+def _do_forage_knowledge(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {
+        "query": args.get("query"),
+        "ambiguity_threshold": args.get("ambiguity_threshold", 0.7),
+        "user_id": "global_user",
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/optimization/forage", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
+    return resp.json()
+
+CHATGPT_SEARCH_LIMIT = 10
+# Tools with an outputSchema return structuredContent alongside the text block.
+STRUCTURED_TOOLS = {"search", "fetch"}
+_TITLE_CHARS = 80
+
+
+def _memory_url(memory_id: str) -> str:
+    return f"muninn://memory/{quote(memory_id, safe='')}"
+
+
+def _memory_title(content: str) -> str:
+    first_line = " ".join((content or "").split())
+    return first_line if len(first_line) <= _TITLE_CHARS else first_line[: _TITLE_CHARS - 1] + "…"
+
+
+def _do_chatgpt_search(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    """ChatGPT connector search: {results: [{id, title, url}]} across all projects."""
+    payload = {
+        "query": args.get("query"),
+        "limit": CHATGPT_SEARCH_LIMIT,
+        "rerank": True,
+        "user_id": "global_user",
+        "session_id": _search_session_id(),
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
+    result = resp.json()
+    if not result.get("success"):
+        return result
+    hits = [
+        {"id": item["id"], "title": _memory_title(item.get("memory", "")), "url": _memory_url(item["id"])}
+        for item in result.get("data") or []
+        if isinstance(item, dict) and item.get("id")
+    ]
+    return {"success": True, "data": {"results": hits}}
+
+
+def _do_chatgpt_fetch(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    """ChatGPT connector fetch: {id, title, text, url, metadata} for one memory."""
+    memory_id = str(args.get("id") or "")
+    if not memory_id:
+        raise ValueError("fetch requires an 'id' returned by search")
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/memory/{quote(memory_id, safe='')}", deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT)
+    result = resp.json()
+    if not result.get("success"):
+        return result
+    record = result["data"]
+    metadata = {
+        key: record.get(key)
+        for key in ("memory_type", "project", "namespace", "importance", "created_at", "archived")
+    }
+    return {
+        "success": True,
+        "data": {
+            "id": record["id"],
+            "title": _memory_title(record.get("memory", "")),
+            "text": record.get("memory", ""),
+            "url": _memory_url(record["id"]),
+            "metadata": metadata,
+        },
+    }
 
 def _do_mimir_relay(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     """Relay an instruction to a remote AI agent via the IRP/1 protocol.

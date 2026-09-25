@@ -128,6 +128,11 @@ All modes use the same memory engine and data directory.
 
 ## MCP Client Configuration
 
+**Per-client setup** (Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor,
+VS Code, LM Studio, Open WebUI, ChatGPT): see [`docs/CLIENTS.md`](docs/CLIENTS.md).
+Clients with tool limits or small models can load a smaller profile with
+`?toolset=core` (or `readonly`, `chatgpt`) on the URL.
+
 The preferred machine-wide topology is one verified `server.py` process and
 HTTP clients connected to `http://127.0.0.1:42069/mcp`. Clients must not
 auto-start private stdio copies when the shared endpoint is configured.
@@ -208,6 +213,15 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | `discover_legacy_sources` | Find prior assistant session files for migration |
 | `ingest_legacy_sources` | Import discovered legacy memories |
 | `record_retrieval_feedback` | Submit outcome signal for adaptive calibration |
+| `hunt_memory` | Agentic multi-hop search with a synthesized summary |
+| `correct_fact` | Rewrite a wrong memory from a user correction |
+| `detect_information_gaps` | List missing details (paths, credentials, hosts) a task needs |
+| `forage_knowledge` | Follow graph links when a search is ambiguous |
+| `trigger_distillation` | Condense clusters of episodic memories into semantic notes |
+| `search`, `fetch` | ChatGPT connector tools (`chatgpt` profile only) |
+
+The full list (37 tools) is returned by `tools/list`; federation, periodic
+ingestion, model-profile and `mimir_relay` tools are omitted above.
 
 ---
 
@@ -321,6 +335,8 @@ Key environment variables:
 | `MUNINN_MCP_SSE_MAX_SESSIONS` | `128` | Legacy SSE session capacity |
 | `MUNINN_MCP_SSE_QUEUE_SIZE` | `256` | Per-session legacy SSE response queue bound |
 | `MUNINN_MCP_SSE_MAX_INFLIGHT` | `8` | Per-session legacy SSE dispatch-task bound |
+| `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
+| `MUNINN_ALLOWED_ORIGINS` | - | Extra browser origins allowed besides localhost (comma-separated; `null` allows `file://`, `*` disables the check) |
 
 `config.template.yaml` contains conservative, relative-path defaults. Keep real
 tokens and machine-specific data paths in private environment/configuration files.
@@ -405,7 +421,8 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 - **Default data dir**: `~/.local/share/AntigravityLabs/muninn/` (Linux/macOS) · `%LOCALAPPDATA%\AntigravityLabs\muninn\` (Windows)
 - **Storage**: SQLite (metadata) + Qdrant (vectors) + KuzuDB (memory chains graph)
 - **No cloud dependency**: All data local by default
-- **Auth**: Bearer token required on all API calls; token shared via env var
+- **Auth**: when `MUNINN_AUTH_TOKEN` or `MUNINN_API_KEY` is set, every API and MCP call needs it as a Bearer token; without one, only local callers are expected
+- **Browser origins**: requests from web pages other than `localhost` are rejected (blocks cross-site access and DNS rebinding); extend with `MUNINN_ALLOWED_ORIGINS`
 - **Namespace isolation**: `user_id` + `namespace` + `project` boundaries enforced at every retrieval layer
 
 ---
@@ -421,6 +438,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 | `docs/MUNINN_COMPREHENSIVE_ROADMAP.md` | Full feature roadmap (v3.1→v3.3+) |
 | `docs/AGENT_CONTINUATION_RUNBOOK.md` | How to resume development across sessions |
 | `docs/PYTHON_SDK.md` | Python SDK reference |
+| `docs/CLIENTS.md` | Connecting Claude, ChatGPT, Codex, Gemini, Cursor, VS Code and local-model clients |
 | `docs/INGESTION_PIPELINE.md` | Ingestion pipeline internals |
 | `docs/OTEL_GENAI_OBSERVABILITY.md` | OpenTelemetry integration guide |
 | `docs/PLAN_GAP_EVALUATION.md` | Gap analysis against SOTA memory systems |

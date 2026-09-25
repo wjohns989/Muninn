@@ -129,6 +129,7 @@ class HttpSession:
     created_at: float
     last_seen_at: float
     active_dispatches: int = 0
+    toolset: Optional[str] = None
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
@@ -157,7 +158,7 @@ def _purge_expired_locked(now: float) -> List[str]:
     return expired
 
 
-def _create_session() -> str | None:
+def _create_session(toolset: Optional[str] = None) -> str | None:
     now = time.time()
     with _ACTIVE_HTTP_SESSIONS_LOCK:
         expired = _purge_expired_locked(now)
@@ -165,7 +166,7 @@ def _create_session() -> str | None:
             session_id = None
         else:
             session_id = uuid.uuid4().hex
-            _ACTIVE_HTTP_SESSIONS[session_id] = HttpSession(now, now)
+            _ACTIVE_HTTP_SESSIONS[session_id] = HttpSession(now, now, toolset=toolset)
     _cleanup_session_contexts(expired)
     return session_id
 
@@ -312,6 +313,8 @@ def _dispatch_http_message(session_id: str, msg: Dict[str, Any]) -> List[Dict[st
 
     with session.dispatch_lock:
         _thread_local.mcp_session_id = session_id
+        if session.toolset:
+            _SESSION_STATE["toolset"] = session.toolset
         try:
             msg_id = msg.get("id")
             method = msg.get("method")
@@ -438,7 +441,25 @@ def _modern_discover_result() -> Dict[str, Any]:
     }
 
 
-def _dispatch_modern_message(msg: Dict[str, Any], version: str) -> Dict[str, Any]:
+def _request_toolset(request: Request) -> Optional[str]:
+    """Clients pick a tool profile per URL, e.g. /mcp?toolset=core or ?toolset=chatgpt."""
+    return request.query_params.get("toolset") or None
+
+
+# 2026-07-28 list/discover/read results are cacheable and MUST carry cacheScope
+# and ttlMs. Tool and capability lists only change on a server restart; they
+# stay "private" because the toolset varies per client URL.
+_CACHE_DIRECTIVES = {
+    "server/discover": 300_000,
+    "tools/list": 300_000,
+    "resources/list": 0,
+    "resources/templates/list": 0,
+    "prompts/list": 0,
+    "resources/read": 0,
+}
+
+
+def _dispatch_modern_message(msg: Dict[str, Any], version: str, toolset: Optional[str] = None) -> Dict[str, Any]:
     """Serve one stateless request inside a context that exists only for this call."""
     msg_id = msg.get("id")
     params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
@@ -448,6 +469,10 @@ def _dispatch_modern_message(msg: Dict[str, Any], version: str) -> Dict[str, Any
     def send_result(result_id: Any, result: Any) -> None:
         if isinstance(result, dict):
             result = {"resultType": "complete", **result}
+            ttl_ms = _CACHE_DIRECTIVES.get(msg.get("method"))
+            if ttl_ms is not None:
+                result.setdefault("cacheScope", "private")
+                result.setdefault("ttlMs", ttl_ms)
         responses.append({"jsonrpc": "2.0", "id": result_id, "result": result})
 
     def send_error(error_id: Any, code: int, message: str) -> None:
@@ -461,6 +486,7 @@ def _dispatch_modern_message(msg: Dict[str, Any], version: str) -> Dict[str, Any
         "protocol_version": version,
         "client_capabilities": meta.get(META_CLIENT_CAPABILITIES) or {},
         "client_info": meta.get(META_CLIENT_INFO) or {},
+        "toolset": toolset,
     })
     with _SESSION_CONTEXTS_LOCK:
         _SESSION_CONTEXTS[context_id] = state
@@ -515,7 +541,7 @@ async def _handle_modern_post(request: Request, msg: Dict[str, Any], version: st
             HTTPStatus.TOO_MANY_REQUESTS, _json_error(msg_id, -32000, "MCP dispatch capacity reached")
         )
     try:
-        response = await asyncio.to_thread(_dispatch_modern_message, msg, version)
+        response = await asyncio.to_thread(_dispatch_modern_message, msg, version, _request_toolset(request))
     finally:
         _finish_stateless_dispatch()
     return _json_response(HTTPStatus.OK, response)
@@ -599,7 +625,7 @@ async def _handle_post(request: Request) -> Response:
         if session_id:
             code = HTTPStatus.BAD_REQUEST if _get_session(session_id) else HTTPStatus.NOT_FOUND
             return _json_response(code, _json_error("server-error", -32600, "Invalid session"))
-        session_id = _create_session()
+        session_id = _create_session(_request_toolset(request))
         if session_id is None:
             return _json_response(
                 HTTPStatus.SERVICE_UNAVAILABLE,

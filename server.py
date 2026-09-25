@@ -487,18 +487,21 @@ app.include_router(streamable_http_router)
 app.include_router(sse_router)
 
 # --- CORS ---
-# Security design: Muninn runs on localhost only and all data-mutating endpoints
-# require a Bearer token (Depends(verify_token)).  The wildcard origin is needed
-# so the static dashboard (opened as file:// or from a different local port) can
-# reach the API.  Per the Fetch spec, wildcard origins CANNOT be combined with
-# allow_credentials=True, so session cookies are not usable — this is intentional.
-# Authentication is Bearer-token only (Authorization header), which browsers do
-# NOT send automatically; no cross-site request forgery is possible.
-# allow_methods is restricted to the verbs actually used by the server.
+# Security design: Muninn runs on localhost and, unless MUNINN_AUTH_TOKEN or
+# MUNINN_API_KEY is set, does not require a token. Browsers attach Origin to
+# cross-site requests, so OriginGuardMiddleware rejects any origin that is not
+# local or listed in MUNINN_ALLOWED_ORIGINS; this blocks other web pages and
+# DNS rebinding (the MCP Streamable HTTP spec requires the check). CORS mirrors
+# the same allow-list. Non-browser clients send no Origin and are unaffected.
+# The dashboard opened as file:// sends Origin "null": add "null" to opt in.
 from fastapi.middleware.cors import CORSMiddleware
+
+from muninn.core.origin import LOCAL_ORIGIN_REGEX, OriginGuardMiddleware, configured_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(configured_origins()),
+    allow_origin_regex=LOCAL_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=[
@@ -507,9 +510,14 @@ app.add_middleware(
         "Accept",
         "Mcp-Session-Id",
         "Mcp-Protocol-Version",
+        "Mcp-Method",
+        "Mcp-Name",
         "Last-Event-ID",
     ],
+    expose_headers=["Mcp-Session-Id"],
 )
+# Added last so it runs first, before CORS answers a preflight.
+app.add_middleware(OriginGuardMiddleware)
 
 DASHBOARD_HTML_PATH = Path(__file__).with_name("dashboard.html")
 
@@ -1378,6 +1386,17 @@ async def get_all_memories_endpoint(
     except Exception as e:
         logger.error("Error getting memories: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/memory/{memory_id}", dependencies=[Depends(verify_token)])
+async def get_memory_endpoint(memory_id: str):
+    """Get one memory by id, including archived memories."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    record = await memory.get(memory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
+    return {"success": True, "data": record}
 
 
 @app.put("/update", dependencies=[Depends(verify_token)])

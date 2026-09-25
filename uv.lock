@@ -1193,6 +1193,19 @@ wheels = [
 ]
 
 [[package]]
+name = "mcp-types"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ae/91/762d7755d971aff8a28d75f7961656148edf27875c8026e6385aaab08ae7/mcp_types-2.2.0.tar.gz", hash = "sha256:d3ed53703ddd10d9c6399f29d322bb66f3f67ab41348ac8556ba23e07fedefad", size = 65892, upload-time = "2026-09-07T16:06:25.187Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/d7/6ffba5d8cd5dd9b8a19478875c50e04945314ba5074e84d749283f27f62d/mcp_types-2.2.0-py3-none-any.whl", hash = "sha256:ea476b73ee86709ab5abc9452385ed36cc05907e582355622e294595c9a04f13", size = 69106, upload-time = "2026-09-07T16:06:21.461Z" },
+]
+
+[[package]]
 name = "mdurl"
 version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1483,6 +1496,7 @@ dependencies = [
 all = [
     { name = "httpx" },
     { name = "instructor" },
+    { name = "mcp-types" },
     { name = "openai" },
     { name = "opentelemetry-api" },
     { name = "pillow" },
@@ -1501,6 +1515,7 @@ conflict = [
     { name = "transformers" },
 ]
 dev = [
+    { name = "mcp-types" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -1537,6 +1552,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'sdk'", specifier = ">=0.24.0" },
     { name = "instructor", marker = "extra == 'instructor'", specifier = ">=1.0.0" },
     { name = "kuzu", specifier = "==0.11.3" },
+    { name = "mcp-types", marker = "extra == 'dev'", specifier = ">=2.2.0" },
     { name = "muninn-mcp", extras = ["instructor", "tray", "dev", "observability", "conflict", "ingestion", "sdk"], marker = "extra == 'all'" },
     { name = "openai", marker = "extra == 'instructor'", specifier = ">=1.0.0" },
     { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.27.0" },

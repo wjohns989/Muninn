@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Tuple
 
 JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
@@ -649,7 +649,9 @@ READ_ONLY_TOOLS = {
     "detect_information_gaps", "forage_knowledge"
 }
 
-DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories"}
+# Tools that overwrite or remove existing memories. MCP defaults destructiveHint
+# to true for non-read-only tools, so every write tool states it explicitly.
+DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories", "update_memory", "correct_fact"}
 
 IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
     "update_memory", "delete_memory", "delete_all_memories",
@@ -667,3 +669,96 @@ IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
 # mimir_relay creates a new interop_runs record on every call and may have
 # side-effects on the remote agent — it is therefore not read-only or idempotent.
 MIMIR_TOOLS = {"mimir_relay"}
+
+# Only mimir_relay reaches beyond the local memory store (other agent CLIs).
+OPEN_WORLD_TOOLS = set(MIMIR_TOOLS)
+
+# ChatGPT connectors outside Developer Mode (deep research, company knowledge)
+# only call two read-only tools with these exact names and result shapes.
+CHATGPT_TOOLS_SCHEMAS: List[Dict[str, Any]] = [
+    {
+        "name": "search",
+        "description": (
+            "Search Muninn memories. Returns matching memory ids with a short title; "
+            "call fetch with an id to read the full memory."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Natural-language search query."}},
+            "required": ["query"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "url": {"type": "string"},
+                        },
+                        "required": ["id", "title", "url"],
+                    },
+                }
+            },
+            "required": ["results"],
+        },
+    },
+    {
+        "name": "fetch",
+        "description": "Fetch the full content and metadata of one Muninn memory by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "Memory id returned by search."}},
+            "required": ["id"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "title": {"type": "string"},
+                "text": {"type": "string"},
+                "url": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["id", "title", "text", "url"],
+        },
+    },
+]
+READ_ONLY_TOOLS |= {"search", "fetch"}
+IDEMPOTENT_TOOLS |= {"search", "fetch"}
+
+# Tool profiles let a client load only what it needs: Cursor caps active tools
+# at 40 across all servers, and every schema costs context on each request.
+CORE_TOOLS = (
+    "add_memory", "search_memory", "hunt_memory", "update_memory", "delete_memory",
+    "record_retrieval_feedback", "get_project_goal", "set_project_goal", "set_project_instruction",
+    "get_user_profile", "correct_fact",
+)
+TOOLSETS: Dict[str, Tuple[str, ...]] = {
+    "full": tuple(schema["name"] for schema in TOOLS_SCHEMAS),
+    "core": CORE_TOOLS,
+    "readonly": tuple(schema["name"] for schema in TOOLS_SCHEMAS if schema["name"] in READ_ONLY_TOOLS),
+    "chatgpt": ("search", "fetch"),
+}
+DEFAULT_TOOLSET = "full"
+
+_ALL_SCHEMAS = {schema["name"]: schema for schema in TOOLS_SCHEMAS + CHATGPT_TOOLS_SCHEMAS}
+
+
+def resolve_toolset(name: Any) -> str:
+    """Return a known toolset name; unknown or empty values fall back to the default."""
+    if isinstance(name, str) and name.strip().lower() in TOOLSETS:
+        return name.strip().lower()
+    return DEFAULT_TOOLSET
+
+
+def toolset_schemas(name: Any) -> List[Dict[str, Any]]:
+    return [_ALL_SCHEMAS[tool] for tool in TOOLSETS[resolve_toolset(name)]]
+
+
+def tool_title(name: str) -> str:
+    """Human-readable display name, e.g. add_memory -> Add Memory."""
+    return " ".join(word.capitalize() for word in name.split("_"))

@@ -70,6 +70,8 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
+    # Official MCP wire schemas, used to validate responses in tests.
+    "mcp-types>=2.2.0",
 ]
 observability = [
     "opentelemetry-api>=1.27.0",

@@ -97,6 +97,10 @@ def truncate_tool_text(text: str, name: str) -> str:
 def format_tool_result_text(result: Dict[str, Any], name: str) -> str:
     """Convert backend JSON result to standard text representation for tool output."""
     if not result.get("success"):
+        # FastAPI HTTPException bodies are {"detail": ...} with no success key.
+        detail = result.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return f"Error: {detail}"
         error_value = result.get("error")
         if isinstance(error_value, str) and error_value.strip():
             return f"Error: {error_value}"

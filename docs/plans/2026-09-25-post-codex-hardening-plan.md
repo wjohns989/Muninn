@@ -49,6 +49,7 @@ machine paths, credentials or runtime artifacts committed; a rollback note per c
 | Learner feedback loop | **Fixed**: the learned score decides retention only; ranking keeps the hand-weighted importance |
 | Reindex / legacy import / legacy detection | **Done**: `python -m muninn.cli reindex|import`, `/admin/*`, `legacy_stores` in `/health` |
 | MCP 2026-07-28 | **Done**: dual-era endpoint (stateless modern requests, `server/discover`, header validation; legacy sessions unchanged) |
+| MCP client accessibility | **Done** (see "Client accessibility review" below) |
 | 9. Benchmarks with real vectors | Open |
 | 10. Session inhibition follow-ups | **Done**: `inhibited` flag on results, SDK `session_id`, explicit `session_id` tool argument |
 | 11. Feedback weighting | Open (measure once the learner has data) |
@@ -74,6 +75,33 @@ Known risks to watch once it is live:
   the logged ranks.
 - **Access log size.** About one row per returned result, pruned after
   max(4 x horizon, 90 days); watch it on busy stores.
+
+### Client accessibility review (2026-09-25)
+
+Checked with the official MCP Python SDK client (`mcp` 2.2.0) over stdio and
+Streamable HTTP in legacy, auto and 2026-07-28 modes; all 12 combinations pass.
+
+| Finding | Fix |
+|---|---|
+| `set_project_goal`, `detect_information_gaps`, `trigger_distillation`, `correct_fact`, `forage_knowledge` were advertised but returned "Method not found" (dispatch entries lost in the modular refactor) | Routed; a test now fails if any listed tool lacks a dispatcher |
+| 2026-07-28 list and discover results lacked the required `cacheScope`/`ttlMs`, so the official SDK rejected every modern connection | Added; `tests/test_mcp_wire_schema.py` validates every method and version against `mcp-types` |
+| Tool failures were JSON-RPC errors the model never sees | Returned as `isError` results (spec 2025-11-25), including backend 4xx bodies |
+| Every tool claimed `openWorldHint: true`; overwrite tools were not marked destructive | Correct hints plus `title` |
+| No Origin validation and CORS `*`, with no token by default: any web page could read or delete memories | `OriginGuardMiddleware` (localhost plus `MUNINN_ALLOWED_ORIGINS`), CORS on the same allow-list |
+| 37 tools exceed Cursor's 40-tool budget with other servers; ChatGPT outside Developer Mode needs `search`/`fetch` | Tool profiles `full`/`core`/`readonly`/`chatgpt` via `?toolset=` or `MUNINN_MCP_TOOLSET`; ChatGPT `search`/`fetch` with `outputSchema` and `structuredContent`; `GET /memory/{id}` |
+| No per-client setup guide | `docs/CLIENTS.md` |
+
+Next for this area:
+
+- MCP resources (project goal, user profile, recent memories) and prompts
+  (`recall`, `remember`), so hosts that surface resources can attach context
+  without a tool call.
+- An `.mcpb` Desktop Extension for one-click Claude Desktop install.
+- OAuth 2.1 on `/mcp` so ChatGPT and claude.ai can connect directly without a
+  tunnel.
+- The stdio wrapper logs the generated temporary token to stderr, and hosts
+  keep stderr in log files; log that a token was generated, not its value.
+- Drop the non-existent `2025-11-05` from `SUPPORTED_PROTOCOL_VERSIONS`.
 
 ## P0 — consolidation correctness (silent failures)
 
