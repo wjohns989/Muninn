@@ -1,8 +1,7 @@
 # Project Index: Muninn
 
-> Generated 2026-09-25 for the `main` tree at `761b92d` (v3.24.0).
-> Items tagged **[dev]** exist only on `fix/mcp-updates-and-fixes` (PR #57), which is
-> 20 commits / 55 files ahead of `main` and is where active development lands.
+> Generated 2026-09-25 (v3.24.0). Items tagged **[dev]** came from `fix/mcp-updates-and-fixes`,
+> merged to `main` via PR #57 on 2026-09-25.
 
 Local-first, assistant-agnostic persistent memory for AI agents. One FastAPI
 server (`server.py`, port `42069`) owns the stores; MCP, REST, SDK and the Huginn
@@ -122,38 +121,22 @@ scripts/               build_standalone.py (PyInstaller), benchmark_colbert_qual
 
 ### Current plan (`HANDOFF_SOTA_READY.md` + `docs/SOTA_EXPERIMENTAL_REVIEW.md`)
 
-| Item | State in code ([dev]) |
+| Item | State |
 |---|---|
-| Fix Huginn UI ingestion regression (Ollama / `global_user` scoping) | Not verified fixed; UI and server still default to `user_id: global_user` |
-| P0: SNIPS → importance loop | **Partial**: `retrieval_utility` weight (0.10) and Elo-scaled half-life exist; the review's "signal-specific multipliers into decay" is not done |
-| P0: Centrality baseline for entity-free memories | **Open**: `centrality` still defaults to `0.0` (a 0.20-weight penalty) |
-| P1: CoALA session inhibition in `HybridRetriever` | **Open**: no inhibition code |
-| Distillation clustering TODO | Implemented (`VectorClusterEngine`); the TODO comment in `distillation.py` is stale |
+| Huginn UI ingestion regression | **Fixed.** Direct ingestion worked; File Discovery and legacy import read a nonexistent `count` field, `api()` hid server errors (e.g. the opt-in `MUNINN_MULTI_SOURCE_INGESTION` flag), and bulk import always reported 0 |
+| P0: SNIPS → importance loop | **Fixed.** Feedback already fed Elo half-life and the SNIPS utility term, but consolidation never persisted recalculated importance (`metadata.update(record)` was a no-op). Merge, promote and shadow were also not persisted, and merge could delete the surviving record |
+| P0: Centrality baseline for entity-free memories | **Done.** Centrality floored at `CENTRALITY_BASELINE` (one-relation score) |
+| P1: CoALA session inhibition | **Done.** `muninn/retrieval/session_inhibition.py`; active when search carries `session_id` (MCP sends it) |
+| Clean-install import failure | **Fixed.** `aiohttp` declared as a dependency |
 
-The Aug 2026 work (PRs #134–#139, merged into the [dev] branch) was an off-roadmap
-operational pass: memory/resource bounds, Streamable HTTP MCP, image memories,
-`.env` loading, Codex config repair, and the Jina Turbo reranker.
+Open follow-ups: consolidation decay still uses `max_similarity=0` (novelty is always 1.0 during decay); `tests/test_concurrency.py` fails (embedded Qdrant/Kuzu reject multi-process access); `test_mcp_http_transport` route introspection breaks on FastAPI ≥0.141; CI does not run the full suite.
 
-### Pull requests (77 open)
+### Pull requests (55 open after cleanup)
 
-**Integration PR:** #57 `fix/mcp-updates-and-fixes` → `main`: CI green (2/2), carries all Aug 2026 work. Merge this first; most other PRs target a stale `main`.
+PR #57 merged. 21 PRs closed with reasons (17 duplicate/superseded, 4 security PRs that fixed non-issues: #66, #67, #76, #108).
 
-**Conflict with the [dev] branch (17):** #59, #60, #67, #68, #73, #77, #97, #105, #115, #116, #117, #119, #125, #126, #127, #128, #129
+**Still conflicting with `main` (need rebase):** #59, #105, #115, #116, #119, #125, #126, #127, #129
 
-**Duplicate clusters (keep ≤1 each):**
-- JSONL bulk parse: #118, #133
-- SQLite index `executescript`: #117, #119 (+ Mimir DDL #115)
-- Chain-link UNWIND batching: #128, #129
-- Batch delete / N+1: #59, #73, #77
-- Clustering: #68, #97, #131 are superseded by `VectorClusterEngine`; #94 (remove stale TODO) is the right fix. #131 also adds `scikit-learn` as a core dependency
-- `mcp_wrapper.py` unused imports: #60, #64, #71, #84, #91
-- `server.py` unused imports: #78, #82
-- `run_benchmark.py` refactor: #87, #90, #95
-- Platform/docker tests: #92, #96, #102, #104, #107
-- Rule-based extraction tests: #111, #113, #122, #124
-- Handoff SDK tests: #62, #75
-- Blocking sleep → backoff/asyncio: #126, #132
+**Kept from duplicate clusters:** #118 (JSONL; note it concatenates lines into one JSON array, which changes parsing for lines like `1, 2`), #119, #129, #59, #94, #90, #92 + #96, #113, #62
 
-**Security (review individually):** #65, #66, #76 (SQL construction in the SQLite store), #67 (`silent_mcp.py`, conflicts with the [dev] rewrite), #108 (CORS)
-
-**Likely superseded:** #61 "modern MCP standards" (by the #134 Streamable HTTP work)
+**Security:** #65 (column allow-list for `update()`) left open as optional hardening; `update()` keys are internal-only today.
