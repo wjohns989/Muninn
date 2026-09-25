@@ -1,10 +1,10 @@
 import os
+import uuid
 
 DEFAULT_HTTP_TIMEOUT = float(os.getenv("MUNINN_MCP_HTTP_TIMEOUT_SEC", "40"))
 import time
 import logging
 import threading
-import uuid
 import json
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Union

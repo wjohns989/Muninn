@@ -138,3 +138,26 @@ def test_mcp_search_forwards_a_per_process_session_for_stdio(monkeypatch):
 
     assert captured["session_id"] == handlers._STDIO_SEARCH_SESSION_ID
     assert captured["session_id"].startswith("stdio-")
+
+
+def test_mcp_search_forwards_http_session_id(monkeypatch):
+    from muninn.mcp import handlers
+    from muninn.mcp.state import _thread_local
+
+    captured = {}
+    response = MagicMock()
+    response.json.return_value = {"success": True, "data": [{"id": "m1"}]}
+
+    def fake_request(method, url, **kwargs):
+        captured.update(kwargs["json"])
+        return response
+
+    monkeypatch.setattr(handlers, "make_request_with_retry", fake_request)
+    monkeypatch.setattr(handlers, "get_git_info", lambda: {"project": "p", "branch": "b"})
+    _thread_local.mcp_session_id = "http-session-1"
+    try:
+        handlers._do_search_memory({"query": "q"}, None)
+    finally:
+        del _thread_local.mcp_session_id
+
+    assert captured["session_id"] == "http-session-1"
