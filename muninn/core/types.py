@@ -146,6 +146,11 @@ class SearchMemoryRequest(BaseModel):
         default=False,
         description="When True, include RecallTrace explaining retrieval signals (v3.1.0).",
     )
+    session_id: Optional[str] = Field(
+        default=None,
+        max_length=256,
+        description="Agent session key; memories already returned in this session are demoted.",
+    )
 
 
 class AddImageMemoryRequest(BaseModel):

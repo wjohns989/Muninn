@@ -705,6 +705,7 @@ class MuninnMemory:
         namespaces: Optional[List[str]] = None,
         media_type: Optional[str] = None,
         explain: bool = False,
+        session_id: Optional[str] = None,
     ) -> List[SearchResult]:
         """
         Search memories with hybrid RRF fusion and reranking.
@@ -718,6 +719,7 @@ class MuninnMemory:
             filters: Additional metadata filters.
             namespaces: Namespace filter list.
             explain: When True, include RecallTrace per result (v3.1.0).
+            session_id: Optional agent session key for session inhibition.
 
         Returns:
             List of memory dicts with scores.
@@ -796,6 +798,7 @@ class MuninnMemory:
                 goal_signal_weight=self.config.goal_compass.signal_weight,
                 feedback_signal_multipliers=feedback_signal_multipliers,
                 media_type=media_type,
+                session_id=session_id,
             )
 
             output = []

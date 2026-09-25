@@ -37,6 +37,7 @@ from muninn.store.vector_store import VectorStore
 from muninn.store.graph_store import GraphStore
 from muninn.retrieval.bm25 import BM25Index
 from muninn.retrieval.reranker import Reranker
+from muninn.retrieval.session_inhibition import SessionInhibitor
 from muninn.retrieval.weight_adapter import WeightAdapter
 from muninn.retrieval.temporal_parser import TimeRange, get_temporal_parser
 from muninn.chains import MemoryChainRetriever
@@ -94,6 +95,7 @@ class HybridRetriever:
         chain_signal_weight: float = 0.6,
         chain_expansion_limit: int = 20,
         chain_max_seed_memories: int = 6,
+        session_inhibitor: Optional[SessionInhibitor] = None,
     ):
         self.metadata = metadata_store
         self.vectors = vector_store
@@ -115,6 +117,9 @@ class HybridRetriever:
         self._colbert_indexer = colbert_indexer
         self._colbert_scorer = ColBERTScorer()
 
+        # CoALA session inhibition: only applied when a search carries a session_id.
+        self._session_inhibitor = session_inhibitor if session_inhibitor is not None else SessionInhibitor.from_env()
+
     async def search(
         self,
         query: str,
@@ -128,6 +133,7 @@ class HybridRetriever:
         goal_embedding: Optional[List[float]] = None,
         goal_signal_weight: float = GOAL_SIGNAL_WEIGHT,
         feedback_signal_multipliers: Optional[Dict[str, float]] = None,
+        session_id: Optional[str] = None,
     ) -> List[SearchResult]:
         """
         Execute multi-signal hybrid search with RRF fusion.
@@ -141,6 +147,8 @@ class HybridRetriever:
             namespaces: Optional namespace filter list.
             media_type: Optional media type filter (text|image|audio|video).
             explain: Whether to generate recall traces (v3.1.0).
+            session_id: Optional agent session key. When set, memories already
+                returned in this session are demoted (session inhibition).
 
         Returns:
             List of SearchResult sorted by relevance.
@@ -302,22 +310,30 @@ class HybridRetriever:
             }
 
         # --- Reranking ---
+            # With session inhibition, rank a wider pool so unseen memories can
+            # replace demoted ones before trimming to `limit`.
+            inhibit = bool(session_id) and self._session_inhibitor is not None
+            pool_limit = limit * 2 if inhibit else limit
             if rerank and records:
                 # ColBERT late-interaction reranking (Phase 6)
                 if self._colbert_enabled and self._colbert_indexer:
                     results = await self._colbert_rerank(
-                        query, candidates[:limit * 2], record_map, limit, traces,
+                        query, candidates[:limit * 2], record_map, pool_limit, traces,
                         user_id=user_id, namespaces=namespaces,
                     )
                 # Standard Cross-Encoder fallback
                 elif self.reranker and self.reranker.is_available:
                     results = self._rerank_candidates(
-                        query, candidates[:limit * 2], record_map, limit, traces
+                        query, candidates[:limit * 2], record_map, pool_limit, traces
                     )
                 else:
-                    results = self._build_results(candidates[:limit], record_map, traces)
+                    results = self._build_results(candidates[:pool_limit], record_map, traces)
             else:
-                results = self._build_results(candidates[:limit], record_map, traces)
+                results = self._build_results(candidates[:pool_limit], record_map, traces)
+
+            if inhibit:
+                results = self._session_inhibitor.rerank(session_id, results, key=lambda r: r.memory.id)[:limit]
+                self._session_inhibitor.record(session_id, (r.memory.id for r in results))
 
         # --- Record access for accessed memories (Batch Optimized) ---
             if results:

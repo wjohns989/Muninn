@@ -4,6 +4,7 @@ DEFAULT_HTTP_TIMEOUT = float(os.getenv("MUNINN_MCP_HTTP_TIMEOUT_SEC", "40"))
 import time
 import logging
 import threading
+import uuid
 import json
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Union
@@ -562,6 +563,18 @@ def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float])
     return resp.json()
 
 
+# Legacy stdio sessions all report "default"; give this process its own key so
+# separate agents sharing one backend do not inhibit each other's results.
+_STDIO_SEARCH_SESSION_ID = f"stdio-{uuid.uuid4().hex}"
+
+
+def _search_session_id() -> str:
+    from .state import get_current_session_id
+
+    session_id = get_current_session_id()
+    return _STDIO_SEARCH_SESSION_ID if session_id in ("default", "stdio") else session_id
+
+
 def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     git = get_git_info()
     filters = dict(args.get("filters") or {})
@@ -578,6 +591,7 @@ def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[s
         "filters": filters,
         "explain": args.get("explain", False),
         "media_type": args.get("media_type"),
+        "session_id": _search_session_id(),
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
     result = resp.json()

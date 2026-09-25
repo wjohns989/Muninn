@@ -821,6 +821,7 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
             namespaces=req.namespaces,
             media_type=req.media_type,
             explain=req.explain,
+            session_id=req.session_id,
         )
         results = await _enrich_with_linked_images(results)
 
