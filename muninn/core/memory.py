@@ -2447,10 +2447,24 @@ class MuninnMemory:
             return await self._extract(content)
 
     async def _rebuild_bm25(self) -> None:
-        """Rebuild BM25 index from all metadata records."""
-        records = self._metadata.get_all(limit=10000)
-        documents = {r.id: r.content for r in records}
-        self._bm25.rebuild(documents)
+        """Rebuild BM25 from every live memory, keeping each one's user/namespace scope."""
+        documents: Dict[str, str] = {}
+        scopes: Dict[str, Tuple[str, str]] = {}
+        cursor = ""
+        while True:
+            page = await asyncio.to_thread(
+                self._metadata.get_for_consolidation, limit=1000, archived=False, after_id=cursor
+            )
+            for record in page:
+                documents[record.id] = record.content
+                scopes[record.id] = (
+                    (record.metadata or {}).get("user_id", "global"),
+                    record.namespace or "global",
+                )
+            if len(page) < 1000:
+                break
+            cursor = page[-1].id
+        self._bm25.rebuild(documents, scopes)
 
     def _run_user_scope_migration(
         self,

@@ -183,16 +183,26 @@ class BM25Index:
         self._avg_dl = 0.0
         self._n = 0
 
-    def rebuild(self, documents: Dict[str, str]) -> None:
+    def rebuild(
+        self,
+        documents: Dict[str, str],
+        scopes: Optional[Dict[str, Tuple[str, str]]] = None,
+    ) -> None:
         """
         Rebuild the entire index from a dict of {id: text}.
         More efficient than individual adds for large batches.
+
+        ``scopes`` maps id -> (user_id, namespace). Without it every document
+        falls back to ("global", "global") and user-scoped searches skip it.
         """
         self.clear()
+        scopes = scopes or {}
         for doc_id, text in documents.items():
             tokens = tokenize(text)
             self._docs[doc_id] = tokens
             self._doc_lengths[doc_id] = len(tokens)
+            if doc_id in scopes:
+                self._metadata[doc_id] = scopes[doc_id]
 
             seen_terms: Set[str] = set()
             for token in tokens:
