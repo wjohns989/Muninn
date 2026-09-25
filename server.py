@@ -27,18 +27,24 @@ import os
 import sys
 import argparse
 import logging
+from logging.handlers import RotatingFileHandler
 import time
 import asyncio
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 import uvicorn
+import requests
 from fastapi import FastAPI, HTTPException, Depends, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 import secrets
 import portalocker
+
+from muninn.core.env_loader import load_project_env
+
+load_project_env(Path(__file__).parent)
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
@@ -56,6 +62,7 @@ from muninn.ingestion.periodic import (
 from muninn.ingestion.legacy_scheduler import LegacyDiscoveryScheduler
 from muninn.core.types import (
     AddMemoryRequest,
+    AddImageMemoryRequest,
     SearchMemoryRequest,
     UpdateMemoryRequest,
     MemoryType,
@@ -69,7 +76,12 @@ from muninn.mimir.store import MimirStore
 
 # Configure detailed logging to file with a robust, absolute path
 server_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'muninn_server.log'))
-file_handler = logging.FileHandler(server_log_path, mode='a')
+file_handler = RotatingFileHandler(
+    server_log_path,
+    maxBytes=10_000_000,
+    backupCount=3,
+    delay=True,
+)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -445,6 +457,10 @@ async def lifespan(app: FastAPI):
         if _periodic_ingestion:
             await _periodic_ingestion.stop()
             _periodic_ingestion = None
+        from muninn.mcp.http import close_all_http_sessions
+        close_all_http_sessions()
+        from muninn.mcp.sse import close_all_sse_sessions
+        await close_all_sse_sessions()
         if memory:
             await memory.shutdown()
         _release_server_instance_lock()
@@ -463,6 +479,12 @@ app = FastAPI(
 # no additional prefix or auth wrapper is needed here.
 app.include_router(mimir_router)
 
+# Register native MCP transports on the one shared server process.
+from muninn.mcp.http import streamable_http_router
+from muninn.mcp.sse import sse_router
+app.include_router(streamable_http_router)
+app.include_router(sse_router)
+
 # --- CORS ---
 # Security design: Muninn runs on localhost only and all data-mutating endpoints
 # require a Bearer token (Depends(verify_token)).  The wildcard origin is needed
@@ -478,7 +500,14 @@ app.add_middleware(
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Mcp-Session-Id",
+        "Mcp-Protocol-Version",
+        "Last-Event-ID",
+    ],
 )
 
 DASHBOARD_HTML_PATH = Path(__file__).with_name("dashboard.html")
@@ -541,6 +570,12 @@ async def health_check():
 
     try:
         health = await memory.health()
+        from muninn.mcp.http import http_transport_status
+        from muninn.mcp.sse import sse_transport_status
+        health["mcp_transports"] = {
+            "streamable_http": http_transport_status(),
+            "legacy_sse": sse_transport_status(),
+        }
         return health
     except Exception as e:
         logger.error("Health check failed: %s", e)
@@ -644,6 +679,131 @@ async def add_memory_endpoint(req: AddMemoryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _image_max_bytes() -> int:
+    default = 100 * 1024 * 1024
+    try:
+        configured = int(os.environ.get("MUNINN_IMAGE_MAX_BYTES", str(default)))
+    except ValueError:
+        return default
+    return min(max(1, configured), 1024 * 1024 * 1024)
+
+
+@app.post("/add-image", dependencies=[Depends(verify_token)])
+async def add_image_memory_endpoint(req: AddImageMemoryRequest):
+    """Store an image locally with an agent-provided searchable description."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    from muninn.media.image_memory import store_image_memory
+
+    metadata = dict(req.metadata or {})
+    if req.project:
+        metadata.setdefault("project", req.project)
+    try:
+        result = await store_image_memory(
+            memory=memory,
+            image_path=req.image_path,
+            description=req.description,
+            images_dir=Path(memory.config.data_dir) / "images",
+            metadata=metadata,
+            linked_memory_ids=req.linked_memory_ids,
+            user_id=req.user_id or "global_user",
+            namespace=req.namespace,
+            scope=req.scope,
+            max_bytes=_image_max_bytes(),
+        )
+        return {"success": True, "data": result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Error storing image memory: %s", exc)
+        raise HTTPException(status_code=500, detail="Image memory storage failed") from exc
+
+
+@app.get("/images/{stored_name}", dependencies=[Depends(verify_token)])
+async def serve_image(stored_name: str):
+    """Serve one authenticated image from managed storage."""
+    from fastapi.responses import FileResponse
+
+    if memory is None or Path(stored_name).name != stored_name:
+        raise HTTPException(status_code=404, detail="Image not found")
+    images_dir = (Path(memory.config.data_dir) / "images").resolve()
+    image_path = (images_dir / stored_name).resolve()
+    try:
+        image_path.relative_to(images_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Image not found") from exc
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(str(image_path))
+
+
+async def _enrich_with_linked_images(results: list[Any]) -> list[Any]:
+    """Attach safe, batch-fetched image summaries to search results.
+
+    Managed filenames are sufficient for authenticated retrieval.  Source paths
+    and arbitrary image metadata are intentionally never copied into results.
+    """
+    if memory is None or not results:
+        return results
+
+    def _result_metadata(result: Any) -> dict[str, Any]:
+        if isinstance(result, dict):
+            metadata = result.get("metadata")
+            memory_record = result.get("memory")
+            if metadata is None and isinstance(memory_record, dict):
+                metadata = memory_record.get("metadata")
+            elif metadata is None and memory_record is not None:
+                metadata = getattr(memory_record, "metadata", None)
+        else:
+            metadata = getattr(result, "metadata", None)
+            if metadata is None:
+                metadata = getattr(getattr(result, "memory", None), "metadata", None)
+        return dict(metadata or {})
+
+    linked_ids: list[str] = []
+    for result in results:
+        metadata = _result_metadata(result)
+        for image_id in metadata.get("linked_image_ids", ()):
+            if isinstance(image_id, str) and image_id not in linked_ids:
+                linked_ids.append(image_id)
+
+    if not linked_ids:
+        return results
+
+    image_records = await asyncio.to_thread(memory._metadata.get_by_ids, linked_ids)
+    safe_images: dict[str, dict[str, Any]] = {}
+    for record in image_records:
+        record_id = str(getattr(record, "id", ""))
+        metadata = dict(getattr(record, "metadata", {}) or {})
+        stored_name = metadata.get("image_stored_name")
+        if not record_id or not isinstance(stored_name, str):
+            continue
+        safe_images[record_id] = {
+            "memory_id": record_id,
+            "description": getattr(record, "content", ""),
+            "image_url": f"/images/{stored_name}",
+            "image_id": metadata.get("image_id"),
+            "image_hash": metadata.get("image_hash"),
+            "image_size_bytes": metadata.get("image_size_bytes"),
+            "image_original_name": metadata.get("image_original_name"),
+        }
+
+    for result in results:
+        metadata = _result_metadata(result)
+        linked = [
+            safe_images[image_id]
+            for image_id in metadata.get("linked_image_ids", ())
+            if image_id in safe_images
+        ]
+        if not linked:
+            continue
+        if isinstance(result, dict):
+            result["linked_images"] = linked
+        else:
+            setattr(result, "linked_images", linked)
+    return results
+
+
 @app.post("/search", dependencies=[Depends(verify_token)])
 async def search_memory_endpoint(req: SearchMemoryRequest):
     """Search for relevant memories using hybrid multi-signal retrieval."""
@@ -662,6 +822,7 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
             media_type=req.media_type,
             explain=req.explain,
         )
+        results = await _enrich_with_linked_images(results)
 
         return {"success": True, "data": results}
     except Exception as e:
@@ -690,6 +851,7 @@ async def hunt_memory_endpoint(req: HuntMemoryRequest):
             namespaces=req.namespaces,
             media_type=req.media_type,
         )
+        results = await _enrich_with_linked_images(results)
 
         synthesis = ""
         if req.synthesize and results:
@@ -1351,6 +1513,7 @@ async def federated_search_endpoint(req: SearchMemoryRequest):
             filters=req.filters,
             namespaces=req.namespaces,
         )
+        results = await _enrich_with_linked_images(results)
         return {"success": True, "data": results}
     except Exception as e:
         logger.error("Federated search failed: %s", e)
@@ -1568,6 +1731,38 @@ async def apply_federation_bundle_endpoint(
 
 # --- Main ---
 
+def _existing_server_healthy(host: str, port: int) -> bool:
+    """
+    Return True when a Muninn-compatible backend is already serving host:port.
+
+    This keeps repeated local launches idempotent for multi-agent setups where
+    one background server is shared across several MCP clients.
+    """
+    url = f"http://{host}:{port}/health"
+    try:
+        response = requests.get(url, timeout=0.75)
+        if response.status_code != 200:
+            return False
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            backend = str(payload.get("backend", "")).lower()
+            status_val = str(payload.get("status", "")).lower()
+            if backend in {"muninn-native", "muninn"}:
+                return True
+            legacy_signature = {"memory_count", "vector_count", "graph_nodes"}
+            if (
+                status_val in {"healthy", "ok", "initializing"}
+                and len(legacy_signature.intersection(payload)) >= 2
+            ):
+                return True
+        return False
+    except requests.RequestException:
+        return False
+
+
 def main():
     config = MuninnConfig.from_env()
 
@@ -1581,6 +1776,18 @@ def main():
 
     import sys
     import os
+
+    if _existing_server_healthy(args.host, args.port):
+        logger.info(
+            "Detected existing Muninn server at http://%s:%d; skipping duplicate startup.",
+            args.host,
+            args.port,
+        )
+        print(
+            f"Muninn already running at http://{args.host}:{args.port}. "
+            "Reusing existing instance."
+        )
+        return
 
     try:
         uvicorn.run(

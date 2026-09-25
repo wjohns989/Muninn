@@ -51,6 +51,7 @@ eval/reports/ollama/
 eval/reports/hygiene/
 eval/reports/model_benchmarks/
 eval/reports/mcp_transport/
+eval/reports/memory/
 
 # Loki / session state
 .loki/
@@ -92,6 +93,41 @@ run_muninn.bat
 # Auth token (contains secrets — never commit)
 .muninn_token
 
+# Local environment and credential files (public templates stay trackable)
+.env
+.env.*
+!.env.example
+!.env.template
+!*.env.example
+!*.env.template
+
+# Machine-local agent/session state and personal memories
+.serena/
+.muninn/
+
+# Runtime process state, traces, profiles, and dumps
+*.pid
+traces/
+*mcp*trace*.jsonl
+*request*trace*.jsonl
+*tool-call*trace*.jsonl
+*tool_call*trace*.jsonl
+*.prof
+*.pstats
+*.heapsnapshot
+*.dmp
+*.dump
+
+# Runtime databases, indexes, and backend storage mappings
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+qdrant*/
+kuzu*/
+bm25*/
+.cache/
+
 # Agent skill configs (user-specific)
 skills/
 
@@ -102,6 +138,7 @@ assets/*.ico
 !assets/README.md
 
 .worktrees/
+.benchmark_tmp/
 
 # Muninn local runtime (NEVER COMMIT)
 .muninn_runtime/

@@ -54,6 +54,20 @@ def _write_timeout_seconds() -> float:
     return _parse_positive_float_env("MUNINN_MCP_WRITE_TIMEOUT_SEC", 40.0, lower=0.1, upper=180.0)
 
 
+def _initialize_capabilities_for_protocol(protocol_version: str) -> Dict[str, Any]:
+    """Advertise only capabilities defined for the negotiated MCP version."""
+    capabilities: Dict[str, Any] = {"tools": {"listChanged": False}}
+    if protocol_version == "2025-11-25":
+        capabilities["io.modelcontextprotocol.elicitation"] = {"modes": ["form"]}
+        capabilities["tasks"] = {
+            "list": {},
+            "cancel": {},
+            "requests": {"tools/call": {}},
+            "notifications": {"status": {}},
+        }
+    return capabilities
+
+
 def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_result_fn, startup_warnings: Optional[List[str]] = None):
     """Handle protocol negotiation and server initialization."""
     if not isinstance(params, dict):
@@ -68,6 +82,9 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
         return
 
     _SESSION_STATE["negotiated"] = True
+    # Several current hosts treat the initialize response as readiness and do
+    # not send notifications/initialized before their first tools/list probe.
+    _SESSION_STATE["initialized"] = True
     _SESSION_STATE["protocol_version"] = negotiated_version
     _SESSION_STATE["client_capabilities"] = params.get("capabilities", {})
     _SESSION_STATE["client_info"] = params.get("clientInfo", {})
@@ -108,22 +125,7 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
     # Send result
     result = {
         "protocolVersion": negotiated_version,
-        "capabilities": {
-            "io.modelcontextprotocol.elicitation": {"modes": ["form"]},
-            "tools": {
-                "listChanged": False
-            },
-            "tasks": {
-                "list": {},
-                "cancel": {},
-                "requests": {
-                    "tools/call": {},
-                },
-                "notifications": {
-                    "status": {},
-                },
-            }
-        },
+        "capabilities": _initialize_capabilities_for_protocol(negotiated_version),
         "serverInfo": {"name": "muninn-mcp", "version": _MUNINN_VERSION},
         "instructions": build_initialize_instructions(startup_warnings)
     }
@@ -161,7 +163,7 @@ def handle_list_tools(msg_id: Any, send_result_fn):
         
     send_result_fn(msg_id, {"tools": tools_list})
 
-def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any], task_request: Dict[str, Any], send_result_fn, send_notification_fn=None, worker_fn=None):
+def handle_call_tool_with_task(session_id: str, msg_id: Any, name: str, arguments: Dict[str, Any], task_request: Dict[str, Any], send_result_fn, send_notification_fn=None, worker_fn=None):
     """Create a task for a tool call and return immediately."""
     if worker_fn is None:
         worker_fn = _run_tool_call_task_worker
@@ -176,7 +178,7 @@ def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any]
     # Capture snapshot before starting thread to ensure 'working' status in immediate response
     task_snapshot = public_task(task)
     
-    worker_args = (task["taskId"], name, arguments, send_notification_fn)
+    worker_args = (session_id, task["taskId"], name, arguments, send_notification_fn)
     # Support legacy 3-arg workers (from tests) by dropping notification sender
     try:
         import inspect
@@ -205,8 +207,13 @@ def handle_call_tool_with_task(msg_id: Any, name: str, arguments: Dict[str, Any]
     }
     send_result_fn(msg_id, payload)
 
-def _run_tool_call_task_worker(task_id: str, name: str, arguments: Dict[str, Any], send_notification_fn):
+def _run_tool_call_task_worker(session_id: str, task_id: str, name: str, arguments: Dict[str, Any], send_notification_fn):
     """Background worker for task-backed tool calls."""
+    # Crucial Fix: A spawned thread has an empty thread-local storage mapping.
+    # We must forcibly re-inject the session ID so DynamicProxy can route state lookups.
+    from .state import _thread_local
+    _thread_local.mcp_session_id = session_id
+
     # Delay if requested (SOTA pattern)
     delay = float(os.environ.get("MUNINN_MCP_TASK_WORKER_START_DELAY_MS", "0")) / 1000.0
     if delay > 0:
@@ -348,8 +355,10 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
             client_caps = _SESSION_STATE.get("client_capabilities", {})
             # If gate is enabled, check if client supports tasks
             if not require_cap or client_caps.get("tasks"):
-                # Redirect to task handler
-                handle_call_tool_with_task(msg_id, name, params.get("arguments", {}), {}, send_result_fn)
+                # Redirect to task handler — grab session_id from thread-local (SSE) or default to stdio
+                from .state import _thread_local as _state_tl
+                sid = getattr(_state_tl, "mcp_session_id", "stdio")
+                handle_call_tool_with_task(sid, msg_id, name, params.get("arguments", {}), {}, send_result_fn)
                 return
 
     arguments = params.get("arguments", {})
@@ -419,6 +428,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
     """Dispatch to internal tool implementations."""
     dispatch = {
         "add_memory": _do_add_memory,
+        "add_image_memory": _do_add_image_memory,
         "search_memory": _do_search_memory,
         "hunt_memory": _do_hunt_memory,
         "get_all_memories": _do_get_all_memories,
@@ -485,6 +495,39 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
         timeout=_write_timeout_seconds(),
     )
     return resp.json()
+
+
+def _do_add_image_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    image_path = args.get("image_path")
+    description = args.get("description")
+    if not image_path or not description:
+        return {"success": False, "error": "image_path and description are required"}
+
+    git = get_git_info()
+    metadata = inject_operator_profile_metadata(args.get("metadata", {}), operation="add")
+    metadata.setdefault("project", args.get("project") or git["project"])
+    metadata.setdefault("branch", git["branch"])
+    scope = args.get("scope", "project")
+    if scope not in ("project", "global"):
+        scope = "project"
+    payload = {
+        "image_path": image_path,
+        "description": description,
+        "project": args.get("project") or git["project"],
+        "namespace": args.get("namespace", "global"),
+        "scope": scope,
+        "metadata": metadata,
+        "linked_memory_ids": args.get("linked_memory_ids"),
+        "user_id": "global_user",
+    }
+    response = make_request_with_retry(
+        "POST",
+        f"{SERVER_URL}/add-image",
+        deadline_epoch=deadline,
+        json=payload,
+        timeout=_write_timeout_seconds(),
+    )
+    return response.json()
 
 def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     """Convenience tool: create a scope='project' memory tagged with the current git project.

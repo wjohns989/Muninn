@@ -1001,8 +1001,8 @@
 
         function updateStats(data) {
             if (!data) return;
-            document.getElementById('stat-total').innerText = data.memories || 0;
-            document.getElementById('stat-entities').innerText = data.entities || 0;
+            document.getElementById('stat-total').innerText = data.memory_count || 0;
+            document.getElementById('stat-entities').innerText = data.graph_nodes || 0;
             // Get profile from health or just use the UI defaults
             const profileDisplay = (data.active_profile || 'Balanced').charAt(0).toUpperCase() + (data.active_profile || 'Balanced').slice(1);
             document.getElementById('stat-profile').innerText = profileDisplay;

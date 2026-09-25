@@ -25,7 +25,7 @@ from muninn.extraction.audio_adapter import AudioAdapter
 MAX_INGEST_FILE_SIZE_BYTES = 100 * 1024 * 1024
 MAX_CHUNK_SIZE_CHARS = 20_000
 MAX_CHUNK_OVERLAP_CHARS = 5_000
-MAX_WORKERS = 4  # Cap concurrency to avoid OOM
+MAX_WORKERS = 8  # Hard safety ceiling; the conservative configured default is 2.
 
 logger = logging.getLogger("Muninn.Ingest")
 
@@ -184,6 +184,7 @@ class IngestionPipeline:
         chunk_size_chars: int = 1200,
         chunk_overlap_chars: int = 150,
         min_chunk_chars: int = 120,
+        max_workers: int = 2,
         allowed_roots: Sequence[str] | None = None,
         vision_config: Dict[str, Any] | None = None,
         audio_config: Dict[str, Any] | None = None,
@@ -192,6 +193,9 @@ class IngestionPipeline:
         self.chunk_size_chars = chunk_size_chars
         self.chunk_overlap_chars = chunk_overlap_chars
         self.min_chunk_chars = min_chunk_chars
+        if not 1 <= int(max_workers) <= MAX_WORKERS:
+            raise ValueError(f"max_workers must be between 1 and {MAX_WORKERS}")
+        self.max_workers = int(max_workers)
         roots = (
             [Path(root).expanduser().resolve() for root in allowed_roots]
             if allowed_roots
@@ -359,56 +363,63 @@ class IngestionPipeline:
         # Pre-serialize allowed roots for worker
         allowed_roots_str = [str(r) for r in self.allowed_roots]
 
-        # Use ProcessPoolExecutor for true parallelism (CPU bound parsing) and isolation
-        with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            future_map = {
-                executor.submit(
-                    _ingest_worker,
-                    idx,
-                    path,
-                    max_bytes,
-                    chunk_size,
-                    chunk_overlap,
-                    min_chunk,
-                    chronological_order,
-                    allowed_roots_str,
-                    self.vision_config,
-                    self.audio_config,
-                ): idx
-                for idx, path in enumerate(expanded)
-            }
+        # Use a bounded process pool for CPU-bound parsing and isolation. Submit
+        # one worker-sized batch at a time so very large catalogs do not retain an
+        # unbounded future/argument graph in the parent process.
+        if expanded:
+            worker_count = min(self.max_workers, len(expanded))
+            with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
+                for batch_start in range(0, len(expanded), worker_count):
+                    batch = enumerate(
+                        expanded[batch_start:batch_start + worker_count],
+                        start=batch_start,
+                    )
+                    future_map = {
+                        executor.submit(
+                            _ingest_worker,
+                            idx,
+                            path,
+                            max_bytes,
+                            chunk_size,
+                            chunk_overlap,
+                            min_chunk,
+                            chronological_order,
+                            allowed_roots_str,
+                            self.vision_config,
+                            self.audio_config,
+                        ): idx
+                        for idx, path in batch
+                    }
 
-            for future in concurrent.futures.as_completed(future_map):
-                idx = future_map[future]
-                path = expanded[idx]
-                try:
-                    result = future.result(timeout=60)  # 60s timeout per file
-                    if result.status == "processed":
-                        processed_sources += 1
-                        total_chunks += len(result.chunks)
-                    else:
-                        skipped_sources += 1
-                    source_results[idx] = result
-                except concurrent.futures.TimeoutError:
-                    # Handle timeout specifically before the generic Exception
-                    logger.error(f"Ingestion timed out for {path}")
-                    source_results[idx] = IngestionSourceResult(
-                        source_path=str(path),
-                        source_type=infer_source_type(path),
-                        status="failed",
-                        errors=["Parsing timed out"],
-                    )
-                    skipped_sources += 1
-                except Exception as exc:
-                    # Handle pickling error or other worker launch failures
-                    logger.error(f"Ingestion worker failed for {path}: {exc}")
-                    source_results[idx] = IngestionSourceResult(
-                        source_path=str(path),
-                        source_type=infer_source_type(path),
-                        status="failed",
-                        errors=[str(exc)],
-                    )
-                    skipped_sources += 1
+                    for future in concurrent.futures.as_completed(future_map):
+                        idx = future_map[future]
+                        path = expanded[idx]
+                        try:
+                            result = future.result(timeout=60)  # 60s timeout per file
+                            if result.status == "processed":
+                                processed_sources += 1
+                                total_chunks += len(result.chunks)
+                            else:
+                                skipped_sources += 1
+                            source_results[idx] = result
+                        except concurrent.futures.TimeoutError:
+                            logger.error("Ingestion timed out for %s", path)
+                            source_results[idx] = IngestionSourceResult(
+                                source_path=str(path),
+                                source_type=infer_source_type(path),
+                                status="failed",
+                                errors=["Parsing timed out"],
+                            )
+                            skipped_sources += 1
+                        except Exception as exc:
+                            logger.error("Ingestion worker failed for %s: %s", path, exc)
+                            source_results[idx] = IngestionSourceResult(
+                                source_path=str(path),
+                                source_type=infer_source_type(path),
+                                status="failed",
+                                errors=[str(exc)],
+                            )
+                            skipped_sources += 1
 
         # Sort results back to original order? 
         # Not strictly required by schema but nice for deterministic reports.

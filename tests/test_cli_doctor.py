@@ -2,7 +2,15 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import muninn.cli as cli
+
+
+@pytest.fixture(autouse=True)
+def _isolate_codex_config(tmp_path: Path, monkeypatch) -> None:
+    """Never let CLI tests inspect or modify the user's real Codex config."""
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", tmp_path / "codex-config.toml")
 
 
 def _write_json(path: Path, payload: dict) -> None:

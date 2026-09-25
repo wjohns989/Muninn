@@ -10,7 +10,7 @@ v3.1.0: Uses platform abstraction for cross-platform path resolution.
 import os
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field
 
 from muninn.core.feature_flags import FeatureFlags
@@ -182,6 +182,7 @@ class RetrievalFeedbackConfig(BaseModel):
     min_effective_samples: float = 2.0
     default_sampling_prob: float = 1.0
     cache_ttl_seconds: int = 30
+    cache_max_entries: int = Field(default=1024, ge=1, le=100_000)
     multiplier_floor: float = 0.75
     multiplier_ceiling: float = 1.25
 
@@ -192,6 +193,7 @@ class IngestionConfig(BaseModel):
     chunk_size_chars: int = 1200
     chunk_overlap_chars: int = 150
     min_chunk_chars: int = 120
+    max_workers: int = Field(default=2, ge=1, le=8)
     allowed_roots: List[str] = Field(default_factory=list)
 
 
@@ -252,7 +254,7 @@ class AudioConfig(BaseModel):
 class RerankerConfig(BaseModel):
     """Reranker configuration."""
     enabled: bool = True
-    model: str = "jinaai/jina-reranker-v1-tiny-en"
+    model: str = "jinaai/jina-reranker-v1-turbo-en"
 
 
 class ConsolidationConfig(BaseModel):
@@ -268,6 +270,8 @@ class ConsolidationConfig(BaseModel):
     colbert_drift_threshold: float = 0.15
     quantization_threshold_points: int = 10000
     integrity_contradiction_threshold: float = 0.7
+    # ``persistent`` restores the legacy eager, process-lifetime NLI session.
+    integrity_resource_mode: Literal["cycle", "persistent"] = "cycle"
 
 
 class ServerConfig(BaseModel):
@@ -316,6 +320,7 @@ class MuninnConfig(BaseModel):
         - MUNINN_XLAM_URL: xLAM server URL
         - MUNINN_XLAM_ENABLED: Enable/disable xLAM extraction
         - MUNINN_RERANKER_ENABLED: Enable/disable reranker
+        - MUNINN_RERANKER_MODEL: FastEmbed cross-encoder model identifier
         - MUNINN_CONSOLIDATION_ENABLED: Enable/disable consolidation
         - MUNINN_CONSOLIDATION_INTERVAL: Hours between consolidation cycles
         """
@@ -386,10 +391,17 @@ class MuninnConfig(BaseModel):
             ),
             reranker=RerankerConfig(
                 enabled=os.environ.get("MUNINN_RERANKER_ENABLED", "true").lower() == "true",
+                model=os.environ.get(
+                    "MUNINN_RERANKER_MODEL",
+                    "jinaai/jina-reranker-v1-turbo-en",
+                ),
             ),
             consolidation=ConsolidationConfig(
                 enabled=os.environ.get("MUNINN_CONSOLIDATION_ENABLED", "true").lower() == "true",
                 interval_hours=float(os.environ.get("MUNINN_CONSOLIDATION_INTERVAL", "6.0")),
+                integrity_resource_mode=os.environ.get(
+                    "MUNINN_CONSOLIDATION_INTEGRITY_RESOURCE_MODE", "cycle"
+                ).strip().lower(),
             ),
             conflict_detection=ConflictDetectionConfig(
                 model_name=os.environ.get(
@@ -438,6 +450,9 @@ class MuninnConfig(BaseModel):
                 cache_ttl_seconds=int(
                     os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_CACHE_TTL", "30")
                 ),
+                cache_max_entries=int(
+                    os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_CACHE_MAX_ENTRIES", "1024")
+                ),
                 multiplier_floor=float(
                     os.environ.get("MUNINN_RETRIEVAL_FEEDBACK_FLOOR", "0.75")
                 ),
@@ -458,6 +473,7 @@ class MuninnConfig(BaseModel):
                 min_chunk_chars=int(
                     os.environ.get("MUNINN_INGESTION_MIN_CHUNK_CHARS", "120")
                 ),
+                max_workers=int(os.environ.get("MUNINN_INGESTION_MAX_WORKERS", "2")),
                 allowed_roots=[
                     part.strip()
                     for part in os.environ.get("MUNINN_INGESTION_ALLOWED_ROOTS", "").split(os.pathsep)

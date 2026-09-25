@@ -107,3 +107,33 @@ def test_add_persists_chain_links_when_detector_enabled():
 
     stored_record = memory._metadata.add.call_args.args[0]
     assert stored_record.metadata["entity_names"] == ["Redis", "Queue"]
+
+
+def test_metadata_only_update_preserves_content_without_rebuilding_chains():
+    memory = MuninnMemory()
+    memory._initialized = True
+    record = MemoryRecord(
+        id="mem-existing",
+        content="Existing content",
+        memory_type=MemoryType.EPISODIC,
+        provenance=Provenance.USER_EXPLICIT,
+        metadata={"user_id": "user-1", "entity_names": ["Redis"]},
+    )
+    memory._metadata = MagicMock()
+    memory._metadata.get.return_value = record
+    memory._vectors = MagicMock()
+    memory._graph = MagicMock()
+    memory._bm25 = MagicMock()
+    memory._chain_detector = MagicMock()
+
+    result = asyncio.run(
+        memory.update(
+            record.id,
+            metadata_patch={"linked_image_ids": ["image-memory-1"]},
+        )
+    )
+
+    assert result["content"] == "Existing content"
+    assert result["chain_links_created"] == 0
+    assert record.metadata["linked_image_ids"] == ["image-memory-1"]
+    memory._chain_detector.detect_links.assert_not_called()

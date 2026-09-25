@@ -170,6 +170,18 @@ class TestCIBenchmarkWorkflow:
 class TestTokenRotationCLI:
     """Tests for muninn.cli rotate-token command."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_host_configs(self, tmp_path, monkeypatch):
+        """Never let token-rotation tests rewrite real machine-wide MCP config."""
+        from muninn import cli
+
+        monkeypatch.setattr(
+            cli,
+            "_CODEX_CONFIG_PATH",
+            tmp_path / "codex-config.toml",
+        )
+        monkeypatch.setattr(cli, "_MCP_CONFIG_PATHS", [])
+
     def test_cli_module_importable(self):
         from muninn import cli  # noqa: F401
 

@@ -695,6 +695,10 @@ def test_send_json_rpc_marks_transport_closed_on_broken_pipe(monkeypatch):
     sent = []
 
     class _StdoutStub:
+        @property
+        def buffer(self):
+            return self
+
         def write(self, _value):
             sent.append("write")
             return 0

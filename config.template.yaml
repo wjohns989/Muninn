@@ -1,35 +1,46 @@
-# Muninn MCP Configuration
+# Muninn public configuration template.
+# Copy to a private filename and adjust relative paths as needed. Never place
+# real authentication tokens, credentials, or production data paths here.
+
+data_dir: "./muninn_data"
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 42069
   log_level: "info"
 
-# --- Storage Policy ---
-# No third-party naming in directory structure.
-storage:
-  vector_store_path: "./data/vectors"
-  graph_store_path: "./data/graph"
-  log_path: "./data/logs"
+embedding:
+  provider: "ollama"
+  model: "nomic-embed-text"
+  dimensions: 768
+  ollama_url: "http://127.0.0.1:11434"
 
-# --- Assistant Integration Registry ---
-# Set enabled: false to exclude an assistant from your swarm
-assistants:
-  claude:
-    enabled: true
-    config_path: "auto" # Searches standard OS paths
-  gemini:
-    enabled: true
-    config_path: "auto"
-  codex:
-    enabled: true
-    config_path: "auto"
-  vscode:
-    enabled: true
-    config_path: "auto"
+vector:
+  path: "./muninn_data/qdrant"
+  collection: "muninn_memories"
+  on_disk: true
+  dimensions: 768
 
-# --- Model Selection ---
-models:
-  embedding: "nomic-embed-text"
-  reranker: "ms-marco-TinyBERT-L-2-v2"
-  llm_sidecar: "xlam-2-1b"
+graph:
+  path: "./muninn_data/kuzu"
+
+metadata:
+  path: "./muninn_data/metadata.db"
+
+consolidation:
+  enabled: true
+  interval_hours: 6.0
+  integrity_resource_mode: "cycle"  # "persistent" restores legacy eager loading
+
+retrieval_feedback:
+  enabled: false
+  cache_ttl_seconds: 30
+  cache_max_entries: 1024
+
+ingestion:
+  max_file_size_bytes: 5242880
+  chunk_size_chars: 1200
+  chunk_overlap_chars: 150
+  min_chunk_chars: 120
+  max_workers: 2
+  allowed_roots: []

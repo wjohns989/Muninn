@@ -1,82 +1,81 @@
-"""
-Tests for Muninn Optimization (Clustering)
-"""
+"""Tests for bounded, scope-safe vector clustering."""
+
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock
-from muninn.optimization.clustering import VectorClusterEngine
-from muninn.core.types import MemoryRecord, MemoryType, Provenance
 
-# Mock records
-def create_mock_record(mid, content, namespace="global"):
+from muninn.core.types import MemoryRecord, MemoryType
+from muninn.optimization.clustering import VectorClusterEngine
+
+
+def create_mock_record(
+    memory_id: str,
+    content: str,
+    *,
+    namespace: str = "global",
+    project: str = "project-a",
+    user_id: str = "user-a",
+) -> MemoryRecord:
     return MemoryRecord(
-        id=mid,
+        id=memory_id,
         content=content,
         memory_type=MemoryType.EPISODIC,
         created_at=1000.0,
         ingested_at=1000.0,
-        metadata={"user_id": "u1"},
-        namespace=namespace
+        metadata={"user_id": user_id},
+        namespace=namespace,
+        project=project,
     )
+
 
 @pytest.fixture
 def mock_memory():
-    m = MagicMock()
-    m._metadata.get_all = AsyncMock()
-    m._vectors.get_vector = MagicMock()
-    m._vectors.search = MagicMock()
-    m._metadata.get_by_ids = MagicMock(return_value=[])
-    return m
+    memory = MagicMock()
+    memory._metadata.get_all = MagicMock()
+    memory._metadata.get_by_ids = MagicMock()
+    memory._vectors.get_vectors = MagicMock()
+    memory._vectors.search = MagicMock()
+    return memory
+
 
 @pytest.mark.asyncio
-async def test_clustering_engine_forms_cluster(mock_memory):
+async def test_clustering_batches_vectors_and_scopes_neighbor_search(mock_memory):
     engine = VectorClusterEngine(mock_memory)
-    
-    # 1. Setup Candidates
-    candidates = [
-        create_mock_record("lead-1", "Leader"),
-        create_mock_record("lead-2", "Noise")
-    ]
-    mock_memory._metadata.get_all.return_value = candidates
-    
-    # 2. Setup Vector Store
-    # Leader 1 vector
-    mock_memory._vectors.get_vector.side_effect = lambda mid: [0.1]*768 if mid else None
-    
-    # Leader 1 finds 6 neighbors (including itself)
-    neighbors = [("lead-1", 1.0)] + [(f"follow-{i}", 0.9) for i in range(5)]
-    mock_memory._vectors.search.return_value = neighbors
-    
-    # Return records for cluster formation
-    mock_memory._metadata.get_by_ids.return_value = [candidates[0]] # Just dummy return
-    
-    # 3. Run
+    leader = create_mock_record("lead-1", "Leader")
+    members = [leader] + [create_mock_record(f"follow-{i}", "Follower") for i in range(4)]
+    mock_memory._metadata.get_all.return_value = [leader]
+    mock_memory._vectors.get_vectors.return_value = {leader.id: [0.1] * 8}
+    mock_memory._vectors.search.return_value = [(record.id, 0.9) for record in members]
+    mock_memory._metadata.get_by_ids.return_value = members
+
     clusters = await engine.find_episodic_clusters(min_cluster_size=5)
-    
+
     assert len(clusters) == 1
-    assert clusters[0]["id"] == "cluster_lead-1"
-    assert len(clusters[0]["memory_ids"]) == 6 # leader + 5 followers
-    
-    # Check that lead-2 was scanned but produced no cluster (assuming search returns empty for it)
-    # Actually since get_vector side_effect returns valid vector for lead-2 (if logic matches), 
-    # we need to ensure lead-2 doesn't return neighbors.
-    # But loop will stop after lead-1 if processed_ids handles it.
-    
-    # lead-2 is not in lead-1's neighbors, so it will be processed.
-    # We need to make sure lead-2's search returns few neighbors.
-    def search_side_effect(query_embedding, limit, score_threshold, filters):
-        # We can detect based on vector or just use a counter?
-        # Mocking side effect is tricky with list inputs.
-        # Let's just assume subsequent calls return empty.
-        if len(query_embedding) > 0:
-             # simple toggle logic or check calls
-             if mock_memory._vectors.search.call_count == 2: # 2nd call
-                 return []
-             return neighbors
-        return []
-    
-    mock_memory._vectors.search.side_effect = search_side_effect
-    
+    assert clusters[0]["memory_ids"] == [record.id for record in members]
+    mock_memory._vectors.get_vectors.assert_called_once_with([leader.id])
+    filters = mock_memory._vectors.search.call_args.kwargs["filters"]
+    assert filters == {
+        "memory_type": "episodic",
+        "namespace": "global",
+        "project": "project-a",
+        "user_id": "user-a",
+    }
+
+
+@pytest.mark.asyncio
+async def test_clustering_excludes_stale_cross_scope_vector_hits(mock_memory):
+    engine = VectorClusterEngine(mock_memory)
+    leader = create_mock_record("lead-1", "Leader")
+    same_scope = [leader] + [create_mock_record(f"same-{i}", "Same") for i in range(3)]
+    cross_scope = create_mock_record("other-project", "Other", project="project-b")
+    mock_memory._metadata.get_all.return_value = [leader]
+    mock_memory._vectors.get_vectors.return_value = {leader.id: [0.1] * 8}
+    mock_memory._vectors.search.return_value = [
+        *((record.id, 0.9) for record in same_scope),
+        (cross_scope.id, 0.99),
+    ]
+    mock_memory._metadata.get_by_ids.return_value = same_scope + [cross_scope]
+
     clusters = await engine.find_episodic_clusters(min_cluster_size=5)
-    # Should still be 1 cluster from lead-1.
-    assert len(clusters) >= 1
+
+    assert clusters == []

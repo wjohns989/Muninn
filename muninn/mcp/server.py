@@ -61,8 +61,8 @@ class McpServer:
                 if self.transport_closed.is_set():
                     return
                 # Standard stdout write for MCP protocol
-                sys.stdout.write(serialized + "\n")
-                sys.stdout.flush()
+                sys.stdout.buffer.write(serialized.encode("utf-8") + b"\n")
+                sys.stdout.buffer.flush()
         except (BrokenPipeError, OSError) as exc:
             self.transport_closed.set()
             logger.warning("MCP stdio transport closed while sending: %s", exc)
@@ -105,8 +105,14 @@ class McpServer:
                 if not self._consume_framing_headers(stream):
                     return None
 
-                payload = stream.read(content_length)
-                if not payload or len(payload) != content_length:
+                payload = bytearray()
+                while len(payload) < content_length:
+                    chunk = stream.read(content_length - len(payload))
+                    if not chunk:
+                        break
+                    payload.extend(chunk)
+                
+                if len(payload) != content_length:
                     return None
                 
                 try:

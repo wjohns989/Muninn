@@ -11,7 +11,7 @@ import time
 import math
 import logging
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
 from muninn.store.lock import get_store_lock
@@ -1243,6 +1243,28 @@ class SQLiteMetadataStore:
         cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         conn.commit()
         return cursor.rowcount > 0
+
+    def get_referenced_image_names(self, stored_names: Iterable[str]) -> Set[str]:
+        """Return candidate managed-image filenames still referenced by memories."""
+        candidates = list(dict.fromkeys(name for name in stored_names if name))
+        if not candidates:
+            return set()
+
+        conn = self._get_conn()
+        referenced: Set[str] = set()
+        for offset in range(0, len(candidates), 500):
+            batch = candidates[offset : offset + 500]
+            placeholders = ", ".join("?" for _ in batch)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT json_extract(metadata, '$.image_stored_name') AS stored_name
+                FROM memories
+                WHERE json_extract(metadata, '$.image_stored_name') IN ({placeholders})
+                """,
+                batch,
+            ).fetchall()
+            referenced.update(row["stored_name"] for row in rows if row["stored_name"])
+        return referenced
 
     def delete_all(self, user_id: Optional[str] = None, namespace: Optional[str] = None) -> int:
         """Delete memories, optionally scoped by user_id and/or namespace.

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import sys
 from dataclasses import dataclass
@@ -177,7 +178,7 @@ def _patch_codex_toml(
     new_server_url: Optional[str] = None,
     dry_run: bool = False,
 ) -> bool:
-    """Patch Codex config.toml with Muninn MCP env values."""
+    """Patch Codex config.toml without mixing stdio and HTTP schemas."""
     if new_token is None and new_server_url is None:
         return False
     if not config_path.exists():
@@ -205,16 +206,13 @@ def _patch_codex_toml(
     muninn_end = _section_end(muninn_idx)
     env_idx = _find_section(0, "[mcp_servers.muninn.env]")
 
-    def _ensure_key(value: Optional[str]) -> bool:
-        return value is not None
-
     def _upsert_env_line(existing: list[str], key: str, value: str) -> tuple[list[str], bool]:
         updated = False
         replaced = False
-        prefix = f"{key} = "
-        target = f'{prefix}"{value}"'
+        target = f'{key} = "{value}"'
+        assignment = re.compile(rf"^\s*{re.escape(key)}\s*=")
         for i, line in enumerate(existing):
-            if line.strip().startswith(prefix):
+            if assignment.match(line):
                 if line.strip() != target:
                     existing[i] = target
                     updated = True
@@ -224,6 +222,44 @@ def _patch_codex_toml(
             existing.append(target)
             updated = True
         return existing, updated
+
+    muninn_body = lines[muninn_idx + 1 : muninn_end]
+    is_streamable_http = any(re.match(r"^\s*url\s*=", line) for line in muninn_body)
+
+    if is_streamable_http:
+        changed = False
+        if new_server_url is not None:
+            mcp_url = new_server_url.rstrip("/")
+            if not mcp_url.endswith("/mcp"):
+                mcp_url += "/mcp"
+            muninn_body, updated = _upsert_env_line(muninn_body, "url", mcp_url)
+            changed = changed or updated
+        if new_token is not None:
+            muninn_body, updated = _upsert_env_line(
+                muninn_body,
+                "bearer_token_env_var",
+                "MUNINN_AUTH_TOKEN",
+            )
+            changed = changed or updated
+
+        lines[muninn_idx + 1 : muninn_end] = muninn_body
+
+        # ``env`` is a valid child table for stdio servers only.  Older Muninn
+        # releases added it to HTTP configs, which prevents Codex from loading
+        # the entire config file.  Remove the complete legacy table, including
+        # any serialized bearer token.
+        env_idx = _find_section(0, "[mcp_servers.muninn.env]")
+        if env_idx is not None:
+            env_end = _section_end(env_idx)
+            del lines[env_idx:env_end]
+            changed = True
+
+        if changed and not dry_run:
+            config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return changed
+
+    def _ensure_key(value: Optional[str]) -> bool:
+        return value is not None
 
     changed = False
     if env_idx is None:
@@ -312,6 +348,31 @@ def _collect_codex_muninn_entries(config_path: Path) -> list[_DoctorServerEntry]
             if lines[idx].strip().startswith("["):
                 return idx
         return len(lines)
+
+    muninn_end = _section_end(muninn_idx)
+    server_url = None
+    bearer_token_env_var = None
+    for line in lines[muninn_idx + 1 : muninn_end]:
+        stripped = line.strip()
+        url_match = re.match(r'^url\s*=\s*"([^"]*)"', stripped)
+        bearer_match = re.match(r'^bearer_token_env_var\s*=\s*"([^"]*)"', stripped)
+        if url_match:
+            server_url = url_match.group(1)
+        elif bearer_match:
+            bearer_token_env_var = bearer_match.group(1)
+
+    if server_url is not None:
+        normalized_url = server_url.rstrip("/")
+        if normalized_url.endswith("/mcp"):
+            normalized_url = normalized_url[:-4]
+        return [
+            _DoctorServerEntry(
+                config_path=config_path,
+                server_name="codex.muninn",
+                token=os.environ.get(bearer_token_env_var) if bearer_token_env_var else None,
+                server_url=normalized_url or None,
+            )
+        ]
 
     env_idx = _find_section(0, "[mcp_servers.muninn.env]")
     if env_idx is None:
@@ -415,7 +476,9 @@ def cmd_rotate_token(args: argparse.Namespace) -> int:
     codex_modified = _patch_codex_toml(
         _CODEX_CONFIG_PATH,
         new_token=new_token,
-        new_server_url=target_server_url,
+        # Token rotation must not silently replace a custom HTTP endpoint.
+        # ``doctor --repair`` remains the explicit URL convergence operation.
+        new_server_url=None,
         dry_run=dry_run,
     )
     if codex_modified:
