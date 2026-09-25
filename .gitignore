@@ -144,3 +144,15 @@ assets/*.ico
 .muninn_runtime/
 node_modules/
 local_docs_backup/
+
+# Relative data directory from config.template.yaml (memories, indexes, images)
+muninn_data/
+muninn_data_*/
+# Managed image memories and data-directory backups/exports
+/images/
+muninn_backup*/
+*.muninn-export.jsonl
+
+# Local test/benchmark output (can contain machine paths)
+test_results*.txt
+eval/reports/*.json

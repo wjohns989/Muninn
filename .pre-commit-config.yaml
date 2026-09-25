@@ -1,0 +1,8 @@
+# Local guard against committing secrets. Enable once per clone:
+#   pip install pre-commit && pre-commit install
+# CI runs the same scan (.github/workflows/privacy.yml) on every PR.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks

@@ -1,0 +1,15 @@
+# Gitleaks configuration: default rules plus a narrow allowlist for known,
+# reviewed non-secrets. Keep entries specific so real keys are still caught.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "PEM redaction patterns in the Mimir policy engine (regex source, not keys)"
+paths = ['''^muninn/mimir/policy\.py$''']
+regexTarget = "line"
+regexes = ['''\[\\s\\S\]\*\?''']
+
+[[allowlists]]
+description = "Fake PEM fixture used to test redaction"
+paths = ['''^tests/test_mimir_policy\.py$''']
+regexes = ['''MIIEowIBAAKCAQEA1234abcd''']
