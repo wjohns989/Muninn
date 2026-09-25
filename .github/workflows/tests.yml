@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: Full test suite (locked dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip uv
+          uv sync --frozen --python python3.11 --extra dev --extra sdk --extra ingestion --extra tray
+
+      - name: Run tests
+        env:
+          # No display on CI runners; pystray's dummy backend lets tray imports load.
+          PYSTRAY_BACKEND: dummy
+        run: uv run --frozen pytest -q
+
+  clean-install:
+    name: Clean install imports
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package without extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Import the server and core modules
+        # Catches runtime imports that are missing from declared dependencies.
+        run: python -c "import server, muninn.core.memory, muninn.mcp.server, muninn.scoring.adaptive; print('imports ok')"

@@ -207,12 +207,16 @@ def test_configured_bearer_token_is_required(client, monkeypatch):
 def test_shared_fastapi_server_exposes_streamable_http_route():
     import server
 
-    routes = {
-        (route.path, frozenset(route.methods or set()))
-        for route in server.app.routes
-        if hasattr(route, "methods")
-    }
-    assert ("/mcp", frozenset({"GET", "POST", "DELETE"})) in routes
+    # Probe behaviour rather than app.routes, whose shape varies across FastAPI
+    # releases (0.141 no longer flattens included routers there).
+    shared = TestClient(server.app, raise_server_exceptions=False)
+    for method in ("GET", "POST", "DELETE"):
+        response = shared.request(method, "/mcp", json={} if method == "POST" else None)
+        assert response.status_code != 404, method
+        # The handler itself answers GET with a JSON-RPC 405 (no SSE stream is
+        # offered); a framework-level 405 would carry no JSON-RPC body.
+        if response.status_code == 405:
+            assert response.json().get("jsonrpc") == "2.0", method
 
 
 @pytest.mark.parametrize(

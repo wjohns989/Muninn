@@ -43,6 +43,8 @@ dependencies = [
     "httpx>=0.24.0",
     # Imported by muninn.extraction.vision_adapter on the core ingestion path
     "aiohttp>=3.9.0",
+    # Legacy MCP SSE transport (muninn.mcp.sse), mounted by server.py
+    "sse-starlette>=2.0.0",
     "qdrant-client>=1.7.0",
     "fastembed>=0.2.0",
     "kuzu>=0.4.0",

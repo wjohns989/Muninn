@@ -1,6 +1,11 @@
 
 import asyncio
-from claude_agent_sdk import query
+
+import pytest
+
+# Manual smoke script (run directly); skipped when collected without the SDK.
+pytest.importorskip("claude_agent_sdk")
+from claude_agent_sdk import query  # noqa: E402
 
 async def main():
     print("Sending query to Claude via Agent SDK...")
