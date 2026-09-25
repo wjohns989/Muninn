@@ -80,3 +80,27 @@ async def test_merge_persists_survivor_and_deletes_only_absorbed(
     assert "rollbacks use blue-green" in survivor.content
     assert survivor.consolidated is True
     assert daemon.metadata.get(absorbed_id) is None
+
+
+@pytest.mark.asyncio
+async def test_retrieval_feedback_slows_decay_after_consolidation(tmp_path):
+    from muninn.scoring.elo import INITIAL_ELO, calculate_elo_update
+
+    daemon = _daemon(tmp_path)
+    created = time.time() - 21 * 86400
+    for memory_id in ("helpful", "ignored"):
+        daemon.metadata.add(_record(memory_id, f"{memory_id} fact", importance=0.5, created_at=created))
+
+    elo = INITIAL_ELO
+    for _ in range(5):
+        daemon.metadata.add_retrieval_feedback(
+            user_id="u1", namespace="global", project="global", query_text="q",
+            memory_id="helpful", outcome=1.0, rank=1, sampling_prob=None,
+            signals={}, source="test",
+        )
+        elo = calculate_elo_update(elo, 1.0)
+    daemon.metadata.update_elo_rating("helpful", elo)
+
+    await daemon._phase_decay()
+
+    assert daemon.metadata.get("helpful").importance > daemon.metadata.get("ignored").importance

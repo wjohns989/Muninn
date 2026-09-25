@@ -31,6 +31,13 @@ DEFAULT_WEIGHTS = {
     "retrieval": 0.10,
 }
 
+# Centrality floor, equal to the normalized score of a memory with one graph
+# relation (GraphStore degree normalization: log1p(degree) / log1p(20)).
+# Plain-text memories with no entities would otherwise score 0.0 and lose the
+# full centrality weight, while a single relation is worth ~0.23. Flooring at
+# one relation removes that discontinuity and keeps the signal monotonic.
+CENTRALITY_BASELINE = math.log1p(1) / math.log1p(20)
+
 # Recency half-life in days
 RECENCY_HALF_LIFE = 7.0
 
@@ -95,6 +102,7 @@ def calculate_importance(
         memory: The memory record to score
         max_similarity: Maximum cosine similarity to existing semantic memories
         centrality: Graph degree centrality for entities in this memory
+                    (floored at CENTRALITY_BASELINE)
         retrieval_utility: SNIPS feedback-derived retrieval utility [0.0, 1.0]
         weights: Optional custom weights dict
 
@@ -108,6 +116,7 @@ def calculate_importance(
     frequency = calculate_frequency(memory.access_count)
     novelty = calculate_novelty(max_similarity)
     provenance = calculate_provenance_weight(memory.provenance)
+    centrality = max(centrality, CENTRALITY_BASELINE)
 
     # Use .get() with DEFAULT_WEIGHTS fallback so callers can supply partial
     # custom weight dicts without raising KeyError.
