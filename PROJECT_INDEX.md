@@ -130,7 +130,7 @@ scripts/               build_standalone.py (PyInstaller), benchmark_colbert_qual
 | P1: CoALA session inhibition | **Done.** `muninn/retrieval/session_inhibition.py`; active when search carries `session_id` (MCP sends it) |
 | Clean-install import failure | **Fixed.** `aiohttp` declared as a dependency |
 
-Next work is planned in `docs/plans/2026-09-25-post-codex-hardening-plan.md`: consolidation only visits the 500 most important memories, replay never re-embeds, decay's delete threshold is unreachable, CI runs no unit tests, plus Codex's pending release verification.
+Current plan and status: `docs/plans/2026-09-25-post-codex-hardening-plan.md`. Landed in PR #140: dense vector recall fix, archive-based consolidation with dry-run and restore, full-store paging, working replay, self-supervised ACT-R importance learning, and a CI workflow that runs the full suite.
 
 ### Pull requests (54 open after cleanup)
 

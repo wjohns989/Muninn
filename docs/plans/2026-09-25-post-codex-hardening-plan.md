@@ -30,6 +30,42 @@ machine paths, credentials or runtime artifacts committed; a rollback note per c
 - CoALA session inhibition (opt-in via `session_id`; MCP forwards HTTP/SSE/stdio session keys),
   with content-free utilization in `/health`.
 
+## Status (updated 2026-09-25, PR #140)
+
+| Item | State |
+|---|---|
+| Dense vector recall under the default `archived=False` filter | **Fixed** (found during this work; the vector signal returned nothing for ordinary memories) |
+| 1. Consolidation coverage | **Fixed**: persisted id cursor per phase |
+| 2. Replay | **Fixed**: `update_vector` preserves payload; archived rows skipped |
+| 3. Decay threshold / retention | **Fixed**: stored novelty; decay, merge and temporal shadow archive (reversible, `POST /restore/{id}`); dry-run mode |
+| 4. Deletes leaking index entries and files | **Fixed** for working-memory TTL (the only remaining hard delete) |
+| 5. Merged survivor re-indexing | Open |
+| 6. CI | **Done**: `tests.yml` (full suite on locked deps + clean-install import check, which also surfaced undeclared `sse-starlette`) |
+| 7. Test hygiene | **Done** |
+| 8. `/ingest` 500 on disabled flag | Open |
+| Self-supervised adaptive importance | **Done**: see below |
+| 9–13 | Open |
+
+### Self-supervised adaptive importance
+
+Muninn learns importance from its own retrieval history without human feedback
+(`muninn/scoring/adaptive.py`). Each search logs access events; each cycle snapshots
+ACT-R activation features for a sample of memories; after the horizon, the LEARN phase
+labels each snapshot by whether a new session retrieved the memory again, scores the
+stored prediction, then updates an online logistic model. Decay uses the learned score
+only while its rolling AUC beats the hand-weighted score, and only for memories older
+than the horizon. Memories archived during a window are censored.
+
+Known risks to watch once it is live:
+- **Feedback loop.** Once active, learned importance feeds the ranking boost
+  (`0.7 + 0.3 x importance`), which influences future retrievals and therefore labels.
+  Mitigations: labels require a new session, session inhibition diversifies results,
+  and the gate falls back to legacy if AUC degrades. If `/health` shows drift, add
+  small exploration (occasional unboosted ranking) and position-bias weighting from
+  the logged ranks.
+- **Access log size.** About one row per returned result, pruned after
+  max(4 x horizon, 90 days); watch it on busy stores.
+
 ## P0 — consolidation correctness (silent failures)
 
 Each of these was reproduced against current `main`.
