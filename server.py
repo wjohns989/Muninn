@@ -1240,7 +1240,7 @@ async def ingest_all_legacy_sources_endpoint():
                     selected_source_ids=batch,
                     max_results_per_provider=50000,
                 )
-                count = batch_result.get("count", 0) if isinstance(batch_result, dict) else 0
+                count = batch_result.get("added_memories", 0) if isinstance(batch_result, dict) else 0
                 total_imported += count
                 logger.info("Bulk import batch %d/%d: imported %d nodes",
                            (i // batch_size) + 1,
