@@ -567,7 +567,13 @@
                     document.getElementById('auth-dot').className = 'status-dot offline';
                     return { error: 'Unauthorized' };
                 }
-                return await res.json();
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    // FastAPI reports failures as {detail}; surface them as {error} for every tab.
+                    const detail = payload.detail;
+                    return { ...payload, error: typeof detail === 'string' ? detail : (JSON.stringify(detail) || res.statusText) };
+                }
+                return payload;
             } catch (e) {
                 return { error: e.message };
             }
@@ -765,11 +771,14 @@
             btn.disabled = false;
             btn.textContent = "Discover & Ingest";
 
-            if (data.count > 0) {
-                log(`Ingested ${data.count} nodes from external sources.`);
+            const added = data.data ? data.data.added_memories : 0;
+            if (data.error) {
+                log(`Discovery failed: ${data.error}`);
+            } else if (added > 0) {
+                log(`Ingested ${added} nodes from external sources.`);
                 updateStats();
             } else {
-                log(`Discovery returned zero findings: ${data.error || 'Check path/permissions'}`);
+                log('Discovery returned zero findings: Check path/permissions');
             }
             pulseNav('ingest', false);
         }
@@ -911,11 +920,14 @@
         async function importLegacy(sourceId) {
             log(`Initiating parse for target ID: ${sourceId}`);
             const data = await api('/ingest/legacy/import', 'POST', { selected_source_ids: [sourceId] });
-            if (data.count > 0) {
-                log(`Parsed and merged ${data.count} nodes.`);
+            const added = data.data ? data.data.added_memories : 0;
+            if (data.error) {
+                alert(`Import failed: ${data.error}`);
+            } else if (added > 0) {
+                log(`Parsed and merged ${added} nodes.`);
                 updateStats();
             } else {
-                alert(`Import failed: ${data.error}`);
+                log(`Import found no new content for ${sourceId}.`);
             }
         }
 

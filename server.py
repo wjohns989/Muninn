@@ -48,6 +48,7 @@ load_project_env(Path(__file__).parent)
 
 from muninn.core.memory import MuninnMemory
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
+from muninn.core.feature_flags import FeatureDisabledError
 from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
@@ -821,6 +822,7 @@ async def search_memory_endpoint(req: SearchMemoryRequest):
             namespaces=req.namespaces,
             media_type=req.media_type,
             explain=req.explain,
+            session_id=req.session_id,
         )
         results = await _enrich_with_linked_images(results)
 
@@ -1124,6 +1126,9 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
         return {"success": True, "data": result}
     except HTTPException:
         raise
+    except FeatureDisabledError as e:
+        # A configuration state, not a server fault: say which flag enables it.
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error("Error ingesting sources: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1240,7 +1245,7 @@ async def ingest_all_legacy_sources_endpoint():
                     selected_source_ids=batch,
                     max_results_per_provider=50000,
                 )
-                count = batch_result.get("count", 0) if isinstance(batch_result, dict) else 0
+                count = batch_result.get("added_memories", 0) if isinstance(batch_result, dict) else 0
                 total_imported += count
                 logger.info("Bulk import batch %d/%d: imported %d nodes",
                            (i // batch_size) + 1,
@@ -1388,6 +1393,58 @@ async def update_memory_endpoint(req: UpdateMemoryRequest):
     except Exception as e:
         logger.error("Error updating memory: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class ReindexRequest(BaseModel):
+    vectors: bool = True
+    bm25: bool = True
+    recreate_vectors: bool = False
+    dry_run: bool = True
+
+
+class ImportMemoriesRequest(BaseModel):
+    records: List[Dict[str, Any]] = Field(default_factory=list, max_length=1000)
+    user_id: str = "global_user"
+    namespace: str = "global"
+    source: str = "legacy"
+    dry_run: bool = True
+
+
+@app.post("/admin/reindex", dependencies=[Depends(verify_token)])
+async def reindex_endpoint(req: ReindexRequest):
+    """Rebuild vectors and/or BM25 from the metadata store (dry run by default)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    from muninn.core.maintenance import reindex
+
+    return {"success": True, "data": await reindex(
+        memory, vectors=req.vectors, bm25=req.bm25,
+        recreate_vectors=req.recreate_vectors, dry_run=req.dry_run,
+    )}
+
+
+@app.post("/admin/import", dependencies=[Depends(verify_token)])
+async def import_memories_endpoint(req: ImportMemoriesRequest):
+    """Import exported memories (Muninn, Mem0 or similar JSON), keeping original timestamps."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    from muninn.core.maintenance import import_memories
+
+    return {"success": True, "data": await import_memories(
+        memory, req.records, user_id=req.user_id, namespace=req.namespace,
+        source=req.source, dry_run=req.dry_run,
+    )}
+
+
+@app.post("/restore/{memory_id}", dependencies=[Depends(verify_token)])
+async def restore_memory_endpoint(memory_id: str):
+    """Restore a memory that consolidation archived (merge, decay or temporal shadow)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    result = await memory.restore(memory_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return {"success": True, "data": result}
 
 
 @app.delete("/delete/{memory_id}", dependencies=[Depends(verify_token)])

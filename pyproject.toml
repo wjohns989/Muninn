@@ -41,9 +41,14 @@ dependencies = [
     "python-multipart",
     "requests",
     "httpx>=0.24.0",
+    # Imported by muninn.extraction.vision_adapter on the core ingestion path
+    "aiohttp>=3.9.0",
+    # Legacy MCP SSE transport (muninn.mcp.sse), mounted by server.py
+    "sse-starlette>=2.0.0",
     "qdrant-client>=1.7.0",
     "fastembed>=0.2.0",
-    "kuzu>=0.4.0",
+    # Kuzu was archived upstream on 2025-10-10; 0.11.3 is its final release.
+    "kuzu==0.11.3",
     # v3.1.0: Cross-platform path resolution
     "platformdirs>=4.0.0",
 ]

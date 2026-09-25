@@ -99,8 +99,9 @@ class _BaseMuninnClient:
         filters: Optional[Dict[str, Any]],
         namespaces: Optional[List[str]],
         explain: bool,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return {
+        payload = {
             "query": query,
             "user_id": user_id,
             "agent_id": agent_id,
@@ -110,6 +111,9 @@ class _BaseMuninnClient:
             "namespaces": namespaces,
             "explain": explain,
         }
+        if session_id:
+            payload["session_id"] = session_id
+        return payload
 
 
 class MuninnClient(_BaseMuninnClient):
@@ -214,6 +218,7 @@ class MuninnClient(_BaseMuninnClient):
         filters: Optional[Dict[str, Any]] = None,
         namespaces: Optional[List[str]] = None,
         explain: bool = False,
+        session_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         payload = self._search_payload(
             query=query,
@@ -224,6 +229,7 @@ class MuninnClient(_BaseMuninnClient):
             filters=filters,
             namespaces=namespaces,
             explain=explain,
+            session_id=session_id,
         )
         return self._request("POST", "/search", json_body=payload)
 
@@ -719,6 +725,7 @@ class AsyncMuninnClient(_BaseMuninnClient):
         filters: Optional[Dict[str, Any]] = None,
         namespaces: Optional[List[str]] = None,
         explain: bool = False,
+        session_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         payload = self._search_payload(
             query=query,
@@ -729,6 +736,7 @@ class AsyncMuninnClient(_BaseMuninnClient):
             filters=filters,
             namespaces=namespaces,
             explain=explain,
+            session_id=session_id,
         )
         return await self._request("POST", "/search", json_body=payload)
 

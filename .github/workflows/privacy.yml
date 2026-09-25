@@ -1,0 +1,56 @@
+name: Privacy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-private-data:
+    name: No secrets or private runtime data
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (full history for the commit-range scan)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks (pinned release, checksum verified)
+        env:
+          GITLEAKS_VERSION: "8.30.0"
+          GITLEAKS_SHA256: "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"
+        run: |
+          curl -sSL -o gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum --check
+          tar xzf gitleaks.tgz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+
+      - name: Scan every commit in the repository history
+        run: gitleaks git --log-opts="--all" --config .gitleaks.toml --redact --no-banner .
+
+      - name: Refuse tracked files that match ignore rules
+        # Catches force-added runtime data: databases, logs, env files, memory
+        # stores, managed images, traces and similar paths listed in .gitignore.
+        run: |
+          tracked_ignored="$(git ls-files --cached --ignored --exclude-standard)"
+          if [ -n "$tracked_ignored" ]; then
+            echo "These tracked files match .gitignore rules for private or runtime data:"
+            echo "$tracked_ignored"
+            exit 1
+          fi
+
+      - name: Refuse machine-specific home directory paths
+        run: |
+          if git grep -nIE '[A-Za-z]:(\\)+Users(\\)+[A-Za-z0-9._-]+(\\)+|[A-Za-z]:/Users/[A-Za-z0-9._-]+/|/home/[a-z][a-z0-9_-]*/|/Users/[A-Za-z][A-Za-z0-9._-]*/' \
+               -- . ':!uv.lock' ':!.github/workflows/privacy.yml' \
+             | grep -vE '[/\\]Users[/\\]+user[/\\]|/home/user/|/home/runner/'; then
+            echo "Commit relative paths or placeholders (C:\\Users\\user\\...) instead of real home directories."
+            exit 1
+          fi

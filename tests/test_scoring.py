@@ -65,3 +65,17 @@ class TestImportanceWithGraphCentrality:
         score_no_cent = calculate_importance(rec, centrality=0.0)
         score_hi_cent = calculate_importance(rec, centrality=0.9)
         assert score_hi_cent >= score_no_cent
+
+    def test_entity_free_memory_gets_baseline_centrality(self):
+        from muninn.scoring.importance import CENTRALITY_BASELINE
+
+        rec = MemoryRecord(content="plain-text note without graph entities", importance=0.5)
+        entity_free = calculate_importance(rec, centrality=0.0)
+        one_relation = calculate_importance(rec, centrality=CENTRALITY_BASELINE)
+        assert entity_free == pytest.approx(one_relation)
+
+    def test_centrality_stays_monotonic_above_baseline(self):
+        rec = MemoryRecord(content="linked note", importance=0.5)
+        scores = [calculate_importance(rec, centrality=c) for c in (0.0, 0.1, 0.3, 0.6, 1.0)]
+        assert all(a <= b + 1e-9 for a, b in zip(scores, scores[1:]))
+        assert scores[-1] > scores[0]

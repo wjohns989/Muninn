@@ -11,7 +11,7 @@ import time
 import math
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
 from muninn.store.lock import get_store_lock
@@ -165,6 +165,29 @@ CREATE TABLE IF NOT EXISTS legacy_sources_cache (
 );
 """
 
+# Self-supervised importance learning: every retrieval of a memory, and
+# point-in-time predictions whose outcomes are observed from later retrievals.
+ACCESS_EVENTS = """
+CREATE TABLE IF NOT EXISTS access_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id   TEXT NOT NULL,
+    accessed_at REAL NOT NULL,
+    session_id  TEXT,
+    rank        INTEGER
+);
+"""
+
+IMPORTANCE_PREDICTIONS = """
+CREATE TABLE IF NOT EXISTS importance_predictions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id    TEXT NOT NULL,
+    predicted_at REAL NOT NULL,
+    features     TEXT NOT NULL,
+    p_model      REAL NOT NULL,
+    legacy_score REAL NOT NULL
+);
+"""
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -210,6 +233,17 @@ class SQLiteMetadataStore:
         conn.execute(PROFILE_POLICY_EVENTS)
         conn.execute(USER_PROFILES)
         conn.execute(LEGACY_SOURCES_CACHE)
+        conn.execute(ACCESS_EVENTS)
+        conn.execute(IMPORTANCE_PREDICTIONS)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_access_events_memory_time ON access_events(memory_id, accessed_at);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_access_events_time ON access_events(accessed_at);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_importance_predictions_time ON importance_predictions(predicted_at);"
+        )
         self._ensure_column_exists(conn, "retrieval_feedback", "rank", "INTEGER")
         self._ensure_column_exists(conn, "retrieval_feedback", "sampling_prob", "REAL")
         # v3.11.0: Project isolation scope migration — add column if upgrading from older DB
@@ -1393,8 +1427,8 @@ class SQLiteMetadataStore:
         )
         conn.commit()
 
-    def record_access_batch(self, memory_ids: List[str]):
-        """Update access metrics for multiple memories in a single transaction."""
+    def record_access_batch(self, memory_ids: List[str], session_id: Optional[str] = None):
+        """Update access metrics and log one access event per memory (rank = list position)."""
         if not memory_ids:
             return
         conn = self._get_conn()
@@ -1404,7 +1438,70 @@ class SQLiteMetadataStore:
             f"UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id IN ({placeholders})",
             [now] + memory_ids
         )
+        conn.executemany(
+            "INSERT INTO access_events (memory_id, accessed_at, session_id, rank) VALUES (?, ?, ?, ?)",
+            [(memory_id, now, session_id, rank) for rank, memory_id in enumerate(memory_ids, start=1)],
+        )
         conn.commit()
+
+    def get_access_events(
+        self, memory_ids: List[str], until: Optional[float] = None
+    ) -> Dict[str, List[Tuple[float, Optional[str]]]]:
+        """Return ``{memory_id: [(accessed_at, session_id), ...]}`` in time order."""
+        events: Dict[str, List[Tuple[float, Optional[str]]]] = {mid: [] for mid in memory_ids}
+        if not memory_ids:
+            return events
+        conn = self._get_conn()
+        for offset in range(0, len(memory_ids), 500):
+            batch = memory_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            params: list = list(batch)
+            time_clause = ""
+            if until is not None:
+                time_clause = " AND accessed_at <= ?"
+                params.append(until)
+            rows = conn.execute(
+                f"SELECT memory_id, accessed_at, session_id FROM access_events "
+                f"WHERE memory_id IN ({placeholders}){time_clause} ORDER BY accessed_at",
+                params,
+            ).fetchall()
+            for row in rows:
+                events[row["memory_id"]].append((row["accessed_at"], row["session_id"]))
+        return events
+
+    def prune_access_events(self, before: float) -> int:
+        conn = self._get_conn()
+        cursor = conn.execute("DELETE FROM access_events WHERE accessed_at < ?", (before,))
+        conn.commit()
+        return cursor.rowcount
+
+    def add_importance_predictions(self, rows: List[Tuple[str, float, str, float, float]]) -> None:
+        """Insert ``(memory_id, predicted_at, features_json, p_model, legacy_score)`` rows."""
+        if not rows:
+            return
+        conn = self._get_conn()
+        conn.executemany(
+            "INSERT INTO importance_predictions (memory_id, predicted_at, features, p_model, legacy_score) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+
+    def pop_due_importance_predictions(self, due_before: float, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Remove and return predictions made at or before ``due_before`` (oldest first)."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM importance_predictions WHERE predicted_at <= ? ORDER BY predicted_at LIMIT ?",
+            (due_before, int(limit)),
+        ).fetchall()
+        if rows:
+            conn.executemany("DELETE FROM importance_predictions WHERE id = ?", [(row["id"],) for row in rows])
+            conn.commit()
+        return [dict(row) for row in rows]
+
+    def count_importance_predictions(self) -> int:
+        row = self._get_conn().execute("SELECT COUNT(*) FROM importance_predictions").fetchone()
+        return int(row[0]) if row else 0
 
     def get_for_consolidation(
         self,
@@ -1414,7 +1511,15 @@ class SQLiteMetadataStore:
         importance_min: Optional[float] = None,
         consolidated: Optional[bool] = None,
         limit: int = 100,
+        archived: Optional[bool] = None,
+        after_id: Optional[str] = None,
     ) -> List[MemoryRecord]:
+        """Fetch consolidation candidates.
+
+        By default returns the most important memories first. With ``after_id``
+        it pages through the whole table in id order instead, so a cursor can
+        visit every memory across cycles rather than only the top ``limit``.
+        """
         conn = self._get_conn()
         conditions = []
         params: list = []
@@ -1434,9 +1539,16 @@ class SQLiteMetadataStore:
         if consolidated is not None:
             conditions.append("consolidated = ?")
             params.append(int(consolidated))
+        if archived is not None:
+            conditions.append("archived = ?")
+            params.append(int(archived))
+        if after_id is not None:
+            conditions.append("id > ?")
+            params.append(after_id)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        query = f"SELECT * FROM memories {where} ORDER BY importance DESC LIMIT ?"
+        order = "id ASC" if after_id is not None else "importance DESC"
+        query = f"SELECT * FROM memories {where} ORDER BY {order} LIMIT ?"
         params.append(limit)
 
         rows = conn.execute(query, params).fetchall()

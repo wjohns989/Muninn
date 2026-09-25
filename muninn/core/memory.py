@@ -50,6 +50,7 @@ from muninn.observability import OTelGenAITracer
 from muninn.chains import MemoryChainDetector
 from muninn.ingestion import IngestionPipeline, discover_legacy_sources as discover_legacy_sources_catalog
 from muninn.ingestion.parser import infer_source_type
+from muninn.platform import detect_legacy_stores
 from muninn.core.ingestion_manager import IngestionManager
 from muninn.advanced.temporal_kg import TemporalKnowledgeGraph
 from muninn.advanced.cross_agent import FederationManager
@@ -222,6 +223,7 @@ class MuninnMemory:
             embed_fn=self._embed,
             colbert_indexer=self._colbert_indexer,
             extractor=self._extraction,
+            images_dir=Path(self.config.data_dir) / "images",
         )
 
         if flags.is_enabled("goal_compass"):
@@ -705,6 +707,7 @@ class MuninnMemory:
         namespaces: Optional[List[str]] = None,
         media_type: Optional[str] = None,
         explain: bool = False,
+        session_id: Optional[str] = None,
     ) -> List[SearchResult]:
         """
         Search memories with hybrid RRF fusion and reranking.
@@ -718,6 +721,7 @@ class MuninnMemory:
             filters: Additional metadata filters.
             namespaces: Namespace filter list.
             explain: When True, include RecallTrace per result (v3.1.0).
+            session_id: Optional agent session key for session inhibition.
 
         Returns:
             List of memory dicts with scores.
@@ -796,6 +800,7 @@ class MuninnMemory:
                 goal_signal_weight=self.config.goal_compass.signal_weight,
                 feedback_signal_multipliers=feedback_signal_multipliers,
                 media_type=media_type,
+                session_id=session_id,
             )
 
             output = []
@@ -814,6 +819,8 @@ class MuninnMemory:
                 }
                 if explain and r.trace is not None:
                     item["trace"] = r.trace.model_dump()
+                if r.inhibited:
+                    item["inhibited"] = True
                 if goal_alignment is not None:
                     item["goal_similarity"] = goal_alignment["similarity"]
                     if goal_alignment["is_drift"]:
@@ -1740,6 +1747,22 @@ class MuninnMemory:
         )
         return result
 
+    async def restore(self, memory_id: str) -> Dict[str, Any]:
+        """Bring an archived memory back into search by re-indexing its content."""
+        self._check_initialized()
+        record = await asyncio.to_thread(self._metadata.get, memory_id)
+        if record is None:
+            return {"error": f"Memory {memory_id} not found"}
+        if not record.archived:
+            return {"id": memory_id, "restored": False, "reason": "not_archived"}
+        metadata = dict(record.metadata or {})
+        metadata.pop("archived_reason", None)
+        metadata.pop("archived_at", None)
+        metadata["restored_at"] = time.time()
+        await self.update(memory_id, data=record.content, archived=False, metadata=metadata)
+        logger.info("Restored archived memory %s", memory_id)
+        return {"id": memory_id, "restored": True, "event": "RESTORE"}
+
     async def update(self, memory_id: str, data: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
         Update a memory's content or metadata.
@@ -1980,6 +2003,20 @@ class MuninnMemory:
         logger.info("Deleted %d memories for user %s", count, user_id)
         return {"event": "DELETE_ALL", "user_id": user_id, "deleted_count": count}
 
+    def _session_inhibition_status(self) -> Dict[str, Any]:
+        """Content-free utilization of the bounded session-inhibition state."""
+        inhibitor = getattr(self._retriever, "_session_inhibitor", None) if self._retriever else None
+        if inhibitor is None:
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "sessions": len(inhibitor),
+            "max_sessions": inhibitor.max_sessions,
+            "max_ids_per_session": inhibitor.max_ids_per_session,
+            "ttl_seconds": inhibitor.ttl_seconds,
+            "rank_penalty": inhibitor.rank_penalty,
+        }
+
     async def health(self) -> Dict[str, Any]:
         """Return system health status."""
         self._check_initialized()
@@ -2020,7 +2057,9 @@ class MuninnMemory:
                     "ttl_seconds": self.config.retrieval_feedback.cache_ttl_seconds,
                 },
                 "ingestion_max_workers": self.config.ingestion.max_workers,
+                "session_inhibition": self._session_inhibition_status(),
             },
+            "legacy_stores": detect_legacy_stores(),
             "backend": "muninn-native",
         }
 
@@ -2412,10 +2451,24 @@ class MuninnMemory:
             return await self._extract(content)
 
     async def _rebuild_bm25(self) -> None:
-        """Rebuild BM25 index from all metadata records."""
-        records = self._metadata.get_all(limit=10000)
-        documents = {r.id: r.content for r in records}
-        self._bm25.rebuild(documents)
+        """Rebuild BM25 from every live memory, keeping each one's user/namespace scope."""
+        documents: Dict[str, str] = {}
+        scopes: Dict[str, Tuple[str, str]] = {}
+        cursor = ""
+        while True:
+            page = await asyncio.to_thread(
+                self._metadata.get_for_consolidation, limit=1000, archived=False, after_id=cursor
+            )
+            for record in page:
+                documents[record.id] = record.content
+                scopes[record.id] = (
+                    (record.metadata or {}).get("user_id", "global"),
+                    record.namespace or "global",
+                )
+            if len(page) < 1000:
+                break
+            cursor = page[-1].id
+        self._bm25.rebuild(documents, scopes)
 
     def _run_user_scope_migration(
         self,

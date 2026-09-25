@@ -79,12 +79,15 @@ class TestDefaultWeights:
 
 class TestCalculateImportanceRetrieval:
     def test_zero_retrieval_utility_unchanged(self):
-        """retrieval_utility=0.0 should produce same result as old formula."""
+        """retrieval_utility=0.0 adds nothing on top of the base signals."""
+        from muninn.scoring.importance import CENTRALITY_BASELINE
+
         mem = _record(age_days=0)
         score_old = calculate_importance(mem, max_similarity=0.0, centrality=0.0, retrieval_utility=0.0)
-        # With age=0, access=0, provenance=INGESTED, max_sim=0 (novelty=1):
-        # 0.25×1.0 + 0.15×0 + 0.20×0 + 0.25×1.0 + 0.15×0.3 + 0.10×0.0 = 0.545
-        assert abs(score_old - 0.545) < 0.01
+        # With age=0, access=0, provenance=INGESTED, max_sim=0 (novelty=1), and
+        # centrality floored at CENTRALITY_BASELINE:
+        # 0.25×1.0 + 0.15×0 + 0.20×baseline + 0.25×1.0 + 0.15×0.3 + 0.10×0.0
+        assert abs(score_old - (0.545 + 0.20 * CENTRALITY_BASELINE)) < 0.01
 
     def test_high_retrieval_utility_boosts_score(self):
         """retrieval_utility=1.0 should boost score by ~0.10."""

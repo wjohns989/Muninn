@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -11,7 +13,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from http import HTTPStatus
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -47,8 +49,11 @@ from muninn.mcp.state import (
     _SESSION_CONTEXTS,
     _SESSION_CONTEXTS_LOCK,
     _SESSION_STATE,
+    _create_default_session_state,
     _thread_local,
 )
+from muninn.mcp.utils import build_initialize_instructions
+from muninn.version import __version__ as _MUNINN_VERSION
 
 logger = logging.getLogger("Muninn.mcp.http")
 
@@ -60,6 +65,23 @@ OPTIONAL_CAPS = {
     "resources/list": {"resources": []},
     "resources/templates/list": {"resourceTemplates": []},
     "prompts/list": {"prompts": []},
+}
+
+# --- MCP 2026-07-28 ("modern", stateless) ---------------------------------
+# Requests carry their protocol version, client info and capabilities in
+# params._meta; there is no initialize handshake and no Mcp-Session-Id.
+# Legacy clients (initialize + session) keep working on the same endpoint.
+MODERN_PROTOCOL_VERSIONS = ("2026-07-28",)
+META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+HEADER_MISMATCH = -32020
+UNSUPPORTED_PROTOCOL_VERSION = -32022
+_MODERN_NAMED_METHODS = {"tools/call": "name", "prompts/get": "name", "resources/read": "uri"}
+_MODERN_METHODS = {
+    "server/discover", "tools/list", "tools/call", "ping",
+    "resources/list", "resources/templates/list", "prompts/list", "resources/read", "prompts/get",
 }
 
 
@@ -357,6 +379,148 @@ def _dispatch_http_message(session_id: str, msg: Dict[str, Any]) -> List[Dict[st
     return responses
 
 
+def _modern_protocol_version(msg: Dict[str, Any]) -> Optional[str]:
+    params = msg.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    if isinstance(meta, dict) and META_PROTOCOL_VERSION in meta:
+        return str(meta[META_PROTOCOL_VERSION])
+    return None
+
+
+def _decode_header_value(value: Optional[str]) -> Optional[str]:
+    """Decode the =?base64?...?= sentinel used for non-ASCII header values."""
+    if value and value.startswith("=?base64?") and value.endswith("?="):
+        try:
+            return base64.b64decode(value[9:-2], validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            return None
+    return value
+
+
+def _validate_modern_headers(request: Request, msg: Dict[str, Any], version: str) -> Optional[str]:
+    """Return a HeaderMismatch message, or None when headers agree with the body."""
+    header_version = request.headers.get(MCP_PROTOCOL_VERSION_HEADER)
+    if header_version != version:
+        return f"MCP-Protocol-Version header {header_version!r} does not match body value {version!r}"
+    method = msg.get("method")
+    if request.headers.get("Mcp-Method") != method:
+        return f"Mcp-Method header does not match body method {method!r}"
+    name_key = _MODERN_NAMED_METHODS.get(method)
+    if name_key is not None:
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        header_name = _decode_header_value(request.headers.get("Mcp-Name"))
+        if header_name is None or header_name != params.get(name_key):
+            return f"Mcp-Name header does not match body {name_key}"
+    return None
+
+
+def _begin_stateless_dispatch() -> bool:
+    global _ACTIVE_HTTP_DISPATCHES
+    with _ACTIVE_HTTP_SESSIONS_LOCK:
+        if _ACTIVE_HTTP_DISPATCHES >= _inflight_limit():
+            return False
+        _ACTIVE_HTTP_DISPATCHES += 1
+        return True
+
+
+def _finish_stateless_dispatch() -> None:
+    global _ACTIVE_HTTP_DISPATCHES
+    with _ACTIVE_HTTP_SESSIONS_LOCK:
+        _ACTIVE_HTTP_DISPATCHES = max(0, _ACTIVE_HTTP_DISPATCHES - 1)
+
+
+def _modern_discover_result() -> Dict[str, Any]:
+    return {
+        "supportedVersions": list(MODERN_PROTOCOL_VERSIONS) + list(SUPPORTED_PROTOCOL_VERSIONS),
+        "capabilities": {"tools": {"listChanged": False}},
+        "_meta": {META_SERVER_INFO: {"name": "muninn-mcp", "version": _MUNINN_VERSION}},
+        "instructions": build_initialize_instructions([]),
+    }
+
+
+def _dispatch_modern_message(msg: Dict[str, Any], version: str) -> Dict[str, Any]:
+    """Serve one stateless request inside a context that exists only for this call."""
+    msg_id = msg.get("id")
+    params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+    meta = params.get("_meta", {})
+    responses: List[Dict[str, Any]] = []
+
+    def send_result(result_id: Any, result: Any) -> None:
+        if isinstance(result, dict):
+            result = {"resultType": "complete", **result}
+        responses.append({"jsonrpc": "2.0", "id": result_id, "result": result})
+
+    def send_error(error_id: Any, code: int, message: str) -> None:
+        responses.append(_json_error(error_id, code, message))
+
+    context_id = f"stateless-{uuid.uuid4().hex}"
+    state = _create_default_session_state()
+    state.update({
+        "negotiated": True,
+        "initialized": True,
+        "protocol_version": version,
+        "client_capabilities": meta.get(META_CLIENT_CAPABILITIES) or {},
+        "client_info": meta.get(META_CLIENT_INFO) or {},
+    })
+    with _SESSION_CONTEXTS_LOCK:
+        _SESSION_CONTEXTS[context_id] = state
+    _thread_local.mcp_session_id = context_id
+    try:
+        method = msg.get("method")
+        if method == "server/discover":
+            send_result(msg_id, _modern_discover_result())
+        elif method == "tools/list":
+            _handle_list_tools(msg_id, send_result)
+        elif method == "tools/call":
+            _handle_call_tool(msg_id, params, send_error, send_result)
+        elif method in OPTIONAL_CAPS:
+            send_result(msg_id, OPTIONAL_CAPS[method])
+        elif method in ("resources/read", "prompts/get"):
+            send_result(msg_id, {"contents": []} if method == "resources/read" else {"messages": []})
+        elif method == "ping":
+            send_result(msg_id, {})
+    except Exception as exc:
+        logger.exception("Stateless MCP dispatch failed: %s", type(exc).__name__)
+        send_error(msg_id, -32603, "Internal error during dispatch")
+    finally:
+        if getattr(_thread_local, "mcp_session_id", None) == context_id:
+            delattr(_thread_local, "mcp_session_id")
+        with _SESSION_CONTEXTS_LOCK:
+            _SESSION_CONTEXTS.pop(context_id, None)
+    return responses[0] if responses else _json_error(msg_id, -32603, "Internal error: No response generated")
+
+
+async def _handle_modern_post(request: Request, msg: Dict[str, Any], version: str) -> Response:
+    msg_id = msg.get("id")
+    mismatch = _validate_modern_headers(request, msg, version)
+    if mismatch:
+        return _json_response(
+            HTTPStatus.BAD_REQUEST, _json_error(msg_id, HEADER_MISMATCH, f"Header mismatch: {mismatch}")
+        )
+    if version not in MODERN_PROTOCOL_VERSIONS:
+        error = _json_error(msg_id, UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version")
+        error["error"]["data"] = {
+            "supported": list(MODERN_PROTOCOL_VERSIONS) + list(SUPPORTED_PROTOCOL_VERSIONS),
+            "requested": version,
+        }
+        return _json_response(HTTPStatus.BAD_REQUEST, error)
+    if not _request_has_id(msg):
+        return _json_response(HTTPStatus.ACCEPTED)
+    if msg.get("method") not in _MODERN_METHODS:
+        return _json_response(
+            HTTPStatus.NOT_FOUND, _json_error(msg_id, -32601, f"Method not found: {msg.get('method')}")
+        )
+    if not _begin_stateless_dispatch():
+        return _json_response(
+            HTTPStatus.TOO_MANY_REQUESTS, _json_error(msg_id, -32000, "MCP dispatch capacity reached")
+        )
+    try:
+        response = await asyncio.to_thread(_dispatch_modern_message, msg, version)
+    finally:
+        _finish_stateless_dispatch()
+    return _json_response(HTTPStatus.OK, response)
+
+
 async def _handle_post(request: Request) -> Response:
     if not _accepts_json(request):
         return _json_response(
@@ -410,6 +574,12 @@ async def _handle_post(request: Request) -> Response:
             HTTPStatus.BAD_REQUEST,
             _json_error("server-error", -32600, "Invalid or oversized JSON-RPC batch"),
         )
+
+    # A request carrying modern per-request _meta is served statelessly (2026-07-28);
+    # modern bodies are always a single message.
+    modern_version = _modern_protocol_version(messages[0]) if not is_batch else None
+    if modern_version is not None:
+        return await _handle_modern_post(request, messages[0], modern_version)
 
     initialize_messages = [msg for msg in messages if msg.get("method") == "initialize"]
     if len(initialize_messages) > 1 or (initialize_messages and len(messages) > 1):

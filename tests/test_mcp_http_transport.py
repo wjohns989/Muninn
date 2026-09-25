@@ -1,4 +1,6 @@
+import base64
 import copy
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -207,12 +209,16 @@ def test_configured_bearer_token_is_required(client, monkeypatch):
 def test_shared_fastapi_server_exposes_streamable_http_route():
     import server
 
-    routes = {
-        (route.path, frozenset(route.methods or set()))
-        for route in server.app.routes
-        if hasattr(route, "methods")
-    }
-    assert ("/mcp", frozenset({"GET", "POST", "DELETE"})) in routes
+    # Probe behaviour rather than app.routes, whose shape varies across FastAPI
+    # releases (0.141 no longer flattens included routers there).
+    shared = TestClient(server.app, raise_server_exceptions=False)
+    for method in ("GET", "POST", "DELETE"):
+        response = shared.request(method, "/mcp", json={} if method == "POST" else None)
+        assert response.status_code != 404, method
+        # The handler itself answers GET with a JSON-RPC 405 (no SSE stream is
+        # offered); a framework-level 405 would carry no JSON-RPC body.
+        if response.status_code == 405:
+            assert response.json().get("jsonrpc") == "2.0", method
 
 
 @pytest.mark.parametrize(
@@ -232,3 +238,108 @@ def test_capabilities_are_version_conservative(client):
 
     assert older.json()["result"]["capabilities"] == {"tools": {"listChanged": False}}
     assert "tasks" in latest.json()["result"]["capabilities"]
+
+
+# --- MCP 2026-07-28 (stateless) -------------------------------------------
+
+MODERN = "2026-07-28"
+
+
+def _modern(client, method, params=None, *, msg_id=1, version=MODERN, headers=None):
+    params = dict(params or {})
+    params["_meta"] = {
+        "io.modelcontextprotocol/protocolVersion": version,
+        "io.modelcontextprotocol/clientInfo": {"name": "test-client", "version": "1.0"},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    }
+    request_headers = _json_headers(**{"MCP-Protocol-Version": version, "Mcp-Method": method})
+    if method == "tools/call":
+        request_headers["Mcp-Name"] = params.get("name", "")
+    request_headers.update(headers or {})
+    body = {"jsonrpc": "2.0", "method": method, "params": params}
+    if msg_id is not None:
+        body["id"] = msg_id
+    return client.post("/mcp", json=body, headers=request_headers)
+
+
+def test_modern_discover_needs_no_session(client):
+    response = _modern(client, "server/discover")
+
+    assert response.status_code == 200
+    assert "Mcp-Session-Id" not in response.headers
+    result = response.json()["result"]
+    assert result["resultType"] == "complete"
+    assert result["supportedVersions"][0] == MODERN and "2025-11-25" in result["supportedVersions"]
+    assert result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "muninn-mcp"
+
+
+def test_modern_tools_list_and_call_without_initialize(client, monkeypatch):
+    from muninn.mcp import handlers
+
+    listed = _modern(client, "tools/list")
+    assert listed.status_code == 200
+    assert any(tool["name"] == "search_memory" for tool in listed.json()["result"]["tools"])
+
+    captured = {}
+    backend = MagicMock()
+    backend.json.return_value = {"success": True, "data": [{"id": "m1", "memory": "fact"}]}
+
+    def fake_request(method, url, **kwargs):
+        captured.update(kwargs["json"])
+        return backend
+
+    monkeypatch.setattr(handlers, "make_request_with_retry", fake_request)
+    monkeypatch.setattr(handlers, "get_git_info", lambda: {"project": "p", "branch": "b"})
+
+    called = _modern(client, "tools/call", {"name": "search_memory", "arguments": {"query": "q"}}, msg_id=2)
+    assert called.status_code == 200 and called.json()["id"] == 2
+    assert called.json()["result"]["resultType"] == "complete"
+    assert captured["session_id"] is None  # no protocol session to key inhibition on
+
+    _modern(client, "tools/call",
+            {"name": "search_memory", "arguments": {"query": "q", "session_id": "conv-7"}}, msg_id=3)
+    assert captured["session_id"] == "conv-7"
+    with _SESSION_CONTEXTS_LOCK:
+        assert not _SESSION_CONTEXTS  # per-request contexts are discarded
+
+
+@pytest.mark.parametrize("override", [
+    {"MCP-Protocol-Version": "2025-11-25"},
+    {"Mcp-Method": "tools/call"},
+])
+def test_modern_header_mismatch_is_rejected(client, override):
+    response = _modern(client, "tools/list", headers=override)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == -32020
+
+
+def test_modern_tool_name_header_must_match_body(client):
+    response = _modern(client, "tools/call", {"name": "search_memory", "arguments": {"query": "q"}},
+                       headers={"Mcp-Name": "delete_all_memories"})
+    assert response.status_code == 400 and response.json()["error"]["code"] == -32020
+
+    encoded = "=?base64?" + base64.b64encode(b"search_memory").decode() + "?="
+    ok = _modern(client, "tools/call", {"name": "search_memory", "arguments": {}},
+                 headers={"Mcp-Name": encoded})
+    assert ok.status_code == 200
+
+
+def test_modern_unsupported_version_lists_supported(client):
+    response = _modern(client, "tools/list", version="2099-01-01")
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == -32022
+    assert error["data"]["requested"] == "2099-01-01" and MODERN in error["data"]["supported"]
+
+
+def test_modern_unknown_method_is_404_and_notification_is_202(client):
+    unknown = _modern(client, "roots/list")
+    assert unknown.status_code == 404 and unknown.json()["error"]["code"] == -32601
+    notification = _modern(client, "tools/list", msg_id=None)
+    assert notification.status_code == 202
+
+
+def test_legacy_initialize_still_works_alongside_modern(client):
+    response, session_id = _initialize(client, "2025-11-25")
+    assert response.status_code == 200 and session_id
+    assert _modern(client, "server/discover").status_code == 200

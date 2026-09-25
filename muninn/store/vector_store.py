@@ -8,7 +8,7 @@ Wraps qdrant-client with Muninn-specific operations.
 import logging
 import uuid
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -82,6 +82,17 @@ class VectorStore:
         )
         return point_id
 
+    def update_vector(self, memory_id: str, embedding: List[float]) -> None:
+        """Replace a point's vector while keeping its payload (scope, user, project)."""
+        from qdrant_client.models import PointVectors
+
+        client = self._get_client()
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
+        client.update_vectors(
+            collection_name=self.collection_name,
+            points=[PointVectors(id=point_id, vector=embedding)],
+        )
+
     def search(
         self,
         query_embedding: List[float],
@@ -98,14 +109,19 @@ class VectorStore:
         query_filter = None
         if filters:
             conditions = []
+            exclusions = []
             for key, value in filters.items():
                 if value is None:
                     continue
                 if key == "memory_ids" and isinstance(value, list):
                     conditions.append(FieldCondition(key="memory_id", match=MatchAny(any=value)))
+                elif key == "archived" and value is False:
+                    # Most points never carry an `archived` payload key; a positive
+                    # match on False would exclude them all, so exclude archived=True.
+                    exclusions.append(FieldCondition(key="archived", match=MatchValue(value=True)))
                 else:
                     conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
-            query_filter = Filter(must=conditions)
+            query_filter = Filter(must=conditions or None, must_not=exclusions or None)
 
         # v1.16+ uses query_points instead of search
         results = client.query_points(
@@ -192,13 +208,15 @@ class VectorStore:
         )
         return True
 
-    def delete(self, memory_id: str) -> bool:
-        """Delete a vector by memory_id."""
+    def delete(self, memory_ids: Union[str, Iterable[str]]) -> bool:
+        """Delete vectors by memory_id (one id or several)."""
+        ids = [memory_ids] if isinstance(memory_ids, str) else list(memory_ids)
+        if not ids:
+            return False
         client = self._get_client()
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
         client.delete(
             collection_name=self.collection_name,
-            points_selector=[point_id],
+            points_selector=[str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id)) for memory_id in ids],
         )
         return True
 

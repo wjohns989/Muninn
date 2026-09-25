@@ -101,19 +101,17 @@ async def test_v3_22_1_contradiction_detection_prevents_merge(mock_daemon):
             # Verify that the LLM was called
             mock_synth.assert_called_once()
             
-            # Verify that the older memory (mem_old) was shadowed / archived
-            # It should have updated metadata with superseded_by and importance drop
-            # Use ANY for the metadata check to debug what actually got updated
-            mock_daemon.metadata.update_metadata.assert_called_with("mem_old", ANY)
-            
-            # Print to see what's happening
-            print(f"older_memory.metadata in test: {older_memory.metadata}")
-            print(f"Update call args: {mock_daemon.metadata.update_metadata.call_args}")
-            
-            # If the dict is copied, we can check the call args directly
-            updated_dict = mock_daemon.metadata.update_metadata.call_args[0][1]
-            assert updated_dict["temporal_shadowed_by"] == "mem_new"
-            assert "superseded_at" in updated_dict
+            # Verify that the older memory (mem_old) was archived with shadow provenance
+            archive_calls = [
+                c for c in mock_daemon.metadata.update.call_args_list
+                if c.args == ("mem_old",) and c.kwargs.get("archived") is True
+            ]
+            assert len(archive_calls) == 1
+            archive_kwargs = archive_calls[0].kwargs
+            assert archive_kwargs["parent_id"] == "mem_new"
+            assert archive_kwargs["metadata"]["temporal_shadowed_by"] == "mem_new"
+            assert archive_kwargs["metadata"]["archived_reason"] == "temporal_shadow"
+            assert "superseded_at" in archive_kwargs["metadata"]
             
             assert older_memory.importance == 0.08000000000000002 # 0.8 * 0.1
             

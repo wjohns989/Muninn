@@ -693,6 +693,79 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # Argument parser
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _admin_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
+    """POST to an authenticated admin endpoint on the running Muninn server."""
+    token = _read_token_from_file(_resolve_token_file(args.token_file)) or (
+        os.environ.get("MUNINN_AUTH_TOKEN") or ""
+    ).strip()
+    if not token:
+        raise SystemExit("No auth token found (token file or MUNINN_AUTH_TOKEN).")
+    response = requests.post(
+        f"{_resolve_server_url(args.server_url)}{path}",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+        timeout=args.timeout_seconds,
+    )
+    response.raise_for_status()
+    return response.json().get("data", {})
+
+
+def cmd_reindex(args: argparse.Namespace) -> int:
+    """Rebuild vectors/BM25 from metadata.db via the running server."""
+    report = _admin_post(args, "/admin/reindex", {
+        "vectors": not args.no_vectors,
+        "bm25": not args.no_bm25,
+        "recreate_vectors": args.recreate_vectors,
+        "dry_run": not args.apply,
+    })
+    print(json.dumps(report, indent=2))
+    if not args.apply:
+        print("Dry run only. Re-run with --apply to rebuild.")
+    return 0
+
+
+def _read_export(path: Path) -> list:
+    text = path.read_text(encoding="utf-8")
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        return json.loads(text)
+    if stripped.startswith("{") and '"results"' in stripped[:200]:
+        return json.loads(text)["results"]  # Mem0 GET /memories response
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Import exported memories (JSONL, JSON array, or a Mem0 /memories response)."""
+    records = _read_export(args.file)
+    totals: dict = {}
+    for start in range(0, len(records), args.batch_size):
+        report = _admin_post(args, "/admin/import", {
+            "records": records[start:start + args.batch_size],
+            "user_id": args.user_id,
+            "namespace": args.namespace,
+            "source": args.source,
+            "dry_run": not args.apply,
+        })
+        for key, value in report.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[key] = totals.get(key, 0) + value
+    totals["dry_run"] = not args.apply
+    print(json.dumps(totals, indent=2))
+    if not args.apply:
+        print("Dry run only. Re-run with --apply to import.")
+    return 0
+
+
+def _add_server_args(sub: argparse.ArgumentParser, timeout: float) -> None:
+    sub.add_argument("--token-file", type=Path, default=None, metavar="PATH",
+                     help="Path to token file (default: .muninn_token or MUNINN_TOKEN_FILE).")
+    sub.add_argument("--server-url", type=str, default=None, metavar="URL",
+                     help="Muninn server URL (default: MUNINN_SERVER_URL or local default).")
+    sub.add_argument("--timeout-seconds", type=float, default=timeout, help="HTTP timeout.")
+    sub.add_argument("--apply", action="store_true", default=False,
+                     help="Perform the operation (default is a dry run that only reports).")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="muninn.cli",
@@ -778,6 +851,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Rewrite discovered Muninn MCP host entries to expected token + URL.",
     )
+    reindex = subparsers.add_parser(
+        "reindex",
+        help="Rebuild vector and keyword indexes from metadata.db.",
+        description=(
+            "Re-embeds every live memory and rebuilds BM25 from the metadata store.\n"
+            "Use after changing the embedding model (with --recreate-vectors if its\n"
+            "dimensions changed) or after restoring a metadata.db into a fresh install."
+        ),
+    )
+    _add_server_args(reindex, timeout=3600.0)
+    reindex.add_argument("--no-vectors", action="store_true", help="Skip re-embedding.")
+    reindex.add_argument("--no-bm25", action="store_true", help="Skip the BM25 rebuild.")
+    reindex.add_argument("--recreate-vectors", action="store_true",
+                         help="Drop and recreate the vector collection at the configured dimensions.")
+
+    importer = subparsers.add_parser(
+        "import",
+        help="Import exported memories (Muninn, Mem0 or similar JSON).",
+        description=(
+            "Reads JSONL, a JSON array, or a Mem0 GET /memories response. Each record needs\n"
+            "text in content/memory/text/data; created_at is preserved; exact duplicates are\n"
+            "skipped. Memories import under --user-id so default searches find them."
+        ),
+    )
+    _add_server_args(importer, timeout=600.0)
+    importer.add_argument("file", type=Path, help="Export file to import.")
+    importer.add_argument("--user-id", default="global_user")
+    importer.add_argument("--namespace", default="global")
+    importer.add_argument("--source", default="legacy", help="Recorded as metadata.import_source.")
+    importer.add_argument("--batch-size", type=int, default=200)
     return parser
 
 
@@ -789,6 +892,10 @@ def main() -> int:
         return cmd_rotate_token(args)
     if args.command == "doctor":
         return cmd_doctor(args)
+    if args.command == "reindex":
+        return cmd_reindex(args)
+    if args.command == "import":
+        return cmd_import(args)
 
     parser.print_help()
     return 1

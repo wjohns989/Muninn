@@ -151,6 +151,13 @@ Generic Streamable HTTP client configuration:
 The legacy stdio wrapper remains available for clients without Streamable HTTP
 support, but it connects to the existing backend and is not a second store owner.
 
+The endpoint is dual-era: clients on MCP 2026-07-28 send stateless requests
+(protocol version, client info and capabilities in `params._meta`, mirrored in the
+`MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers) and can call
+`server/discover`; clients on 2025-11-25 and earlier keep using `initialize` and
+`Mcp-Session-Id`. Stateless clients that want session inhibition pass a
+`session_id` argument to `search_memory`.
+
 Legacy wrapper registration:
 
 ```bash
@@ -247,6 +254,9 @@ async def main():
 | `GET` | `/get_all` | Paginated memory listing |
 | `PUT` | `/update` | Update a memory |
 | `DELETE` | `/delete/{memory_id}` | Delete a memory |
+| `POST` | `/restore/{memory_id}` | Restore a memory that consolidation archived (merge, decay, temporal shadow) |
+| `POST` | `/admin/reindex` | Rebuild vectors/BM25 from metadata (dry run by default) |
+| `POST` | `/admin/import` | Import exported memories, keeping original timestamps (dry run by default) |
 | `POST` | `/ingest` | Ingest files/folders |
 | `POST` | `/ingest/legacy/discover` | Discover legacy session files |
 | `POST` | `/ingest/legacy/import` | Import selected legacy memories |
@@ -287,6 +297,15 @@ Key environment variables:
 | `MUNINN_FEDERATION_PEERS` | - | Comma-separated list of peer base URLs |
 | `MUNINN_FEDERATION_SYNC_ON_ADD` | off | `=1` enables real-time push-on-add to peers |
 | `MUNINN_TEMPORAL_QUERY_EXPANSION` | off | `=1` enables NL time-phrase parsing in search |
+| `MUNINN_CONSOLIDATION_DRY_RUN` | off | `=1` computes consolidation changes and lists them in `/consolidation/status` without writing any store |
+| `MUNINN_CONSOLIDATION_BATCH_SIZE` | `500` | Memories visited per phase per cycle; a persisted cursor pages through the whole store |
+| `MUNINN_IMPORTANCE_MODEL` | `auto` | Self-supervised importance: `auto` learns continuously and uses the learned model only while it beats the hand-weighted score on its own outcomes; `shadow` learns and reports only; `legacy` disables learning |
+| `MUNINN_ADAPTIVE_HORIZON_DAYS` | `7` | Window in which a memory must be re-retrieved by a new session to count as needed |
+| `MUNINN_ADAPTIVE_SAMPLES_PER_CYCLE` | `200` | Predictions recorded per consolidation cycle for later self-labelling |
+| `MUNINN_ADAPTIVE_MIN_EXAMPLES` | `200` | Resolved outcomes required before the learned model may take over |
+| `MUNINN_SESSION_INHIBITION` | on | Demote memories already returned in the same agent session (requires `session_id` on search; MCP sends it) |
+| `MUNINN_SESSION_INHIBITION_RANK_PENALTY` | `3` | Positions a repeated memory moves down in the final ranked pool |
+| `MUNINN_SESSION_INHIBITION_TTL_SEC` | `1800` | How long a returned memory stays inhibited within a session |
 | `MUNINN_RERANKER_ENABLED` | on | `=false` disables cross-encoder reranking |
 | `MUNINN_RERANKER_MODEL` | `jinaai/jina-reranker-v1-turbo-en` | FastEmbed cross-encoder model; set the prior `jinaai/jina-reranker-v1-tiny-en` to roll back ranking behavior |
 | `MUNINN_CONSOLIDATION_INTEGRITY_RESOURCE_MODE` | `cycle` | Load NLI integrity resources only for a consolidation cycle; `persistent` restores legacy eager lifetime |
@@ -305,6 +324,27 @@ Key environment variables:
 
 `config.template.yaml` contains conservative, relative-path defaults. Keep real
 tokens and machine-specific data paths in private environment/configuration files.
+
+### Upgrading and migrating memories
+
+`metadata.db` is the source of truth; vectors and the keyword index are derived from it.
+Every command below talks to the running server and is a dry run unless `--apply` is given.
+
+```bash
+# Rebuild vectors and BM25 from metadata.db (after an embedding-model change add
+# --recreate-vectors; also use after restoring metadata.db into a fresh install)
+python -m muninn.cli reindex --apply
+
+# Import memories exported from another system, including the pre-3.0 Mem0-based
+# Muninn: JSONL, a JSON array, or a Mem0 GET /memories response. Original
+# timestamps are kept, exact duplicates skipped, and the original user id is
+# stored as metadata.legacy_user_id.
+python -m muninn.cli import export.json --source mem0
+python -m muninn.cli import export.json --source mem0 --apply
+```
+
+`/health` reports `legacy_stores` (booleans only) when an older `~/.muninn/data` or Mem0
+store exists on the machine. Back up the data directory before any `--apply`.
 
 ### Reproducible memory profiling
 
@@ -375,7 +415,8 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 | Document | Description |
 |----------|-------------|
 | `SOTA_PLUS_PLAN.md` | Active development phases and roadmap |
-| `HANDOFF.md` | Operational setup, auth flow, known issues |
+| `docs/plans/2026-09-25-post-codex-hardening-plan.md` | Current plan and status |
+| `docs/archive/` | Historical handoffs and remediation reports (including `HANDOFF.md`) |
 | `docs/ARCHITECTURE.md` | System architecture deep-dive |
 | `docs/MUNINN_COMPREHENSIVE_ROADMAP.md` | Full feature roadmap (v3.1→v3.3+) |
 | `docs/AGENT_CONTINUATION_RUNBOOK.md` | How to resume development across sessions |

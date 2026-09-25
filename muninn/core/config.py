@@ -265,6 +265,19 @@ class ConsolidationConfig(BaseModel):
     merge_similarity: float = 0.92
     promote_access_count: int = 5
     working_memory_ttl_hours: float = 24.0
+    # Records visited per phase per cycle; a persisted cursor pages through
+    # the whole store across cycles.
+    batch_size: int = 500
+    # Compute and report proposed changes without writing any store.
+    dry_run: bool = False
+    # Self-supervised importance (muninn.scoring.adaptive):
+    #   auto   - learn continuously; use the learned model while it beats legacy
+    #   shadow - learn and report, never use
+    #   legacy - hand-weighted importance only, no learning
+    importance_model: Literal["auto", "shadow", "legacy"] = "auto"
+    adaptive_horizon_days: float = 7.0
+    adaptive_samples_per_cycle: int = 200
+    adaptive_min_examples: int = 200
     
     # Phase 9: Maintenance & Integrity (v3.6.0)
     colbert_drift_threshold: float = 0.15
@@ -402,6 +415,13 @@ class MuninnConfig(BaseModel):
                 integrity_resource_mode=os.environ.get(
                     "MUNINN_CONSOLIDATION_INTEGRITY_RESOURCE_MODE", "cycle"
                 ).strip().lower(),
+                batch_size=max(1, int(os.environ.get("MUNINN_CONSOLIDATION_BATCH_SIZE", "500"))),
+                dry_run=os.environ.get("MUNINN_CONSOLIDATION_DRY_RUN", "false").strip().lower()
+                in ("1", "true", "yes", "on"),
+                importance_model=os.environ.get("MUNINN_IMPORTANCE_MODEL", "auto").strip().lower(),
+                adaptive_horizon_days=max(0.01, float(os.environ.get("MUNINN_ADAPTIVE_HORIZON_DAYS", "7"))),
+                adaptive_samples_per_cycle=max(1, int(os.environ.get("MUNINN_ADAPTIVE_SAMPLES_PER_CYCLE", "200"))),
+                adaptive_min_examples=max(10, int(os.environ.get("MUNINN_ADAPTIVE_MIN_EXAMPLES", "200"))),
             ),
             conflict_detection=ConflictDetectionConfig(
                 model_name=os.environ.get(

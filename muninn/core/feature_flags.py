@@ -32,6 +32,10 @@ def _env_bool(key: str, default: str = "0") -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+class FeatureDisabledError(RuntimeError):
+    """Raised when an operation needs a feature flag that is turned off."""
+
+
 @dataclass(frozen=True)
 class FeatureFlags:
     """
@@ -162,10 +166,10 @@ class FeatureFlags:
             flag_name: The flag to check.
 
         Raises:
-            RuntimeError: If the flag is disabled.
+            FeatureDisabledError: If the flag is disabled.
         """
         if not self.is_enabled(flag_name):
-            raise RuntimeError(
+            raise FeatureDisabledError(
                 f"Feature '{flag_name}' is disabled. "
                 f"Set MUNINN_{flag_name.upper()}=1 to enable."
             )

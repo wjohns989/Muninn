@@ -5,17 +5,21 @@ Background consolidation process inspired by neuroscience sleep consolidation
 and biological immune system memory maturation.
 
 Runs periodically (default: every 6 hours) through 5 phases:
-1. DECAY    — Recalculate importance, soft-delete low-value memories
-2. MERGE    — Find and merge near-duplicate episodic memories
+1. DECAY    — Recalculate importance, archive low-value memories
+2. MERGE    — Merge near-duplicate episodic memories (absorbed record archived)
 3. PROMOTE  — Promote frequently-accessed memories to higher types
 4. REPLAY   — Re-embed high-importance memories with latest model
 5. STATISTICS — Update system-wide metrics and health
 """
 
 import asyncio
+import json
+import random
 import time
 import logging
-from typing import Optional
+from collections import deque
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
 
@@ -25,11 +29,14 @@ from muninn.store.vector_store import VectorStore
 from muninn.store.graph_store import GraphStore
 from muninn.retrieval.bm25 import BM25Index
 from muninn.scoring.importance import calculate_importance, batch_update_importance
+from muninn.scoring.adaptive import AdaptiveImportanceModel, build_features, outcome_label
 from muninn.consolidation.merge import find_merge_candidates, merge_memories
 from muninn.consolidation.promote import find_promotion_candidates, promote_memory
-from muninn.core.types import MemoryType
+from muninn.core.types import MemoryRecord, MemoryType
 
 logger = logging.getLogger("Muninn.Consolidation")
+
+ADAPTIVE_STATE_KEY = "adaptive_importance_state"
 
 
 class ConsolidationDaemon:
@@ -50,6 +57,7 @@ class ConsolidationDaemon:
         embed_fn=None,
         colbert_indexer=None,
         extractor=None,
+        images_dir: Optional[Path] = None,
     ):
         self.config = config
         self.metadata = metadata
@@ -64,6 +72,23 @@ class ConsolidationDaemon:
         self._last_cycle: Optional[float] = None
         self._cycle_count = 0
         self._cycle_lock = asyncio.Lock()
+        self._images_dir = images_dir
+        self._dry_run = getattr(config, "dry_run", False) is True
+        batch_size = getattr(config, "batch_size", 500)
+        self._batch_size = batch_size if isinstance(batch_size, int) and batch_size > 0 else 500
+        # Content-free record of what a dry run would have changed (ids only).
+        self._proposed_actions: deque = deque(maxlen=500)
+
+        # Self-supervised importance (see muninn.scoring.adaptive).
+        self._clock = time.time
+        mode = getattr(config, "importance_model", "legacy")
+        self._importance_mode = mode if mode in ("auto", "shadow", "legacy") else "legacy"
+        self._adaptive: Optional[AdaptiveImportanceModel] = None
+        if self._importance_mode != "legacy":
+            self._adaptive = AdaptiveImportanceModel(min_examples=int(config.adaptive_min_examples))
+            self._adaptive.load_json(self.metadata.get_meta(ADAPTIVE_STATE_KEY))
+            self._horizon_seconds = float(config.adaptive_horizon_days) * 86400.0
+            self._samples_per_cycle = int(config.adaptive_samples_per_cycle)
         
         # Phase 9 integrity components (v3.6.0). The NLI session is the largest
         # optional CPU resource, so cycle mode owns it only while the phase runs.
@@ -155,6 +180,9 @@ class ConsolidationDaemon:
         }
 
         try:
+            # Phase 0: LEARN (resolve self-labelled importance predictions)
+            results["phases"]["learn"] = await self._phase_learn()
+
             # Phase 1: DECAY
             decay_result = await self._phase_decay()
             results["phases"]["decay"] = decay_result
@@ -215,17 +243,159 @@ class ConsolidationDaemon:
             except asyncio.CancelledError:
                 break
 
+    def _propose(self, phase: str, action: str, memory_id: str, **details: Any) -> None:
+        self._proposed_actions.append(
+            {"phase": phase, "action": action, "memory_id": memory_id, **details}
+        )
+
+    def _persist(self, record, *fields: str) -> None:
+        """Write the named fields of an in-memory record back to the metadata store."""
+        if self._dry_run:
+            self._propose("persist", "update", record.id, fields=list(fields))
+            return
+        self.metadata.update(record.id, **{field: getattr(record, field) for field in fields})
+
+    def _next_batch(self, phase: str) -> List[MemoryRecord]:
+        """Return the next page of live memories for a phase, advancing its cursor.
+
+        Paging by id visits every memory across cycles; a top-importance slice
+        would never reach the low-importance records decay exists for.
+        """
+        key = f"consolidation_cursor:{phase}"
+        cursor = self.metadata.get_meta(key, "")
+        if not isinstance(cursor, str):
+            cursor = ""
+        records = self.metadata.get_for_consolidation(
+            limit=self._batch_size, archived=False, after_id=cursor
+        )
+        next_cursor = records[-1].id if len(records) >= self._batch_size else ""
+        if not self._dry_run:
+            self.metadata.set_meta(key, next_cursor)
+        return records
+
+    def _archive(
+        self,
+        record: MemoryRecord,
+        phase: str,
+        reason: str,
+        parent_id: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Retire a memory reversibly: keep its row and graph links, drop it from hot indexes."""
+        if self._dry_run:
+            self._propose(phase, "archive", record.id, reason=reason, parent_id=parent_id)
+            return
+        metadata = dict(record.metadata or {})
+        metadata.update(extra_metadata or {})
+        metadata["archived_reason"] = reason
+        metadata["archived_at"] = time.time()
+        fields: Dict[str, Any] = {"archived": True, "metadata": metadata}
+        if parent_id is not None:
+            fields["parent_id"] = parent_id
+        self.metadata.update(record.id, **fields)
+        self.vectors.delete([record.id])
+        self.bm25.remove(record.id)
+
+    async def _reindex_content(self, record: MemoryRecord) -> None:
+        """Make a record's rewritten content searchable by vector and keyword."""
+        if self._dry_run:
+            self._propose("merge", "reindex", record.id)
+            return
+        metadata = record.metadata or {}
+        self.bm25.add(
+            record.id,
+            record.content,
+            user_id=metadata.get("user_id", "global"),
+            namespace=record.namespace or "global",
+        )
+        if self._embed_fn is None:
+            return
+        try:
+            embedding = self._embed_fn(record.content)
+            if hasattr(embedding, "__await__"):
+                embedding = await embedding
+            self.vectors.update_vector(record.id, embedding)
+            self.vectors.set_payload(record.id, {"content": record.content[:500]})
+        except Exception as e:
+            logger.warning("Re-embedding merged memory %s failed: %s", record.id, e)
+
+    async def _remove(self, record: MemoryRecord, phase: str, reason: str) -> None:
+        """Permanently delete a memory from every store, including its managed image."""
+        if self._dry_run:
+            self._propose(phase, "delete", record.id, reason=reason)
+            return
+        self.metadata.delete(record.id)
+        self.vectors.delete([record.id])
+        self.graph.delete_memory_references(record.id)
+        self.bm25.remove(record.id)
+        stored_name = (record.metadata or {}).get("image_stored_name")
+        if stored_name and self._images_dir is not None:
+            from muninn.media.image_memory import cleanup_managed_images
+
+            await cleanup_managed_images(
+                metadata_store=self.metadata,
+                images_dir=self._images_dir,
+                stored_names=[stored_name],
+            )
+
     # --- Phase Implementations ---
+
+    async def _phase_learn(self) -> dict:
+        """
+        Phase 0: LEARN
+        - Resolve importance predictions whose horizon has passed, labelling each
+          from the access log (was it retrieved again by a new session?)
+        - Score each prediction against its outcome, then update the model
+        - Prune access events older than the learning window
+        """
+        if self._adaptive is None:
+            return {"skipped": "legacy"}
+        if self._dry_run:
+            return {"skipped": "dry_run"}
+        t0 = time.time()
+        now = self._clock()
+        due = self.metadata.pop_due_importance_predictions(now - self._horizon_seconds, limit=2000)
+        memory_ids = list({row["memory_id"] for row in due})
+        live = {
+            record.id
+            for record in self.metadata.get_by_ids(memory_ids)
+            if not record.archived
+        }
+        events = self.metadata.get_access_events(memory_ids)
+        resolved = positives = censored = 0
+        for row in due:
+            # A memory archived or deleted during its window could not be retrieved;
+            # counting it as a negative would let the model confirm its own decisions.
+            if row["memory_id"] not in live:
+                censored += 1
+                continue
+            label = outcome_label(events[row["memory_id"]], row["predicted_at"], self._horizon_seconds)
+            self._adaptive.observe(json.loads(row["features"]), row["p_model"], row["legacy_score"], label)
+            resolved += 1
+            positives += label
+        if resolved:
+            self.metadata.set_meta(ADAPTIVE_STATE_KEY, self._adaptive.to_json())
+        pruned = self.metadata.prune_access_events(now - max(4 * self._horizon_seconds, 90 * 86400.0))
+        result = {
+            "resolved": resolved,
+            "positives": positives,
+            "censored": censored,
+            "model_active": self._adaptive.active,
+            "pruned_events": pruned,
+            "elapsed": round(time.time() - t0, 2),
+        }
+        logger.info("Phase LEARN: %s", result)
+        return result
 
     async def _phase_decay(self) -> dict:
         """
         Phase 1: DECAY
-        - Recalculate importance for all memories
-        - Soft-delete memories below threshold
-        - Expire working memories past TTL
+        - Recalculate importance for the next page of memories
+        - Archive memories below threshold (reversible)
+        - Delete working memories past TTL
         """
         t0 = time.time()
-        records = self.metadata.get_for_consolidation(limit=500)
+        records = self._next_batch("decay")
         decayed = 0
         expired = 0
         updated = 0
@@ -237,13 +407,24 @@ class ConsolidationDaemon:
         utility_map = self.metadata.get_batch_retrieval_utility(
             record_ids, lookback_days=30, estimator="snips"
         )
+        now = self._clock()
+        events_map = self.metadata.get_access_events(record_ids, until=now) if self._adaptive else {}
+        predictions = []
+        learned = 0
 
+        ttl_seconds = self.config.working_memory_ttl_hours * 3600
         for record in records:
+            # Working memory is scratch space: expire it outright past its TTL.
+            if record.memory_type == MemoryType.WORKING and (time.time() - record.created_at) > ttl_seconds:
+                await self._remove(record, "decay", "working_memory_ttl")
+                expired += 1
+                continue
+
             # Get centrality from pre-fetched map
             centrality = centrality_map.get(record.id, 0.0)
 
-            # Get max similarity for novelty calculation
-            max_sim = 0.0  # Would need vector lookup — simplified for now
+            # Novelty was measured against existing memories at ingestion time.
+            max_sim = 1.0 - record.novelty_score
 
             # SNIPS retrieval utility from pre-fetched batch map
             ret_util = utility_map.get(record.id, 0.0)
@@ -256,30 +437,46 @@ class ConsolidationDaemon:
                 retrieval_utility=ret_util,
             )
 
+            # Ranking keeps the hand-weighted importance; the learned score only
+            # decides retention. Retrievals are the learner's labels, so letting
+            # its output shape ranking would let it reinforce its own predictions.
+            retention = new_importance
+            if self._adaptive is not None:
+                events = events_map.get(record.id, [])
+                features = build_features(
+                    record,
+                    [ts for ts, _ in events],
+                    len({sid for _, sid in events if sid is not None}),
+                    now,
+                )
+                probability = self._adaptive.predict(features)
+                predictions.append((record.id, now, json.dumps(features), probability, new_importance))
+                # Use the learned score only once it has beaten legacy on self-labelled
+                # outcomes, and only for memories old enough to have a track record.
+                if (
+                    self._importance_mode == "auto"
+                    and self._adaptive.active
+                    and now - record.created_at >= self._horizon_seconds
+                ):
+                    retention = self._adaptive.importance(probability)
+                    learned += 1
+
             if new_importance != record.importance:
                 record.importance = new_importance
-                self.metadata.update(record)
+                self._persist(record, "importance")
                 updated += 1
 
-            # Soft-delete below threshold
-            if new_importance < self.config.decay_threshold:
-                self.metadata.delete(record.id)
-                self.vectors.delete([record.id])
-                self.graph.delete_memory_references(record.id)
-                self.bm25.remove(record.id)
+            if retention < self.config.decay_threshold:
+                self._archive(record, "decay", "below_decay_threshold")
                 decayed += 1
 
-            # Expire working memories past TTL
-            if record.memory_type == MemoryType.WORKING:
-                ttl_seconds = self.config.working_memory_ttl_hours * 3600
-                if (time.time() - record.created_at) > ttl_seconds:
-                    self.metadata.delete(record.id)
-                    self.vectors.delete([record.id])
-                    expired += 1
+        if predictions and not self._dry_run:
+            sample = random.sample(predictions, min(self._samples_per_cycle, len(predictions)))
+            self.metadata.add_importance_predictions(sample)
 
         elapsed = time.time() - t0
         result = {"updated": updated, "decayed": decayed, "expired": expired,
-                  "elapsed": round(elapsed, 2)}
+                  "learned_scores": learned, "elapsed": round(elapsed, 2)}
         logger.info("Phase DECAY: %s", result)
         return result
 
@@ -292,7 +489,7 @@ class ConsolidationDaemon:
         """
         t0 = time.time()
         # Process in batches to maintain isolation context
-        records = self.metadata.get_for_consolidation(limit=500)
+        records = self._next_batch("merge")
         episodic = [r for r in records if r.memory_type == MemoryType.EPISODIC]
 
         if not episodic:
@@ -402,22 +599,26 @@ class ConsolidationDaemon:
                                 )
                                 
                                 # Use temporal_kg to shadow the edges of the outdated fact
-                                if hasattr(self.graph, "shadow_memory_edges"):
+                                if hasattr(self.graph, "shadow_memory_edges") and not self._dry_run:
                                     self.graph.shadow_memory_edges(
                                         memory_id=target_to_shadow.id, 
                                         superseded_at=superseding.created_at
                                     )
                                 
-                                # Archive the outdated episodic memory so it doesn't pollute standard Vector / BM25 queries (preserving historical record in graph)
-                                target_metadata = target_to_shadow.metadata.copy()
-                                target_metadata["temporal_shadowed_by"] = superseding.id
-                                target_metadata["superseded_at"] = time.time()
+                                # Archive the outdated memory so it leaves vector/BM25 recall
+                                # while its history stays in the graph and metadata store.
                                 target_to_shadow.importance = target_to_shadow.importance * 0.1
-                                self.metadata.update_metadata(target_to_shadow.id, target_metadata)
-                                self.metadata.update(target_to_shadow)
-                                
-                                self.vectors.delete([target_to_shadow.id])
-                                self.bm25.remove(target_to_shadow.id)
+                                self._persist(target_to_shadow, "importance")
+                                self._archive(
+                                    target_to_shadow,
+                                    "merge",
+                                    "temporal_shadow",
+                                    parent_id=superseding.id,
+                                    extra_metadata={
+                                        "temporal_shadowed_by": superseding.id,
+                                        "superseded_at": time.time(),
+                                    },
+                                )
                         except Exception as e:
                             logger.warning(f"Temporal synthesis failed during MERGE: {e}")
             
@@ -425,21 +626,32 @@ class ConsolidationDaemon:
                 # Since they contradict chronologically, we cannot merge them. The older fact is now archived.
                 continue
 
+            # merge_memories mutates and keeps whichever record has higher importance,
+            # so snapshot the one it will absorb (and the survivor's text) first.
+            survivor, absorbed = (primary, secondary) if primary.importance >= secondary.importance else (secondary, primary)
+            absorbed = absorbed.model_copy(deep=True)
+            survivor_content_before = survivor.content
             merged = merge_memories(primary, secondary)
 
-            # Update stores
-            self.metadata.update(merged)
-            self.metadata.delete(secondary.id)
-            self.vectors.delete([secondary.id])
-            self.graph.delete_memory_references(secondary.id)
-            # Graph update: primary node summary changes
-            merged_uid = (merged.metadata or {}).get("user_id")
-            self.graph.add_memory_node(
-                merged.id,
-                merged.content[:500],
-                user_id=merged_uid,
-                namespace=merged.namespace
+            # Update stores: the survivor carries the combined content; the absorbed
+            # record is archived (not deleted) and points at its survivor.
+            self._persist(
+                merged,
+                "content", "created_at", "last_accessed", "access_count",
+                "metadata", "consolidation_gen", "consolidated",
             )
+            self._archive(absorbed, "merge", "merged", parent_id=merged.id)
+            if merged.content != survivor_content_before:
+                await self._reindex_content(merged)
+            if not self._dry_run:
+                # Graph update: survivor node summary changes
+                merged_uid = (merged.metadata or {}).get("user_id")
+                self.graph.add_memory_node(
+                    merged.id,
+                    merged.content[:500],
+                    user_id=merged_uid,
+                    namespace=merged.namespace
+                )
             
             merged_count += 1
 
@@ -456,7 +668,7 @@ class ConsolidationDaemon:
         - Promote episodic → semantic → procedural
         """
         t0 = time.time()
-        records = self.metadata.get_for_consolidation(limit=500)
+        records = self._next_batch("promote")
 
         candidates = find_promotion_candidates(records)
         promoted = 0
@@ -465,7 +677,7 @@ class ConsolidationDaemon:
             record = self.metadata.get(mem_id)
             if record:
                 updated = promote_memory(record, new_type)
-                self.metadata.update(updated)
+                self._persist(updated, "memory_type", "consolidated", "consolidation_gen", "importance")
                 promoted += 1
 
         elapsed = time.time() - t0
@@ -488,28 +700,22 @@ class ConsolidationDaemon:
         if self._embed_fn is None:
             return {"re_embedded": 0, "reason": "no_embed_fn", "elapsed": 0.0}
 
-        # Get high-importance memories for replay
-        records = self.metadata.get_for_consolidation(limit=100)
+        # Get high-importance live memories for replay (archived ones stay out of the index)
+        records = self.metadata.get_for_consolidation(limit=100, archived=False)
         high_importance = [r for r in records if r.importance > 0.7][:20]
 
         for record in high_importance:
+            if self._dry_run:
+                self._propose("replay", "re_embed", record.id)
+                continue
             try:
                 # Re-embed the content
                 embedding = self._embed_fn(record.content)
                 if hasattr(embedding, "__await__"):
                     embedding = await embedding
 
-                # Upsert to vector store
-                self.vectors.upsert(
-                    doc_id=record.id,
-                    vector=embedding,
-                    payload={
-                        "content": record.content[:500],
-                        "memory_type": record.memory_type.value,
-                        "namespace": record.namespace,
-                        "importance": record.importance,
-                    },
-                )
+                # Replace only the vector so scope/user/project payload filters keep matching
+                self.vectors.update_vector(record.id, embedding)
                 re_embedded += 1
             except Exception as e:
                 logger.warning("Replay re-embed failed for %s: %s", record.id, e)
@@ -750,4 +956,17 @@ class ConsolidationDaemon:
             "interval_hours": self.config.interval_hours,
             "integrity_resource_mode": self.config.integrity_resource_mode,
             "integrity_resources_loaded": self._conflict_detector is not None,
+            "dry_run": self._dry_run,
+            "proposed_actions": list(self._proposed_actions) if self._dry_run else [],
+            "adaptive_importance": self._adaptive_status(),
+        }
+
+    def _adaptive_status(self) -> dict:
+        if self._adaptive is None:
+            return {"mode": "legacy"}
+        return {
+            "mode": self._importance_mode,
+            "horizon_days": round(self._horizon_seconds / 86400.0, 3),
+            "pending_predictions": self.metadata.count_importance_predictions(),
+            **self._adaptive.status(),
         }
