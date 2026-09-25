@@ -248,6 +248,8 @@ async def main():
 | `PUT` | `/update` | Update a memory |
 | `DELETE` | `/delete/{memory_id}` | Delete a memory |
 | `POST` | `/restore/{memory_id}` | Restore a memory that consolidation archived (merge, decay, temporal shadow) |
+| `POST` | `/admin/reindex` | Rebuild vectors/BM25 from metadata (dry run by default) |
+| `POST` | `/admin/import` | Import exported memories, keeping original timestamps (dry run by default) |
 | `POST` | `/ingest` | Ingest files/folders |
 | `POST` | `/ingest/legacy/discover` | Discover legacy session files |
 | `POST` | `/ingest/legacy/import` | Import selected legacy memories |
@@ -315,6 +317,27 @@ Key environment variables:
 
 `config.template.yaml` contains conservative, relative-path defaults. Keep real
 tokens and machine-specific data paths in private environment/configuration files.
+
+### Upgrading and migrating memories
+
+`metadata.db` is the source of truth; vectors and the keyword index are derived from it.
+Every command below talks to the running server and is a dry run unless `--apply` is given.
+
+```bash
+# Rebuild vectors and BM25 from metadata.db (after an embedding-model change add
+# --recreate-vectors; also use after restoring metadata.db into a fresh install)
+python -m muninn.cli reindex --apply
+
+# Import memories exported from another system, including the pre-3.0 Mem0-based
+# Muninn: JSONL, a JSON array, or a Mem0 GET /memories response. Original
+# timestamps are kept, exact duplicates skipped, and the original user id is
+# stored as metadata.legacy_user_id.
+python -m muninn.cli import export.json --source mem0
+python -m muninn.cli import export.json --source mem0 --apply
+```
+
+`/health` reports `legacy_stores` (booleans only) when an older `~/.muninn/data` or Mem0
+store exists on the machine. Back up the data directory before any `--apply`.
 
 ### Reproducible memory profiling
 

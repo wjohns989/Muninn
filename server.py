@@ -1391,6 +1391,47 @@ async def update_memory_endpoint(req: UpdateMemoryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ReindexRequest(BaseModel):
+    vectors: bool = True
+    bm25: bool = True
+    recreate_vectors: bool = False
+    dry_run: bool = True
+
+
+class ImportMemoriesRequest(BaseModel):
+    records: List[Dict[str, Any]] = Field(default_factory=list, max_length=1000)
+    user_id: str = "global_user"
+    namespace: str = "global"
+    source: str = "legacy"
+    dry_run: bool = True
+
+
+@app.post("/admin/reindex", dependencies=[Depends(verify_token)])
+async def reindex_endpoint(req: ReindexRequest):
+    """Rebuild vectors and/or BM25 from the metadata store (dry run by default)."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    from muninn.core.maintenance import reindex
+
+    return {"success": True, "data": await reindex(
+        memory, vectors=req.vectors, bm25=req.bm25,
+        recreate_vectors=req.recreate_vectors, dry_run=req.dry_run,
+    )}
+
+
+@app.post("/admin/import", dependencies=[Depends(verify_token)])
+async def import_memories_endpoint(req: ImportMemoriesRequest):
+    """Import exported memories (Muninn, Mem0 or similar JSON), keeping original timestamps."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    from muninn.core.maintenance import import_memories
+
+    return {"success": True, "data": await import_memories(
+        memory, req.records, user_id=req.user_id, namespace=req.namespace,
+        source=req.source, dry_run=req.dry_run,
+    )}
+
+
 @app.post("/restore/{memory_id}", dependencies=[Depends(verify_token)])
 async def restore_memory_endpoint(memory_id: str):
     """Restore a memory that consolidation archived (merge, decay or temporal shadow)."""

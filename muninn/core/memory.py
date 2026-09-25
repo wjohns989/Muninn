@@ -50,6 +50,7 @@ from muninn.observability import OTelGenAITracer
 from muninn.chains import MemoryChainDetector
 from muninn.ingestion import IngestionPipeline, discover_legacy_sources as discover_legacy_sources_catalog
 from muninn.ingestion.parser import infer_source_type
+from muninn.platform import detect_legacy_stores
 from muninn.core.ingestion_manager import IngestionManager
 from muninn.advanced.temporal_kg import TemporalKnowledgeGraph
 from muninn.advanced.cross_agent import FederationManager
@@ -2056,6 +2057,7 @@ class MuninnMemory:
                 "ingestion_max_workers": self.config.ingestion.max_workers,
                 "session_inhibition": self._session_inhibition_status(),
             },
+            "legacy_stores": detect_legacy_stores(),
             "backend": "muninn-native",
         }
 

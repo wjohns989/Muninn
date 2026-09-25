@@ -176,6 +176,20 @@ def get_legacy_data_dir() -> Path:
     return Path.home() / ".muninn" / "data"
 
 
+def detect_legacy_stores() -> dict:
+    """Report (as booleans only) whether older memory stores exist on this machine.
+
+    - ``muninn_legacy_data_dir``: the pre-platformdirs ``~/.muninn/data`` layout.
+    - ``mem0_store``: a Mem0 home directory, used by the pre-3.0 Mem0-based Muninn.
+    Paths are deliberately not returned so /health stays free of machine paths.
+    """
+    legacy_dir = get_legacy_data_dir()
+    return {
+        "muninn_legacy_data_dir": legacy_dir.is_dir() and any(legacy_dir.iterdir()),
+        "mem0_store": (Path.home() / ".mem0").is_dir(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Process management (cross-platform)
 # ---------------------------------------------------------------------------
