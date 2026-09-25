@@ -162,22 +162,28 @@ async def test_daemon_labels_its_own_predictions_from_later_retrievals(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_decay_uses_learned_score_only_when_active_and_mature(tmp_path):
+async def test_learned_score_drives_retention_not_ranking(tmp_path):
     daemon = _daemon(tmp_path, adaptive_horizon_days=7)
     now = daemon._clock.now
-    daemon.metadata.add(MemoryRecord(id="mature", content="a", created_at=now - 30 * DAY,
-                                     metadata={"user_id": "u1"}))
-    daemon.metadata.add(MemoryRecord(id="young", content="b", created_at=now - DAY,
-                                     metadata={"user_id": "u1"}))
+    for memory_id, age_days in (("mature", 30), ("young", 1)):
+        daemon.metadata.add(MemoryRecord(id=memory_id, content=memory_id, created_at=now - age_days * DAY,
+                                         metadata={"user_id": "u1"}))
     daemon._adaptive.active = True
-    daemon._adaptive.weights = [0.0] * (len(FEATURE_NAMES) - 1) + [3.0]  # p ~ 0.95 for everyone
+    daemon._adaptive.weights = [0.0] * (len(FEATURE_NAMES) - 1) + [-3.0]  # p ~ 0.05: "not needed"
 
     result = await daemon._phase_decay()
 
     assert result["learned_scores"] == 1
-    expected = daemon._adaptive.importance(daemon._adaptive.predict([0] * (len(FEATURE_NAMES) - 1) + [1]))
-    assert daemon.metadata.get("mature").importance == pytest.approx(expected)
-    assert daemon.metadata.get("young").importance != pytest.approx(expected)
+    assert daemon.metadata.get("mature").archived is True  # retention follows the learned score
+    assert daemon.metadata.get("young").archived is False  # too young to judge
+    # Ranking importance is still the hand-weighted score, so the learner cannot
+    # influence which memories get retrieved and thereby its own labels.
+    legacy = _daemon(tmp_path / "legacy", importance_model="legacy")
+    legacy.metadata.add(MemoryRecord(id="mature", content="mature", created_at=now - 30 * DAY,
+                                     metadata={"user_id": "u1"}))
+    await legacy._phase_decay()
+    assert daemon.metadata.get("mature").importance == pytest.approx(
+        legacy.metadata.get("mature").importance, abs=1e-6)
 
 
 @pytest.mark.asyncio

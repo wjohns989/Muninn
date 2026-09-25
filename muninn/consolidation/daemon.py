@@ -414,6 +414,10 @@ class ConsolidationDaemon:
                 retrieval_utility=ret_util,
             )
 
+            # Ranking keeps the hand-weighted importance; the learned score only
+            # decides retention. Retrievals are the learner's labels, so letting
+            # its output shape ranking would let it reinforce its own predictions.
+            retention = new_importance
             if self._adaptive is not None:
                 events = events_map.get(record.id, [])
                 features = build_features(
@@ -431,7 +435,7 @@ class ConsolidationDaemon:
                     and self._adaptive.active
                     and now - record.created_at >= self._horizon_seconds
                 ):
-                    new_importance = self._adaptive.importance(probability)
+                    retention = self._adaptive.importance(probability)
                     learned += 1
 
             if new_importance != record.importance:
@@ -439,7 +443,7 @@ class ConsolidationDaemon:
                 self._persist(record, "importance")
                 updated += 1
 
-            if new_importance < self.config.decay_threshold:
+            if retention < self.config.decay_threshold:
                 self._archive(record, "decay", "below_decay_threshold")
                 decayed += 1
 
