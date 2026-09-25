@@ -98,14 +98,19 @@ class VectorStore:
         query_filter = None
         if filters:
             conditions = []
+            exclusions = []
             for key, value in filters.items():
                 if value is None:
                     continue
                 if key == "memory_ids" and isinstance(value, list):
                     conditions.append(FieldCondition(key="memory_id", match=MatchAny(any=value)))
+                elif key == "archived" and value is False:
+                    # Most points never carry an `archived` payload key; a positive
+                    # match on False would exclude them all, so exclude archived=True.
+                    exclusions.append(FieldCondition(key="archived", match=MatchValue(value=True)))
                 else:
                     conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
-            query_filter = Filter(must=conditions)
+            query_filter = Filter(must=conditions or None, must_not=exclusions or None)
 
         # v1.16+ uses query_points instead of search
         results = client.query_points(
