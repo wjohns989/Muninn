@@ -169,3 +169,60 @@ Each of these was reproduced against current `main`.
 
 1 → 2 → 4 → 5 (mechanical, test-first), then 6 → 7 so CI guards everything after. Item 3 waits on
 the retention decision. Items 9 and 11 need a working vector cache. Item 12 closes the cycle.
+
+---
+
+# Next cycle: ecosystem changes, migration, cleanup (researched 2026-09-25)
+
+## Ecosystem changes that affect Muninn
+
+| Change | Impact on Muninn | Plan |
+|---|---|---|
+| **Kùzu archived** 2025-10-10; 0.11.3 is the final release. Community fork **LadybugDB** (v0.19.1 as of 2026-08) continues it; on-disk files are not a portable interchange format. | The graph store and TKG sit on an unmaintained engine (no security fixes, no new Python/platform wheels). | Pinned `kuzu==0.11.3` (done). Then put the graph behind an interface and migrate by **logical rebuild from SQLite** (not file copy), either to LadybugDB or to SQLite-backed entity/relation tables. Muninn's graph use (entity links, degree, temporal edges) is small enough that SQLite would also remove the second single-process store. Decide with a benchmark. |
+| **MCP spec 2026-07-28** is stateless: `Mcp-Session-Id` and the `initialize` handshake are removed; protocol version, client info and capabilities travel in `_meta` on every request; HTTP+SSE transport, Roots, Sampling and Logging are deprecated. | The Streamable HTTP transport negotiates up to 2025-11-25; session inhibition keys off the MCP session id; the legacy SSE router is now a deprecated transport. | Add 2026-07-28 support alongside 2025-11-25 (per-request `_meta` version, `UnsupportedProtocolVersionError`), derive the inhibition key from an explicit tool argument or client identity instead of the removed session header, and schedule the SSE router for removal. |
+| **Benchmarks**: LongMemEval (500 questions), LoCoMo (1,540) and BEAM (1M/10M tokens) are the reference set; published results are ~94–96% on LongMemEval and ~92–94% on LoCoMo. | Muninn only runs a synthetic LongMemEval-style set, and vector recall was broken until PR #140, so it has no comparable number. | Run the real LongMemEval-S and LoCoMo through the existing adapter with a working vector cache; add BEAM-1M later. This becomes the regression gate and the offline check for the adaptive learner. |
+| **Local embeddings**: `nomic-embed-text` remains a sound small default; `embeddinggemma` (768-d, same dimension) and `qwen3-embedding:0.6b` (MRL, adjustable dims) score higher on MTEB. | Changing models means re-embedding every memory. | Needs the reindex tool below, then an A/B on the benchmark before switching the default. |
+
+## Migrating an existing local install
+
+The repository starts at v3.0.0 (2026-02-11), which replaced the Mem0-based Muninn. What an upgrade needs
+depends on which generation the local install is:
+
+- **3.x install** (data under the platform data dir, e.g. `%LOCALAPPDATA%\AntigravityLabs\muninn`, containing
+  `metadata.db`, `qdrant_v8/`, `kuzu_v12/`): upgrades in place. SQLite adds new columns and tables on
+  startup, BM25 is rebuilt from SQLite, and the vector and graph directory names have not changed since
+  3.0. The vector-recall fix is query-side, so existing points need no rewrite. Back up the data dir, stop
+  the service, update, start with `MUNINN_CONSOLIDATION_DRY_RUN=1`.
+- **Pre-3.0 (Mem0-based) install** (served on port 8000, `mem0ai` dependency, data in Mem0's own store):
+  there is no migration path today. The 3.0 design called for a Mem0 → native migration script and a
+  `MIGRATION.md`; neither was written.
+
+Tooling to build (always operating on a backup copy, dry-run by default):
+1. `muninn reindex` — rebuild vectors, BM25 and graph from `metadata.db`. Also the mechanism for an
+   embedding-model change and for leaving Kùzu.
+2. `muninn import-mem0` — read memories from a running Mem0-era server's API (or its store), preserve
+   original `created_at`, user and metadata, tag provenance `legacy_import`, skip duplicates by content
+   hash, report counts before writing.
+3. Wire the unused `platform.get_legacy_data_dir()` into startup so a legacy layout is detected and reported
+   in `/health` instead of silently starting empty.
+
+## Repository cleanup
+
+- **Privacy guard (done):** gitleaks in CI and pre-commit, tracked-but-ignored check, home-path check,
+  `.gitignore` for the relative data dir and images; untracked outputs containing a real profile path.
+  History contains no secrets; three old commits contain a Windows profile path, which only a history
+  rewrite on `main` would remove (not recommended).
+- **Root clutter:** move the historical reports (`CHANGELOG_REMEDIATION.md`, `FINAL_REMEDIATION_REPORT.md`,
+  `REMEDIATION_HANDOFF.md`, `SESSION_COMPLETE.md`, `PR_UPDATE.md`, `HANDOFF.md`) to `docs/archive/`; review
+  `fix_fastembed.py`, `ingest_history.py` (hard-coded pre-3.0 paths and port 8000) and the root
+  `package.json` (Node Claude Agent SDK, unused by the Python code).
+- **Lint:** 1,173 auto-fixable Ruff findings (whitespace, unsorted/unused imports). One mechanical PR,
+  then Ruff in CI so it stays clean.
+- **Branches:** 110 remote branches, most from closed or merged PRs. Delete after review.
+- **PR backlog:** 54 open; CI now validates them.
+
+## Sources
+- Kùzu archive and LadybugDB: https://oneuptime.com/blog/post/2026-08-12-kuzu-archived-pin-0-11-3-fork-or-migrate/view
+- MCP 2026-07-28 changelog: https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/changelog.mdx
+- Memory benchmarks: https://mem0.ai/blog/ai-memory-benchmarks-in-2026 and https://mem0.ai/blog/state-of-ai-agent-memory-2026
+- Local embedding models: https://www.morphllm.com/ollama-embedding-models
