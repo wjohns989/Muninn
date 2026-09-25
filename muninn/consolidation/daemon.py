@@ -296,6 +296,29 @@ class ConsolidationDaemon:
         self.vectors.delete([record.id])
         self.bm25.remove(record.id)
 
+    async def _reindex_content(self, record: MemoryRecord) -> None:
+        """Make a record's rewritten content searchable by vector and keyword."""
+        if self._dry_run:
+            self._propose("merge", "reindex", record.id)
+            return
+        metadata = record.metadata or {}
+        self.bm25.add(
+            record.id,
+            record.content,
+            user_id=metadata.get("user_id", "global"),
+            namespace=record.namespace or "global",
+        )
+        if self._embed_fn is None:
+            return
+        try:
+            embedding = self._embed_fn(record.content)
+            if hasattr(embedding, "__await__"):
+                embedding = await embedding
+            self.vectors.update_vector(record.id, embedding)
+            self.vectors.set_payload(record.id, {"content": record.content[:500]})
+        except Exception as e:
+            logger.warning("Re-embedding merged memory %s failed: %s", record.id, e)
+
     async def _remove(self, record: MemoryRecord, phase: str, reason: str) -> None:
         """Permanently delete a memory from every store, including its managed image."""
         if self._dry_run:
@@ -604,8 +627,10 @@ class ConsolidationDaemon:
                 continue
 
             # merge_memories mutates and keeps whichever record has higher importance,
-            # so snapshot the one it will absorb first.
-            absorbed = (secondary if primary.importance >= secondary.importance else primary).model_copy(deep=True)
+            # so snapshot the one it will absorb (and the survivor's text) first.
+            survivor, absorbed = (primary, secondary) if primary.importance >= secondary.importance else (secondary, primary)
+            absorbed = absorbed.model_copy(deep=True)
+            survivor_content_before = survivor.content
             merged = merge_memories(primary, secondary)
 
             # Update stores: the survivor carries the combined content; the absorbed
@@ -616,6 +641,8 @@ class ConsolidationDaemon:
                 "metadata", "consolidation_gen", "consolidated",
             )
             self._archive(absorbed, "merge", "merged", parent_id=merged.id)
+            if merged.content != survivor_content_before:
+                await self._reindex_content(merged)
             if not self._dry_run:
                 # Graph update: survivor node summary changes
                 merged_uid = (merged.metadata or {}).get("user_id")

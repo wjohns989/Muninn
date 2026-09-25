@@ -93,6 +93,12 @@ class VectorStore:
             points=[PointVectors(id=point_id, vector=embedding)],
         )
 
+    def set_payload(self, memory_id: str, fields: Dict[str, Any]) -> None:
+        """Merge fields into a point's payload without touching its vector."""
+        client = self._get_client()
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
+        client.set_payload(collection_name=self.collection_name, payload=fields, points=[point_id])
+
     def search(
         self,
         query_embedding: List[float],

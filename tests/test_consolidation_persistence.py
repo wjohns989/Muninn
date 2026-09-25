@@ -1,6 +1,7 @@
 """Consolidation phases must persist their results to the real metadata store."""
 
 import time
+import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -63,6 +64,7 @@ async def test_merge_persists_survivor_and_archives_absorbed(
     tmp_path, monkeypatch, primary_importance, secondary_importance
 ):
     daemon = _daemon(tmp_path)
+    daemon._embed_fn = lambda text: [0.1, 0.2, 0.3, 0.4]
     daemon.metadata.add(_record("a", "deploys run on Fridays", importance=primary_importance))
     daemon.metadata.add(_record("b", "rollbacks use blue-green", importance=secondary_importance))
     monkeypatch.setattr(
@@ -86,6 +88,11 @@ async def test_merge_persists_survivor_and_archives_absorbed(
     assert absorbed.metadata["archived_reason"] == "merged"
     daemon.vectors.delete.assert_called_once_with([absorbed_id])
     daemon.bm25.remove.assert_called_once_with(absorbed_id)
+    # The survivor's rewritten content is searchable by keyword and vector.
+    bm25_id, bm25_text = daemon.bm25.add.call_args.args[:2]
+    assert bm25_id == survivor_id and "rollbacks use blue-green" in bm25_text and "Fridays" in bm25_text
+    daemon.vectors.update_vector.assert_called_once_with(survivor_id, [0.1, 0.2, 0.3, 0.4])
+    daemon.vectors.set_payload.assert_called_once_with(survivor_id, {"content": survivor.content[:500]})
 
 
 @pytest.mark.asyncio
@@ -285,5 +292,19 @@ def test_update_vector_preserves_scope_payload(tmp_path):
 
         hits = vs.search([0.0, 1.0, 0.0, 0.0], 5, filters={"user_id": "u1", "project": "p1"})
         assert hits and hits[0][0] == "m1" and hits[0][1] > 0.99
+    finally:
+        vs._get_client().close()
+
+
+def test_set_payload_merges_fields(tmp_path):
+    from muninn.store.vector_store import VectorStore
+
+    vs = VectorStore(tmp_path / "vectors", embedding_dims=4)
+    try:
+        vs.upsert("m1", [1.0, 0.0, 0.0, 0.0], {"user_id": "u1", "content": "old"})
+        vs.set_payload("m1", {"content": "new"})
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "m1"))
+        point = vs._get_client().retrieve(vs.collection_name, ids=[point_id])[0]
+        assert point.payload["content"] == "new" and point.payload["user_id"] == "u1"
     finally:
         vs._get_client().close()
