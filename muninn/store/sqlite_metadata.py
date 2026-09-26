@@ -232,7 +232,10 @@ CREATE TABLE IF NOT EXISTS history_threads (
     status               TEXT,
     topics_json          TEXT,
     analyzed_turns       INTEGER NOT NULL DEFAULT 0,
-    analyzed_at          REAL
+    analyzed_at          REAL,
+    continues_thread     TEXT,
+    duplicate_turns      INTEGER NOT NULL DEFAULT 0,
+    analysis_error       TEXT
 );
 """
 
@@ -314,7 +317,12 @@ class SQLiteMetadataStore:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(history_threads)")}
         for column, ddl in HISTORY_THREAD_COLUMNS.items():
             if column not in existing:
-                conn.execute(f"ALTER TABLE history_threads ADD COLUMN {column} {ddl}")
+                try:
+                    conn.execute(f"ALTER TABLE history_threads ADD COLUMN {column} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    # Another process opening the same database added it first.
+                    if "duplicate column" not in str(exc).lower():
+                        raise
         conn.execute(HISTORY_PROMPTS)
         conn.execute(HISTORY_TURNS)
         conn.execute(
