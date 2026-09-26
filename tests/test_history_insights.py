@@ -46,9 +46,21 @@ def test_key_is_saved_privately_and_env_wins(monkeypatch):
     assert llm_settings.api_key() is None and not llm_settings.should_prompt()
 
 
-def test_default_models_are_luna_then_zdr_fallbacks():
-    assert llm_settings.models() == ["openai/gpt-6-luna", "deepseek/deepseek-v4-flash",
+def test_default_models_are_luna_pro_then_zdr_fallbacks():
+    assert llm_settings.models() == ["openai/gpt-6-luna-pro", "deepseek/deepseek-v4-flash",
                                      "google/gemini-3.5-flash-lite"]
+
+
+def test_batch_variants_are_used_as_their_direct_model(monkeypatch):
+    # ':batch' ids only work through the asynchronous Batch API (which stores data up to 30 days).
+    llm_settings.save_key("sk-or-k", model="openai/gpt-6-luna-pro:batch")
+    assert llm_settings.models()[0] == "openai/gpt-6-luna-pro"
+    monkeypatch.setenv("MUNINN_INSIGHTS_MODEL", "deepseek/deepseek-v4-flash:batch")
+    assert llm_settings.models()[0] == "deepseek/deepseek-v4-flash"
+    chosen = Provider.from_env(model="openai/gpt-6-luna:batch")
+    assert chosen.model == "openai/gpt-6-luna" and len(chosen.models) == 3   # OpenRouter's limit
+    assert len(chosen.request_body([])["models"]) <= 3
+    assert oct(llm_settings.settings_path().parent.stat().st_mode & 0o777) == "0o700"
 
 
 def test_first_run_prompt_saves_a_verified_key(monkeypatch, capsys):
@@ -94,7 +106,7 @@ def test_openrouter_request_enforces_zdr_schema_and_only_supported_parameters():
     llm_settings.save_key("sk-or-k")
     provider = Provider.from_env()
     body = provider.request_body([{"role": "user", "content": "x"}])
-    assert provider.name == "openrouter" and body["models"][0] == "openai/gpt-6-luna"
+    assert provider.name == "openrouter" and body["models"][0] == "openai/gpt-6-luna-pro"
     assert body["provider"] == {"zdr": True, "data_collection": "deny", "require_parameters": True}
     schema = body["response_format"]["json_schema"]
     assert body["response_format"]["type"] == "json_schema" and schema["strict"] is True
@@ -152,7 +164,7 @@ def _openrouter(answers, sent):
 
     def respond(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/endpoints/zdr"):
-            endpoint = {"model_id": "openai/gpt-6-luna", "supported_parameters": ["structured_outputs"],
+            endpoint = {"model_id": "openai/gpt-6-luna-pro", "supported_parameters": ["structured_outputs"],
                         "pricing": {"prompt": "0.0000001", "completion": "0.0000005"}}
             return httpx.Response(200, json={"data": [endpoint]})
         sent.append((request.headers.get("authorization"), json.loads(request.content)))
@@ -291,3 +303,111 @@ def test_analysis_reads_projects_in_order_across_apps(relay, monkeypatch):  # no
     assert report["superseded_insights"] == 1
     replaced_here = insights_by_text["Fact: A temporary mock server was used."]
     assert replaced_here.archived and replaced_here.metadata["superseded"] is True
+
+
+# --- refusals ------------------------------------------------------------------------------------
+
+def _reply(content="", **choice):
+    return 200, {"model": "openai/gpt-6-luna-pro", "usage": {"prompt_tokens": 10, "cost": 0.0001},
+                 "choices": [{"message": {"content": content, **choice.pop("message", {})}, **choice}]}
+
+
+REFUSALS = {
+    "refusal field": _reply(message={"refusal": "I can't help with that."}),
+    "content filter stop": _reply(json.dumps(GOOD)[:40], finish_reason="content_filter"),
+    "native safety stop": _reply("", finish_reason="stop", native_finish_reason="SAFETY"),
+    "plain-text refusal": _reply("I'm sorry, but I can't help with summarizing this conversation."),
+    "refusal as the summary": _reply(json.dumps({**GOOD, "summary": "I cannot assist with this request.",
+                                                 "insights": []})),
+    "empty reply": _reply(""),
+    "moderation error": (403, {"error": {
+        "code": 403, "message": "Input was flagged by moderation",
+        "metadata": {"reasons": ["sexual"], "model_slug": "openai/gpt-6-luna-pro"}}}),
+    "azure content filter": (400, {"error": {"code": "content_filter", "message": "The response was filtered "
+                                             "due to the prompt triggering Azure OpenAI's content management policy."}}),
+}
+
+
+def _scripted(replies, sent):
+    queue = iter(replies)
+
+    def respond(request):
+        body = json.loads(request.content)
+        sent.append(body)
+        status, payload = next(queue)
+        return httpx.Response(status, json=payload)
+
+    return httpx.MockTransport(respond)
+
+
+@pytest.mark.parametrize("signal", sorted(REFUSALS))
+def test_a_refusal_is_never_stored_and_the_next_model_answers(imported, signal):
+    llm_settings.save_key("sk-or-k")
+    sent = []
+    good = (200, {"model": "deepseek/deepseek-v4-flash", "usage": {}, "choices": [{"message": {
+        "content": json.dumps(GOOD)}, "finish_reason": "stop"}]})
+    report = asyncio.run(analyze_threads(imported.memory, imported.vault, apply=True, project="webapp", limit=1,
+                                         transport=_scripted([REFUSALS[signal], good], sent)))
+    assert not report["errors"] and not report["refused_threads"] and report["refusals"] == 1
+    # OpenRouter's own fallback only covers errors: the refused request is re-sent to the next model.
+    assert sent[1]["model"] == "deepseek/deepseek-v4-flash" and "openai/gpt-6-luna-pro" not in sent[1]["models"]
+    stored = [r for r in imported.store.get_all(limit=500) if (r.metadata or {}).get("kind") == "thread_insight"]
+    assert stored and all(r.metadata["insight_model"] == "deepseek/deepseek-v4-flash" for r in stored)
+    assert not any("can't" in r.content or "cannot" in r.content for r in stored)
+
+
+def test_when_every_model_refuses_nothing_is_stored_and_the_thread_says_why(imported):
+    llm_settings.save_key("sk-or-k")
+    key = imported.store.list_history_threads("webapp", limit=1)[0]["thread_key"]
+    summary_before = imported.store.get(imported.store.get_history_thread(key)["summary_memory_id"]).content
+    refusal = REFUSALS["plain-text refusal"]
+    report = asyncio.run(analyze_threads(imported.memory, imported.vault, apply=True, project="webapp", limit=1,
+                                         transport=_scripted([refusal] * 3, [])))
+    assert report["refusals"] == 3 and report["insights"] == 0 and not report["errors"]
+    refused = report["refused_threads"][0]
+    assert refused["thread"] == key and "every model refused" in refused["reason"]
+    state = imported.store.get_history_thread(key)
+    assert state["status"] is None and state["analysis_error"].startswith("refused:")
+    assert imported.store.get(state["summary_memory_id"]).content == summary_before   # untouched
+    assert not [r for r in imported.store.get_all(limit=500) if (r.metadata or {}).get("kind") == "thread_insight"]
+    assert len(imported.store.get_thread_memories(key, 0, 1000)) > 0                   # imported turns remain
+
+    # Not retried on every run (that would pay for the same refusal again)...
+    pending = lambda **kw: [t["thread_key"] for t in imported.store.list_history_threads(  # noqa: E731
+        "webapp", 50, needs_analysis=True, **kw)]
+    assert key not in pending() and key in pending(retry_refused=True)
+    # ...unless asked, e.g. with another model; a success clears the error.
+    good = _reply(json.dumps(GOOD), finish_reason="stop")
+    retried = asyncio.run(analyze_threads(imported.memory, imported.vault, apply=True, project="webapp", limit=1,
+                                          retry_refused=True, transport=_scripted([good], [])))
+    assert retried["threads"] == 1 and retried["insights"] == 2
+    assert imported.store.get_history_thread(key)["analysis_error"] is None
+
+
+def test_an_unreadable_reply_is_an_error_not_an_empty_result(imported):
+    llm_settings.save_key("sk-or-k")
+    garbage = _reply("{not json")
+    report = asyncio.run(analyze_threads(imported.memory, imported.vault, apply=True, project="webapp", limit=1,
+                                         transport=_scripted([garbage, garbage], [])))
+    assert report["errors"] and report["insights"] == 0
+    key = imported.store.list_history_threads("webapp", limit=1)[0]["thread_key"]
+    assert imported.store.get_history_thread(key)["status"] is None       # not marked "completed"
+
+
+def test_refusal_wording_only_matches_refusals():
+    from muninn.history.insights import looks_like_refusal
+
+    for text in ("I'm sorry, but I can't help with that.", "I cannot assist with this request.",
+                 "Sorry, I won't summarize this.", "As an AI, I must decline.", "I’m unable to process this content.",
+                 "Unfortunately, I can't provide a summary of this conversation."):
+        assert looks_like_refusal(text), text
+    for text in ("The user asked the assistant to fix the login page.", "Implemented the parser; I/O is pending.",
+                 "In this conversation the assistant said it cannot reproduce the bug.",
+                 "Sorry-state handling was added to the checkout flow."):
+        assert not looks_like_refusal(text, anywhere=True), text
+    assert looks_like_refusal("The chat is a story draft with explicit scenes, so I can't summarize it.", anywhere=True)
+    assert not looks_like_refusal("The chat is a story draft, so I can't summarize it.")   # start only
+    kept = validate_reply(json.dumps({**GOOD, "insights": [
+        {"kind": "fact", "text": "I cannot provide details about this content.", "turn": 0, "scope": "project"},
+        {"kind": "fact", "text": "Drafts live in drafts/.", "turn": 0, "scope": "project"}]}))
+    assert [i["text"] for i in kept["insights"]] == ["Drafts live in drafts/."]

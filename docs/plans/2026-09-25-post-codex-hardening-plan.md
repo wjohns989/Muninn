@@ -164,14 +164,28 @@ summary, all under project `Muninn`, re-read in order and found by search.
   markers and other threads' timestamped insights. Superseded insights are
   archived; re-analysis replaces a thread's insights.
 - OpenRouter: the CLI asks for a key on first run (verified, saved with
-  owner-only permissions). Default `openai/gpt-6-luna` with DeepSeek V4 Flash
-  and Gemini 3.5 Flash-Lite fallbacks, chosen from the live ZDR endpoint list.
+  owner-only permissions). Default `openai/gpt-6-luna-pro` with DeepSeek V4
+  Flash and Gemini 3.5 Flash-Lite fallbacks, chosen from the live ZDR endpoint
+  list; OpenRouter accepts at most three models, and `:batch` ids are used as
+  their direct model.
   The previous default, `google/gemini-2.5-flash`, expires 2026-10-20.
   Requests use a strict JSON Schema with `require_parameters`, and send only
   parameters all three models' ZDR endpoints accept. Every reply is validated
   before storage.
 - Whole conversations go in one call. The old 2,500-character cap per turn
   dropped about 60% of a real long session before any model saw it.
+- Refusals are detected (refusal field, content-filter or safety stop,
+  moderation error, empty reply, refusal wording in the summary) and the
+  request moves to the next model. When all refuse, nothing is stored and the
+  thread records `analysis_error`; `--retry-refused` tries again.
+- Live test on a real 15.8 MB Claude Desktop transcript (Windows paths, 6
+  compactions, subfolder `cd`s): every human prompt was kept, and 114 memories
+  were written in time order with compactions in place. One Luna Pro call
+  cost $0.05 and returned an accurate summary, status and 9 insights, with no
+  schema retries. It exposed two fixes: Windows paths now name their project
+  on any OS, and a session belongs to the folder it was started in, not the
+  last `cd`. OpenRouter billed about 1.3 characters per prompt token, so the
+  cost preview now uses that rate.
 
 Next for this area:
 

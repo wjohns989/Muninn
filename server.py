@@ -1539,6 +1539,7 @@ class HistoryAnalyzeRequest(BaseModel):
     project: Optional[str] = None
     limit: int = 50
     create_handoffs: bool = True
+    retry_refused: bool = False
 
 
 @app.post("/history/analyze", dependencies=[Depends(verify_token)])
@@ -1546,7 +1547,8 @@ async def history_analyze_endpoint(req: HistoryAnalyzeRequest):
     """Extract decisions, preferences, conventions, fixes and open items from imported threads (opt-in LLM)."""
     service = _require_history()
     options = {"provider": req.provider, "model": req.model, "project": req.project,
-               "limit": max(1, min(req.limit, 1000)), "create_handoffs": req.create_handoffs}
+               "limit": max(1, min(req.limit, 1000)), "create_handoffs": req.create_handoffs,
+               "retry_refused": req.retry_refused}
     if not req.apply:
         return {"success": True, "data": await service.run_analysis(apply=False, **options)}
     try:

@@ -224,7 +224,8 @@ def parse_claude_code(
             continue
         if line.get("isSidechain") or line.get("isMeta") or kind not in ("user", "assistant"):
             continue
-        session.cwd = line.get("cwd") or session.cwd
+        # The launch folder names the project; later lines follow the agent's cd into subfolders.
+        session.cwd = session.cwd or line.get("cwd")
         session.branch = line.get("gitBranch") or session.branch
         entry = line.get("entrypoint")
         if entry:

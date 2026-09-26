@@ -11,10 +11,13 @@ worktree has been deleted.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Optional
+
+_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)|\\")
 
 
 def name_from_remote(url: str) -> str:
@@ -31,15 +34,33 @@ def _git(directory: Path, *args: str) -> str:
         return ""
 
 
-def repository_hint(directory: str) -> Path:
+def _as_path(directory: str) -> PurePath:
+    """The directory as a path; Windows paths stay Windows paths when read on another OS."""
+    if os.name != "nt" and _WINDOWS_PATH.search(directory):
+        return PureWindowsPath(directory)
+    return Path(directory)
+
+
+def repository_hint(directory: str) -> PurePath:
     """The repository a worktree folder belongs to, when the path shows it."""
-    parts = Path(directory).parts
+    path = _as_path(directory)
+    parts = path.parts
     for index in range(len(parts) - 1):
         if parts[index] == ".claude" and parts[index + 1] == "worktrees":
-            return Path(*parts[:index])
+            return type(path)(*parts[:index])
         if parts[index] == ".codex" and parts[index + 1] == "worktrees" and len(parts) > index + 3:
-            return Path(*parts[: index + 4])
-    return Path(directory)
+            return type(path)(*parts[: index + 4])
+    return path
+
+
+def _is_home(path: PurePath, home: Path) -> bool:
+    if path == home:
+        return True
+    if isinstance(path, Path) and path.exists():
+        return False
+    # A home folder from another machine or account (C:\Users\<name>, /home/<name>, /Users/<name>).
+    parent = path.parent
+    return parent.parent == parent.parent.parent and parent.name.lower() in ("users", "home")
 
 
 @lru_cache(maxsize=4096)
@@ -49,9 +70,9 @@ def project_for_directory(directory: Optional[str], home: Optional[str] = None) 
         return None
     path = repository_hint(directory)
     home_path = Path(home or Path.home())
-    if str(path) in ("", "/", "\\") or path == home_path or path.parent == path:
+    if str(path) in ("", ".", "/", "\\") or _is_home(path, home_path) or path.parent == path:
         return None
-    if path.is_dir():
+    if isinstance(path, Path) and path.is_dir():
         remote = _git(path, "config", "--get", "remote.origin.url")
         if remote:
             return name_from_remote(remote) or None

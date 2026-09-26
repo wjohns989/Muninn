@@ -27,8 +27,15 @@ PRIVACY_PAGE = "https://openrouter.ai/settings/privacy"
 # All three accept about 1M tokens on ZDR endpoints. DeepSeek V4 Flash comes first among the
 # fallbacks because it has many ZDR hosts, which keeps bulk runs moving if Luna's single ZDR
 # host (Azure) is busy.
-DEFAULT_MODEL = "openai/gpt-6-luna"
+# GPT-6 Luna Pro is Luna served with reasoning mode "pro", at the same price on its Azure ZDR
+# endpoints; verified live (strict JSON Schema, ZDR routing). Fallbacks run on other hosts, so an
+# Azure outage does not stop a run. OpenRouter accepts at most 3 models per request.
+DEFAULT_MODEL = "openai/gpt-6-luna-pro"
 FALLBACK_MODELS = ("deepseek/deepseek-v4-flash", "google/gemini-3.5-flash-lite")
+MAX_MODELS = 3
+# ":batch" variants only work through OpenRouter's asynchronous Batch API, which also keeps inputs and
+# results for up to 30 days; Muninn calls models directly, so the suffix is dropped.
+_BATCH_SUFFIX = ":batch"
 
 
 def settings_path() -> Path:
@@ -48,6 +55,10 @@ def load() -> Dict[str, Any]:
 def _save(data: Dict[str, Any]) -> Path:
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     try:
@@ -77,22 +88,28 @@ def key_source() -> Optional[str]:
 def models() -> List[str]:
     """Primary model first, then fallbacks: MUNINN_INSIGHTS_MODEL, saved choice, or the default."""
     chosen = os.environ.get("MUNINN_INSIGHTS_MODEL", "").strip() or str(load().get("model") or "").strip()
-    primary = chosen or DEFAULT_MODEL
-    return [primary] + [m for m in FALLBACK_MODELS if m != primary]
+    primary = normalize_model(chosen) or DEFAULT_MODEL
+    return ([primary] + [m for m in (DEFAULT_MODEL, *FALLBACK_MODELS) if m != primary])[:MAX_MODELS]
+
+
+def normalize_model(model: Optional[str]) -> str:
+    """Model id usable with chat completions (drops the Batch API ':batch' suffix)."""
+    model = (model or "").strip()
+    return model[: -len(_BATCH_SUFFIX)] if model.endswith(_BATCH_SUFFIX) else model
 
 
 def save_key(key: str, model: Optional[str] = None) -> Path:
     data = load()
     data.update({"api_key": key.strip(), "saved_at": time.time(), "declined": False})
     if model:
-        data["model"] = model
+        data["model"] = normalize_model(model)
     return _save(data)
 
 
 def save_model(model: Optional[str]) -> Path:
     data = load()
     if model:
-        data["model"] = model
+        data["model"] = normalize_model(model)
     else:
         data.pop("model", None)
     return _save(data)

@@ -480,3 +480,25 @@ def test_project_timeline_interleaves_apps_in_time_order(relay):
     assert switches == [("codex", "claude-code"), ("claude-code", "codex"), ("codex", "claude-code")]
     page = run(read_project_timeline(relay.memory, "Relay", limit=2))
     assert page["next_offset"] == 2 and [e["kind"] for e in page["entries"]].count("conversation_turn") == 2
+
+
+def test_windows_transcripts_name_their_project_on_any_os():
+    from muninn.core.projects import project_for_directory
+
+    repo = r"C:\Users\user\VSCodeProjects\ChatConverter"
+    assert project_for_directory(repo) == "ChatConverter"
+    assert project_for_directory(repo + r"\.claude\worktrees\fix-ui") == "ChatConverter"
+    assert project_for_directory(r"C:\Users\user") is None and project_for_directory("C:\\") is None
+    assert project_for_directory("/home/someone-else") is None
+    assert project_for_directory("/Users/user/code/Proj") == "Proj"
+
+
+def test_a_session_belongs_to_the_folder_it_was_started_in():
+    """The agent may cd into subfolders; the launch folder (the one Claude Code files it under) names it."""
+    from muninn.history import parsers
+
+    root = r"C:\Users\user\VSCodeProjects\StoryApp"
+    rows = (_claude("s-1", root, [(0, "start", "ok")])
+            + _claude("s-1", root + r"\story-engine\recovery", [(60, "recover drafts", "done")]))
+    session = parsers.parse_claude_code("\n".join(json.dumps(r) for r in rows))
+    assert session.cwd == root and len(session.turns) == 2

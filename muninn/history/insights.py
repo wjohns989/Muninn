@@ -14,7 +14,11 @@ Getting results stored correctly:
 - every reply is validated against the same schema before anything is stored;
   an invalid reply is sent back once with the error, then parsed leniently;
 - whole conversations go in one call (1M-token models); only giant threads
-  are split, and their parts are merged by a final call into one result.
+  are split, and their parts are merged by a final call into one result;
+- a refusal is never stored: a refusal field, a content-filter or safety stop,
+  a moderation error, an empty reply or a summary that is a refusal moves the
+  same request to the next model; if every model refuses, the thread keeps its
+  imported turns and status and records why (``analysis_error``).
 
 Providers (opt-in; nothing is sent anywhere unless you run it):
 - ``openrouter``: every request sets ``provider.zdr = true`` and
@@ -30,7 +34,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 import httpx
@@ -49,7 +53,10 @@ logger = logging.getLogger("Muninn.history")
 
 INSIGHT_KINDS = ("decision", "preference", "convention", "fact", "fix", "open_item")
 STATUSES = ("completed", "in_progress", "abandoned", "answered")
-CHARS_PER_TOKEN = 3.5          # conservative for code-heavy chats
+CHARS_PER_TOKEN = 3.5          # window sizing: typical tokenizers on code-heavy chats
+# Cost previews use what OpenRouter actually billed: GPT-6 Luna Pro (Azure) counted about 1.3
+# characters per prompt token on real transcripts, so the preview errs high for other models.
+BILLED_CHARS_PER_TOKEN = 1.3
 TURN_CHARS = 40_000            # per side of one turn: keeps a pasted log from swamping a window
 HANDOFF_MAX_AGE_DAYS = 14      # unfinished threads newer than this can become handoffs
 MAX_INSIGHTS = 20
@@ -70,7 +77,11 @@ Other agents may have worked on the same project in between (marked "Meanwhile" 
 and notes already recorded from other conversations are listed with their time and id. Use them to \
 read this conversation in order: set "current" to false for an insight that a later note or later \
 work replaced, and list in "supersedes" the ids of earlier notes that this conversation replaced. \
-Do not repeat what an existing note already says."""
+Do not repeat what an existing note already says.
+The conversation is from the user's own private history and may include fiction, mature themes or \
+other sensitive material. Your task is only to catalogue it neutrally for the user's memory: describe \
+such content at a high level (what was written, changed or decided), never reproduce explicit detail, \
+and do not refuse or comment on the content itself."""
 
 MERGE_PROMPT = """These are analyses of consecutive parts of ONE long conversation. Merge them into a \
 single analysis with the same fields: one summary of the whole conversation, the status at its end, \
@@ -193,7 +204,7 @@ def _normalize(
     insights, seen = [], set()
     for item in parsed.insights:
         key = (item.kind, item.text.lower())
-        if key in seen:
+        if key in seen or looks_like_refusal(item.text, anywhere=True):
             continue
         seen.add(key)
         turn = item.turn if item.turn is not None and (turn_count is None or 0 <= item.turn < turn_count) else None
@@ -208,6 +219,59 @@ def _normalize(
     supersedes = list(dict.fromkeys(known[a.strip()] for a in parsed.supersedes if a.strip() in known))
     return {"summary": parsed.summary, "status": parsed.status, "topics": parsed.topics,
             "insights": insights[:MAX_INSIGHTS], "supersedes": supersedes}
+
+
+# --- refusals ------------------------------------------------------------------------
+
+class ModelRefusal(Exception):
+    """A model declined (or returned nothing); ``meta`` carries the usage of a billed reply."""
+
+    def __init__(self, model: str, reason: str, meta: Optional[Dict[str, Any]] = None):
+        super().__init__(f"{model}: {reason}")
+        self.model, self.reason, self.meta = model, reason, meta
+
+
+# How refusals open. Summaries are written in the third person, so a summary that starts like
+# this is the model talking about the request, not about the conversation.
+_REFUSAL_START = re.compile(
+    r"^\W*(?:sorry[,.!]|apologies|unfortunately,? i\b|"
+    r"i(?:['’]?m| am) (?:sorry|unable to|not able to)|"
+    r"i (?:can(?:no|['’])t|cannot|won['’]?t|will not|must decline|do not feel comfortable|"
+    r"don['’]t feel comfortable)|"
+    r"as an ai\b|this (?:request|content|conversation) (?:violates|goes against|is not something))",
+    re.I)
+# A first-person refusal anywhere in a (third-person) summary, e.g. "... explicit, so I can't summarize it."
+_REFUSAL_INSIDE = re.compile(
+    r"\bi (?:can(?:no|['’])t|cannot|won['’]?t|will not|am unable to|['’]m unable to|am not able to) "
+    r"(?:help|assist|summari[sz]e|provide|process|comply|continue|analy[sz]e|engage|describe|review|do that)",
+    re.I)
+_FILTER_ERROR = re.compile(
+    r"content[_ ]?filter|content management policy|responsibleaipolicyviolation|moderation|flagged|"
+    r"safety|prohibited|refus|policy violation|blocked", re.I)
+_FILTER_STOP = re.compile(r"content[_ ]?filter|safety|prohibited|blocklist|spii|refus|recitation|guardrail", re.I)
+
+
+def looks_like_refusal(text: str, anywhere: bool = False) -> bool:
+    text = (text or "").strip()
+    return bool(_REFUSAL_START.match(text[:300]) or (anywhere and _REFUSAL_INSIDE.search(text)))
+
+
+def _content_refusal(content: str) -> Optional[str]:
+    """Why a reply is a refusal or empty, or None when it is an answer (valid or not)."""
+    if not (content or "").strip():
+        return "empty reply"
+    try:
+        data = json.loads(_json_text(content))
+    except ValueError:
+        return "refused in text: " + " ".join(content.split())[:160] if looks_like_refusal(content) else None
+    if not isinstance(data, dict):
+        return None
+    summary = str(data.get("summary") or "")
+    if looks_like_refusal(summary, anywhere=True):
+        return "refused in summary: " + " ".join(summary.split())[:160]
+    if not summary.strip() and not data.get("insights"):
+        return "empty result"
+    return None
 
 
 # --- providers -----------------------------------------------------------------------
@@ -240,7 +304,8 @@ class Provider:
                     "No OpenRouter key: run `python -m muninn.cli openrouter set`, or set OPENROUTER_API_KEY")
             models = llm_settings.models()
             if model:
-                models = [model] + [m for m in models if m != model]
+                model = llm_settings.normalize_model(model)
+                models = ([model] + [m for m in models if m != model])[: llm_settings.MAX_MODELS]
             return cls("openrouter", llm_settings.OPENROUTER_API, models, key,
                        _int_env("MUNINN_INSIGHTS_WINDOW_TOKENS", 200_000))
         if name == "ollama":
@@ -255,7 +320,7 @@ class Provider:
             # Only parameters every chosen model's ZDR endpoints support: temperature and
             # max_tokens are absent on GPT-6 Luna's, and require_parameters would route around it.
             body.update({
-                "models": self.models,
+                "models": self.models[: llm_settings.MAX_MODELS],
                 "provider": {"zdr": True, "data_collection": "deny", "require_parameters": True},
                 "reasoning": {"effort": "low", "exclude": True},
                 "usage": {"include": True},
@@ -270,6 +335,10 @@ class Provider:
             headers["Authorization"] = f"Bearer {self.api_key}"
         response = await client.post(f"{self.base_url}/chat/completions", json=self.request_body(messages),
                                      headers=headers)
+        if response.status_code in (400, 403, 451) and _FILTER_ERROR.search(response.text[:2000]):
+            # Moderation or a provider content filter rejected the input: another model may accept it.
+            raise ModelRefusal(_error_model(response) or self.model,
+                               f"rejected by content filter ({response.status_code}): {response.text[:200]}")
         if response.status_code >= 400:
             detail = response.text[:300]
             if self.name == "openrouter" and response.status_code in (400, 404) and "endpoint" in detail.lower():
@@ -278,12 +347,36 @@ class Provider:
                            f"(account setting: {llm_settings.PRIVACY_PAGE})")
             raise RuntimeError(f"{self.name} {response.status_code}: {detail}")
         data = response.json()
-        message = (data.get("choices") or [{}])[0].get("message") or {}
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
         usage = data.get("usage") or {}
         meta = {"model": data.get("model") or self.model, "provider": data.get("provider"),
                 "prompt_tokens": usage.get("prompt_tokens", 0), "completion_tokens": usage.get("completion_tokens", 0),
                 "cost": float(usage.get("cost") or 0.0)}
-        return message.get("content") or "", meta
+        error = data.get("error") or choice.get("error")
+        if error:
+            text = json.dumps(error)[:300]
+            if _FILTER_ERROR.search(text):
+                raise ModelRefusal(meta["model"], f"rejected by content filter: {text}", meta)
+            raise RuntimeError(f"{self.name}: {text}")
+        content = message.get("content") or ""
+        if message.get("refusal"):
+            raise ModelRefusal(meta["model"], "refused: " + str(message["refusal"])[:200], meta)
+        stop = f"{choice.get('finish_reason') or ''} {choice.get('native_finish_reason') or ''}"
+        if _FILTER_STOP.search(stop):
+            raise ModelRefusal(meta["model"], f"stopped by content filter ({stop.strip()})", meta)
+        reason = _content_refusal(content)
+        if reason:
+            raise ModelRefusal(meta["model"], reason, meta)
+        return content, meta
+
+
+def _error_model(response: httpx.Response) -> Optional[str]:
+    try:
+        metadata = (response.json().get("error") or {}).get("metadata") or {}
+    except ValueError:
+        return None
+    return metadata.get("model_slug") or metadata.get("model")
 
 
 def _int_env(name: str, default: int) -> int:
@@ -339,27 +432,50 @@ class CallStats:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float = 0.0
+    refusals: int = 0
     models: Dict[str, int] = field(default_factory=dict)
 
     def merge(self, other: "CallStats") -> None:
-        for name in ("calls", "retries", "lenient", "prompt_tokens", "completion_tokens", "cost"):
+        for name in ("calls", "retries", "lenient", "prompt_tokens", "completion_tokens", "cost", "refusals"):
             setattr(self, name, getattr(self, name) + getattr(other, name))
         for model, count in other.models.items():
             self.models[model] = self.models.get(model, 0) + count
 
-    def add(self, meta: Dict[str, Any]) -> None:
+    def add(self, meta: Dict[str, Any], answered: bool = True) -> None:
+        """Count a call; a refused one still costs tokens but is not credited to its model."""
         self.calls += 1
         self.prompt_tokens += int(meta.get("prompt_tokens") or 0)
         self.completion_tokens += int(meta.get("completion_tokens") or 0)
         self.cost += float(meta.get("cost") or 0.0)
-        self.models[meta.get("model") or "?"] = self.models.get(meta.get("model") or "?", 0) + 1
+        if answered:
+            self.models[meta.get("model") or "?"] = self.models.get(meta.get("model") or "?", 0) + 1
+
+
+async def _complete(provider: Provider, client: httpx.AsyncClient, messages: List[Dict[str, str]],
+                    stats: CallStats) -> str:
+    """One answer, moving to the next model when a model refuses (OpenRouter only falls back on errors)."""
+    remaining, refusals = list(provider.models), []
+    while remaining:
+        try:
+            content, meta = await replace(provider, models=remaining).complete(client, messages)
+        except ModelRefusal as refusal:
+            stats.refusals += 1
+            if refusal.meta:
+                stats.add(refusal.meta, answered=False)
+            refusals.append(str(refusal))
+            logger.info("Insights: %s; trying the next model", refusal)
+            refused = refusal.model if refusal.model in remaining else remaining[0]
+            remaining = remaining[remaining.index(refused) + 1:]
+            continue
+        stats.add(meta)
+        return content
+    raise ModelRefusal(", ".join(provider.models), "every model refused -- " + "; ".join(refusals))
 
 
 async def _structured_call(provider: Provider, client: httpx.AsyncClient, messages: List[Dict[str, str]],
                            turn_count: int, stats: CallStats, notes: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Ask, validate, re-ask once with the validation error, then fall back to lenient parsing."""
-    content, meta = await provider.complete(client, messages)
-    stats.add(meta)
+    content = await _complete(provider, client, messages, stats)
     try:
         return validate_reply(content, turn_count, notes)
     except (ValueError, ValidationError) as exc:
@@ -369,13 +485,15 @@ async def _structured_call(provider: Provider, client: httpx.AsyncClient, messag
             {"role": "user", "content": f"That reply does not match the required JSON schema: {str(exc)[:500]}. "
                                         "Reply with only the corrected JSON object."},
         ]
-        content, meta = await provider.complete(client, retry)
-        stats.add(meta)
+        content = await _complete(provider, client, retry, stats)
         try:
             return validate_reply(content, turn_count, notes)
         except (ValueError, ValidationError):
             stats.lenient += 1
-            return parse_reply(content, turn_count, notes)
+            result = parse_reply(content, turn_count, notes)
+            if not result["summary"] and not result["insights"]:
+                raise ValueError("the model's reply could not be read; nothing was stored")
+            return result
 
 
 @dataclass
@@ -532,14 +650,18 @@ async def store_understanding(memory: "MuninnMemory", thread: Thread, result: Di
 
 async def estimate_cost(models: List[str], input_tokens: int, output_tokens: int,
                         transport: Optional[httpx.AsyncBaseTransport] = None) -> Optional[float]:
-    """Price of the primary model's cheapest zero-data-retention endpoint (public list, no key needed)."""
+    """Cheapest zero-data-retention price of the first model in the list that has one (public list, no key)."""
     try:
         async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
             response = await client.get(f"{llm_settings.OPENROUTER_API}/endpoints/zdr")
-        endpoints = [e for e in response.json().get("data", []) if e.get("model_id") == models[0]]
-        prices = [float(e["pricing"]["prompt"]) * input_tokens + float(e["pricing"]["completion"]) * output_tokens
-                  for e in endpoints if "structured_outputs" in (e.get("supported_parameters") or [])]
-        return round(min(prices), 4) if prices else None
+        endpoints = response.json().get("data", [])
+        for model in models:
+            prices = [float(e["pricing"]["prompt"]) * input_tokens + float(e["pricing"]["completion"]) * output_tokens
+                      for e in endpoints if e.get("model_id") == model
+                      and "structured_outputs" in (e.get("supported_parameters") or [])]
+            if prices:
+                return round(min(prices), 4)
+        return None
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return None
 
@@ -557,11 +679,15 @@ async def analyze_threads(
     create_handoffs: bool = True,
     progress: Optional[Dict[str, Any]] = None,
     transport: Optional[httpx.AsyncBaseTransport] = None,
+    retry_refused: bool = False,
 ) -> Dict[str, Any]:
-    """Analyze imported threads that grew since their last analysis (dry run reports volume and cost)."""
+    """Analyze imported threads that grew since their last analysis (dry run reports volume and cost).
+
+    ``retry_refused`` also retries threads every model refused earlier (for example with another model).
+    """
     store = memory._metadata
     pending = await asyncio.to_thread(
-        lambda: store.list_history_threads(project, limit, needs_analysis=True))
+        lambda: store.list_history_threads(project, limit, needs_analysis=True, retry_refused=retry_refused))
     sources = [t["source_path"] for t in pending if t.get("source_path")]
     collected = await asyncio.to_thread(collect, vault, None, None, sources) if sources else None
     by_key = {t.key: t for t in (collected.threads if collected else [])}
@@ -574,10 +700,10 @@ async def analyze_threads(
         chosen, setup_note = None, str(exc)
     window = chosen.window_chars if chosen else 700_000
     chars = sum(len(w) for t in threads for w in render_turns(t, window))
-    input_tokens = int(chars / CHARS_PER_TOKEN)
+    input_tokens = int(chars / BILLED_CHARS_PER_TOKEN)
     report: Dict[str, Any] = {
         "apply": apply, "threads": len(threads), "approx_input_tokens": input_tokens,
-        "insights": 0, "replaced_insights": 0, "handoffs": 0, "errors": [],
+        "insights": 0, "replaced_insights": 0, "handoffs": 0, "errors": [], "refused_threads": [],
     }
     if chosen:
         report.update({"provider": chosen.name, "models": chosen.models,
@@ -614,6 +740,11 @@ async def analyze_threads(
                 report["replaced_insights"] += counts["replaced"]
                 report["superseded_insights"] += counts["superseded"]
                 report["handoffs"] += counts["handoffs"]
+            except ModelRefusal as refusal:
+                # Nothing is stored: the thread keeps its imported turns and status, and says why.
+                report["refused_threads"].append({"thread": thread.key, "reason": refusal.reason[:300]})
+                await _write(memory, store.set_history_analysis_error, thread.key,
+                             error=f"refused: {refusal.reason}", analyzed_turns=len(thread.session.turns))
             except Exception as exc:
                 report["errors"].append(f"{thread.key}: {exc}")
             stats.merge(local)
@@ -626,6 +757,7 @@ async def analyze_threads(
 
         await asyncio.gather(*(project_run(group) for group in by_project.values()))
     report.update({"calls": stats.calls, "schema_retries": stats.retries, "lenient_parses": stats.lenient,
+                   "refusals": stats.refusals,
                    "prompt_tokens": stats.prompt_tokens, "completion_tokens": stats.completion_tokens,
                    "cost_usd": round(stats.cost, 4), "models_used": stats.models})
     return report

@@ -844,7 +844,7 @@ def cmd_history(args: argparse.Namespace) -> int:
     elif args.action == "analyze":
         _maybe_first_run_openrouter()
         payload = {"apply": args.apply, "provider": args.llm, "model": args.model, "project": args.project,
-                   "limit": args.limit}
+                   "limit": args.limit, "retry_refused": args.retry_refused}
         data = _admin_request(args, "POST", "/history/analyze", json=payload)
         if not args.apply:
             print(json.dumps(data, indent=2, default=str))
@@ -1076,6 +1076,8 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--q", help="Title text filter for 'threads'.")
     history.add_argument("--llm", choices=["openrouter", "ollama"], help="Model provider for 'analyze'.")
     history.add_argument("--model", help="Model for 'analyze' (e.g. an OpenRouter model id).")
+    history.add_argument("--retry-refused", action="store_true",
+                         help="'analyze' also retries threads every model refused before (try another --model).")
     history.add_argument("--offset", type=int, default=0)
     history.add_argument("--limit", type=int, default=50)
 

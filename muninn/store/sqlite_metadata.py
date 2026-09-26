@@ -241,6 +241,7 @@ HISTORY_THREAD_COLUMNS = {
     "source_path": "TEXT", "status": "TEXT", "topics_json": "TEXT",
     "analyzed_turns": "INTEGER NOT NULL DEFAULT 0", "analyzed_at": "REAL",
     "continues_thread": "TEXT", "duplicate_turns": "INTEGER NOT NULL DEFAULT 0",
+    "analysis_error": "TEXT",
 }
 
 # One row per imported turn. Resuming or forking a session writes a new transcript that starts
@@ -1676,6 +1677,7 @@ class SQLiteMetadataStore:
         text: Optional[str] = None,
         since: Optional[float] = None,
         needs_analysis: bool = False,
+        retry_refused: bool = False,
     ) -> List[Dict[str, Any]]:
         """The thread catalog, newest first, filtered by project, agent, status, topic, title text or date."""
         conditions, params = [], []
@@ -1693,7 +1695,8 @@ class SQLiteMetadataStore:
             conditions.append("ended_at >= ?")
             params.append(since)
         if needs_analysis:
-            conditions.append("analyzed_turns < turns_imported")
+            conditions.append("(analyzed_turns < turns_imported OR analysis_error IS NOT NULL)"
+                              if retry_refused else "analyzed_turns < turns_imported")
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         rows = self._get_conn().execute(
             f"SELECT * FROM history_threads{where} ORDER BY ended_at DESC LIMIT ?", (*params, int(limit))
@@ -1708,9 +1711,18 @@ class SQLiteMetadataStore:
     def set_history_analysis(self, thread_key: str, *, status: str, topics: List[str], analyzed_turns: int) -> None:
         conn = self._get_conn()
         conn.execute(
-            "UPDATE history_threads SET status = ?, topics_json = ?, analyzed_turns = ?, analyzed_at = ? "
-            "WHERE thread_key = ?",
+            "UPDATE history_threads SET status = ?, topics_json = ?, analyzed_turns = ?, analyzed_at = ?, "
+            "analysis_error = NULL WHERE thread_key = ?",
             (status, json.dumps(topics), analyzed_turns, time.time(), thread_key),
+        )
+        conn.commit()
+
+    def set_history_analysis_error(self, thread_key: str, *, error: str, analyzed_turns: int) -> None:
+        """Record why a thread could not be analyzed; it is retried when it grows or on request."""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE history_threads SET analysis_error = ?, analyzed_turns = ?, analyzed_at = ? WHERE thread_key = ?",
+            (error[:500], analyzed_turns, time.time(), thread_key),
         )
         conn.commit()
 

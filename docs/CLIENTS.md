@@ -196,7 +196,11 @@ imported thread and record what matters:
 python -m muninn.cli history analyze                         # dry run: threads, tokens, estimated cost
 python -m muninn.cli history analyze --apply                 # runs in the background
 python -m muninn.cli history threads --status in_progress --topic auth
+python -m muninn.cli history analyze --apply --retry-refused --model google/gemini-3.5-flash-lite
 ```
+
+The cost estimate uses the rate OpenRouter actually billed for GPT-6 Luna Pro
+(about 1.3 characters per prompt token), so it errs high for other models.
 
 ### Setting up OpenRouter
 
@@ -225,14 +229,17 @@ independent extraction and summarization results and on cost per thread.
 
 | Model | Role | Why |
 |---|---|---|
-| `openai/gpt-6-luna` | Default | Highest Intelligence Index in the low-cost tier (37.3). Recommended for extraction, summarization and classification. 1.05M context. About $2 per 1,000 typical threads |
-| `deepseek/deepseek-v4-flash` | First fallback | 1M context, 8 ZDR hosts with strict JSON, cheapest input. Keeps bulk runs moving if Luna's single ZDR host (Azure) is busy |
+| `openai/gpt-6-luna-pro` | Default | GPT-6 Luna's higher-reasoning tier on a zero-data-retention Azure host. 1.05M context. In live tests a 15.8 MB Claude Desktop transcript (68 turns, 6 compactions) took one call and $0.05 |
+| `deepseek/deepseek-v4-flash` | First fallback | 1M context, 8 ZDR hosts with strict JSON, cheapest input. Keeps bulk runs moving if Luna Pro's single ZDR host (Azure) is busy |
 | `google/gemini-3.5-flash-lite` | Second fallback | 1M context, Google-hosted ZDR, lowest hallucination rate of the three |
 
-OpenRouter falls back down this list automatically. All three accept about a
-million tokens, so even very long conversations go to the model whole: tool
-output is already stripped, and a 13 MB Claude Code transcript comes to about
-40k tokens of conversation. Only a thread beyond the window
+OpenRouter falls back down this list automatically when a model errors or is
+unavailable; it accepts at most three models, so the list stops at three. A
+model id ending in `:batch` is used as its direct model: those ids only work
+through OpenRouter's asynchronous Batch API, which also keeps inputs and
+results for 30 days. All three accept about a million tokens, so even very
+long conversations go to the model whole: tool output is already stripped,
+and a 15.8 MB transcript came to 431k characters of conversation. Only a thread beyond the window
 (`MUNINN_INSIGHTS_WINDOW_TOKENS`, default 200k) is split. Its parts are
 analyzed separately and then merged by one more call into a single summary,
 status and deduplicated insight list. DeepSeek V4.1 Flash (released
@@ -250,8 +257,21 @@ results for it were available yet.
   sent back once with the error, and if it still fails, whatever is usable is
   kept. Unknown turn numbers are dropped, and only preferences can be global.
   Only note ids the model was actually shown can be marked superseded.
-- The report lists the calls, schema retries, tokens, cost and the model that
-  actually answered, and each insight records `insight_model`.
+- A refusal is never stored. A reply counts as a refusal when it has a
+  `refusal` field, stops on a content filter or safety reason, is rejected by
+  moderation or a provider content filter (such as Azure's), is empty, or its
+  summary is the model declining ("I can't help with…"). OpenRouter only falls
+  back on errors, so Muninn sends the same request to the next model itself.
+  An insight worded as a refusal is dropped. If every model refuses, nothing
+  is written: the thread keeps its imported turns, summary and status, and
+  `analysis_error` says why. It is not retried on every run (that would pay
+  for the same refusal again); use `--retry-refused`, for example with another
+  `--model`. The prompt asks models to catalogue fiction and sensitive material
+  neutrally and at a high level, which avoids most refusals and keeps explicit
+  detail out of the insights.
+- The report lists the calls, schema retries, refusals, refused threads,
+  tokens, cost and the model that actually answered, and each insight records
+  `insight_model`.
 
 | Provider | When | Privacy |
 |---|---|---|
