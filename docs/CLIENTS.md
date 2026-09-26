@@ -63,16 +63,80 @@ from the client's MCP identity (for example `claude-code`, `codex`,
 `claude-desktop`). Override it with `?agent=<name>` on the URL or
 `MUNINN_AGENT_NAME` for stdio when two apps would otherwise look the same.
 
+## Bring in your existing conversations
+
+Muninn can turn the conversations already on this machine into memories, filed
+under the project and time they happened, so agents can search them and re-read
+whole threads in order.
+
+| App | Where Muninn reads it |
+|---|---|
+| Claude Code, and Claude Desktop's Code tab / Cowork | `~/.claude/projects/*/*.jsonl` (or `$CLAUDE_CONFIG_DIR`); Desktop titles from its `claude-code-sessions` folder |
+| Codex CLI, IDE extension, ChatGPT desktop app (Codex) | `~/.codex/sessions` and `archived_sessions`, including compressed `.jsonl.zst` (or `$CODEX_HOME`); titles from `state_*.sqlite` |
+| Gemini CLI | `~/.gemini/tmp/<project hash>/chats` |
+| ChatGPT and Claude chats (web and desktop chat) | These live in the cloud. Download your data (ChatGPT: Settings → Data controls → Export; Claude: Settings → Privacy → Export data) and leave the `.zip` in Downloads, or pass it with `--path` |
+| Prompts from deleted sessions | `~/.claude/history.jsonl` and `~/.codex/history.jsonl`, which the apps keep after deleting transcripts |
+
+```bash
+python -m muninn.cli history status          # what was found, retention warnings
+python -m muninn.cli history import          # dry run: threads, projects, dates, memory counts
+python -m muninn.cli history import --apply  # import (runs in the background)
+python -m muninn.cli history threads --project Muninn
+python -m muninn.cli history thread <thread-id>
+```
+
+Agents can do the same with the `import_agent_history` and `get_thread` tools.
+
+**What becomes a memory.** Every turn becomes one memory: your request, the
+reply, the files it touched and the commands it ran. Tool output and hidden
+reasoning are left out. Long turns are split into ordered parts, never cut short.
+Each memory carries the time of the turn, the project, the working directory,
+the branch, the agent and a thread id with the turn number, so:
+
+- imported memories sit in the right place in time next to everything else;
+- the project name matches what live agents use (the git remote name, or the
+  repository folder; worktrees of a repository share its name), so imported
+  history and current project memories line up;
+- `get_thread` re-reads a conversation from start to finish.
+
+Compaction summaries are kept as memories of their own. The transcripts hold
+the full conversation from before each compaction, so those turns come back
+too. Each thread also gets a summary memory, refreshed as the thread grows.
+Conversations outside any repository are filed under the project `global`.
+Secrets (API keys, tokens, passwords, connection strings) are redacted from
+memory text.
+
+**Nothing the apps clean up is lost.** Claude Code deletes transcripts older
+than 30 days by default (`cleanupPeriodDays`), Gemini CLI can expire sessions,
+and deleting a Codex thread deletes its file. The server keeps its own
+compressed copy of every transcript in `<data dir>/history_vault`, synced at
+startup and every 30 minutes, and never removes anything from it. A file the
+app deletes stays in the vault, and a file rewritten shorter keeps its previous
+copy. Credential and settings files are never read. After your first
+`--apply`, each sync also imports new turns, so live threads, including what
+compaction drops, keep flowing in.
+
+| Setting | Default | |
+|---|---|---|
+| `MUNINN_HISTORY_VAULT` | `1` | `0` turns the vault and automatic import off |
+| `MUNINN_HISTORY_SYNC_MINUTES` | `30` | How often to copy and import new history |
+| `MUNINN_HISTORY_AUTO_IMPORT` | after first import | `1`/`0` forces automatic import on or off |
+| `MUNINN_HISTORY_HOMES` | none | Extra home folders to scan, separated by `:` (`;` on Windows), e.g. `/mnt/c/Users/me` when Muninn runs in WSL |
+
+Muninn finds relocated data through the apps' own `CLAUDE_CONFIG_DIR` and
+`CODEX_HOME`. It never changes app settings. To keep transcripts in Claude Code
+itself for longer, raise `cleanupPeriodDays` in `~/.claude/settings.json`.
+
 ## Tool profiles
 
-Muninn exposes 41 tools. Some clients cap the total tool count across servers
+Muninn exposes 43 tools. Some clients cap the total tool count across servers
 (Cursor allows 40 active tools), and every tool schema costs context on each
 request, so pick a profile per client:
 
 | Profile | Tools | When |
 |---|---|---|
-| `full` (default) | all 41 | Claude Code, Claude Desktop, Codex, Gemini CLI |
-| `core` | 15: context and handoffs, add, search, hunt, update, delete, feedback, goals, instructions, profile, correct | Cursor, VS Code, small local models |
+| `full` (default) | all 43 | Claude Code, Claude Desktop, Codex, Gemini CLI |
+| `core` | 16: context, handoffs and threads, add, search, hunt, update, delete, feedback, goals, instructions, profile, correct | Cursor, VS Code, small local models |
 | `readonly` | the read-only tools | Shared or untrusted agents |
 | `chatgpt` | `search`, `fetch` | Web ChatGPT connectors and deep research |
 
@@ -275,4 +339,5 @@ Tool results follow the current spec: failures come back as results with
 | Too many tools, or the client ignores some | Use `?toolset=core` or `MUNINN_MCP_TOOLSET=core` |
 | One agent cannot see another's project memories | They used different project names; check the `project` in `get_project_context`, or pin `MUNINN_PROJECT` for that client |
 | Memories show agent `unknown` | Set `?agent=` on the URL or `MUNINN_AGENT_NAME` for stdio |
+| Old conversations missing | Run `python -m muninn.cli history status`; for Claude Code, anything already past `cleanupPeriodDays` before the vault first ran is gone, but its prompts are recovered from `history.jsonl` |
 | Handoff not offered to the next agent | Handoffs are per project; resume with the same project name, or pass `handoff_id` |

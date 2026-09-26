@@ -202,6 +202,8 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | `create_handoff` | Leave work for another agent: summary, next steps, decisions, open questions, files, branch |
 | `resume_handoff` | Claim the newest open handoff for a project (or a given id) |
 | `complete_handoff` | Mark a resumed handoff done or cancelled, or release it |
+| `get_thread` | Re-read an imported conversation in order, or list a project's threads |
+| `import_agent_history` | Import local Claude/Codex/Gemini history and chat exports as memories (dry run by default) |
 | `add_memory` | Store a memory with optional `scope`, `project`, `namespace`, `media_type` |
 | `add_image_memory` | Store a local image plus a searchable description and optional memory links |
 | `search_memory` | Hybrid 5-signal search with `media_type` filtering and recall traces |
@@ -227,7 +229,7 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | `trigger_distillation` | Condense clusters of episodic memories into semantic notes |
 | `search`, `fetch` | ChatGPT connector tools (`chatgpt` profile only) |
 
-The full list (41 tools) is returned by `tools/list`; federation, periodic
+The full list (43 tools) is returned by `tools/list`; federation, periodic
 ingestion, model-profile and `mimir_relay` tools are omitted above.
 
 ---
@@ -344,11 +346,25 @@ Key environment variables:
 | `MUNINN_MCP_SSE_MAX_INFLIGHT` | `8` | Per-session legacy SSE dispatch-task bound |
 | `MUNINN_AGENT_NAME` | client name | Agent label recorded on memories and handoffs for a stdio client (HTTP clients use `?agent=`) |
 | `MUNINN_PROJECT` | git repo | Project for a stdio client started outside a repository (e.g. by Claude Desktop) |
+| `MUNINN_HISTORY_VAULT` | on | Keep a private copy of Claude Code/Desktop, Codex and Gemini CLI transcripts (the apps delete theirs); see `docs/CLIENTS.md` |
+| `MUNINN_HISTORY_SYNC_MINUTES` | `30` | How often new conversation history is copied (and, after the first import, imported) |
+| `MUNINN_HISTORY_AUTO_IMPORT` | after first import | `1`/`0` forces automatic import of new turns on or off |
+| `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
 | `MUNINN_ALLOWED_ORIGINS` | - | Extra browser origins allowed besides localhost (comma-separated; `null` allows `file://`, `*` disables the check) |
 
 `config.template.yaml` contains conservative, relative-path defaults. Keep real
 tokens and machine-specific data paths in private environment/configuration files.
+
+### Importing your existing AI conversations
+
+`python -m muninn.cli history import` (dry run, then `--apply`) turns the
+conversations already on this machine (Claude Code and Claude Desktop, Codex
+CLI and the ChatGPT desktop app, Gemini CLI, and ChatGPT/Claude data exports)
+into memories. Each turn is filed under its original project, directory, branch,
+agent and time, so it can be searched and re-read in order with `get_thread`.
+The server also keeps a vault copy of these transcripts so nothing the apps
+clean up is lost. Details: [`docs/CLIENTS.md`](docs/CLIENTS.md#bring-in-your-existing-conversations).
 
 ### Upgrading and migrating memories
 

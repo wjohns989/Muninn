@@ -35,17 +35,15 @@ def _do_get_git_info() -> Dict[str, str]:
             **kwargs
         ).strip()
         
-        repo_url = subprocess.check_output(
-            ["git", "config", "--get", "remote.origin.url"], 
-            **kwargs
-        ).strip()
-        
-        if repo_url:
-            project = repo_url.rstrip("/").split("/")[-1].split(":")[-1].removesuffix(".git")
-        else:
-            # No remote: the repository's folder name is the stable identity.
-            toplevel = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], **kwargs).strip()
-            project = os.path.basename(toplevel) or "unknown"
+        # A repository without a remote makes this exit 1; that is not an error.
+        repo_url = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"], stdout=subprocess.PIPE, check=False, **kwargs
+        ).stdout.strip()
+
+        from muninn.core.projects import name_from_remote, project_for_directory
+
+        # Same naming as imported history: remote name, else the main repository folder.
+        project = name_from_remote(repo_url) if repo_url else (project_for_directory(os.getcwd()) or "unknown")
         return {"branch": branch, "project": project}
     except Exception:
         return {"branch": "unknown", "project": os.path.basename(os.getcwd())}

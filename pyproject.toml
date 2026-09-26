@@ -83,6 +83,8 @@ conflict = [
 ingestion = [
     "pypdf>=4.0.0",
     "python-docx>=1.1.0",
+    # Codex compresses older and archived rollouts with Zstandard.
+    "zstandard>=0.23.0",
 ]
 sdk = [
     "requests>=2.31.0",

@@ -30,7 +30,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import TYPE_CHECKING, Optional, Dict, Any, List
 from pathlib import Path
 
 import uvicorn
@@ -101,6 +101,9 @@ _mimir_store: Optional[MimirStore] = None
 _mimir_relay: Optional[MimirRelay] = None
 _periodic_ingestion: Optional[PeriodicIngestionScheduler] = None
 _legacy_discovery: Optional[LegacyDiscoveryScheduler] = None
+_history: Optional["HistoryService"] = None
+if TYPE_CHECKING:
+    from muninn.history.service import HistoryService
 _SERVER_INSTANCE_LOCK_HANDLE: Optional[portalocker.Lock] = None
 _SERVER_INSTANCE_LOCK_PATH: Optional[Path] = None
 
@@ -387,7 +390,7 @@ def _release_server_instance_lock() -> None:
 # --- Application Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global memory, _mimir_store, _mimir_relay, _periodic_ingestion, _legacy_discovery
+    global memory, _mimir_store, _mimir_relay, _periodic_ingestion, _legacy_discovery, _history
 
     logger.info("Muninn Server starting...")
 
@@ -450,9 +453,21 @@ async def lifespan(app: FastAPI):
                 config.legacy_discovery.interval_hours,
             )
 
+        # Keep a private copy of local AI conversation history (the apps delete theirs) and,
+        # once the user has imported it, keep importing new turns. MUNINN_HISTORY_VAULT=0 disables.
+        if os.environ.get("MUNINN_HISTORY_VAULT", "1").strip().lower() not in ("0", "false", "no", "off"):
+            from muninn.history.service import HistoryService
+
+            _history = HistoryService(memory, Path(config.data_dir) / "history_vault")
+            await _history.start()
+            logger.info("History vault enabled (sync every %.0f min)", _history.interval / 60)
+
         yield
     finally:
         logger.info("Shutting down Muninn Server...")
+        if _history:
+            await _history.stop()
+            _history = None
         if _legacy_discovery:
             await _legacy_discovery.stop()
             _legacy_discovery = None
@@ -1236,7 +1251,13 @@ async def ingest_all_legacy_sources_endpoint():
             return {"success": True, "data": {"imported": 0, "total_discovered": 0, "message": "No sources found"}}
 
         # Step 2: Extract all source IDs
-        all_ids = [s["source_id"] for s in sources if s.get("parser_supported", False)]
+        from muninn.ingestion.discovery import HISTORY_MANAGED_PROVIDERS
+
+        # Agent transcripts are imported as ordered, project-tagged memories by /history/import.
+        all_ids = [
+            s["source_id"] for s in sources
+            if s.get("parser_supported", False) and s.get("provider") not in HISTORY_MANAGED_PROVIDERS
+        ]
         logger.info("Bulk import: %d parser-supported sources out of %d total", len(all_ids), len(sources))
 
         if not all_ids:
@@ -1454,6 +1475,81 @@ async def import_memories_endpoint(req: ImportMemoriesRequest):
         memory, req.records, user_id=req.user_id, namespace=req.namespace,
         source=req.source, dry_run=req.dry_run,
     )}
+
+
+# --- Local AI conversation history ------------------------------------------
+
+class HistoryImportRequest(BaseModel):
+    apply: bool = False
+    providers: Optional[List[str]] = None
+    since: Optional[str] = None
+    paths: Optional[List[str]] = None
+
+
+def _require_history():
+    _require_memory()
+    if _history is None:
+        raise HTTPException(status_code=409, detail="History vault is disabled (MUNINN_HISTORY_VAULT=0)")
+    return _history
+
+
+def _parse_since(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    from muninn.history.parsers import parse_time
+
+    parsed = parse_time(value)
+    if parsed is None:
+        raise HTTPException(status_code=400, detail="since must be an ISO date or epoch seconds")
+    return parsed
+
+
+@app.get("/history/status", dependencies=[Depends(verify_token)])
+async def history_status_endpoint():
+    """Vault contents, where each app keeps history, retention warnings, import progress."""
+    return {"success": True, "data": _require_history().status()}
+
+
+@app.post("/history/sync", dependencies=[Depends(verify_token)])
+async def history_sync_endpoint(paths: Optional[List[str]] = None):
+    """Copy new and changed conversation files into the vault now."""
+    return {"success": True, "data": await _require_history().sync(paths)}
+
+
+@app.post("/history/import", dependencies=[Depends(verify_token)])
+async def history_import_endpoint(req: HistoryImportRequest):
+    """Dry run (default) reports what would become memories; apply imports in the background."""
+    service = _require_history()
+    since = _parse_since(req.since)
+    if req.paths:
+        await service.sync(req.paths)
+    if not req.apply:
+        return {"success": True, "data": await service.run_import(apply=False, providers=req.providers, since=since)}
+    if not service.last_sync:
+        await service.sync()
+    started = service.start_import(providers=req.providers, since=since)
+    return {"success": True, "data": {"started": started, "message": (
+        "Import running; follow it with GET /history/status" if started else "An import is already running")}}
+
+
+@app.get("/history/threads", dependencies=[Depends(verify_token)])
+async def history_threads_endpoint(project: Optional[str] = None, limit: int = 20):
+    """Imported conversation threads, most recent first."""
+    _require_memory()
+    data = await asyncio.to_thread(memory._metadata.list_history_threads, project, max(1, min(limit, 200)))
+    return {"success": True, "data": data}
+
+
+@app.get("/history/threads/{thread_key:path}", dependencies=[Depends(verify_token)])
+async def history_thread_endpoint(thread_key: str, offset: int = 0, limit: int = 50):
+    """Re-read one conversation thread in order, including turns compaction removed."""
+    _require_memory()
+    from muninn.history.importer import read_thread
+
+    data = await read_thread(memory, thread_key, max(0, offset), max(1, min(limit, 200)))
+    if data["thread"] is None and not data["entries"]:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_key} not found")
+    return {"success": True, "data": data}
 
 
 # --- Agent handoffs and session briefing ------------------------------------

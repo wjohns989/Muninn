@@ -11,7 +11,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
+from muninn.history.locations import NEVER_READ, claude_code_source, codex_source
 from muninn.ingestion.parser import SUPPORTED_EXTENSIONS
+
+# Conversation transcripts that `muninn history import` turns into ordered, project-tagged
+# memories; the raw-chunk legacy import skips them in "import all" to avoid duplicates.
+HISTORY_MANAGED_PROVIDERS = frozenset({"codex_cli", "claude_code", "gemini_cli"})
 
 
 @dataclass
@@ -58,15 +63,19 @@ def _provider_specs(home: Path, roots: Sequence[Path]) -> List[Dict[str, object]
     xdg_config = _env_path("XDG_CONFIG_HOME", home / ".config")
     xdg_data = _env_path("XDG_DATA_HOME", home / ".local" / "share")
     mac_app_support = home / "Library" / "Application Support"
+    # Honour the apps' own relocation variables (CLAUDE_CONFIG_DIR, CODEX_HOME).
+    claude_home = claude_code_source(home).home
+    codex_home = codex_source(home).home
 
     specs: List[Dict[str, object]] = [
         {
             "provider": "codex_cli",
             "category": "assistant_chat",
             "patterns": [
-                home / ".codex" / "history.jsonl",
-                # Sessions are stored under ~/.codex/sessions/YYYY/MM/DD/rollout-<id>.jsonl
-                home / ".codex" / "sessions" / "**" / "*.jsonl",
+                codex_home / "history.jsonl",
+                # Sessions are stored under $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<id>.jsonl
+                codex_home / "sessions" / "**" / "*.jsonl",
+                codex_home / "archived_sessions" / "**" / "*.jsonl",
             ],
             "confidence": "high",
             "notes": "Codex CLI session transcripts (YYYY/MM/DD/rollout-*.jsonl) and history index",
@@ -74,7 +83,7 @@ def _provider_specs(home: Path, roots: Sequence[Path]) -> List[Dict[str, object]
         {
             "provider": "claude_code",
             "category": "assistant_chat",
-            "patterns": [home / ".claude" / "projects" / "**" / "*.jsonl"],
+            "patterns": [claude_home / "projects" / "**" / "*.jsonl"],
             "confidence": "high",
             "notes": "Claude Code project transcripts (one JSONL file per session UUID)",
         },
@@ -82,14 +91,13 @@ def _provider_specs(home: Path, roots: Sequence[Path]) -> List[Dict[str, object]
             "provider": "gemini_cli",
             "category": "assistant_chat",
             "patterns": [
-                # Saved sessions: ~/.gemini/tmp/<project-hash>/chats/<uuid>.json
+                # Saved sessions: ~/.gemini/tmp/<project-hash>/chats/<uuid>.json. Other files
+                # under ~/.gemini include OAuth credentials, so nothing broader is scanned.
                 home / ".gemini" / "tmp" / "**" / "chats" / "*.json",
-                # Fallback: any other JSONL/JSON artifacts under ~/.gemini/
-                home / ".gemini" / "**" / "*.jsonl",
-                home / ".gemini" / "**" / "*.json",
+                home / ".gemini" / "tmp" / "**" / "chats" / "*.jsonl",
             ],
-            "confidence": "medium",
-            "notes": "Gemini CLI saved sessions (tmp/<hash>/chats/) and other artifacts",
+            "confidence": "high",
+            "notes": "Gemini CLI saved sessions (tmp/<hash>/chats/)",
         },
         {
             "provider": "antigravity_brain",
@@ -154,38 +162,10 @@ def _provider_specs(home: Path, roots: Sequence[Path]) -> List[Dict[str, object]
             "confidence": "low",
             "notes": "Copilot Chat artifacts (layout varies by VS Code version)",
         },
-        {
-            "provider": "claude_desktop",
-            "category": "assistant_chat",
-            "patterns": [
-                appdata / "Claude" / "**" / "*.json",
-                appdata / "Claude" / "**" / "*.jsonl",
-                localapp / "Claude" / "**" / "*.json",
-                localapp / "Claude" / "**" / "*.jsonl",
-                home / ".config" / "Claude" / "**" / "*.json",
-                home / ".config" / "Claude" / "**" / "*.jsonl",
-                mac_app_support / "Claude" / "**" / "*.json",
-                mac_app_support / "Claude" / "**" / "*.jsonl",
-            ],
-            "confidence": "low",
-            "notes": "Claude Desktop local artifacts (layout may vary)",
-        },
-        {
-            "provider": "chatgpt_desktop",
-            "category": "assistant_chat",
-            "patterns": [
-                appdata / "ChatGPT" / "**" / "*.json",
-                appdata / "ChatGPT" / "**" / "*.jsonl",
-                localapp / "ChatGPT" / "**" / "*.json",
-                localapp / "ChatGPT" / "**" / "*.jsonl",
-                home / ".config" / "ChatGPT" / "**" / "*.json",
-                home / ".config" / "ChatGPT" / "**" / "*.jsonl",
-                mac_app_support / "ChatGPT" / "**" / "*.json",
-                mac_app_support / "ChatGPT" / "**" / "*.jsonl",
-            ],
-            "confidence": "low",
-            "notes": "ChatGPT desktop local artifacts (layout may vary; primary storage is cloud)",
-        },
+        # Claude Desktop and ChatGPT desktop keep chats in the cloud; their app-data folders hold
+        # settings and tokens, not transcripts. Their chats come in through the data exports
+        # (`muninn history import --path conversations.json`); Claude Desktop's Code tab writes
+        # Claude Code transcripts, covered above.
         # --- Aider ---
         # Aider writes .aider.chat.history.md in the project directory where it
         # is invoked.  We cannot enumerate every possible project directory, so
@@ -319,7 +299,7 @@ def discover_legacy_sources(
                 if not resolved.exists() or not resolved.is_file():
                     continue
                 key = str(resolved)
-                if key in seen:
+                if key in seen or resolved.name in NEVER_READ:
                     continue
 
                 source_type = _source_type_for_path(resolved)

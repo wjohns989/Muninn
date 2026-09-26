@@ -210,6 +210,34 @@ CREATE TABLE IF NOT EXISTS agent_handoffs (
 
 HANDOFF_STATUSES = ("open", "claimed", "done", "cancelled")
 
+# Conversations imported from local AI apps: one row per thread, so re-imports
+# only add new turns and a thread can be listed and re-read in order.
+HISTORY_THREADS = """
+CREATE TABLE IF NOT EXISTS history_threads (
+    thread_key           TEXT PRIMARY KEY,
+    provider             TEXT NOT NULL,
+    agent                TEXT NOT NULL,
+    session_id           TEXT NOT NULL,
+    project              TEXT NOT NULL,
+    directory            TEXT,
+    branch               TEXT,
+    title                TEXT,
+    started_at           REAL,
+    ended_at             REAL,
+    turns_imported       INTEGER NOT NULL DEFAULT 0,
+    compactions_imported INTEGER NOT NULL DEFAULT 0,
+    summary_memory_id    TEXT,
+    updated_at           REAL NOT NULL
+);
+"""
+
+HISTORY_PROMPTS = """
+CREATE TABLE IF NOT EXISTS history_prompts_imported (
+    digest      TEXT PRIMARY KEY,
+    imported_at REAL NOT NULL
+);
+"""
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -258,6 +286,11 @@ class SQLiteMetadataStore:
         conn.execute(ACCESS_EVENTS)
         conn.execute(IMPORTANCE_PREDICTIONS)
         conn.execute(AGENT_HANDOFFS)
+        conn.execute(HISTORY_THREADS)
+        conn.execute(HISTORY_PROMPTS)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_history_threads_project ON history_threads(project, ended_at);"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_agent_handoffs_project "
             "ON agent_handoffs(user_id, project, status, created_at);"
@@ -1582,6 +1615,63 @@ class SQLiteMetadataStore:
         )
         conn.commit()
         return self.get_handoff(handoff_id) if cursor.rowcount else None
+
+    # --- Imported conversation threads ----------------------------------------
+
+    def get_history_thread(self, thread_key: str) -> Optional[Dict[str, Any]]:
+        row = self._get_conn().execute("SELECT * FROM history_threads WHERE thread_key = ?", (thread_key,)).fetchone()
+        return dict(row) if row else None
+
+    def upsert_history_thread(self, thread: Dict[str, Any]) -> None:
+        columns = [
+            "thread_key", "provider", "agent", "session_id", "project", "directory", "branch", "title",
+            "started_at", "ended_at", "turns_imported", "compactions_imported", "summary_memory_id", "updated_at",
+        ]
+        values = [thread.get(column) for column in columns]
+        updates = ", ".join(f"{column}=excluded.{column}" for column in columns[1:])
+        conn = self._get_conn()
+        conn.execute(
+            f"INSERT INTO history_threads ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+            f"ON CONFLICT(thread_key) DO UPDATE SET {updates}",
+            values,
+        )
+        conn.commit()
+
+    def list_history_threads(self, project: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+        query, params = "SELECT * FROM history_threads", []
+        if project:
+            query += " WHERE project = ?"
+            params.append(project)
+        rows = self._get_conn().execute(query + " ORDER BY ended_at DESC LIMIT ?", (*params, int(limit))).fetchall()
+        return [dict(row) for row in rows]
+
+    def history_prompt_seen(self, digest: str) -> bool:
+        return self._get_conn().execute(
+            "SELECT 1 FROM history_prompts_imported WHERE digest = ?", (digest,)
+        ).fetchone() is not None
+
+    def mark_history_prompts(self, digests: Iterable[str]) -> None:
+        conn = self._get_conn()
+        conn.executemany(
+            "INSERT OR IGNORE INTO history_prompts_imported (digest, imported_at) VALUES (?, ?)",
+            [(digest, time.time()) for digest in digests],
+        )
+        conn.commit()
+
+    def get_thread_memories(self, thread_key: str, offset: int = 0, limit: int = 200) -> List[MemoryRecord]:
+        """Memories imported from one conversation thread, in conversation order."""
+        if self._json1_available:
+            where = "json_extract(metadata, '$.thread_id') = ?"
+            order = ("created_at, CAST(json_extract(metadata, '$.turn_index') AS INTEGER), "
+                     "CAST(json_extract(metadata, '$.part') AS INTEGER)")
+            param = thread_key
+        else:
+            where, order, param = "metadata LIKE ?", "created_at", f'%"thread_id": "{thread_key}"%'
+        rows = self._get_conn().execute(
+            f"SELECT * FROM memories WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            (param, int(limit), int(offset)),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
 
     def pop_due_importance_predictions(self, due_before: float, limit: int = 1000) -> List[Dict[str, Any]]:
         """Remove and return predictions made at or before ``due_before`` (oldest first)."""

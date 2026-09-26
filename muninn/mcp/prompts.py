@@ -23,7 +23,8 @@ FULL_PROTOCOL = PROTOCOL_INTRO + """
 
 1. Start of a session: call get_project_context(project) before other work and follow the project \
 instructions it returns. If it shows an open handoff for you or for anyone, call resume_handoff and \
-continue from its next steps.
+continue from its next steps. It also lists recent_threads: earlier conversations about this project \
+in any app; read the relevant ones with get_thread instead of redoing work.
 2. Before answering about earlier work, decisions or preferences, call search_memory.
 3. Save durable knowledge with add_memory as you go: a decision and its reason, a convention, a fix \
 for a recurring problem, a fact about the environment. Use scope="global" for user preferences that \
@@ -38,8 +39,9 @@ resumed, call complete_handoff."""
 
 READONLY_PROTOCOL = PROTOCOL_INTRO + """
 
-This connection is read-only. Call get_project_context(project) at the start of a session, and \
-search_memory before answering about earlier work, decisions or preferences."""
+This connection is read-only. Call get_project_context(project) at the start of a session, read \
+relevant earlier conversations with get_thread, and call search_memory before answering about earlier \
+work, decisions or preferences."""
 
 CHATGPT_PROTOCOL = (
     "Muninn is the user's shared memory across their AI agents. Use search to find relevant memories "

@@ -104,6 +104,49 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "get_thread",
+        "description": (
+            "Re-read an earlier conversation from any app (Claude Code, Claude Desktop, Codex, Gemini CLI, "
+            "ChatGPT or Claude exports) in its original order, including the parts that were compacted away. "
+            "Without thread_id, lists the project's threads, newest first."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {"type": "string", "description": "Thread id from get_project_context or a listing."},
+                "project": {"type": "string", "description": "Project whose threads to list when no thread_id."},
+                "offset": {"type": "integer", "default": 0, "minimum": 0, "description": "Entries to skip."},
+                "limit": {"type": "integer", "default": 30, "minimum": 1, "maximum": 200},
+            },
+        },
+    },
+    {
+        "name": "import_agent_history",
+        "description": (
+            "Import local conversation history from Claude Code, Claude Desktop, Codex (CLI and ChatGPT app) "
+            "and Gemini CLI, plus ChatGPT/Claude data exports, as memories filed under their original project "
+            "and time. Dry run by default: reports what would be imported. apply=true runs it in the background; "
+            "later runs only add new turns."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "apply": {"type": "boolean", "default": False, "description": "Actually import (else dry run)."},
+                "providers": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["claude_code", "codex", "gemini_cli", "chatgpt", "claude_ai"]},
+                    "description": "Limit to these sources.",
+                },
+                "since": {"type": "string", "description": "Only threads active since this ISO date."},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra files, e.g. a ChatGPT or Claude export (conversations.json or .zip).",
+                },
+            },
+        },
+    },
+    {
         "name": "complete_handoff",
         "description": (
             "Close a handoff you resumed: status 'done' when the work is finished, 'cancelled' if it is "
@@ -772,7 +815,7 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
-    "get_project_context",
+    "get_project_context", "get_thread",
     "search_memory", "hunt_memory", "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
     "export_handoff", "discover_legacy_sources",
@@ -866,7 +909,7 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 # Tool profiles let a client load only what it needs: Cursor caps active tools
 # at 40 across all servers, and every schema costs context on each request.
 CORE_TOOLS = (
-    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff",
+    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
     "add_memory", "search_memory", "hunt_memory", "update_memory", "delete_memory",
     "record_retrieval_feedback", "get_project_goal", "set_project_goal", "set_project_instruction",
     "get_user_profile", "correct_fact",

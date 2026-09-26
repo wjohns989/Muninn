@@ -22,6 +22,15 @@ _TITLE_CHARS = 80
 _SNIPPET_CHARS = 400
 
 
+async def _write(memory: "MuninnMemory", fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Serialize store writes with the engine's write lock (they share one SQLite connection)."""
+    lock = getattr(memory, "_write_lock", None)
+    if lock is None:  # no engine sharing the connection: write on this thread
+        return fn(*args, **kwargs)
+    async with lock:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+
 def _title_from(summary: str) -> str:
     line = " ".join(summary.split())
     return line if len(line) <= _TITLE_CHARS else line[: _TITLE_CHARS - 1] + "…"
@@ -69,7 +78,7 @@ async def create_handoff(
         "to_agent": (to_agent or "").strip() or None,
         "created_at": time.time(),
     }
-    return await asyncio.to_thread(memory._metadata.add_handoff, record)
+    return await _write(memory, memory._metadata.add_handoff, record)
 
 
 async def list_handoffs(
@@ -113,8 +122,8 @@ async def resume_handoff(
             return {"handoff": None, "message": f"No open handoff{where}"}
     if claim and handoff["status"] in ACTIVE_STATUSES:
         previous = handoff["claimed_by"] if handoff["status"] == "claimed" else None
-        claimed = await asyncio.to_thread(
-            store.transition_handoff, handoff["id"], "claimed", agent=agent, allowed_from=ACTIVE_STATUSES
+        claimed = await _write(
+            memory, store.transition_handoff, handoff["id"], "claimed", agent=agent, allowed_from=ACTIVE_STATUSES
         )
         handoff = claimed or handoff
         if previous and previous != agent:
@@ -138,9 +147,7 @@ async def finish_handoff(
     existing = await asyncio.to_thread(memory._metadata.get_handoff, handoff_id)
     if existing is None or existing["user_id"] != user_id:
         return None
-    return await asyncio.to_thread(
-        memory._metadata.transition_handoff, handoff_id, status, agent=agent, note=note,
-    )
+    return await _write(memory, memory._metadata.transition_handoff, handoff_id, status, agent=agent, note=note)
 
 
 def _memory_item(record: Any) -> Dict[str, Any]:
@@ -199,6 +206,14 @@ async def project_context(
         "agents": sorted({r.source_agent for r in project_records if r.source_agent not in ("", "unknown")}
                          | {h["from_agent"] for h in handoffs}),
     })
+    threads = await asyncio.to_thread(store.list_history_threads, project, 5)
+    if threads:
+        # Earlier conversations about this project in any app; read one with get_thread.
+        context["recent_threads"] = [
+            {"thread_id": t["thread_key"], "agent": t["agent"], "title": t["title"], "branch": t["branch"],
+             "started_at": t["started_at"], "ended_at": t["ended_at"], "turns": t["turns_imported"]}
+            for t in threads
+        ]
     if any(h["status"] == "open" for h in handoffs):
         context["hint"] = "An open handoff is waiting: call resume_handoff to claim it before starting."
     return context

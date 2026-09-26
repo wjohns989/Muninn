@@ -693,21 +693,56 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # Argument parser
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _admin_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
-    """POST to an authenticated admin endpoint on the running Muninn server."""
+def _admin_request(args: argparse.Namespace, method: str, path: str, **kwargs) -> dict:
+    """Call an endpoint on the running Muninn server, with the token when one is configured."""
     token = _read_token_from_file(_resolve_token_file(args.token_file)) or (
         os.environ.get("MUNINN_AUTH_TOKEN") or ""
     ).strip()
-    if not token:
-        raise SystemExit("No auth token found (token file or MUNINN_AUTH_TOKEN).")
-    response = requests.post(
+    response = requests.request(
+        method,
         f"{_resolve_server_url(args.server_url)}{path}",
-        headers={"Authorization": f"Bearer {token}"},
-        json=payload,
+        headers={"Authorization": f"Bearer {token}"} if token else {},
         timeout=args.timeout_seconds,
+        **kwargs,
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except ValueError:
+            detail = response.text
+        raise SystemExit(f"{method} {path} failed ({response.status_code}): {detail}")
     return response.json().get("data", {})
+
+
+def _admin_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
+    """POST to an admin endpoint on the running Muninn server."""
+    return _admin_request(args, "POST", path, json=payload)
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    """Keep and import local AI conversation history (Claude Code/Desktop, Codex, Gemini CLI, exports)."""
+    if args.action == "status":
+        data = _admin_request(args, "GET", "/history/status")
+    elif args.action == "sync":
+        data = _admin_request(args, "POST", "/history/sync", json=[str(p) for p in args.path] or None)
+    elif args.action == "import":
+        payload = {"apply": args.apply, "providers": args.provider or None, "since": args.since,
+                   "paths": [str(p) for p in args.path] or None}
+        data = _admin_request(args, "POST", "/history/import", json=payload)
+        if not args.apply:
+            print(json.dumps(data, indent=2, default=str))
+            print("Dry run only. Re-run with --apply to import (it runs in the background; see 'history status').")
+            return 0
+    elif args.action == "threads":
+        params = {"limit": args.limit, **({"project": args.project} if args.project else {})}
+        data = _admin_request(args, "GET", "/history/threads", params=params)
+    else:  # thread
+        if not args.thread_id:
+            raise SystemExit("history thread needs a thread id (see 'history threads').")
+        data = _admin_request(args, "GET", f"/history/threads/{args.thread_id}",
+                              params={"offset": args.offset, "limit": args.limit})
+    print(json.dumps(data, indent=2, default=str))
+    return 0
 
 
 def cmd_reindex(args: argparse.Namespace) -> int:
@@ -881,6 +916,31 @@ def build_parser() -> argparse.ArgumentParser:
     importer.add_argument("--namespace", default="global")
     importer.add_argument("--source", default="legacy", help="Recorded as metadata.import_source.")
     importer.add_argument("--batch-size", type=int, default=200)
+
+    history = subparsers.add_parser(
+        "history",
+        help="Keep and import local AI conversation history as memories.",
+        description=(
+            "status   what the vault holds, where each app keeps history, retention warnings\n"
+            "sync     copy new/changed transcripts into the vault now (runs every 30 min anyway)\n"
+            "import   dry run of turning history into memories; --apply to import (then automatic)\n"
+            "threads  list imported conversation threads (--project to filter)\n"
+            "thread   re-read one thread in order: history thread <thread-id>"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_server_args(history, timeout=300.0)
+    history.add_argument("action", choices=["status", "sync", "import", "threads", "thread"])
+    history.add_argument("thread_id", nargs="?", help="Thread id for 'thread'.")
+    history.add_argument("--provider", action="append",
+                         choices=["claude_code", "codex", "gemini_cli", "chatgpt", "claude_ai"],
+                         help="Only these sources (repeatable).")
+    history.add_argument("--since", help="Only threads active since this date (YYYY-MM-DD).")
+    history.add_argument("--path", action="append", type=Path, default=[],
+                         help="Extra file, e.g. a ChatGPT/Claude export conversations.json or .zip (repeatable).")
+    history.add_argument("--project", help="Project filter for 'threads'.")
+    history.add_argument("--offset", type=int, default=0)
+    history.add_argument("--limit", type=int, default=50)
     return parser
 
 
@@ -896,6 +956,8 @@ def main() -> int:
         return cmd_reindex(args)
     if args.command == "import":
         return cmd_import(args)
+    if args.command == "history":
+        return cmd_history(args)
 
     parser.print_help()
     return 1

@@ -109,8 +109,33 @@ Verified with the official MCP SDK: Codex over HTTP (2026-07-28) stores a
 memory and a handoff; Claude Desktop over stdio, started outside any
 repository, sees both in its briefing, claims the handoff and completes it.
 
+### Local conversation history (2026-09-26)
+
+Legacy discovery found transcript files but imported them as fixed-size raw
+chunks, all under one project, stamped with the import time. It also scanned
+folders that hold credentials: Gemini's `oauth_creds.json` matched
+`~/.gemini/**/*.json`, and the Claude and ChatGPT app-data scans matched
+`claude_desktop_config.json` and similar files. And it ignored `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`, Codex `archived_sessions` and `.zst` rollouts.
+
+| Piece | What it does |
+|---|---|
+| `muninn/history/locations.py` | App locations from the apps' own settings (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, per-OS app data, `MUNINN_HISTORY_HOMES`) plus their retention settings |
+| `muninn/history/vault.py` | Compressed private copy in `<data dir>/history_vault`; never deletes; keeps versions when a file shrinks; marks files the app deleted |
+| `muninn/history/parsers.py` | Claude Code (queued mid-turn messages, compaction summaries, Desktop titles), Codex (current and early layouts, `.zst`, thread titles), Gemini, ChatGPT/Claude exports, prompt histories |
+| `muninn/history/importer.py` | One memory per turn (ordered parts, not truncated) with original time, project (git remote or repository; worktree-aware), directory, branch, agent, thread id and turn number; compaction and thread-summary memories; secrets redacted; incremental |
+| `muninn/history/service.py` | Sync every 30 min; automatic import after the first applied import |
+| Interfaces | `/history/*`, `python -m muninn.cli history`, MCP `get_thread` and `import_agent_history`, `recent_threads` in `get_project_context` |
+
+Legacy discovery now honours the relocation variables, never reads credential
+files, and its "import all" skips the agent transcripts the importer handles.
+Verified on a real Claude Desktop transcript: 19 turns and a compaction
+summary, all under project `Muninn`, re-read in order and found by search.
+
 Next for this area:
 
+- Claude Code hooks (SessionStart / PreCompact) to import the live session at
+  compaction time instead of on the next sync.
 - MCP resources (project briefing as `muninn://project/{name}`) for hosts that
   attach resources without a tool call.
 - Show handoffs and agent labels in the Huginn dashboard.

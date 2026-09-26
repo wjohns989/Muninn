@@ -507,6 +507,8 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "create_handoff": _do_create_handoff,
         "resume_handoff": _do_resume_handoff,
         "complete_handoff": _do_complete_handoff,
+        "get_thread": _do_get_thread,
+        "import_agent_history": _do_import_agent_history,
         "search": _do_chatgpt_search,
         "fetch": _do_chatgpt_fetch,
     }
@@ -1080,11 +1082,39 @@ def _do_complete_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dic
     )
     return resp.json()
 
+def _do_get_thread(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    thread_id = str(args.get("thread_id") or "")
+    if thread_id:
+        params = {"offset": args.get("offset", 0), "limit": args.get("limit", 30)}
+        resp = make_request_with_retry(
+            "GET", f"{SERVER_URL}/history/threads/{quote(thread_id, safe=':')}",
+            deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+        return resp.json()
+    params = {"limit": args.get("limit", 30)}
+    project = client_project(args)["project"]
+    if project:
+        params["project"] = project
+    resp = make_request_with_retry(
+        "GET", f"{SERVER_URL}/history/threads", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT
+    )
+    return resp.json()
+
+def _do_import_agent_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {key: args.get(key) for key in ("apply", "providers", "since", "paths") if args.get(key) is not None}
+    resp = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/import", deadline_epoch=deadline, json=payload, timeout=120
+    )
+    return resp.json()
+
 CHATGPT_SEARCH_LIMIT = 10
 # Tools with an outputSchema return structuredContent alongside the text block.
 STRUCTURED_TOOLS = {"search", "fetch"}
 # Nested briefings and handoffs are returned whole rather than preview-compacted.
-EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {"get_project_context", "create_handoff", "resume_handoff", "complete_handoff"}
+EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {
+    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
+    "import_agent_history",
+}
 _TITLE_CHARS = 80
 
 
