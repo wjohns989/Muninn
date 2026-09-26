@@ -101,6 +101,13 @@ def test_sync_ingest_sources_payload():
     assert payload["chronological_order"] == "none"
 
 
+def test_sync_ingest_sources_empty_sources():
+    stub = _StubSession({})
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    with pytest.raises(ValueError, match="sources must be a non-empty list"):
+        client.ingest_sources(sources=[])
+
+
 def test_sync_discover_legacy_sources_payload():
     stub = _StubSession(
         {
@@ -439,6 +446,45 @@ async def test_async_delete_url_encodes_memory_id():
         client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
         result = await client.delete("mem/alpha?v=1")
         assert result["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_async_ingest_sources_empty_sources():
+    transport = httpx.MockTransport(lambda _: httpx.Response(404))
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        with pytest.raises(ValueError, match="sources must be a non-empty list"):
+            await client.ingest_sources(sources=[])
+
+
+@pytest.mark.asyncio
+async def test_async_ingest_sources_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/ingest":
+            body = json.loads(request.content.decode("utf-8"))
+            assert body["sources"] == ["/tmp/a.txt"]
+            assert body["project"] == "muninn"
+            assert body["recursive"] is True
+            assert body["chunk_size_chars"] == 500
+            assert body["chronological_order"] == "none"
+            return httpx.Response(
+                200,
+                json={"success": True, "data": {"event": "INGEST_COMPLETED", "added_memories": 2}},
+            )
+        return httpx.Response(404, json={"detail": "not found"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.ingest_sources(
+            sources=["/tmp/a.txt"],
+            project="muninn",
+            recursive=True,
+            chunk_size_chars=500,
+        )
+
+        assert result["event"] == "INGEST_COMPLETED"
+        assert result["added_memories"] == 2
 
 
 @pytest.mark.asyncio
