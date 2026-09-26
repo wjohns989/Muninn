@@ -7,7 +7,7 @@ import sys
 import os
 import logging
 import threading
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 import requests
 
 # Global state for legacy test monkeypatching. 
@@ -109,6 +109,8 @@ from muninn.mcp.handlers import (
     handle_get_task as _handle_get_task,
     handle_get_task_result as _handle_get_task_result,
     handle_cancel_task as _handle_cancel_task,
+    handle_list_prompts as _handle_list_prompts,
+    handle_get_prompt as _handle_get_prompt,
     get_tool_call_deadline_epoch as _get_tool_call_deadline_epoch,
     startup_recovery_allowed as _startup_recovery_allowed
 )
@@ -171,22 +173,6 @@ def _read_operator_model_profile(env_var: str) -> Optional[str]:
 
 from muninn.version import __version__
 
-def _build_initialize_instructions(startup_warnings: Optional[List[str]] = None) -> str:
-    base_instructions = (
-        "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
-        "for cross-assistant continuity."
-    )
-    session_profile = _read_operator_model_profile("MUNINN_OPERATOR_MODEL_PROFILE")
-    if session_profile:
-        base_instructions = (
-            f"{base_instructions}\n\nSession model profile: {session_profile} "
-            "(from MUNINN_OPERATOR_MODEL_PROFILE)."
-        )
-    if not startup_warnings:
-        return base_instructions
-    bullet_list = "\n".join(f"- {warning}" for warning in startup_warnings)
-    return f"{base_instructions}\n\nStartup checks:\n{bullet_list}"
-
 # Adapter Functions for Modular Handlers
 def _legacy_send_result(mid, result):
     send_json_rpc({"jsonrpc": "2.0", "id": mid, "result": result})
@@ -225,10 +211,10 @@ def handle_list_resource_templates(msg_id: Any, params: Dict[str, Any]):
     send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"resourceTemplates": []}})
 
 def handle_list_prompts(msg_id: Any, params: Dict[str, Any]):
-    send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}})
+    _handle_list_prompts(msg_id, _legacy_send_result)
 
 def handle_get_prompt(msg_id: Any, params: Dict[str, Any]):
-    _send_json_rpc_error(msg_id, -32602, "Prompt not found")
+    _handle_get_prompt(msg_id, params, _legacy_send_error, _legacy_send_result)
 
 def handle_read_resource(msg_id: Any, params: Dict[str, Any]):
     _send_json_rpc_error(msg_id, -32602, "Resource not found")
@@ -268,7 +254,6 @@ def _should_dispatch_in_background(msg: Dict[str, Any]) -> bool:
 _OPTIONAL_CAPABILITY_METHOD_RESULTS: Dict[str, Dict[str, Any]] = {
     "resources/list": {"resources": []},
     "resources/templates/list": {"resourceTemplates": []},
-    "prompts/list": {"prompts": []},
 }
 
 
@@ -298,13 +283,14 @@ def _handle_optional_capability_method(msg_id: Any, method: str, params: Any) ->
             send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"contents": []}})
         return True
 
-    if method == "prompts/get":
-        if not isinstance(params, dict):
-            if msg_id is not None:
-                _send_json_rpc_error(msg_id, -32602, "prompts/get params must be an object.")
-            return True
+    if method == "prompts/list":
         if msg_id is not None:
-            send_json_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"messages": []}})
+            handle_list_prompts(msg_id, params)
+        return True
+
+    if method == "prompts/get":
+        if msg_id is not None:
+            handle_get_prompt(msg_id, params)
         return True
 
     return False

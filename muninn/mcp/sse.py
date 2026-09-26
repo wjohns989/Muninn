@@ -21,6 +21,7 @@ from muninn.mcp.handlers import (
 from muninn.mcp.handlers import (
     handle_cancel_task as _handle_cancel_task,
 )
+from muninn.mcp.handlers import handle_get_prompt as _handle_get_prompt
 from muninn.mcp.handlers import (
     handle_get_task as _handle_get_task,
 )
@@ -30,6 +31,7 @@ from muninn.mcp.handlers import (
 from muninn.mcp.handlers import (
     handle_initialize as _handle_initialize,
 )
+from muninn.mcp.handlers import handle_list_prompts as _handle_list_prompts
 from muninn.mcp.handlers import (
     handle_list_tasks as _handle_list_tasks,
 )
@@ -304,7 +306,6 @@ def handle_cancel_task(session_id: str, msg_id: Any, params: Dict[str, Any]):
 OPTIONAL_CAPS = {
     "resources/list": {"resources": []},
     "resources/templates/list": {"resourceTemplates": []},
-    "prompts/list": {"prompts": []},
 }
 
 
@@ -366,6 +367,21 @@ def _dispatch_sync(session_id: str, msg: Dict[str, Any]):
                     send_error(session_id, msg_id, -32600, "Server not initialized")
                 return
             handle_get_task_result(session_id, msg_id, params)
+        elif method in ("prompts/list", "prompts/get"):
+            if not _SESSION_STATE.get("initialized"):
+                if msg_id:
+                    send_error(session_id, msg_id, -32600, "Server not initialized")
+                return
+            if msg_id:
+                sid = session_id
+                if method == "prompts/list":
+                    _handle_list_prompts(msg_id, lambda mid, res: send_result(sid, mid, res))
+                else:
+                    _handle_get_prompt(
+                        msg_id, params,
+                        lambda mid, code, message: send_error(sid, mid, code, message),
+                        lambda mid, res: send_result(sid, mid, res),
+                    )
         elif method in OPTIONAL_CAPS:
             if not _SESSION_STATE.get("initialized"):
                 if msg_id:
@@ -373,7 +389,7 @@ def _dispatch_sync(session_id: str, msg: Dict[str, Any]):
                 return
             if msg_id:
                 send_result(session_id, msg_id, OPTIONAL_CAPS[method])
-        elif method in ("resources/read", "prompts/get"):
+        elif method == "resources/read":
             if not _SESSION_STATE.get("initialized"):
                 if msg_id:
                     send_error(session_id, msg_id, -32600, "Server not initialized")
@@ -383,8 +399,7 @@ def _dispatch_sync(session_id: str, msg: Dict[str, Any]):
                     send_error(session_id, msg_id, -32602, f"{method} params must be an object")
                 return
             if msg_id:
-                res = {"contents": []} if method == "resources/read" else {"messages": []}
-                send_result(session_id, msg_id, res)
+                send_result(session_id, msg_id, {"contents": []})
         elif method == "ping":
             if msg_id:
                 send_result(session_id, msg_id, {})

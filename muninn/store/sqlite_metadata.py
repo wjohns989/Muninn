@@ -11,7 +11,7 @@ import time
 import math
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
 from muninn.store.lock import get_store_lock
@@ -188,6 +188,28 @@ CREATE TABLE IF NOT EXISTS importance_predictions (
 );
 """
 
+# Agent-to-agent handoffs. Kept out of `memories` so consolidation never merges,
+# decays or archives them, and long notes are never split into chunks.
+AGENT_HANDOFFS = """
+CREATE TABLE IF NOT EXISTS agent_handoffs (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    project      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    from_agent   TEXT NOT NULL,
+    to_agent     TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',
+    claimed_by   TEXT,
+    note         TEXT,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL
+);
+"""
+
+HANDOFF_STATUSES = ("open", "claimed", "done", "cancelled")
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -235,6 +257,11 @@ class SQLiteMetadataStore:
         conn.execute(LEGACY_SOURCES_CACHE)
         conn.execute(ACCESS_EVENTS)
         conn.execute(IMPORTANCE_PREDICTIONS)
+        conn.execute(AGENT_HANDOFFS)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_handoffs_project "
+            "ON agent_handoffs(user_id, project, status, created_at);"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_access_events_memory_time ON access_events(memory_id, accessed_at);"
         )
@@ -1486,6 +1513,75 @@ class SQLiteMetadataStore:
             rows,
         )
         conn.commit()
+
+    # --- Agent handoffs -----------------------------------------------------
+
+    @staticmethod
+    def _handoff_row(row: sqlite3.Row) -> Dict[str, Any]:
+        item = dict(row)
+        item["details"] = json.loads(item.pop("details_json") or "{}")
+        return item
+
+    def add_handoff(self, handoff: Dict[str, Any]) -> Dict[str, Any]:
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO agent_handoffs (id, user_id, project, title, summary, details_json, from_agent, "
+            "to_agent, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
+            (
+                handoff["id"], handoff["user_id"], handoff["project"], handoff["title"], handoff["summary"],
+                json.dumps(handoff.get("details") or {}), handoff["from_agent"], handoff.get("to_agent"),
+                handoff["created_at"], handoff["created_at"],
+            ),
+        )
+        conn.commit()
+        return self.get_handoff(handoff["id"])
+
+    def get_handoff(self, handoff_id: str) -> Optional[Dict[str, Any]]:
+        row = self._get_conn().execute("SELECT * FROM agent_handoffs WHERE id = ?", (handoff_id,)).fetchone()
+        return self._handoff_row(row) if row else None
+
+    def list_handoffs(
+        self,
+        user_id: str,
+        project: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Newest first; ``project=None`` lists every project."""
+        conditions, params = ["user_id = ?"], [user_id]
+        if project:
+            conditions.append("project = ?")
+            params.append(project)
+        if statuses:
+            conditions.append(f"status IN ({', '.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        rows = self._get_conn().execute(
+            f"SELECT * FROM agent_handoffs WHERE {' AND '.join(conditions)} ORDER BY created_at DESC LIMIT ?",
+            (*params, int(limit)),
+        ).fetchall()
+        return [self._handoff_row(row) for row in rows]
+
+    def transition_handoff(
+        self,
+        handoff_id: str,
+        status: str,
+        *,
+        agent: str,
+        note: Optional[str] = None,
+        allowed_from: Sequence[str] = HANDOFF_STATUSES,
+        now: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Move a handoff to ``status`` if it is currently in ``allowed_from``; None otherwise."""
+        if status not in HANDOFF_STATUSES:
+            raise ValueError(f"Unknown handoff status: {status}")
+        conn = self._get_conn()
+        cursor = conn.execute(
+            f"UPDATE agent_handoffs SET status = ?, claimed_by = ?, note = COALESCE(?, note), updated_at = ? "
+            f"WHERE id = ? AND status IN ({', '.join('?' for _ in allowed_from)})",
+            (status, agent, note, now if now is not None else time.time(), handoff_id, *allowed_from),
+        )
+        conn.commit()
+        return self.get_handoff(handoff_id) if cursor.rowcount else None
 
     def pop_due_importance_predictions(self, due_before: float, limit: int = 1000) -> List[Dict[str, Any]]:
         """Remove and return predictions made at or before ``due_before`` (oldest first)."""

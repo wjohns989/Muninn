@@ -13,8 +13,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from muninn.mcp import handlers
-from muninn.mcp.http import _ACTIVE_HTTP_SESSIONS, _ACTIVE_HTTP_SESSIONS_LOCK, close_all_http_sessions
-from muninn.mcp.http import streamable_http_router
+from muninn.mcp.http import (
+    _ACTIVE_HTTP_SESSIONS,
+    _ACTIVE_HTTP_SESSIONS_LOCK,
+    close_all_http_sessions,
+    streamable_http_router,
+)
 from muninn.mcp.state import _SESSION_CONTEXTS, _SESSION_CONTEXTS_LOCK, _thread_local
 
 methods = pytest.importorskip("mcp_types.methods")
@@ -68,6 +72,7 @@ LEGACY_CALLS = [
     ("resources/list", {}),
     ("resources/templates/list", {}),
     ("prompts/list", {}),
+    ("prompts/get", {"name": "handoff", "arguments": {"project": "p", "to_agent": "codex"}}),
     ("ping", {}),
 ]
 
@@ -97,6 +102,8 @@ MODERN_CALLS = [
     ("resources/list", {}),
     ("resources/templates/list", {}),
     ("prompts/list", {}),
+    ("prompts/get", {"name": "start", "arguments": {"project": "p"}}),
+    ("tools/call", {"name": "get_project_context", "arguments": {"project": "p"}}),
 ]
 
 
@@ -108,7 +115,7 @@ def test_stateless_version_matches_the_official_schema(client, method, params):
         "io.modelcontextprotocol/clientCapabilities": {},
     }}
     headers = {**HEADERS, "MCP-Protocol-Version": MODERN, "Mcp-Method": method}
-    if method == "tools/call":
+    if method in ("tools/call", "prompts/get"):
         headers["Mcp-Name"] = params["name"]
     response = client.post("/mcp", headers=headers,
                            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})

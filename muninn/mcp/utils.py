@@ -40,7 +40,12 @@ def _do_get_git_info() -> Dict[str, str]:
             **kwargs
         ).strip()
         
-        project = repo_url.split("/")[-1].replace(".git", "") if repo_url else "unknown"
+        if repo_url:
+            project = repo_url.rstrip("/").split("/")[-1].split(":")[-1].removesuffix(".git")
+        else:
+            # No remote: the repository's folder name is the stable identity.
+            toplevel = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], **kwargs).strip()
+            project = os.path.basename(toplevel) or "unknown"
         return {"branch": branch, "project": project}
     except Exception:
         return {"branch": "unknown", "project": os.path.basename(os.getcwd())}
@@ -158,12 +163,11 @@ def negotiated_protocol_version(requested: Optional[str]) -> Optional[str]:
         return SUPPORTED_PROTOCOL_VERSIONS[0]
     return None
 
-def build_initialize_instructions(startup_warnings: Optional[List[str]] = None) -> str:
-    """Build a set of instructions for the client during initialization."""
-    base_instructions = (
-        "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
-        "for cross-assistant continuity."
-    )
+def build_initialize_instructions(startup_warnings: Optional[List[str]] = None, toolset: str = "full") -> str:
+    """Server instructions: the shared-memory protocol for the session's toolset, plus startup checks."""
+    from .prompts import protocol_for
+
+    base_instructions = protocol_for(toolset)
     session_profile = _read_operator_model_profile("MUNINN_OPERATOR_MODEL_PROFILE")
     if session_profile:
         base_instructions = (

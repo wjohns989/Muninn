@@ -91,11 +91,29 @@ Streamable HTTP in legacy, auto and 2026-07-28 modes; all 12 combinations pass.
 | 37 tools exceed Cursor's 40-tool budget with other servers; ChatGPT outside Developer Mode needs `search`/`fetch` | Tool profiles `full`/`core`/`readonly`/`chatgpt` via `?toolset=` or `MUNINN_MCP_TOOLSET`; ChatGPT `search`/`fetch` with `outputSchema` and `structuredContent`; `GET /memory/{id}` |
 | No per-client setup guide | `docs/CLIENTS.md` |
 
+### Cross-agent handoffs and built-in prompting (2026-09-26)
+
+Goal: Claude Desktop (and its Code tab), Codex and ChatGPT Work in the ChatGPT
+desktop app, Claude Code and any other local agent share one store and pass
+projects to each other.
+
+| Finding | Fix |
+|---|---|
+| The project came from the MCP process's working directory: over HTTP that is the server's own folder for every client, and desktop apps start stdio servers outside the repository | `project` argument on the tools; HTTP never uses the server's directory; stdio uses git only inside a repository, else `MUNINN_PROJECT`, else `global` |
+| Memories never recorded which agent wrote them (`source_agent` was always `unknown`) | Agent from MCP `clientInfo` (aliases such as `claude-ai` → `claude-desktop`), `?agent=` or `MUNINN_AGENT_NAME` |
+| Handoffs existed only as export/import bundles between stores; notes over 1000 characters were split into chunks | `agent_handoffs` table (outside consolidation) with open → claimed → done lifecycle; tools `create_handoff`, `resume_handoff`, `complete_handoff`; REST `/handoffs` |
+| No session-start routine | `get_project_context` / `GET /context`: goal, open handoffs, rules, recent memories by agent, global preferences |
+| Server instructions were one sentence; prompts were empty stubs | The shared-memory protocol ships as server instructions (read by Codex, Claude Code, Claude Desktop, Gemini CLI), per toolset; MCP prompts `start`, `resume`, `handoff`, `remember` on every transport |
+
+Verified with the official MCP SDK: Codex over HTTP (2026-07-28) stores a
+memory and a handoff; Claude Desktop over stdio, started outside any
+repository, sees both in its briefing, claims the handoff and completes it.
+
 Next for this area:
 
-- MCP resources (project goal, user profile, recent memories) and prompts
-  (`recall`, `remember`), so hosts that surface resources can attach context
-  without a tool call.
+- MCP resources (project briefing as `muninn://project/{name}`) for hosts that
+  attach resources without a tool call.
+- Show handoffs and agent labels in the Huginn dashboard.
 - An `.mcpb` Desktop Extension for one-click Claude Desktop install.
 - OAuth 2.1 on `/mcp` so ChatGPT and claude.ai can connect directly without a
   tunnel.

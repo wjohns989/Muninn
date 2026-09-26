@@ -236,7 +236,10 @@ def test_capabilities_are_version_conservative(client):
     older, _ = _initialize(client, "2025-06-18")
     latest, _ = _initialize(client, "2025-11-25")
 
-    assert older.json()["result"]["capabilities"] == {"tools": {"listChanged": False}}
+    assert older.json()["result"]["capabilities"] == {
+        "tools": {"listChanged": False},
+        "prompts": {"listChanged": False},
+    }
     assert "tasks" in latest.json()["result"]["capabilities"]
 
 

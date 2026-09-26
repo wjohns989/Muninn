@@ -13,12 +13,129 @@ SUPPORTED_MODEL_PROFILES = ("low_latency", "balanced", "high_reasoning")
 
 TOOLS_SCHEMAS: List[Dict[str, Any]] = [
     {
+        "name": "get_project_context",
+        "description": (
+            "Call this FIRST in every session, before other work. Returns the project's goal, handoffs "
+            "other agents left (Claude Code, Claude Desktop, Codex, Gemini...), project rules, recent "
+            "memories with the agent that wrote each, and global user preferences. If it reports an open "
+            "handoff, call resume_handoff to pick it up."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "The repository or folder name you are working in (use the same name every session)."
+                    ),
+                },
+                "recent_limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50,
+                                 "description": "How many recent project memories to include."},
+            },
+        },
+    },
+    {
+        "name": "create_handoff",
+        "description": (
+            "Hand the current work to another agent or a later session. Call it when the user says to "
+            "hand off, when you stop mid-task, or at the end of a session with unfinished work. Write it "
+            "so an agent with no access to this conversation can continue: what was done, the current "
+            "state, and concrete next steps."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "The repository or folder name you are working in (use the same name every session)."
+                    ),
+                },
+                "summary": {"type": "string", "description": "What was done and where things stand now."},
+                "title": {"type": "string", "description": "Short headline; defaults to the start of summary."},
+                "next_steps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ordered, concrete next actions.",
+                },
+                "open_questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Unresolved questions or decisions for the user.",
+                },
+                "decisions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Decisions made and why, so they are not relitigated.",
+                },
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Relevant files or paths, relative to the project root.",
+                },
+                "branch": {"type": "string", "description": "Git branch holding the work, if any."},
+                "to_agent": {
+                    "type": "string",
+                    "description": "Preferred agent (e.g. codex, claude-code, claude-desktop); omit for anyone.",
+                },
+            },
+            "required": ["project", "summary"],
+        },
+    },
+    {
+        "name": "resume_handoff",
+        "description": (
+            "Pick up work another agent handed off. Claims the newest open handoff for the project "
+            "(or the given handoff_id) so other agents see it is taken, and returns its summary, next "
+            "steps, decisions and files. Set claim=false to only read it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "The repository or folder name you are working in (use the same name every session)."
+                    ),
+                },
+                "handoff_id": {"type": "string", "description": "A specific handoff to resume."},
+                "claim": {"type": "boolean", "default": True, "description": "Mark it as claimed by you."},
+            },
+        },
+    },
+    {
+        "name": "complete_handoff",
+        "description": (
+            "Close a handoff you resumed: status 'done' when the work is finished, 'cancelled' if it is "
+            "no longer needed, or 'open' to release it for another agent. Add a note on the outcome."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "handoff_id": {
+                    "type": "string",
+                    "description": "The handoff id from resume_handoff or get_project_context.",
+                },
+                "status": {"type": "string", "enum": ["done", "cancelled", "open"], "default": "done"},
+                "note": {"type": "string", "description": "Outcome, or why it was released or cancelled."},
+            },
+            "required": ["handoff_id"],
+        },
+    },
+    {
         "name": "add_memory",
         "description": "Add a new memory to the knowledge base. Use this to store facts, preferences, or important information that should be remembered across sessions. Use scope='global' for universal rules/preferences that should always be visible; use scope='project' (default) for project-specific information.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "The information to remember."},
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Project this belongs to: the repository or folder name you are working in. "
+                        "Pass it so every agent files and finds the same project's memories."
+                    ),
+                },
                 "metadata": {"type": "object", "description": "Optional metadata tags (e.g., {'project': 'phoenix', 'category': 'api'})."},
                 "scope": {
                     "type": "string",
@@ -55,12 +172,19 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
     },
     {
         "name": "set_project_instruction",
-        "description": "Convenience tool to create a project-scoped instruction memory. The memory is tagged with the current git project and scope='project', ensuring it NEVER appears when working in a different repository. Use for project-specific coding conventions, constraints, or guidelines.",
+        "description": "Convenience tool to create a project-scoped instruction memory. The memory is tagged with the project and scope='project', ensuring it NEVER appears when working in a different repository. Use for project-specific coding conventions, constraints, or guidelines.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "instruction": {"type": "string", "description": "The project-specific instruction or convention to remember (e.g., 'Always use async/await for I/O operations in this codebase')."},
-                "category": {"type": "string", "description": "Optional category tag for the instruction (e.g., 'coding_conventions', 'architecture', 'testing')."}
+                "category": {"type": "string", "description": "Optional category tag for the instruction (e.g., 'coding_conventions', 'architecture', 'testing')."},
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Project this belongs to: the repository or folder name you are working in. "
+                        "Pass it so every agent files and finds the same project's memories."
+                    ),
+                }
             },
             "required": ["instruction"]
         }
@@ -72,6 +196,13 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "The search query."},
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Project to search: the repository or folder name you are working in. Memories with scope "
+                        "'global' are always included. Pass it to find what other agents stored for this project."
+                    ),
+                },
                 "limit": {"type": "integer", "default": 5, "description": "Max number of results (default 5)"},
                 "rerank": {"type": "boolean", "default": True, "description": "Enable SOTA reranking for precision (default true)"},
                 "explain": {"type": "boolean", "default": False, "description": "Include per-result recall trace explaining retrieval signals (v3.1.0)"},
@@ -641,6 +772,7 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
+    "get_project_context",
     "search_memory", "hunt_memory", "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
     "export_handoff", "discover_legacy_sources",
@@ -654,6 +786,7 @@ READ_ONLY_TOOLS = {
 DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories", "update_memory", "correct_fact"}
 
 IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
+    "resume_handoff", "complete_handoff",
     "update_memory", "delete_memory", "delete_all_memories",
     "set_project_goal", "set_user_profile", "set_model_profiles",
     "import_handoff", "apply_federation_bundle",
@@ -733,6 +866,7 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 # Tool profiles let a client load only what it needs: Cursor caps active tools
 # at 40 across all servers, and every schema costs context on each request.
 CORE_TOOLS = (
+    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff",
     "add_memory", "search_memory", "hunt_memory", "update_memory", "delete_memory",
     "record_retrieval_feedback", "get_project_goal", "set_project_goal", "set_project_instruction",
     "get_user_profile", "correct_fact",

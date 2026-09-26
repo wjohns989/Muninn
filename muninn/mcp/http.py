@@ -21,6 +21,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from muninn.core.security import is_security_enabled
 from muninn.core.security import verify_token as core_verify_token
 from muninn.mcp.definitions import SUPPORTED_PROTOCOL_VERSIONS
+from muninn.mcp.handlers import active_toolset, handle_get_prompt, handle_list_prompts
 from muninn.mcp.handlers import (
     handle_call_tool as _handle_call_tool,
 )
@@ -64,7 +65,6 @@ JSON_CONTENT_TYPE = "application/json"
 OPTIONAL_CAPS = {
     "resources/list": {"resources": []},
     "resources/templates/list": {"resourceTemplates": []},
-    "prompts/list": {"prompts": []},
 }
 
 # --- MCP 2026-07-28 ("modern", stateless) ---------------------------------
@@ -130,6 +130,7 @@ class HttpSession:
     last_seen_at: float
     active_dispatches: int = 0
     toolset: Optional[str] = None
+    agent: Optional[str] = None
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
@@ -158,7 +159,7 @@ def _purge_expired_locked(now: float) -> List[str]:
     return expired
 
 
-def _create_session(toolset: Optional[str] = None) -> str | None:
+def _create_session(toolset: Optional[str] = None, agent: Optional[str] = None) -> str | None:
     now = time.time()
     with _ACTIVE_HTTP_SESSIONS_LOCK:
         expired = _purge_expired_locked(now)
@@ -166,7 +167,7 @@ def _create_session(toolset: Optional[str] = None) -> str | None:
             session_id = None
         else:
             session_id = uuid.uuid4().hex
-            _ACTIVE_HTTP_SESSIONS[session_id] = HttpSession(now, now, toolset=toolset)
+            _ACTIVE_HTTP_SESSIONS[session_id] = HttpSession(now, now, toolset=toolset, agent=agent)
     _cleanup_session_contexts(expired)
     return session_id
 
@@ -315,6 +316,8 @@ def _dispatch_http_message(session_id: str, msg: Dict[str, Any]) -> List[Dict[st
         _thread_local.mcp_session_id = session_id
         if session.toolset:
             _SESSION_STATE["toolset"] = session.toolset
+        if session.agent:
+            _SESSION_STATE["agent_name"] = session.agent
         try:
             msg_id = msg.get("id")
             method = msg.get("method")
@@ -358,16 +361,17 @@ def _dispatch_http_message(session_id: str, msg: Dict[str, Any]) -> List[Dict[st
                 )
             elif method == "tasks/result":
                 _handle_get_task_result(msg_id, params, send_error, send_result)
+            elif method == "prompts/list":
+                handle_list_prompts(msg_id, send_result)
+            elif method == "prompts/get":
+                handle_get_prompt(msg_id, params, send_error, send_result)
             elif method in OPTIONAL_CAPS:
                 send_result(msg_id, OPTIONAL_CAPS[method])
-            elif method in ("resources/read", "prompts/get"):
+            elif method == "resources/read":
                 if not isinstance(params, dict):
                     send_error(msg_id, -32602, f"{method} params must be an object")
                 else:
-                    send_result(
-                        msg_id,
-                        {"contents": []} if method == "resources/read" else {"messages": []},
-                    )
+                    send_result(msg_id, {"contents": []})
             elif method == "ping":
                 send_result(msg_id, {})
             elif msg_id is not None:
@@ -435,15 +439,20 @@ def _finish_stateless_dispatch() -> None:
 def _modern_discover_result() -> Dict[str, Any]:
     return {
         "supportedVersions": list(MODERN_PROTOCOL_VERSIONS) + list(SUPPORTED_PROTOCOL_VERSIONS),
-        "capabilities": {"tools": {"listChanged": False}},
+        "capabilities": {"tools": {"listChanged": False}, "prompts": {"listChanged": False}},
         "_meta": {META_SERVER_INFO: {"name": "muninn-mcp", "version": _MUNINN_VERSION}},
-        "instructions": build_initialize_instructions([]),
+        "instructions": build_initialize_instructions([], toolset=active_toolset()),
     }
 
 
 def _request_toolset(request: Request) -> Optional[str]:
     """Clients pick a tool profile per URL, e.g. /mcp?toolset=core or ?toolset=chatgpt."""
     return request.query_params.get("toolset") or None
+
+
+def _request_agent(request: Request) -> Optional[str]:
+    """Optional agent label per URL (?agent=codex) for clients whose clientInfo name is vague."""
+    return request.query_params.get("agent") or None
 
 
 # 2026-07-28 list/discover/read results are cacheable and MUST carry cacheScope
@@ -459,7 +468,9 @@ _CACHE_DIRECTIVES = {
 }
 
 
-def _dispatch_modern_message(msg: Dict[str, Any], version: str, toolset: Optional[str] = None) -> Dict[str, Any]:
+def _dispatch_modern_message(
+    msg: Dict[str, Any], version: str, toolset: Optional[str] = None, agent: Optional[str] = None
+) -> Dict[str, Any]:
     """Serve one stateless request inside a context that exists only for this call."""
     msg_id = msg.get("id")
     params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
@@ -487,6 +498,7 @@ def _dispatch_modern_message(msg: Dict[str, Any], version: str, toolset: Optiona
         "client_capabilities": meta.get(META_CLIENT_CAPABILITIES) or {},
         "client_info": meta.get(META_CLIENT_INFO) or {},
         "toolset": toolset,
+        "agent_name": agent,
     })
     with _SESSION_CONTEXTS_LOCK:
         _SESSION_CONTEXTS[context_id] = state
@@ -499,10 +511,14 @@ def _dispatch_modern_message(msg: Dict[str, Any], version: str, toolset: Optiona
             _handle_list_tools(msg_id, send_result)
         elif method == "tools/call":
             _handle_call_tool(msg_id, params, send_error, send_result)
+        elif method == "prompts/list":
+            handle_list_prompts(msg_id, send_result)
+        elif method == "prompts/get":
+            handle_get_prompt(msg_id, params, send_error, send_result)
         elif method in OPTIONAL_CAPS:
             send_result(msg_id, OPTIONAL_CAPS[method])
-        elif method in ("resources/read", "prompts/get"):
-            send_result(msg_id, {"contents": []} if method == "resources/read" else {"messages": []})
+        elif method == "resources/read":
+            send_result(msg_id, {"contents": []})
         elif method == "ping":
             send_result(msg_id, {})
     except Exception as exc:
@@ -541,7 +557,9 @@ async def _handle_modern_post(request: Request, msg: Dict[str, Any], version: st
             HTTPStatus.TOO_MANY_REQUESTS, _json_error(msg_id, -32000, "MCP dispatch capacity reached")
         )
     try:
-        response = await asyncio.to_thread(_dispatch_modern_message, msg, version, _request_toolset(request))
+        response = await asyncio.to_thread(
+            _dispatch_modern_message, msg, version, _request_toolset(request), _request_agent(request)
+        )
     finally:
         _finish_stateless_dispatch()
     return _json_response(HTTPStatus.OK, response)
@@ -625,7 +643,7 @@ async def _handle_post(request: Request) -> Response:
         if session_id:
             code = HTTPStatus.BAD_REQUEST if _get_session(session_id) else HTTPStatus.NOT_FOUND
             return _json_response(code, _json_error("server-error", -32600, "Invalid session"))
-        session_id = _create_session(_request_toolset(request))
+        session_id = _create_session(_request_toolset(request), _request_agent(request))
         if session_id is None:
             return _json_response(
                 HTTPStatus.SERVICE_UNAVAILABLE,

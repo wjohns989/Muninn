@@ -47,6 +47,7 @@ from muninn.core.env_loader import load_project_env
 load_project_env(Path(__file__).parent)
 
 from muninn.core.memory import MuninnMemory
+from muninn.core import handoffs
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.core.feature_flags import FeatureDisabledError
 from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
@@ -1453,6 +1454,99 @@ async def import_memories_endpoint(req: ImportMemoriesRequest):
         memory, req.records, user_id=req.user_id, namespace=req.namespace,
         source=req.source, dry_run=req.dry_run,
     )}
+
+
+# --- Agent handoffs and session briefing ------------------------------------
+
+class CreateHandoffRequest(BaseModel):
+    project: str
+    summary: str
+    from_agent: str = "unknown"
+    title: Optional[str] = None
+    to_agent: Optional[str] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
+    user_id: str = "global_user"
+
+
+class ResumeHandoffRequest(BaseModel):
+    agent: str = "unknown"
+    project: Optional[str] = None
+    handoff_id: Optional[str] = None
+    claim: bool = True
+    user_id: str = "global_user"
+
+
+class FinishHandoffRequest(BaseModel):
+    agent: str = "unknown"
+    status: str = "done"
+    note: Optional[str] = None
+    user_id: str = "global_user"
+
+
+def _require_memory() -> None:
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+
+@app.post("/handoffs", dependencies=[Depends(verify_token)])
+async def create_handoff_endpoint(req: CreateHandoffRequest):
+    """Leave work for another agent: what was done, where it stands, what comes next."""
+    _require_memory()
+    try:
+        handoff = await handoffs.create_handoff(
+            memory, project=req.project, summary=req.summary, from_agent=req.from_agent,
+            title=req.title, to_agent=req.to_agent, details=req.details, user_id=req.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"success": True, "data": handoff}
+
+
+@app.get("/handoffs", dependencies=[Depends(verify_token)])
+async def list_handoffs_endpoint(
+    project: Optional[str] = None, status: Optional[str] = None, limit: int = 20, user_id: str = "global_user"
+):
+    """List handoffs, newest first; status is a comma-separated filter (open,claimed,done,cancelled)."""
+    _require_memory()
+    statuses = [part.strip() for part in status.split(",") if part.strip()] if status else None
+    data = await handoffs.list_handoffs(memory, project=project, statuses=statuses, limit=limit, user_id=user_id)
+    return {"success": True, "data": data}
+
+
+@app.post("/handoffs/resume", dependencies=[Depends(verify_token)])
+async def resume_handoff_endpoint(req: ResumeHandoffRequest):
+    """Claim the newest open handoff for a project (or a given id) for the calling agent."""
+    _require_memory()
+    data = await handoffs.resume_handoff(
+        memory, agent=req.agent, project=req.project, handoff_id=req.handoff_id, claim=req.claim,
+        user_id=req.user_id,
+    )
+    return {"success": True, "data": data}
+
+
+@app.post("/handoffs/{handoff_id}/finish", dependencies=[Depends(verify_token)])
+async def finish_handoff_endpoint(handoff_id: str, req: FinishHandoffRequest):
+    """Mark a handoff done or cancelled, or release it back to open."""
+    _require_memory()
+    try:
+        data = await handoffs.finish_handoff(
+            memory, handoff_id=handoff_id, agent=req.agent, status=req.status, note=req.note, user_id=req.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Handoff {handoff_id} not found")
+    return {"success": True, "data": data}
+
+
+@app.get("/context", dependencies=[Depends(verify_token)])
+async def project_context_endpoint(
+    project: Optional[str] = None, recent_limit: int = 10, user_id: str = "global_user"
+):
+    """Session-start briefing: goal, active handoffs, project rules, recent work, global preferences."""
+    _require_memory()
+    data = await handoffs.project_context(memory, project=project, recent_limit=recent_limit, user_id=user_id)
+    return {"success": True, "data": data}
 
 
 @app.post("/restore/{memory_id}", dependencies=[Depends(verify_token)])

@@ -128,8 +128,11 @@ All modes use the same memory engine and data directory.
 
 ## MCP Client Configuration
 
-**Per-client setup** (Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor,
-VS Code, LM Studio, Open WebUI, ChatGPT): see [`docs/CLIENTS.md`](docs/CLIENTS.md).
+**Per-client setup** (ChatGPT desktop app with Codex, Claude Desktop and Claude
+Code, Gemini CLI, Cursor, VS Code, LM Studio, Open WebUI, web ChatGPT): see
+[`docs/CLIENTS.md`](docs/CLIENTS.md). All clients share one store; the server
+instructions teach every agent to load `get_project_context` at the start and to
+pass work on with `create_handoff` / `resume_handoff`.
 Clients with tool limits or small models can load a smaller profile with
 `?toolset=core` (or `readonly`, `chatgpt`) on the URL.
 
@@ -195,6 +198,10 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 
 | Tool | Description |
 |------|-------------|
+| `get_project_context` | Session-start briefing: goal, open handoffs, project rules, recent memories by agent, global preferences |
+| `create_handoff` | Leave work for another agent: summary, next steps, decisions, open questions, files, branch |
+| `resume_handoff` | Claim the newest open handoff for a project (or a given id) |
+| `complete_handoff` | Mark a resumed handoff done or cancelled, or release it |
 | `add_memory` | Store a memory with optional `scope`, `project`, `namespace`, `media_type` |
 | `add_image_memory` | Store a local image plus a searchable description and optional memory links |
 | `search_memory` | Hybrid 5-signal search with `media_type` filtering and recall traces |
@@ -220,7 +227,7 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | `trigger_distillation` | Condense clusters of episodic memories into semantic notes |
 | `search`, `fetch` | ChatGPT connector tools (`chatgpt` profile only) |
 
-The full list (37 tools) is returned by `tools/list`; federation, periodic
+The full list (41 tools) is returned by `tools/list`; federation, periodic
 ingestion, model-profile and `mimir_relay` tools are omitted above.
 
 ---
@@ -335,6 +342,8 @@ Key environment variables:
 | `MUNINN_MCP_SSE_MAX_SESSIONS` | `128` | Legacy SSE session capacity |
 | `MUNINN_MCP_SSE_QUEUE_SIZE` | `256` | Per-session legacy SSE response queue bound |
 | `MUNINN_MCP_SSE_MAX_INFLIGHT` | `8` | Per-session legacy SSE dispatch-task bound |
+| `MUNINN_AGENT_NAME` | client name | Agent label recorded on memories and handoffs for a stdio client (HTTP clients use `?agent=`) |
+| `MUNINN_PROJECT` | git repo | Project for a stdio client started outside a repository (e.g. by Claude Desktop) |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
 | `MUNINN_ALLOWED_ORIGINS` | - | Extra browser origins allowed besides localhost (comma-separated; `null` allows `file://`, `*` disables the check) |
 
