@@ -108,13 +108,17 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         "description": (
             "Re-read an earlier conversation from any app (Claude Code, Claude Desktop, Codex, Gemini CLI, "
             "ChatGPT or Claude exports) in its original order, including the parts that were compacted away. "
-            "Without thread_id, lists the project's threads, newest first."
+            "Without thread_id, lists the project's threads, newest first. With timeline=true, returns the "
+            "project's work across all apps interleaved in time order, with handoffs and agent switches."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "thread_id": {"type": "string", "description": "Thread id from get_project_context or a listing."},
                 "project": {"type": "string", "description": "Project whose threads to list when no thread_id."},
+                "timeline": {"type": "boolean", "default": False,
+                             "description": "Project timeline across apps instead of one thread."},
+                "since": {"type": "string", "description": "Timeline start (ISO date)."},
                 "offset": {"type": "integer", "default": 0, "minimum": 0, "description": "Entries to skip."},
                 "limit": {"type": "integer", "default": 30, "minimum": 1, "maximum": 200},
             },

@@ -523,7 +523,7 @@ def cmd_rotate_token(args: argparse.Namespace) -> int:
     if sys.platform == "win32":
         print("  PowerShell:")
         print(f"    $env:MUNINN_AUTH_TOKEN = (Get-Content '{token_file}')")
-        print(f"    python server.py")
+        print("    python server.py")
         print()
         print("  To persist permanently (user-scope):")
         print(f"    setx MUNINN_AUTH_TOKEN \"{new_token}\"")
@@ -750,6 +750,82 @@ def cmd_hooks(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mask(key: str) -> str:
+    return key[:8] + "…" + key[-4:] if len(key) > 16 else "…"
+
+
+def _prompt_openrouter_key(*, first_run: bool) -> bool:
+    """Ask for an OpenRouter key in an interactive terminal; returns True when one was saved."""
+    import getpass
+
+    from muninn.history import llm_settings
+
+    if first_run:
+        print(
+            "\nMuninn can use OpenRouter to understand your imported conversations: pull out decisions,\n"
+            "preferences, fixes and open items, and summarize each thread. Every request requires\n"
+            "zero data retention (no storage, no training), and secrets are redacted before sending.\n"
+            f"Default model: {llm_settings.DEFAULT_MODEL} (about $2 per 1,000 threads).\n"
+            f"Get a key at {llm_settings.KEYS_PAGE}. Press Enter to skip and use local Ollama instead;\n"
+            "you can add a key later with: python -m muninn.cli openrouter set\n"
+        )
+    for _ in range(3):
+        key = getpass.getpass("OpenRouter API key (input hidden; Enter to skip): ").strip()
+        if not key:
+            if first_run:
+                llm_settings.decline()
+                print("Using local Ollama for thread analysis. Change this any time with `openrouter set`.")
+            return False
+        ok, message = llm_settings.verify_key(key)
+        print(("✓ " if ok else "✗ ") + message)
+        if ok:
+            path = llm_settings.save_key(key)
+            print(f"Saved to {path} (readable only by you).")
+            return True
+    return False
+
+
+def _maybe_first_run_openrouter() -> None:
+    from muninn.history import llm_settings
+
+    if sys.stdin.isatty() and sys.stdout.isatty() and llm_settings.should_prompt():
+        _prompt_openrouter_key(first_run=True)
+
+
+def cmd_openrouter(args: argparse.Namespace) -> int:
+    """Show, set or clear the OpenRouter key and model used for thread analysis."""
+    from muninn.history import llm_settings
+
+    if args.action == "clear":
+        llm_settings.forget()
+        print(f"Removed {llm_settings.settings_path()}. Thread analysis will use local Ollama.")
+        return 0
+    if args.action == "set":
+        if args.key:
+            ok, message = (True, "not verified (--no-verify)") if args.no_verify else llm_settings.verify_key(args.key)
+            print(("✓ " if ok else "✗ ") + message)
+            if not ok:
+                return 1
+            llm_settings.save_key(args.key, args.model)
+        elif args.model and llm_settings.api_key():
+            llm_settings.save_model(args.model)
+        elif not sys.stdin.isatty():
+            raise SystemExit("Pass --key, or run this in an interactive terminal.")
+        elif not _prompt_openrouter_key(first_run=False):
+            return 1
+        elif args.model:
+            llm_settings.save_model(args.model)
+    key = llm_settings.api_key()
+    print(json.dumps({
+        "key": _mask(key) if key else None,
+        "key_from": llm_settings.key_source(),
+        "models": llm_settings.models() if key else [],
+        "local_ollama_chosen": bool(llm_settings.load().get("declined")),
+        "settings_file": str(llm_settings.settings_path()),
+    }, indent=2))
+    return 0
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     """Keep and import local AI conversation history (Claude Code/Desktop, Codex, Gemini CLI, exports)."""
     if args.action == "status":
@@ -757,6 +833,7 @@ def cmd_history(args: argparse.Namespace) -> int:
     elif args.action == "sync":
         data = _admin_request(args, "POST", "/history/sync", json=[str(p) for p in args.path] or None)
     elif args.action == "import":
+        _maybe_first_run_openrouter()
         payload = {"apply": args.apply, "providers": args.provider or None, "since": args.since,
                    "paths": [str(p) for p in args.path] or None}
         data = _admin_request(args, "POST", "/history/import", json=payload)
@@ -765,13 +842,14 @@ def cmd_history(args: argparse.Namespace) -> int:
             print("Dry run only. Re-run with --apply to import (it runs in the background; see 'history status').")
             return 0
     elif args.action == "analyze":
+        _maybe_first_run_openrouter()
         payload = {"apply": args.apply, "provider": args.llm, "model": args.model, "project": args.project,
                    "limit": args.limit}
         data = _admin_request(args, "POST", "/history/analyze", json=payload)
         if not args.apply:
             print(json.dumps(data, indent=2, default=str))
-            print("Dry run only. Re-run with --apply (uses OpenRouter with zero data retention when "
-                  "OPENROUTER_API_KEY is set on the server, else local Ollama; --llm to choose).")
+            print("Dry run only. Re-run with --apply. Uses OpenRouter (zero data retention) when a key is set "
+                  "(`openrouter set`), else local Ollama; --llm and --model override.")
             return 0
     elif args.action == "threads":
         params = {"limit": args.limit}
@@ -781,6 +859,12 @@ def cmd_history(args: argparse.Namespace) -> int:
         if args.q:
             params["q"] = args.q
         data = _admin_request(args, "GET", "/history/threads", params=params)
+    elif args.action == "timeline":
+        if not args.project:
+            raise SystemExit("history timeline needs --project.")
+        params = {"project": args.project, "offset": args.offset, "limit": args.limit}
+        params.update({key: getattr(args, key) for key in ("since",) if getattr(args, key)})
+        data = _admin_request(args, "GET", "/history/timeline", params=params)
     else:  # thread
         if not args.thread_id:
             raise SystemExit("history thread needs a thread id (see 'history threads').")
@@ -971,12 +1055,13 @@ def build_parser() -> argparse.ArgumentParser:
             "import   dry run of turning history into memories; --apply to import (then automatic)\n"
             "analyze  extract decisions, preferences, fixes, open items per thread (LLM; dry run first)\n"
             "threads  list imported conversation threads (--project to filter)\n"
-            "thread   re-read one thread in order: history thread <thread-id>"
+            "thread   re-read one thread in order: history thread <thread-id>\n"
+            "timeline one project's conversations from every app, interleaved in time order (--project)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_server_args(history, timeout=300.0)
-    history.add_argument("action", choices=["status", "sync", "import", "analyze", "threads", "thread"])
+    history.add_argument("action", choices=["status", "sync", "import", "analyze", "threads", "thread", "timeline"])
     history.add_argument("thread_id", nargs="?", help="Thread id for 'thread'.")
     history.add_argument("--provider", action="append",
                          choices=["claude_code", "codex", "gemini_cli", "chatgpt", "claude_ai"],
@@ -1009,6 +1094,23 @@ def build_parser() -> argparse.ArgumentParser:
     hooks.add_argument("--app", action="append", choices=["claude", "codex"], help="Only this app (repeatable).")
     hooks.add_argument("--server-url", default=None, help="Muninn server URL the hooks call.")
     hooks.add_argument("--apply", action="store_true", help="Write the settings.")
+
+    openrouter = subparsers.add_parser(
+        "openrouter",
+        help="Set up the OpenRouter key used to analyze imported conversations.",
+        description=(
+            "status  show which key and models are used (the key is masked)\n"
+            "set     save a key (prompted, hidden, verified with OpenRouter) and optionally --model\n"
+            "clear   remove the saved key; analysis falls back to local Ollama\n"
+            "Every request requires zero data retention. The key is stored in Muninn's config\n"
+            "directory with owner-only permissions; OPENROUTER_API_KEY in the environment wins."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    openrouter.add_argument("action", choices=["status", "set", "clear"])
+    openrouter.add_argument("--key", help="Key to save (otherwise you are prompted without echo).")
+    openrouter.add_argument("--model", help="Primary model, e.g. deepseek/deepseek-v4.1-flash.")
+    openrouter.add_argument("--no-verify", action="store_true", help="Save without asking OpenRouter first.")
     return parser
 
 
@@ -1028,6 +1130,8 @@ def main() -> int:
         return cmd_history(args)
     if args.command == "hooks":
         return cmd_hooks(args)
+    if args.command == "openrouter":
+        return cmd_openrouter(args)
 
     parser.print_help()
     return 1

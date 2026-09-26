@@ -24,7 +24,8 @@ FULL_PROTOCOL = PROTOCOL_INTRO + """
 1. Start of a session: call get_project_context(project) before other work and follow the project \
 instructions it returns. If it shows an open handoff for you or for anyone, call resume_handoff and \
 continue from its next steps. It also lists recent_threads: earlier conversations about this project \
-in any app; read the relevant ones with get_thread instead of redoing work.
+in any app; read the relevant ones with get_thread instead of redoing work (get_thread with \
+timeline=true shows the project's work across all apps in time order).
 2. Before answering about earlier work, decisions or preferences, call search_memory.
 3. Save durable knowledge with add_memory as you go: a decision and its reason, a convention, a fix \
 for a recurring problem, a fact about the environment. Use scope="global" for user preferences that \

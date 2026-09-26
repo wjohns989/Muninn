@@ -1574,6 +1574,19 @@ async def history_threads_endpoint(
     return {"success": True, "data": data}
 
 
+@app.get("/history/timeline", dependencies=[Depends(verify_token)])
+async def history_timeline_endpoint(
+    project: str, since: Optional[str] = None, until: Optional[str] = None, offset: int = 0, limit: int = 100,
+):
+    """A project's conversations from every app in one time-ordered stream, with handoffs and agent switches."""
+    _require_memory()
+    from muninn.history.importer import read_project_timeline
+
+    data = await read_project_timeline(memory, project, since=_parse_since(since), until=_parse_since(until),
+                                       offset=max(0, offset), limit=max(1, min(limit, 500)))
+    return {"success": True, "data": data}
+
+
 @app.get("/history/threads/{thread_key:path}", dependencies=[Depends(verify_token)])
 async def history_thread_endpoint(thread_key: str, offset: int = 0, limit: int = 50):
     """Re-read one conversation thread in order, including turns compaction removed."""

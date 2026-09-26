@@ -349,9 +349,10 @@ Key environment variables:
 | `MUNINN_HISTORY_VAULT` | on | Keep a private copy of Claude Code/Desktop, Codex and Gemini CLI transcripts (the apps delete theirs); see `docs/CLIENTS.md` |
 | `MUNINN_HISTORY_SYNC_MINUTES` | `30` | How often new conversation history is copied (and, after the first import, imported) |
 | `MUNINN_HISTORY_AUTO_IMPORT` | after first import | `1`/`0` forces automatic import of new turns on or off |
-| `OPENROUTER_API_KEY` | - | Enables `history analyze` through OpenRouter; every request enforces zero data retention |
+| `OPENROUTER_API_KEY` | - | Enables `history analyze` through OpenRouter (or save one with `openrouter set`; the CLI asks on first run); every request enforces zero data retention |
 | `MUNINN_INSIGHTS_PROVIDER` | auto | `openrouter` or `ollama` for thread analysis (auto: OpenRouter when a key is set) |
-| `MUNINN_INSIGHTS_MODEL` | `google/gemini-2.5-flash` | Model for thread analysis (OpenRouter id, or an Ollama model) |
+| `MUNINN_INSIGHTS_MODEL` | `openai/gpt-6-luna` | Primary model for thread analysis; OpenRouter falls back to DeepSeek V4 Flash, then Gemini 3.5 Flash-Lite (all zero data retention). `python -m muninn.cli openrouter set` saves a key and model |
+| `MUNINN_INSIGHTS_WINDOW_TOKENS` | `200000` | Conversation per analysis call; larger threads are split and merged |
 | `MUNINN_INSIGHTS_AUTO` | off | `1` analyzes new threads after each automatic import |
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |

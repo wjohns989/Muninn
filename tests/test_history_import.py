@@ -167,11 +167,18 @@ class FakeMemory:
         self._metadata.add(record)
         return {"id": record.id, "event": "ADD"}
 
-    async def update(self, memory_id, data=None, metadata_patch=None, **_):
+    async def update(self, memory_id, data=None, metadata_patch=None, archived=None, **_):
         record = self._metadata.get(memory_id)
-        self._metadata.update(memory_id, content=data or record.content,
-                              metadata=dict(record.metadata or {}, **(metadata_patch or {})))
+        fields = {"content": data or record.content,
+                  "metadata": dict(record.metadata or {}, **(metadata_patch or {}))}
+        if archived is not None:
+            fields["archived"] = int(archived)
+        self._metadata.update(memory_id, **fields)
         return {"id": memory_id}
+
+    async def delete(self, memory_id):
+        self._metadata.delete(memory_id)
+        return {"id": memory_id, "event": "DELETE"}
 
 
 @pytest.fixture
@@ -291,7 +298,8 @@ def test_import_is_ordered_complete_and_incremental(env):
     assert dry["recovered_prompts"] == 1 and dry["by_project"]["webapp"]["threads"] == 3
 
     report = run(import_history(env.memory, env.vault, apply=True))
-    assert report["turn_memories"] >= 8 and report["compaction_memories"] == 3  # Claude + two Codex threads
+    # The compressed Codex rollout repeats the other rollout's compaction (as a fork does): stored once.
+    assert report["turn_memories"] >= 8 and report["compaction_memories"] == 2
     thread = run(read_thread(env.memory, "claude_code:c-111"))
     entries = thread["entries"]
     kinds = [(e["kind"], e["turn_index"], e["part"]) for e in entries]
@@ -374,3 +382,101 @@ def test_extra_homes_are_vaulted_without_collisions(env, tmp_path, monkeypatch):
     same_name = [f for f in transcripts if f.path.name == "c-111.jsonl.gz"]
     assert len(same_name) == 2 and len({f.path for f in same_name}) == 2
     assert "claude_code:c-win" in {t.key for t in collect(env.vault).threads}
+
+
+
+# --- one project, several apps, one timeline ----------------------------------------------
+
+def _claude(session, cwd, turns, entry="cli"):
+    rows = []
+    for at, user, reply in turns:
+        base = {"sessionId": session, "cwd": cwd, "gitBranch": "main", "entrypoint": entry}
+        rows.append({**base, "type": "user", "timestamp": iso(at), "message": {"role": "user", "content": user}})
+        rows.append({**base, "type": "assistant", "timestamp": iso(at + 5),
+                     "message": {"role": "assistant", "content": [{"type": "text", "text": reply}]}})
+    return rows
+
+
+def _codex(session, cwd, turns):
+    rows = [{"timestamp": iso(turns[0][0]), "type": "session_meta",
+             "payload": {"id": session, "cwd": cwd, "originator": "codex_desktop"}}]
+    for at, user, reply in turns:
+        rows.append({"timestamp": iso(at), "type": "event_msg", "payload": {"type": "user_message", "message": user}})
+        rows.append({"timestamp": iso(at + 5), "type": "event_msg",
+                     "payload": {"type": "agent_message", "message": reply}})
+    return rows
+
+
+@pytest.fixture
+def relay(tmp_path, monkeypatch):
+    """Codex starts, hands to Claude Code, then Codex continues its own thread; a resume copies turns."""
+    for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "MUNINN_HISTORY_HOMES"):
+        monkeypatch.delenv(var, raising=False)
+    home = tmp_path / "home"
+    repo = home / "code" / "Relay"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    codex_file = home / ".codex" / "sessions" / "2026" / "05" / "28" / "rollout-2026-05-28T00-00-00-cx-1.jsonl"
+    jsonl(codex_file, _codex("cx-1", str(repo), [(0, "codex step 1", "done 1"), (100, "codex step 2", "done 2")]))
+    claude_first = [(200, "claude step 3", "done 3"), (300, "claude step 4", "done 4")]
+    jsonl(home / ".claude" / "projects" / "-relay" / "cc-1.jsonl", _claude("cc-1", str(repo), claude_first))
+    # `claude --resume`: a new session file that starts with a copy of cc-1, then new work.
+    jsonl(home / ".claude" / "projects" / "-relay" / "cc-2.jsonl",
+          _claude("cc-2", str(repo), claude_first + [(600, "claude step 7", "done 7")]))
+    vault = HistoryVault(tmp_path / "vault", home=home)
+    memory = FakeMemory(SQLiteMetadataStore(tmp_path / "metadata.db"))
+    yield SimpleNamespace(home=home, repo=repo, codex_file=codex_file, vault=vault, memory=memory,
+                          store=memory._metadata)
+    vault.close()
+
+
+def test_resumed_sessions_do_not_duplicate_turns(relay):
+    relay.vault.sync()
+    dry = run(import_history(relay.memory, relay.vault, apply=False))
+    assert dry["duplicate_turns"] == 2
+    report = run(import_history(relay.memory, relay.vault, apply=True))
+    assert report["duplicate_turns"] == 2 and report["turn_memories"] == 5   # 2 codex + 2 claude + 1 new
+    resumed = relay.store.get_history_thread("claude_code:cc-2")
+    assert resumed["continues_thread"] == "claude_code:cc-1" and resumed["duplicate_turns"] == 2
+    texts = [e["content"] for e in run(read_thread(relay.memory, "claude_code:cc-2"))["entries"]]
+    assert len(texts) == 1 and "claude step 7" in texts[0]
+    again = run(import_history(relay.memory, relay.vault, apply=True))
+    assert again["turn_memories"] == 0 and again["duplicate_turns"] == 0
+
+
+def test_project_timeline_interleaves_apps_in_time_order(relay):
+    from muninn.core import handoffs
+    from muninn.history.importer import read_project_timeline
+
+    relay.vault.sync()
+    run(import_history(relay.memory, relay.vault, apply=True))
+    run(handoffs.create_handoff(relay.memory, project="Relay", from_agent="codex", summary="Continue in Claude",
+                                to_agent="claude-code"))
+    handoff = relay.store.list_handoffs("global_user", "Relay", None)[0]
+    relay.store._get_conn().execute("UPDATE agent_handoffs SET created_at = ? WHERE id = ?", (T0 + 150, handoff["id"]))
+    relay.store._get_conn().commit()
+    # Codex later continues its own thread after Claude's work (a handoff back).
+    with relay.codex_file.open("a") as handle:
+        for row in _codex("cx-1", str(relay.repo), [(400, "codex step 5", "done 5")])[1:]:
+            handle.write(json.dumps(row) + "\n")
+    os.utime(relay.codex_file, (T0 + 900, T0 + 900))
+    relay.vault.sync()
+    grown = run(import_history(relay.memory, relay.vault, apply=True))
+    assert grown["turn_memories"] == 1 and grown["duplicate_turns"] == 0
+
+    timeline = run(read_project_timeline(relay.memory, "Relay"))
+    order = [(e["kind"], e["agent"], (e.get("content") or "").split("User: ")[-1].split("\n")[0])
+             for e in timeline["entries"]]
+    assert order == [
+        ("conversation_turn", "codex", "codex step 1"),
+        ("conversation_turn", "codex", "codex step 2"),
+        ("handoff", "codex", order[2][2]),
+        ("conversation_turn", "claude-code", "claude step 3"),
+        ("conversation_turn", "claude-code", "claude step 4"),
+        ("conversation_turn", "codex", "codex step 5"),
+        ("conversation_turn", "claude-code", "claude step 7"),
+    ]
+    switches = [(e.get("agent_switch_from"), e["agent"]) for e in timeline["entries"] if e.get("agent_switch_from")]
+    assert switches == [("codex", "claude-code"), ("claude-code", "codex"), ("codex", "claude-code")]
+    page = run(read_project_timeline(relay.memory, "Relay", limit=2))
+    assert page["next_offset"] == 2 and [e["kind"] for e in page["entries"]].count("conversation_turn") == 2

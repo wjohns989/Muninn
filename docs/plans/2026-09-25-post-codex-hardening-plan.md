@@ -153,6 +153,26 @@ summary, all under project `Muninn`, re-read in order and found by search.
   a store-wide re-embed and send every future memory to the cloud, so they are
   documented as a trade-off rather than enabled.
 
+### One timeline across apps; validated analysis (2026-09-26)
+
+- Turn fingerprints (original time + text) stop resumed or forked sessions
+  from storing copied turns twice. The new thread records `continues_thread`.
+  The project timeline (`history timeline`, `/history/timeline`, `get_thread`
+  with `timeline=true`) interleaves every app's turns with handoff events and
+  agent switches.
+- Analysis reads each project's threads oldest first, with "Meanwhile"
+  markers and other threads' timestamped insights. Superseded insights are
+  archived; re-analysis replaces a thread's insights.
+- OpenRouter: the CLI asks for a key on first run (verified, saved with
+  owner-only permissions). Default `openai/gpt-6-luna` with DeepSeek V4 Flash
+  and Gemini 3.5 Flash-Lite fallbacks, chosen from the live ZDR endpoint list.
+  The previous default, `google/gemini-2.5-flash`, expires 2026-10-20.
+  Requests use a strict JSON Schema with `require_parameters`, and send only
+  parameters all three models' ZDR endpoints accept. Every reply is validated
+  before storage.
+- Whole conversations go in one call. The old 2,500-character cap per turn
+  dropped about 60% of a real long session before any model saw it.
+
 Next for this area:
 
 - MCP resources (project briefing as `muninn://project/{name}`) for hosts that

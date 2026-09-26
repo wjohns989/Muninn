@@ -190,7 +190,21 @@ def compaction_memories(thread: Thread, index: int, compaction: parsers.Compacti
     ]
 
 
-def summary_memory(thread: Thread) -> Dict[str, Any]:
+def turn_fingerprint(turn: parsers.Turn, thread_key: str) -> str:
+    """Same turn, same fingerprint, in whichever transcript it appears (resume and fork copy turns)."""
+    basis = " ".join((turn.user or turn.assistant[:400]).split()).lower()[:600]
+    # Without a timestamp, text alone is too weak to call two turns the same: stay within the thread.
+    scope = thread_key if not turn.at else ""
+    return hashlib.sha1(f"t|{int(turn.at or 0)}|{scope}|{basis}".encode()).hexdigest()
+
+
+def compaction_fingerprint(compaction: parsers.Compaction, thread_key: str) -> str:
+    scope = thread_key if not compaction.at else ""
+    text = " ".join(compaction.text.split())[:600]
+    return hashlib.sha1(f"c|{int(compaction.at or 0)}|{scope}|{text}".encode()).hexdigest()
+
+
+def summary_memory(thread: Thread, continues: Optional[str] = None) -> Dict[str, Any]:
     s = thread.session
     turns = [t for t in s.turns if t.user]
     last_reply = next((t.assistant for t in reversed(s.turns) if t.assistant), "")
@@ -201,6 +215,8 @@ def summary_memory(thread: Thread) -> Dict[str, Any]:
     ]
     if s.cwd:
         lines.append(f"Directory: {s.cwd}")
+    if continues:
+        lines.append(f"Continues thread {continues} (resumed or forked; its earlier turns are not repeated here)")
     if turns:
         lines.append("Requests: " + " | ".join(" ".join(t.user.split())[:140] for t in turns[:12]))
     if last_reply:
@@ -394,6 +410,8 @@ async def import_history(
         "oldest": None, "newest": None, "errors": collected.errors,
     }
     progress.update({"threads_total": len(collected.threads), "threads_done": 0})
+    report["duplicate_turns"] = 0
+    batch_seen: Dict[str, str] = {}   # fingerprints claimed earlier in this run (threads go oldest first)
     for thread in collected.threads:
         session = thread.session
         state = await asyncio.to_thread(store.get_history_thread, thread.key)
@@ -406,8 +424,22 @@ async def import_history(
             report["threads_new"] += 1
         elif new_turns or new_compactions:
             report["threads_grown"] += 1
-        items = [m for i, t in new_turns for m in turn_memories(thread, i, t)]
-        compactions = [m for i, c in new_compactions for m in compaction_memories(thread, i, c)]
+        # Skip turns another thread already holds: a resumed or forked session starts with a copy.
+        turn_fps = {i: turn_fingerprint(t, thread.key) for i, t in new_turns}
+        comp_fps = {i: compaction_fingerprint(c, thread.key) for i, c in new_compactions}
+        known = await asyncio.to_thread(store.seen_turns, list(turn_fps.values()) + list(comp_fps.values()))
+        known.update({fp: key for fp, key in batch_seen.items() if fp in turn_fps.values() or fp in comp_fps.values()})
+        copied = [i for i, _ in new_turns if known.get(turn_fps[i], thread.key) != thread.key]
+        fresh_turns = [(i, t) for i, t in new_turns if known.get(turn_fps[i], thread.key) == thread.key]
+        fresh_compactions = [(i, c) for i, c in new_compactions if known.get(comp_fps[i], thread.key) == thread.key]
+        continues = known[turn_fps[copied[0]]] if copied else (state or {}).get("continues_thread")
+        duplicate_turns = ((state or {}).get("duplicate_turns") or 0) + len(copied)
+        report["duplicate_turns"] += len(copied)
+        fresh_fps = [(turn_fps[i], thread.key, i, t.at) for i, t in fresh_turns] + \
+                    [(comp_fps[i], thread.key, None, c.at) for i, c in fresh_compactions]
+        batch_seen.update({fp: thread.key for fp, *_ in fresh_fps})
+        items = [m for i, t in fresh_turns for m in turn_memories(thread, i, t)]
+        compactions = [m for i, c in fresh_compactions for m in compaction_memories(thread, i, c)]
         report["turn_memories"] += len(items)
         report["compaction_memories"] += len(compactions)
         project_counts = report["by_project"].setdefault(thread.project_name, {"threads": 0, "memories": 0})
@@ -431,7 +463,8 @@ async def import_history(
                     await _add(memory, item, scope)
 
             await asyncio.gather(*(add_one(item) for item in items + compactions))
-            summary = summary_memory(thread)
+            await _write(memory, store.mark_turns, fresh_fps)
+            summary = summary_memory(thread, continues)
             summary_id = state["summary_memory_id"] if state else None
             if summary_id and await asyncio.to_thread(store.get, summary_id):
                 await memory.update(summary_id, data=summary["content"], metadata_patch=summary["metadata"])
@@ -445,6 +478,7 @@ async def import_history(
                 "ended_at": session.ended_at, "turns_imported": len(session.turns),
                 "compactions_imported": len(session.compactions), "summary_memory_id": summary_id,
                 "updated_at": time.time(), "source_path": thread.source,
+                "continues_thread": continues, "duplicate_turns": duplicate_turns,
             })
         progress["threads_done"] = progress.get("threads_done", 0) + 1
 
@@ -479,13 +513,66 @@ async def read_thread(memory: "MuninnMemory", thread_key: str, offset: int = 0, 
     store = memory._metadata
     state = await asyncio.to_thread(store.get_history_thread, thread_key)
     records = await asyncio.to_thread(store.get_thread_memories, thread_key, offset, limit)
-    entries = [
-        {"id": r.id, "kind": (r.metadata or {}).get("kind"), "turn_index": (r.metadata or {}).get("turn_index"),
-         "part": (r.metadata or {}).get("part"), "created_at": r.created_at, "content": r.content}
-        for r in records if (r.metadata or {}).get("kind") != "thread_summary"
-    ]
-    return {"thread": state, "offset": offset, "entries": entries,
-            "next_offset": offset + len(records) if len(records) == limit else None}
+    entries, found = [], []
+    for r in records:
+        kind = (r.metadata or {}).get("kind")
+        if kind == "thread_insight":
+            found.append({"id": r.id, "kind": (r.metadata or {}).get("insight_kind"),
+                          "turn_index": (r.metadata or {}).get("turn_index"), "content": r.content})
+        elif kind != "thread_summary":
+            entries.append({"id": r.id, "kind": kind, "turn_index": (r.metadata or {}).get("turn_index"),
+                            "part": (r.metadata or {}).get("part"), "created_at": r.created_at, "content": r.content})
+    result = {"thread": state, "offset": offset, "entries": entries,
+              "next_offset": offset + len(records) if len(records) == limit else None}
+    if found:
+        result["insights"] = found
+    return result
+
+
+async def read_project_timeline(
+    memory: "MuninnMemory",
+    project: str,
+    *,
+    since: Optional[float] = None,
+    until: Optional[float] = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    """A project's conversations from every app in one time-ordered stream, with handoffs and agent switches."""
+    store = memory._metadata
+    records = await asyncio.to_thread(store.get_project_timeline, project, offset, limit, since, until)
+    entries: List[Dict[str, Any]] = []
+    for r in records:
+        meta = r.metadata or {}
+        entries.append({
+            "at": r.created_at, "when": _stamp(r.created_at), "kind": meta.get("kind"), "agent": meta.get("agent"),
+            "thread_id": meta.get("thread_id"), "thread_title": meta.get("thread_title"),
+            "turn_index": meta.get("turn_index"), "part": meta.get("part"), "id": r.id, "content": r.content,
+        })
+    more = len(records) == limit
+    low = since if offset == 0 else (entries[0]["at"] if entries else since)
+    high = entries[-1]["at"] if more and entries else until
+    events = []
+    for h in await asyncio.to_thread(store.list_handoffs, "global_user", project, None, 200):
+        steps = "; ".join((h.get("details") or {}).get("next_steps", [])[:3])
+        events.append({"at": h["created_at"], "kind": "handoff", "agent": h["from_agent"], "handoff_id": h["id"],
+                       "content": f"Handoff from {h['from_agent']} to {h.get('to_agent') or 'any agent'}: "
+                                  f"{h['title']}" + (f" Next: {steps}" if steps else "")})
+        if h["status"] != "open" and h.get("claimed_by"):
+            events.append({"at": h["updated_at"], "kind": f"handoff_{h['status']}", "agent": h["claimed_by"],
+                           "handoff_id": h["id"],
+                           "content": f"Handoff {h['status']} by {h['claimed_by']}: {h['title']}"})
+    events = [e for e in events if (low is None or e["at"] >= low) and (high is None or e["at"] <= high)]
+    for event in events:
+        event["when"] = _stamp(event["at"])
+    merged = sorted(entries + events, key=lambda e: (e["at"] or 0, e["kind"] or "", e.get("turn_index") or 0,
+                                                      e.get("part") or 0))
+    previous = None
+    for item in merged:
+        if item.get("agent") and previous and item["agent"] != previous:
+            item["agent_switch_from"] = previous
+        previous = item.get("agent") or previous
+    return {"project": project, "entries": merged, "next_offset": offset + len(records) if more else None}
 
 
 def dumps(report: Dict[str, Any]) -> str:

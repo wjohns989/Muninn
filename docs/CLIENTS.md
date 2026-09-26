@@ -106,6 +106,22 @@ Conversations outside any repository are filed under the project `global`.
 Secrets (API keys, tokens, passwords, connection strings) are redacted from
 memory text.
 
+**One record per project, in time order, without copies.** Resuming or
+forking a session (Claude Code `--resume`, Codex fork) writes a new transcript
+that starts with a copy of the earlier conversation. Each turn is identified by
+its original time and text, so a copy is recognized and stored once, and the
+new thread is marked as continuing the old one. When agents pass a project back
+and forth (Codex, then Claude Code, then Codex again in its first thread), the
+project timeline reads it in the order it happened:
+
+```bash
+python -m muninn.cli history timeline --project Muninn     # every app, interleaved, with handoffs
+```
+
+Agents get the same view with `get_thread` and `timeline=true`. Entries show
+which agent spoke, handoff events, and where the work switched from one agent
+to another.
+
 **Nothing the apps clean up is lost.** Claude Code deletes transcripts older
 than 30 days by default (`cleanupPeriodDays`), Gemini CLI can expire sessions,
 and deleting a Codex thread deletes its file. The server keeps its own
@@ -168,17 +184,79 @@ imported thread and record what matters:
   these.
 - **Handoffs:** threads from the last 14 days left in progress with open items
   become handoffs, so the next agent can pick them up.
+- **Across apps, in order:** each project's threads are read oldest first.
+  The model sees where another agent worked in between ("Meanwhile, Claude
+  Code worked on …"), and it sees the insights other threads already recorded,
+  with their times. When later work replaces an earlier decision, the old
+  insight is archived (restorable), so search returns the current one.
+  Re-analysing a thread that grew replaces its insights rather than adding
+  more.
 
 ```bash
-python -m muninn.cli history analyze                         # dry run: threads and approximate tokens
+python -m muninn.cli history analyze                         # dry run: threads, tokens, estimated cost
 python -m muninn.cli history analyze --apply                 # runs in the background
 python -m muninn.cli history threads --status in_progress --topic auth
 ```
 
+### Setting up OpenRouter
+
+The first time you run `history import` or `history analyze` in a terminal,
+Muninn asks for an OpenRouter key. The input is hidden, and the key is checked
+with OpenRouter before it is saved to Muninn's config directory
+(`openrouter.json`, readable only by you, never in a repository). Press Enter
+to use local Ollama instead; you won't be asked again. Manage it any time:
+
+```bash
+python -m muninn.cli openrouter status                       # key (masked), models, where it is stored
+python -m muninn.cli openrouter set                          # prompt for a key
+python -m muninn.cli openrouter set --model deepseek/deepseek-v4.1-flash
+python -m muninn.cli openrouter clear
+```
+
+`OPENROUTER_API_KEY` (or `MUNINN_OPENROUTER_API_KEY`) in the server's
+environment takes precedence over the saved key.
+
+### Which model
+
+The default was chosen from OpenRouter's live list of zero-data-retention
+endpoints (September 2026). Candidates had to offer strict structured outputs,
+at least 128k context and healthy uptime; they were then compared on
+independent extraction and summarization results and on cost per thread.
+
+| Model | Role | Why |
+|---|---|---|
+| `openai/gpt-6-luna` | Default | Highest Intelligence Index in the low-cost tier (37.3). Recommended for extraction, summarization and classification. 1.05M context. About $2 per 1,000 typical threads |
+| `deepseek/deepseek-v4-flash` | First fallback | 1M context, 8 ZDR hosts with strict JSON, cheapest input. Keeps bulk runs moving if Luna's single ZDR host (Azure) is busy |
+| `google/gemini-3.5-flash-lite` | Second fallback | 1M context, Google-hosted ZDR, lowest hallucination rate of the three |
+
+OpenRouter falls back down this list automatically. All three accept about a
+million tokens, so even very long conversations go to the model whole: tool
+output is already stripped, and a 13 MB Claude Code transcript comes to about
+40k tokens of conversation. Only a thread beyond the window
+(`MUNINN_INSIGHTS_WINDOW_TOKENS`, default 200k) is split. Its parts are
+analyzed separately and then merged by one more call into a single summary,
+status and deduplicated insight list. DeepSeek V4.1 Flash (released
+2026-09-10) is one flag away; it is not the default because no independent
+results for it were available yet.
+
+### How results are stored correctly
+
+- Requests carry a strict JSON Schema, and `provider.require_parameters`
+  makes OpenRouter use only endpoints that enforce it.
+- Only parameters every chosen model's ZDR endpoints accept are sent. For
+  example, GPT-6 Luna's endpoints reject `temperature`, which would otherwise
+  route around it.
+- Every reply is validated before anything is written. An invalid reply is
+  sent back once with the error, and if it still fails, whatever is usable is
+  kept. Unknown turn numbers are dropped, and only preferences can be global.
+  Only note ids the model was actually shown can be marked superseded.
+- The report lists the calls, schema retries, tokens, cost and the model that
+  actually answered, and each insight records `insight_model`.
+
 | Provider | When | Privacy |
 |---|---|---|
-| OpenRouter | `OPENROUTER_API_KEY` set for the server (default model `google/gemini-2.5-flash`; change with `MUNINN_INSIGHTS_MODEL` or `--model`) | Every request sets `provider.zdr = true` and `data_collection = deny`, so OpenRouter routes it only to endpoints that retain nothing and cannot train on it. Text is redacted before sending. Fast: threads run in parallel |
-| Ollama | No OpenRouter key, or `--llm ollama` | Stays on your machine; slower and weaker on long threads (`MUNINN_OLLAMA_MODEL`, default `llama3.2:3b`) |
+| OpenRouter | A key is saved or set in the environment | Every request sets `provider.zdr = true` and `data_collection = deny`: only endpoints that retain nothing and cannot train on it. Text is redacted before sending |
+| Ollama | No key, `--llm ollama`, or you skipped the prompt | Stays on your machine; smaller window (`MUNINN_OLLAMA_WINDOW_TOKENS`, default 24k), slower (`MUNINN_OLLAMA_MODEL`, default `llama3.2:3b`) |
 
 Nothing is sent anywhere until you run `analyze --apply`. Set
 `MUNINN_INSIGHTS_AUTO=1` to also analyze new threads after each automatic

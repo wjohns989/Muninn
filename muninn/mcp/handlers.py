@@ -1084,6 +1084,18 @@ def _do_complete_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dic
 
 def _do_get_thread(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     thread_id = str(args.get("thread_id") or "")
+    if args.get("timeline") and not thread_id:
+        project = client_project(args)["project"]
+        if not project:
+            raise ValueError("timeline needs project: the repository or folder name")
+        params = {"project": project, "offset": args.get("offset", 0), "limit": args.get("limit", 30)}
+        if args.get("since"):
+            params["since"] = args["since"]
+        resp = make_request_with_retry(
+            "GET", f"{SERVER_URL}/history/timeline", deadline_epoch=deadline, params=params,
+            timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+        return resp.json()
     if thread_id:
         params = {"offset": args.get("offset", 0), "limit": args.get("limit", 30)}
         resp = make_request_with_retry(

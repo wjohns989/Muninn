@@ -240,7 +240,19 @@ CREATE TABLE IF NOT EXISTS history_threads (
 HISTORY_THREAD_COLUMNS = {
     "source_path": "TEXT", "status": "TEXT", "topics_json": "TEXT",
     "analyzed_turns": "INTEGER NOT NULL DEFAULT 0", "analyzed_at": "REAL",
+    "continues_thread": "TEXT", "duplicate_turns": "INTEGER NOT NULL DEFAULT 0",
 }
+
+# One row per imported turn. Resuming or forking a session writes a new transcript that starts
+# with a copy of the earlier conversation; fingerprints (original time + text) catch the copies.
+HISTORY_TURNS = """
+CREATE TABLE IF NOT EXISTS history_turns (
+    fingerprint TEXT PRIMARY KEY,
+    thread_key  TEXT NOT NULL,
+    turn_index  INTEGER,
+    at          REAL
+);
+"""
 
 HISTORY_PROMPTS = """
 CREATE TABLE IF NOT EXISTS history_prompts_imported (
@@ -303,6 +315,7 @@ class SQLiteMetadataStore:
             if column not in existing:
                 conn.execute(f"ALTER TABLE history_threads ADD COLUMN {column} {ddl}")
         conn.execute(HISTORY_PROMPTS)
+        conn.execute(HISTORY_TURNS)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_history_threads_project ON history_threads(project, ended_at);"
         )
@@ -1713,6 +1726,65 @@ class SQLiteMetadataStore:
             [(digest, time.time()) for digest in digests],
         )
         conn.commit()
+
+    def seen_turns(self, fingerprints: List[str]) -> Dict[str, str]:
+        """Fingerprint -> thread that already holds that turn."""
+        found: Dict[str, str] = {}
+        conn = self._get_conn()
+        for i in range(0, len(fingerprints), self._SQLITE_MAX_VARS):
+            chunk = fingerprints[i: i + self._SQLITE_MAX_VARS]
+            rows = conn.execute(
+                "SELECT fingerprint, thread_key FROM history_turns "
+                f"WHERE fingerprint IN ({', '.join('?' * len(chunk))})",
+                chunk,
+            ).fetchall()
+            found.update({row["fingerprint"]: row["thread_key"] for row in rows})
+        return found
+
+    def mark_turns(self, rows: List[Tuple[str, str, Optional[int], Optional[float]]]) -> None:
+        conn = self._get_conn()
+        conn.executemany(
+            "INSERT OR IGNORE INTO history_turns (fingerprint, thread_key, turn_index, at) VALUES (?, ?, ?, ?)", rows
+        )
+        conn.commit()
+
+    def get_project_timeline(
+        self,
+        project: str,
+        offset: int = 0,
+        limit: int = 100,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+    ) -> List[MemoryRecord]:
+        """Every imported conversation turn of a project, across apps and threads, in time order."""
+        kinds = ("conversation_turn", "compaction_summary", "recovered_prompt")
+        if self._json1_available:
+            conditions = [
+                "project = ?", "json_extract(metadata, '$.import_source') = 'agent_history'",
+                f"json_extract(metadata, '$.kind') IN ({', '.join('?' * len(kinds))})",
+            ]
+            params: List[Any] = [project, *kinds]
+            order = ("created_at, json_extract(metadata, '$.thread_id'), "
+                     "CAST(json_extract(metadata, '$.turn_index') AS INTEGER), "
+                     "CAST(json_extract(metadata, '$.part') AS INTEGER), id")
+        else:
+            conditions = ["project = ?", "metadata LIKE ?"]
+            params = [project, '%"import_source": "agent_history"%']
+            order = "created_at, id"
+        if since is not None:
+            conditions.append("created_at >= ?")
+            params.append(since)
+        if until is not None:
+            conditions.append("created_at <= ?")
+            params.append(until)
+        rows = self._get_conn().execute(
+            f"SELECT * FROM memories WHERE {' AND '.join(conditions)} ORDER BY {order} LIMIT ? OFFSET ?",
+            (*params, int(limit), int(offset)),
+        ).fetchall()
+        records = [self._row_to_record(row) for row in rows]
+        if not self._json1_available:
+            records = [r for r in records if (r.metadata or {}).get("kind") in kinds]
+        return records
 
     def get_thread_memories(self, thread_key: str, offset: int = 0, limit: int = 200) -> List[MemoryRecord]:
         """Memories imported from one conversation thread, in conversation order."""
