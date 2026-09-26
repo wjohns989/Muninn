@@ -35,7 +35,7 @@ from pathlib import Path
 
 import uvicorn
 import requests
-from fastapi import FastAPI, HTTPException, Depends, Security, status
+from fastapi import FastAPI, HTTPException, Depends, Request, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
@@ -1532,11 +1532,45 @@ async def history_import_endpoint(req: HistoryImportRequest):
         "Import running; follow it with GET /history/status" if started else "An import is already running")}}
 
 
+class HistoryAnalyzeRequest(BaseModel):
+    apply: bool = False
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    project: Optional[str] = None
+    limit: int = 50
+    create_handoffs: bool = True
+
+
+@app.post("/history/analyze", dependencies=[Depends(verify_token)])
+async def history_analyze_endpoint(req: HistoryAnalyzeRequest):
+    """Extract decisions, preferences, conventions, fixes and open items from imported threads (opt-in LLM)."""
+    service = _require_history()
+    options = {"provider": req.provider, "model": req.model, "project": req.project,
+               "limit": max(1, min(req.limit, 1000)), "create_handoffs": req.create_handoffs}
+    if not req.apply:
+        return {"success": True, "data": await service.run_analysis(apply=False, **options)}
+    try:
+        from muninn.history.insights import Provider
+
+        Provider.from_env(req.provider, req.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    started = service.start_analysis(**options)
+    return {"success": True, "data": {"started": started, "message": (
+        "Analysis running; follow it with GET /history/status" if started else "Another job is running")}}
+
+
 @app.get("/history/threads", dependencies=[Depends(verify_token)])
-async def history_threads_endpoint(project: Optional[str] = None, limit: int = 20):
-    """Imported conversation threads, most recent first."""
+async def history_threads_endpoint(
+    project: Optional[str] = None, agent: Optional[str] = None, status: Optional[str] = None,
+    topic: Optional[str] = None, q: Optional[str] = None, since: Optional[str] = None, limit: int = 20,
+):
+    """The catalog of imported conversation threads, most recent first."""
     _require_memory()
-    data = await asyncio.to_thread(memory._metadata.list_history_threads, project, max(1, min(limit, 200)))
+    data = await asyncio.to_thread(
+        lambda: memory._metadata.list_history_threads(
+            project, max(1, min(limit, 200)), agent=agent, status=status, topic=topic, text=q,
+            since=_parse_since(since)))
     return {"success": True, "data": data}
 
 
@@ -1550,6 +1584,19 @@ async def history_thread_endpoint(thread_key: str, offset: int = 0, limit: int =
     if data["thread"] is None and not data["entries"]:
         raise HTTPException(status_code=404, detail=f"Thread {thread_key} not found")
     return {"success": True, "data": data}
+
+
+@app.post("/hooks/{agent}", dependencies=[Depends(verify_token)])
+async def agent_hook_endpoint(agent: str, request: Request):
+    """Claude Code / Codex hook events: session-start briefing, transcript capture at compaction and exit."""
+    _require_memory()
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+    from muninn.history.hooks import handle_hook
+
+    return await handle_hook(agent, payload if isinstance(payload, dict) else {}, memory, _history)
 
 
 # --- Agent handoffs and session briefing ------------------------------------

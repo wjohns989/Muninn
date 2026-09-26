@@ -227,9 +227,20 @@ CREATE TABLE IF NOT EXISTS history_threads (
     turns_imported       INTEGER NOT NULL DEFAULT 0,
     compactions_imported INTEGER NOT NULL DEFAULT 0,
     summary_memory_id    TEXT,
-    updated_at           REAL NOT NULL
+    updated_at           REAL NOT NULL,
+    source_path          TEXT,
+    status               TEXT,
+    topics_json          TEXT,
+    analyzed_turns       INTEGER NOT NULL DEFAULT 0,
+    analyzed_at          REAL
 );
 """
+
+# Columns added after history_threads first shipped; created on older databases at startup.
+HISTORY_THREAD_COLUMNS = {
+    "source_path": "TEXT", "status": "TEXT", "topics_json": "TEXT",
+    "analyzed_turns": "INTEGER NOT NULL DEFAULT 0", "analyzed_at": "REAL",
+}
 
 HISTORY_PROMPTS = """
 CREATE TABLE IF NOT EXISTS history_prompts_imported (
@@ -287,6 +298,10 @@ class SQLiteMetadataStore:
         conn.execute(IMPORTANCE_PREDICTIONS)
         conn.execute(AGENT_HANDOFFS)
         conn.execute(HISTORY_THREADS)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(history_threads)")}
+        for column, ddl in HISTORY_THREAD_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE history_threads ADD COLUMN {column} {ddl}")
         conn.execute(HISTORY_PROMPTS)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_history_threads_project ON history_threads(project, ended_at);"
@@ -1626,7 +1641,7 @@ class SQLiteMetadataStore:
         columns = [
             "thread_key", "provider", "agent", "session_id", "project", "directory", "branch", "title",
             "started_at", "ended_at", "turns_imported", "compactions_imported", "summary_memory_id", "updated_at",
-        ]
+        ] + [column for column in HISTORY_THREAD_COLUMNS if column in thread]
         values = [thread.get(column) for column in columns]
         updates = ", ".join(f"{column}=excluded.{column}" for column in columns[1:])
         conn = self._get_conn()
@@ -1637,13 +1652,54 @@ class SQLiteMetadataStore:
         )
         conn.commit()
 
-    def list_history_threads(self, project: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
-        query, params = "SELECT * FROM history_threads", []
-        if project:
-            query += " WHERE project = ?"
-            params.append(project)
-        rows = self._get_conn().execute(query + " ORDER BY ended_at DESC LIMIT ?", (*params, int(limit))).fetchall()
-        return [dict(row) for row in rows]
+    def list_history_threads(
+        self,
+        project: Optional[str] = None,
+        limit: int = 20,
+        *,
+        agent: Optional[str] = None,
+        status: Optional[str] = None,
+        topic: Optional[str] = None,
+        text: Optional[str] = None,
+        since: Optional[float] = None,
+        needs_analysis: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """The thread catalog, newest first, filtered by project, agent, status, topic, title text or date."""
+        conditions, params = [], []
+        for column, value in (("project", project), ("agent", agent), ("status", status)):
+            if value:
+                conditions.append(f"{column} = ?")
+                params.append(value)
+        if topic:
+            conditions.append("topics_json LIKE ?")
+            params.append(f'%"{topic}"%')
+        if text:
+            conditions.append("title LIKE ?")
+            params.append(f"%{text}%")
+        if since:
+            conditions.append("ended_at >= ?")
+            params.append(since)
+        if needs_analysis:
+            conditions.append("analyzed_turns < turns_imported")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._get_conn().execute(
+            f"SELECT * FROM history_threads{where} ORDER BY ended_at DESC LIMIT ?", (*params, int(limit))
+        ).fetchall()
+        threads = []
+        for row in rows:
+            item = dict(row)
+            item["topics"] = json.loads(item.pop("topics_json") or "[]")
+            threads.append(item)
+        return threads
+
+    def set_history_analysis(self, thread_key: str, *, status: str, topics: List[str], analyzed_turns: int) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE history_threads SET status = ?, topics_json = ?, analyzed_turns = ?, analyzed_at = ? "
+            "WHERE thread_key = ?",
+            (status, json.dumps(topics), analyzed_turns, time.time(), thread_key),
+        )
+        conn.commit()
 
     def history_prompt_seen(self, digest: str) -> bool:
         return self._get_conn().execute(

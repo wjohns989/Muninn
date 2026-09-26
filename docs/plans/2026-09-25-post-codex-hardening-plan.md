@@ -132,10 +132,29 @@ files, and its "import all" skips the agent transcripts the importer handles.
 Verified on a real Claude Desktop transcript: 19 turns and a compaction
 summary, all under project `Muninn`, re-read in order and found by search.
 
+### Hooks and thread understanding (2026-09-26)
+
+- `POST /hooks/{agent}` plus `python -m muninn.cli hooks install`. Claude Code
+  uses `http` hooks; Codex uses command hooks through `muninn/hook_client.py`
+  (standard library only, about 50 ms startup, always exits 0). SessionStart
+  injects the project briefing. PreCompact, Stop (throttled) and SessionEnd
+  vault and import that one thread in the background; the endpoint answers in
+  about 10 ms.
+- `history analyze` (`muninn/history/insights.py`): per thread, a model
+  extracts a summary, status, topics and insights (decision, preference,
+  convention, fact, fix, open_item). Each insight is stored as a semantic
+  memory dated to its source turn. Recent in-progress threads with open items
+  become handoffs. Providers: OpenRouter, with `provider.zdr = true` and
+  `data_collection = deny` on every request, or local Ollama. The thread
+  catalog gains status and topic filters.
+- Import speed: batching fastembed gave no gain on the test CPU (8.1 s one at
+  a time vs 9.2 s batched for 64 turns), so it was not added. Imported turns
+  skip the per-turn LLM entity extraction instead. Cloud embeddings would force
+  a store-wide re-embed and send every future memory to the cloud, so they are
+  documented as a trade-off rather than enabled.
+
 Next for this area:
 
-- Claude Code hooks (SessionStart / PreCompact) to import the live session at
-  compaction time instead of on the next sync.
 - MCP resources (project briefing as `muninn://project/{name}`) for hosts that
   attach resources without a tool call.
 - Show handoffs and agent labels in the Huginn dashboard.

@@ -81,7 +81,7 @@ whole threads in order.
 python -m muninn.cli history status          # what was found, retention warnings
 python -m muninn.cli history import          # dry run: threads, projects, dates, memory counts
 python -m muninn.cli history import --apply  # import (runs in the background)
-python -m muninn.cli history threads --project Muninn
+python -m muninn.cli history threads --project Muninn   # also --agent, --status, --topic, --q, --since
 python -m muninn.cli history thread <thread-id>
 ```
 
@@ -126,6 +126,72 @@ compaction drops, keep flowing in.
 Muninn finds relocated data through the apps' own `CLAUDE_CONFIG_DIR` and
 `CODEX_HOME`. It never changes app settings. To keep transcripts in Claude Code
 itself for longer, raise `cleanupPeriodDays` in `~/.claude/settings.json`.
+
+## Automatic briefing and capture (hooks)
+
+Hooks make this automatic instead of something agents must remember:
+
+```bash
+python -m muninn.cli hooks install          # dry run: shows the settings it would write
+python -m muninn.cli hooks install --apply  # write them (backups kept; your own hooks untouched)
+python -m muninn.cli hooks status
+python -m muninn.cli hooks uninstall --apply
+```
+
+| Event | What Muninn does |
+|---|---|
+| Session start (also after resume, clear, compaction) | Injects the project briefing into the new session: goal, open handoffs, earlier threads from every app, project rules, recent memories, preferences |
+| Before compaction | Copies the transcript to the vault and imports the thread right away, so what compaction drops is saved at that moment |
+| After each reply | Same, at most every two minutes per thread |
+| Session end | Same, immediately |
+
+- **Claude Code** (CLI, IDE extensions, Claude Desktop's Code tab): `http` hooks
+  in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) that call
+  `http://127.0.0.1:42069/hooks/claude-code`.
+- **Codex** (CLI, IDE extension, ChatGPT desktop app): command hooks in
+  `~/.codex/hooks.json` (or `$CODEX_HOME`) that run `muninn/hook_client.py`, a
+  standard-library script that starts in about 50 ms (Codex gives session-end
+  hooks one second) and never blocks Codex if the server is down.
+- With a server token, export `MUNINN_AUTH_TOKEN` in the environment the apps
+  start from; the hooks send it.
+
+## Understanding imported threads (optional LLM step)
+
+Importing keeps every turn. `analyze` goes further and has a model read each
+imported thread and record what matters:
+
+- **Insights:** decisions and why they were made, your preferences,
+  project conventions, facts, bug fixes and open items. Each is saved as its
+  own memory, dated to the turn it came from and linked to the thread.
+- **Thread fields:** a written summary, a status (completed, in progress,
+  abandoned, answered) and topic tags. The thread catalog can be filtered by
+  these.
+- **Handoffs:** threads from the last 14 days left in progress with open items
+  become handoffs, so the next agent can pick them up.
+
+```bash
+python -m muninn.cli history analyze                         # dry run: threads and approximate tokens
+python -m muninn.cli history analyze --apply                 # runs in the background
+python -m muninn.cli history threads --status in_progress --topic auth
+```
+
+| Provider | When | Privacy |
+|---|---|---|
+| OpenRouter | `OPENROUTER_API_KEY` set for the server (default model `google/gemini-2.5-flash`; change with `MUNINN_INSIGHTS_MODEL` or `--model`) | Every request sets `provider.zdr = true` and `data_collection = deny`, so OpenRouter routes it only to endpoints that retain nothing and cannot train on it. Text is redacted before sending. Fast: threads run in parallel |
+| Ollama | No OpenRouter key, or `--llm ollama` | Stays on your machine; slower and weaker on long threads (`MUNINN_OLLAMA_MODEL`, default `llama3.2:3b`) |
+
+Nothing is sent anywhere until you run `analyze --apply`. Set
+`MUNINN_INSIGHTS_AUTO=1` to also analyze new threads after each automatic
+import.
+
+Why not use OpenRouter for embeddings to speed up the import itself? Memories
+must all be embedded by the same model, so switching the embedding provider
+means re-embedding the whole store (`muninn.cli reindex`), and every memory
+you ever store afterwards goes to the cloud. On this project's test machine,
+local embedding took about 0.13 s per turn (roughly 20 minutes per 10,000
+turns, in the background), and batching did not help. The import already
+skips per-turn LLM entity extraction. So the cloud pays off for understanding
+threads, not for storing them.
 
 ## Tool profiles
 

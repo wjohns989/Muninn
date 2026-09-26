@@ -25,6 +25,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("Muninn.history")
 AUTO_IMPORT_META = "history_auto_import"
+# Stop fires after every reply; import a live thread at most this often from it.
+CAPTURE_DEBOUNCE_SECONDS = 120.0
+
+
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _minutes() -> float:
@@ -46,7 +52,10 @@ class HistoryService:
         self._lock = asyncio.Lock()
         self.last_sync: Optional[Dict[str, Any]] = None
         self.last_import: Optional[Dict[str, Any]] = None
+        self.last_analysis: Optional[Dict[str, Any]] = None
         self.progress: Dict[str, Any] = {}
+        self._captured: Dict[str, float] = {}
+        self._background: set = set()
 
     # --- settings ---------------------------------------------------------------
 
@@ -99,6 +108,26 @@ class HistoryService:
                 await asyncio.to_thread(self.memory._metadata.set_meta, AUTO_IMPORT_META, "1")
         return report
 
+    async def run_analysis(self, *, apply: bool, **options: Any) -> Dict[str, Any]:
+        from muninn.history.insights import analyze_threads
+
+        if not apply:
+            return await analyze_threads(self.memory, self.vault, apply=False, **options)
+        self.progress = {"running": True, "analysis": True, "started_at": time.time()}
+        try:
+            report = await analyze_threads(self.memory, self.vault, apply=True, progress=self.progress, **options)
+        finally:
+            self.progress["running"] = False
+        report["finished_at"] = time.time()
+        self.last_analysis = report
+        return report
+
+    def start_analysis(self, **options: Any) -> bool:
+        if self._job and not self._job.done():
+            return False
+        self._job = asyncio.create_task(self._guarded(self.run_analysis(apply=True, **options)))
+        return True
+
     def start_import(self, *, providers: Optional[List[str]] = None, since: Optional[float] = None) -> bool:
         """Apply in the background (large histories take a while); poll status()."""
         if self._job and not self._job.done():
@@ -112,6 +141,27 @@ class HistoryService:
         except Exception as exc:
             logger.exception("History import failed")
             self.last_import = {"error": str(exc), "finished_at": time.time()}
+
+    async def capture(self, path: str, provider: str, *, force: bool = False) -> Dict[str, Any]:
+        """Vault and import one transcript now (called by agent hooks)."""
+        key = str(Path(path).resolve())
+        now = time.time()
+        if not force and now - self._captured.get(key, 0.0) < CAPTURE_DEBOUNCE_SECONDS:
+            return {"skipped": "debounced"}
+        self._captured[key] = now
+        async with self._lock:
+            outcome = await asyncio.to_thread(self.vault.capture, Path(path), provider)
+            if outcome == "missing":
+                return {"captured": False}
+            report = await import_history(self.memory, self.vault, apply=True, sources=[key])
+        return {"captured": True, "vault": outcome, "turn_memories": report["turn_memories"],
+                "compaction_memories": report["compaction_memories"]}
+
+    def capture_later(self, path: str, provider: str, *, force: bool = False) -> None:
+        """Hooks must answer fast (Codex allows 1 s at session end): capture in the background."""
+        task = asyncio.create_task(self._guarded(self.capture(path, provider, force=force)))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     async def thread(self, thread_key: str, offset: int = 0, limit: int = 50) -> Dict[str, Any]:
         return await read_thread(self.memory, thread_key, offset, limit)
@@ -129,6 +179,8 @@ class HistoryService:
             "auto_import": self.auto_import_enabled(),
             "last_sync": self.last_sync,
             "last_import": self.last_import,
+            "last_analysis": self.last_analysis,
+            "auto_analyze": _flag("MUNINN_INSIGHTS_AUTO"),
             "import_progress": self.progress,
             "warnings": self.retention_warnings(),
         }
@@ -140,7 +192,7 @@ class HistoryService:
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        for task in (self._task, self._job):
+        for task in (self._task, self._job, *self._background):
             if task and not task.done():
                 task.cancel()
         self._task = None
@@ -152,6 +204,8 @@ class HistoryService:
                 await self.sync()
                 if self.auto_import_enabled() and not (self._job and not self._job.done()):
                     await self.run_import(apply=True)
+                    if _flag("MUNINN_INSIGHTS_AUTO"):
+                        await self.run_analysis(apply=True)
             except asyncio.CancelledError:
                 raise
             except Exception:

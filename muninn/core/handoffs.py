@@ -65,8 +65,9 @@ async def create_handoff(
         raise ValueError("summary is required: what was done and where things stand")
     details = details or {}
     clean: Dict[str, Any] = {field: _clean_list(details.get(field)) for field in DETAIL_LIST_FIELDS}
-    if isinstance(details.get("branch"), str) and details["branch"].strip():
-        clean["branch"] = details["branch"].strip()
+    for key in ("branch", "thread_id"):  # thread_id: the imported conversation this came from
+        if isinstance(details.get(key), str) and details[key].strip():
+            clean[key] = details[key].strip()
     record = {
         "id": str(uuid.uuid4()),
         "user_id": user_id,
@@ -191,11 +192,15 @@ async def project_context(
     # Read the stored goal directly: the goal compass would also embed it.
     goal = await asyncio.to_thread(store.get_project_goal, user_id=user_id, namespace="global", project=project)
     project_records = await asyncio.to_thread(
-        store.get_all, limit=recent_limit + 30, project=project, user_id=user_id, archived=False
+        store.get_all, limit=recent_limit + 200, project=project, user_id=user_id, archived=False
     )
     instructions = [r for r in project_records if "instruction" in str((r.metadata or {}).get("category", ""))]
     instruction_ids = {r.id for r in instructions}
-    recent = [r for r in project_records if r.id not in instruction_ids][:recent_limit]
+    # Imported conversation turns are represented by recent_threads; list saved knowledge here.
+    recent = [
+        r for r in project_records
+        if r.id not in instruction_ids and (r.metadata or {}).get("import_source") != "agent_history"
+    ][:recent_limit]
     handoffs = await list_handoffs(memory, project=project, statuses=list(ACTIVE_STATUSES), limit=5)
     context.update({
         "goal": {"goal_statement": goal.get("goal_statement"), "constraints": goal.get("constraints", [])}
@@ -217,3 +222,60 @@ async def project_context(
     if any(h["status"] == "open" for h in handoffs):
         context["hint"] = "An open handoff is waiting: call resume_handoff to claim it before starting."
     return context
+
+
+def _ago(at: Optional[float], now: Optional[float] = None) -> str:
+    if not at:
+        return "unknown time"
+    minutes = max(0, int(((now or time.time()) - at) / 60))
+    if minutes < 90:
+        return f"{minutes} min ago"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h ago"
+    return time.strftime("%Y-%m-%d", time.gmtime(at))
+
+
+def render_briefing(context: Dict[str, Any], max_chars: int = 6000) -> str:
+    """The project briefing as text an agent reads at session start (injected by hooks)."""
+    project = context.get("project")
+    lines: List[str] = []
+    if project:
+        lines.append(f'Muninn shared memory for project "{project}", shared with your other AI agents. '
+                     "Use get_project_context, search_memory, get_thread and the handoff tools for more; "
+                     f'pass project="{project}".')
+    else:
+        lines.append("Muninn shared memory: no project detected for this directory; pass project to Muninn tools.")
+        waiting = context.get("projects_with_open_handoffs") or []
+        if waiting:
+            lines.append("Projects with open handoffs: " + ", ".join(waiting))
+    goal = context.get("goal")
+    if goal and goal.get("goal_statement"):
+        lines.append(f"Goal: {goal['goal_statement']}")
+        for constraint in goal.get("constraints") or []:
+            lines.append(f"  constraint: {constraint}")
+    for h in context.get("active_handoffs") or []:
+        steps = "; ".join((h.get("details") or {}).get("next_steps", [])[:4])
+        state = "OPEN" if h["status"] == "open" else f"claimed by {h.get('claimed_by')}"
+        lines.append(f"Handoff {h['id']} ({state}) from {h['from_agent']}, {_ago(h['created_at'])}: {h['title']}"
+                     + (f" Next: {steps}" if steps else "") + " -> resume_handoff to pick it up.")
+    threads = context.get("recent_threads") or []
+    if threads:
+        lines.append("Earlier conversations (read with get_thread):")
+        for t in threads:
+            lines.append(f"  - {t['agent']} · {t.get('title') or 'untitled'} · {_ago(t.get('ended_at'))} · "
+                         f"{t.get('turns', 0)} turns · thread_id {t['thread_id']}")
+    rules = context.get("instructions") or []
+    if rules:
+        lines.append("Project rules:")
+        lines.extend(f"  - {' '.join(r['memory'].split())[:300]}" for r in rules)
+    recent = context.get("recent_memories") or []
+    if recent:
+        lines.append("Recent memories:")
+        lines.extend(f"  - [{_ago(m.get('created_at'))}, {m.get('agent')}] {' '.join(m['memory'].split())[:200]}"
+                     for m in recent[:8])
+    prefs = context.get("global_preferences") or []
+    if prefs:
+        lines.append("User preferences:")
+        lines.extend(f"  - {' '.join(p['memory'].split())[:200]}" for p in prefs[:6])
+    text = "\n".join(lines)
+    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"

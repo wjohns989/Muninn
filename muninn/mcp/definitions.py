@@ -143,6 +143,16 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "Extra files, e.g. a ChatGPT or Claude export (conversations.json or .zip).",
                 },
+                "project": {"type": "string", "description": "Limit analysis to this project."},
+                "analyze": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Instead of importing, extract decisions, preferences, fixes and open items from "
+                        "imported threads with an LLM (the user's OpenRouter zero-data-retention key or local "
+                        "Ollama). Dry run unless apply=true."
+                    ),
+                },
             },
         },
     },

@@ -719,6 +719,37 @@ def _admin_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
     return _admin_request(args, "POST", path, json=payload)
 
 
+def cmd_hooks(args: argparse.Namespace) -> int:
+    """Install Muninn's session hooks into Claude Code and Codex (dry run unless --apply)."""
+    from muninn.history import hook_install
+
+    apps = args.app or ["claude", "codex"]
+    install = args.action == "install"
+    server_url = _resolve_server_url(args.server_url)
+    plans = []
+    if "claude" in apps:
+        plans.append(hook_install.claude_plan(server_url, install=install))
+    if "codex" in apps:
+        plans.append(hook_install.codex_plan(install=install))
+    for plan in plans:
+        present = hook_install.installed(plan)
+        print(f"{plan.app}: {plan.path}")
+        print(f"  Muninn hooks now: {', '.join(present) or 'none'}")
+        if args.action == "status":
+            continue
+        if not plan.changed:
+            print("  nothing to change")
+        elif args.apply:
+            backup = hook_install.apply_plan(plan)
+            print(f"  {'installed' if install else 'removed'}" + (f" (backup: {backup.name})" if backup else ""))
+        else:
+            print("  would write:")
+            print("    " + json.dumps(plan.after.get("hooks", {}), indent=2).replace("\n", "\n    "))
+    if args.action != "status" and not args.apply:
+        print("Dry run only. Re-run with --apply to write the settings.")
+    return 0
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     """Keep and import local AI conversation history (Claude Code/Desktop, Codex, Gemini CLI, exports)."""
     if args.action == "status":
@@ -733,8 +764,22 @@ def cmd_history(args: argparse.Namespace) -> int:
             print(json.dumps(data, indent=2, default=str))
             print("Dry run only. Re-run with --apply to import (it runs in the background; see 'history status').")
             return 0
+    elif args.action == "analyze":
+        payload = {"apply": args.apply, "provider": args.llm, "model": args.model, "project": args.project,
+                   "limit": args.limit}
+        data = _admin_request(args, "POST", "/history/analyze", json=payload)
+        if not args.apply:
+            print(json.dumps(data, indent=2, default=str))
+            print("Dry run only. Re-run with --apply (uses OpenRouter with zero data retention when "
+                  "OPENROUTER_API_KEY is set on the server, else local Ollama; --llm to choose).")
+            return 0
     elif args.action == "threads":
-        params = {"limit": args.limit, **({"project": args.project} if args.project else {})}
+        params = {"limit": args.limit}
+        for key in ("project", "agent", "status", "topic", "since"):
+            if getattr(args, key, None):
+                params[key] = getattr(args, key)
+        if args.q:
+            params["q"] = args.q
         data = _admin_request(args, "GET", "/history/threads", params=params)
     else:  # thread
         if not args.thread_id:
@@ -924,13 +969,14 @@ def build_parser() -> argparse.ArgumentParser:
             "status   what the vault holds, where each app keeps history, retention warnings\n"
             "sync     copy new/changed transcripts into the vault now (runs every 30 min anyway)\n"
             "import   dry run of turning history into memories; --apply to import (then automatic)\n"
+            "analyze  extract decisions, preferences, fixes, open items per thread (LLM; dry run first)\n"
             "threads  list imported conversation threads (--project to filter)\n"
             "thread   re-read one thread in order: history thread <thread-id>"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_server_args(history, timeout=300.0)
-    history.add_argument("action", choices=["status", "sync", "import", "threads", "thread"])
+    history.add_argument("action", choices=["status", "sync", "import", "analyze", "threads", "thread"])
     history.add_argument("thread_id", nargs="?", help="Thread id for 'thread'.")
     history.add_argument("--provider", action="append",
                          choices=["claude_code", "codex", "gemini_cli", "chatgpt", "claude_ai"],
@@ -938,9 +984,31 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--since", help="Only threads active since this date (YYYY-MM-DD).")
     history.add_argument("--path", action="append", type=Path, default=[],
                          help="Extra file, e.g. a ChatGPT/Claude export conversations.json or .zip (repeatable).")
-    history.add_argument("--project", help="Project filter for 'threads'.")
+    history.add_argument("--project", help="Project filter for 'threads' and 'analyze'.")
+    history.add_argument("--agent", help="Agent filter for 'threads' (claude-code, codex, ...).")
+    history.add_argument("--status", help="Status filter for 'threads' (completed, in_progress, ...).")
+    history.add_argument("--topic", help="Topic filter for 'threads'.")
+    history.add_argument("--q", help="Title text filter for 'threads'.")
+    history.add_argument("--llm", choices=["openrouter", "ollama"], help="Model provider for 'analyze'.")
+    history.add_argument("--model", help="Model for 'analyze' (e.g. an OpenRouter model id).")
     history.add_argument("--offset", type=int, default=0)
     history.add_argument("--limit", type=int, default=50)
+
+    hooks = subparsers.add_parser(
+        "hooks",
+        help="Add Muninn session hooks to Claude Code and Codex.",
+        description=(
+            "Session start: the agent receives the project briefing (goal, open handoffs, earlier\n"
+            "threads from every app). Before compaction and at session end: the transcript is copied\n"
+            "to the vault and imported, so nothing compaction drops is lost. Dry run unless --apply;\n"
+            "settings files are backed up; only Muninn's own entries are changed."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    hooks.add_argument("action", choices=["status", "install", "uninstall"])
+    hooks.add_argument("--app", action="append", choices=["claude", "codex"], help="Only this app (repeatable).")
+    hooks.add_argument("--server-url", default=None, help="Muninn server URL the hooks call.")
+    hooks.add_argument("--apply", action="store_true", help="Write the settings.")
     return parser
 
 
@@ -958,6 +1026,8 @@ def main() -> int:
         return cmd_import(args)
     if args.command == "history":
         return cmd_history(args)
+    if args.command == "hooks":
+        return cmd_hooks(args)
 
     parser.print_help()
     return 1

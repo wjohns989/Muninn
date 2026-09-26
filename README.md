@@ -349,6 +349,10 @@ Key environment variables:
 | `MUNINN_HISTORY_VAULT` | on | Keep a private copy of Claude Code/Desktop, Codex and Gemini CLI transcripts (the apps delete theirs); see `docs/CLIENTS.md` |
 | `MUNINN_HISTORY_SYNC_MINUTES` | `30` | How often new conversation history is copied (and, after the first import, imported) |
 | `MUNINN_HISTORY_AUTO_IMPORT` | after first import | `1`/`0` forces automatic import of new turns on or off |
+| `OPENROUTER_API_KEY` | - | Enables `history analyze` through OpenRouter; every request enforces zero data retention |
+| `MUNINN_INSIGHTS_PROVIDER` | auto | `openrouter` or `ollama` for thread analysis (auto: OpenRouter when a key is set) |
+| `MUNINN_INSIGHTS_MODEL` | `google/gemini-2.5-flash` | Model for thread analysis (OpenRouter id, or an Ollama model) |
+| `MUNINN_INSIGHTS_AUTO` | off | `1` analyzes new threads after each automatic import |
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
 | `MUNINN_ALLOWED_ORIGINS` | - | Extra browser origins allowed besides localhost (comma-separated; `null` allows `file://`, `*` disables the check) |
@@ -364,7 +368,11 @@ CLI and the ChatGPT desktop app, Gemini CLI, and ChatGPT/Claude data exports)
 into memories. Each turn is filed under its original project, directory, branch,
 agent and time, so it can be searched and re-read in order with `get_thread`.
 The server also keeps a vault copy of these transcripts so nothing the apps
-clean up is lost. Details: [`docs/CLIENTS.md`](docs/CLIENTS.md#bring-in-your-existing-conversations).
+clean up is lost. `python -m muninn.cli hooks install --apply` adds Claude Code and
+Codex hooks that brief every new session and capture transcripts before
+compaction, and `history analyze` (OpenRouter with zero data retention, or local
+Ollama) extracts decisions, preferences, fixes and open items per thread.
+Details: [`docs/CLIENTS.md`](docs/CLIENTS.md#bring-in-your-existing-conversations).
 
 ### Upgrading and migrating memories
 

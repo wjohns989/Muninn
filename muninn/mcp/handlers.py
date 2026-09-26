@@ -1101,10 +1101,16 @@ def _do_get_thread(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
     return resp.json()
 
 def _do_import_agent_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    payload = {key: args.get(key) for key in ("apply", "providers", "since", "paths") if args.get(key) is not None}
-    resp = make_request_with_retry(
-        "POST", f"{SERVER_URL}/history/import", deadline_epoch=deadline, json=payload, timeout=120
-    )
+    if args.get("analyze"):
+        payload = {"apply": bool(args.get("apply"))}
+        project = client_project(args)["project"]
+        if project:
+            payload["project"] = project
+        path = "/history/analyze"
+    else:
+        payload = {key: args.get(key) for key in ("apply", "providers", "since", "paths") if args.get(key) is not None}
+        path = "/history/import"
+    resp = make_request_with_retry("POST", f"{SERVER_URL}{path}", deadline_epoch=deadline, json=payload, timeout=120)
     return resp.json()
 
 CHATGPT_SEARCH_LIMIT = 10

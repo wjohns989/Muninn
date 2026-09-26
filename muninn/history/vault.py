@@ -166,6 +166,29 @@ class HistoryVault:
                               "rel": Path("exports") / f"{tag}-{path.name}"})
         return items
 
+    def capture(self, path: Path, provider: str) -> str:
+        """Copy one file now (hooks call this before compaction or at session end)."""
+        path = Path(path)
+        if not path.is_file() or path.name in NEVER_READ:
+            return "missing"
+        rel = None
+        for number, home in enumerate(history_homes(self.home)):
+            for source in history_sources(home):
+                if source.provider != provider:
+                    continue
+                try:
+                    inner = path.resolve().relative_to(source.home.resolve())
+                except ValueError:
+                    continue
+                prefix = Path() if number == 0 else Path("homes") / hashlib.sha1(str(home).encode()).hexdigest()[:8]
+                rel = prefix / provider / inner
+        if rel is None:  # transcript outside the known homes: keep it anyway
+            rel = Path(provider) / "external" / hashlib.sha1(str(path.parent).encode()).hexdigest()[:10] / path.name
+        outcome = self._sync_file(str(path.resolve()), path, {"provider": provider, "kind": "transcript", "rel": rel},
+                                  time.time())
+        self._db.commit()
+        return "updated" if outcome == "updated_with_version" else outcome
+
     @staticmethod
     def _source_files(source: HistorySource) -> Iterator[Dict[str, Any]]:
         seen = set()

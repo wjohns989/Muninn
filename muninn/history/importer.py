@@ -246,8 +246,15 @@ class Collected:
     errors: List[str] = field(default_factory=list)
 
 
-def collect(vault: HistoryVault, providers: Optional[List[str]] = None, since: Optional[float] = None) -> Collected:
+def collect(
+    vault: HistoryVault,
+    providers: Optional[List[str]] = None,
+    since: Optional[float] = None,
+    sources: Optional[Iterable[str]] = None,
+) -> Collected:
+    """Parse the vault into threads; ``sources`` limits it to those original file paths."""
     wanted = {p.strip().lower() for p in providers or [] if p.strip()}
+    only = {str(Path(s).resolve()) for s in sources} if sources else None
 
     def enabled(provider: str) -> bool:
         return not wanted or provider in wanted
@@ -276,6 +283,8 @@ def collect(vault: HistoryVault, providers: Optional[List[str]] = None, since: O
         if not enabled(provider):
             continue
         for item in vault.files(provider=provider, kind="transcript"):
+            if only is not None and item.source_path not in only:
+                continue
             try:
                 session = parse(read_text(item.path), Path(item.source_path).name)
                 if session and provider == "gemini_cli" and not session.surface:
@@ -283,12 +292,12 @@ def collect(vault: HistoryVault, providers: Optional[List[str]] = None, since: O
                 keep(session, item.source_path)
             except Exception as exc:  # one unreadable file must not stop the import
                 out.errors.append(f"{provider}: {Path(item.source_path).name}: {exc}")
-        for item in vault.files(provider=provider, kind="prompt_history"):
+        for item in ([] if only is not None else vault.files(provider=provider, kind="prompt_history")):
             try:
                 out.prompts.extend(parsers.parse_prompt_history(read_text(item.path), provider))
             except Exception as exc:
                 out.errors.append(f"{provider}: prompt history: {exc}")
-    if enabled("chatgpt") or enabled("claude_ai") or enabled("export"):
+    if only is None and (enabled("chatgpt") or enabled("claude_ai") or enabled("export")):
         for item in vault.files(provider="export"):
             try:
                 for payload in parsers.export_payloads(Path(item.source_path), read_bytes(item.path)):
@@ -348,11 +357,13 @@ async def _write(memory: "MuninnMemory", fn: Callable[..., Any], *args: Any, **k
 
 
 async def _add(memory: "MuninnMemory", item: Dict[str, Any], scope: str) -> Optional[str]:
+    # Bulk history uses the fast rule-based entity pass, not a per-turn LLM call.
+    metadata = dict(item["metadata"], operator_model_profile="low_latency", muninn_extraction_timeout_seconds=10)
     result = await memory.add(
         content=item["content"],
         user_id="global_user",
         agent_id=item["metadata"].get("agent"),
-        metadata=item["metadata"],
+        metadata=metadata,
         memory_type=MemoryType.EPISODIC,
         provenance=Provenance.INGESTED,
         scope=scope,
@@ -371,9 +382,10 @@ async def import_history(
     providers: Optional[List[str]] = None,
     since: Optional[float] = None,
     progress: Optional[Dict[str, Any]] = None,
+    sources: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """Dry run by default: report what would be imported. With ``apply`` write only what is new."""
-    collected = await asyncio.to_thread(collect, vault, providers, since)
+    collected = await asyncio.to_thread(collect, vault, providers, since, sources)
     store = memory._metadata
     progress = progress if progress is not None else {}
     report: Dict[str, Any] = {
@@ -432,7 +444,7 @@ async def import_history(
                 "branch": session.branch, "title": session.title, "started_at": session.started_at,
                 "ended_at": session.ended_at, "turns_imported": len(session.turns),
                 "compactions_imported": len(session.compactions), "summary_memory_id": summary_id,
-                "updated_at": time.time(),
+                "updated_at": time.time(), "source_path": thread.source,
             })
         progress["threads_done"] = progress.get("threads_done", 0) + 1
 
