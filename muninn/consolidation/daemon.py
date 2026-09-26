@@ -32,11 +32,17 @@ from muninn.scoring.importance import calculate_importance, batch_update_importa
 from muninn.scoring.adaptive import AdaptiveImportanceModel, build_features, outcome_label
 from muninn.consolidation.merge import find_merge_candidates, merge_memories
 from muninn.consolidation.promote import find_promotion_candidates, promote_memory
-from muninn.core.types import MemoryRecord, MemoryType
+from muninn.core.types import MemoryRecord, MemoryType, is_transcript_metadata
 
 logger = logging.getLogger("Muninn.Consolidation")
 
 ADAPTIVE_STATE_KEY = "adaptive_importance_state"
+
+
+
+def is_transcript(record: Optional[MemoryRecord]) -> bool:
+    """Imported conversation records are never decayed, merged or retyped (see TRANSCRIPT_KINDS)."""
+    return record is not None and is_transcript_metadata(record.metadata)
 
 
 class ConsolidationDaemon:
@@ -271,7 +277,7 @@ class ConsolidationDaemon:
         next_cursor = records[-1].id if len(records) >= self._batch_size else ""
         if not self._dry_run:
             self.metadata.set_meta(key, next_cursor)
-        return records
+        return [record for record in records if not is_transcript(record)]
 
     def _archive(
         self,
@@ -546,7 +552,7 @@ class ConsolidationDaemon:
             primary = self.metadata.get(primary_id)
             secondary = self.metadata.get(secondary_id)
             
-            if not primary or not secondary:
+            if not primary or not secondary or is_transcript(primary) or is_transcript(secondary):
                 continue
             
             # CRITICAL SAFETY check: Never merge across namespaces

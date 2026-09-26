@@ -99,6 +99,12 @@ the branch, the agent and a thread id with the turn number, so:
   history and current project memories line up;
 - `get_thread` re-reads a conversation from start to finish.
 
+Imported turns, compaction summaries and thread summaries are a record of what
+was said, so Muninn's upkeep leaves them alone: they are never deduplicated,
+merged, archived by decay, retyped, or used to resolve a conflict with another
+memory. An old turn cannot retire a current decision. The insights drawn from
+them (below) follow the normal memory lifecycle.
+
 Compaction summaries are kept as memories of their own. The transcripts hold
 the full conversation from before each compaction, so those turns come back
 too. Each thread also gets a summary memory, refreshed as the thread grows.

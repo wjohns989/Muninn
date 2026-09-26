@@ -190,6 +190,44 @@ async def test_decay_archives_redundant_stale_memory_using_stored_novelty(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_imported_conversation_turns_are_never_decayed_merged_or_retyped(tmp_path):
+    """A stale, redundant, never-retrieved imported turn stays: threads must re-read in order."""
+    from muninn.core.types import Provenance
+
+    daemon = _real_daemon(tmp_path)
+    old = time.time() - 3650 * 86400
+    for kind in ("conversation_turn", "compaction_summary", "thread_summary"):
+        daemon.metadata.add(_record(kind, f"{kind} text", provenance=Provenance.INGESTED, novelty_score=0.02,
+                                    created_at=old, access_count=50,
+                                    metadata={"user_id": "u1", "import_source": "agent_history", "kind": kind}))
+    daemon.metadata.add(_record("note", "restated fact", provenance=Provenance.INGESTED,
+                                novelty_score=0.02, created_at=old))
+
+    assert (await daemon._phase_decay())["decayed"] == 1
+    assert daemon.metadata.get("note").archived is True
+    await daemon._phase_promote()
+    for kind in ("conversation_turn", "compaction_summary", "thread_summary"):
+        record = daemon.metadata.get(kind)
+        assert record.archived is False and record.memory_type == MemoryType.EPISODIC
+
+
+@pytest.mark.asyncio
+async def test_merge_never_absorbs_an_imported_turn(tmp_path):
+    from muninn.consolidation import daemon as daemon_module
+
+    daemon = _real_daemon(tmp_path)
+    daemon.metadata.add(_record("live", "ok, continue"))
+    daemon.metadata.add(_record("turn", "ok, continue", metadata={"user_id": "u1", "kind": "conversation_turn"}))
+    original = daemon_module.find_merge_candidates
+    daemon_module.find_merge_candidates = AsyncMock(return_value=[("live", "turn", 0.99)])
+    try:
+        assert (await daemon._phase_merge())["merged"] == 0
+    finally:
+        daemon_module.find_merge_candidates = original
+    assert daemon.metadata.get("turn").archived is False
+
+
+@pytest.mark.asyncio
 async def test_expired_working_memory_is_removed_from_every_store(tmp_path):
     daemon = _real_daemon(tmp_path, working_memory_ttl_hours=1)
     images = tmp_path / "images"

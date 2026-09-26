@@ -125,3 +125,32 @@ async def test_ingestion_manager_extraction_timeout_falls_back():
     assert memory.extract_called == 1
     assert memory.embed_called == 1
     assert result["record"].metadata.get("muninn_extraction_timed_out") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind, checked", [("conversation_turn", False), ("thread_summary", False), (None, True)])
+async def test_imported_conversation_records_skip_dedup_and_conflict_resolution(kind, checked):
+    """An old imported turn is a record of what was said: it never merges into or retires a memory."""
+    from muninn.dedup.semantic_dedup import DedupStrategy
+
+    class _Vectors:
+        def count(self):
+            return 5
+
+        def search(self, *args, **kwargs):
+            return []
+
+    calls = []
+    memory = _MemoryStub()
+    memory._vectors = _Vectors()
+    memory._dedup = SimpleNamespace(check_duplicate=lambda **kw: calls.append("dedup") or SimpleNamespace(
+        is_duplicate=True, strategy=DedupStrategy.SKIP, existing_memory_id="m1", model_dump=lambda: {}))
+    memory._conflict_detector = SimpleNamespace(detect_conflicts=lambda *a: calls.append("conflict") or [])
+    metadata = {"import_source": "agent_history", "kind": kind} if kind else {}
+
+    result = await IngestionManager(memory).process_add(
+        content="User: continue", user_id="global_user", agent_id=None, metadata=metadata, namespace="global",
+        memory_type=MemoryType.EPISODIC, provenance=Provenance.INGESTED, scope="project",
+    )
+    assert ("dedup" in calls) is checked
+    assert result["event"] == ("DEDUP_SKIP" if checked else "PROCESS_COMPLETE")

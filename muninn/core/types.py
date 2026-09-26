@@ -15,6 +15,15 @@ from pydantic import BaseModel, Field
 
 from muninn.core.recall_trace import RecallTrace
 
+# Imported conversation records (muninn/history): the verbatim record of what was said and when.
+# They are never deduplicated, conflict-resolved, decayed, merged or retyped, so every thread
+# stays re-readable in order and an old turn never rewrites a current memory.
+TRANSCRIPT_KINDS = frozenset({"conversation_turn", "compaction_summary", "thread_summary", "recovered_prompt"})
+
+
+def is_transcript_metadata(metadata: Optional[Dict[str, Any]]) -> bool:
+    return (metadata or {}).get("kind") in TRANSCRIPT_KINDS
+
 
 class MemoryType(str, Enum):
     WORKING = "working"
