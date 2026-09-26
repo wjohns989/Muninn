@@ -391,6 +391,10 @@ python -m muninn.cli reindex --apply
 # stored as metadata.legacy_user_id.
 python -m muninn.cli import export.json --source mem0
 python -m muninn.cli import export.json --source mem0 --apply
+
+# Rows of an older Muninn metadata.db `memories` table, exported as JSONL, keep
+# their project, metadata (JSON text is parsed), memory type and archived state.
+python -m muninn.cli import old-muninn.jsonl --source muninn-legacy
 ```
 
 `/health` reports `legacy_stores` (booleans only) when an older `~/.muninn/data` or Mem0

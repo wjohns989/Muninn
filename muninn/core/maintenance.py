@@ -14,11 +14,12 @@ Both default to dry runs that only report what would change.
 
 import asyncio
 import hashlib
+import json
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
-from muninn.core.types import MemoryRecord, Provenance
+from muninn.core.types import MemoryRecord, MemoryType, Provenance
 
 if TYPE_CHECKING:  # pragma: no cover
     from muninn.core.memory import MuninnMemory
@@ -135,7 +136,13 @@ def normalize_legacy_record(
     content = next((raw[k] for k in _CONTENT_KEYS if isinstance(raw.get(k), str) and raw[k].strip()), None)
     if content is None:
         return None
-    raw_metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    raw_metadata = raw.get("metadata")
+    if isinstance(raw_metadata, str):   # a metadata.db row stores it as JSON text
+        try:
+            raw_metadata = json.loads(raw_metadata)
+        except ValueError:
+            raw_metadata = {}
+    raw_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     metadata = {k: v for k, v in raw_metadata.items() if k not in _RESERVED_METADATA}
     legacy_user = raw.get("user_id") or raw_metadata.get("user_id")
     if legacy_user and legacy_user != user_id:
@@ -149,9 +156,14 @@ def normalize_legacy_record(
     created_at = next(
         (ts for ts in (_parse_timestamp(raw.get(k)) for k in _CREATED_KEYS) if ts is not None), None
     )
+    memory_type = str(raw.get("memory_type") or "").lower()
     return {
         "content": content.strip(),
         "created_at": created_at,
+        # Kept from a Muninn export; working memory is scratch space and imports as the default type.
+        "memory_type": MemoryType(memory_type) if memory_type in {t.value for t in MemoryType}
+        and memory_type != MemoryType.WORKING.value else None,
+        "archived": raw.get("archived") in (True, 1, "1", "true", "True"),
         "user_id": user_id,
         "namespace": raw.get("namespace") or namespace,
         # Pre-3.0 memories were not project-scoped; keep them visible everywhere.
@@ -180,7 +192,7 @@ async def import_memories(
         existing.update(content_hash(r.content) for r in page)
 
     report = {"dry_run": dry_run, "read": 0, "invalid": 0, "duplicates": 0,
-              "imported": 0, "merged": 0, "skipped": 0}
+              "imported": 0, "merged": 0, "skipped": 0, "archived": 0}
     for raw in records:
         report["read"] += 1
         item = normalize_legacy_record(raw, user_id=user_id, namespace=namespace, source=source)
@@ -194,6 +206,7 @@ async def import_memories(
         existing.add(digest)
         if dry_run:
             report["imported"] += 1
+            report["archived"] += int(item["archived"])
             continue
         result = await memory.add(
             content=item["content"],
@@ -202,12 +215,17 @@ async def import_memories(
             namespace=item["namespace"],
             provenance=Provenance.INGESTED,
             scope=item["scope"],
+            **({"memory_type": item["memory_type"]} if item["memory_type"] else {}),
         )
         event = result.get("event")
         if event == "ADD" and result.get("id"):
             report["imported"] += 1
             if item["created_at"] is not None:
                 await asyncio.to_thread(memory._metadata.update, result["id"], created_at=item["created_at"])
+            if item["archived"]:
+                # Archived in the old store: kept, restorable, and out of search as before.
+                await asyncio.to_thread(memory._metadata.update, result["id"], archived=True)
+                report["archived"] += 1
         elif event == "DEDUP_MERGED":
             report["merged"] += 1
         else:
