@@ -11,6 +11,7 @@ import time
 from typing import Dict, Any, Optional, List, Tuple
 
 from muninn.core.types import (
+    is_transcript_metadata,
     MemoryRecord, MemoryType, Provenance, ExtractionResult,
 )
 from muninn.scoring.importance import calculate_importance, calculate_novelty
@@ -130,9 +131,10 @@ class IngestionManager:
             media_type=media_type,
         )
 
-        # 3. Semantic Deduplication
+        # 3. Semantic Deduplication (never for imported conversation records: see TRANSCRIPT_KINDS)
+        verbatim = is_transcript_metadata(metadata)
         vectors_count = await asyncio.to_thread(self.memory._vectors.count)
-        if self.memory._dedup and vectors_count > 0:
+        if self.memory._dedup and vectors_count > 0 and not verbatim:
             from muninn.dedup.semantic_dedup import DedupStrategy
 
             with self._otel.span("muninn.ingestion.dedup"):
@@ -158,7 +160,7 @@ class IngestionManager:
 
         # 4. Conflict Detection
         conflict_info = None
-        if self.memory._conflict_detector and vectors_count > 0:
+        if self.memory._conflict_detector and vectors_count > 0 and not verbatim:
             with self._otel.span("muninn.ingestion.conflict_detection"):
                 try:
                     similar_for_conflict = await asyncio.to_thread(

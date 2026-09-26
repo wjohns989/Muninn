@@ -49,6 +49,7 @@ machine paths, credentials or runtime artifacts committed; a rollback note per c
 | Learner feedback loop | **Fixed**: the learned score decides retention only; ranking keeps the hand-weighted importance |
 | Reindex / legacy import / legacy detection | **Done**: `python -m muninn.cli reindex|import`, `/admin/*`, `legacy_stores` in `/health` |
 | MCP 2026-07-28 | **Done**: dual-era endpoint (stateless modern requests, `server/discover`, header validation; legacy sessions unchanged) |
+| MCP client accessibility | **Done** (see "Client accessibility review" below) |
 | 9. Benchmarks with real vectors | Open |
 | 10. Session inhibition follow-ups | **Done**: `inhibited` flag on results, SDK `session_id`, explicit `session_id` tool argument |
 | 11. Feedback weighting | Open (measure once the learner has data) |
@@ -74,6 +75,129 @@ Known risks to watch once it is live:
   the logged ranks.
 - **Access log size.** About one row per returned result, pruned after
   max(4 x horizon, 90 days); watch it on busy stores.
+
+### Client accessibility review (2026-09-25)
+
+Checked with the official MCP Python SDK client (`mcp` 2.2.0) over stdio and
+Streamable HTTP in legacy, auto and 2026-07-28 modes; all 12 combinations pass.
+
+| Finding | Fix |
+|---|---|
+| `set_project_goal`, `detect_information_gaps`, `trigger_distillation`, `correct_fact`, `forage_knowledge` were advertised but returned "Method not found" (dispatch entries lost in the modular refactor) | Routed; a test now fails if any listed tool lacks a dispatcher |
+| 2026-07-28 list and discover results lacked the required `cacheScope`/`ttlMs`, so the official SDK rejected every modern connection | Added; `tests/test_mcp_wire_schema.py` validates every method and version against `mcp-types` |
+| Tool failures were JSON-RPC errors the model never sees | Returned as `isError` results (spec 2025-11-25), including backend 4xx bodies |
+| Every tool claimed `openWorldHint: true`; overwrite tools were not marked destructive | Correct hints plus `title` |
+| No Origin validation and CORS `*`, with no token by default: any web page could read or delete memories | `OriginGuardMiddleware` (localhost plus `MUNINN_ALLOWED_ORIGINS`), CORS on the same allow-list |
+| 37 tools exceed Cursor's 40-tool budget with other servers; ChatGPT outside Developer Mode needs `search`/`fetch` | Tool profiles `full`/`core`/`readonly`/`chatgpt` via `?toolset=` or `MUNINN_MCP_TOOLSET`; ChatGPT `search`/`fetch` with `outputSchema` and `structuredContent`; `GET /memory/{id}` |
+| No per-client setup guide | `docs/CLIENTS.md` |
+
+### Cross-agent handoffs and built-in prompting (2026-09-26)
+
+Goal: Claude Desktop (and its Code tab), Codex and ChatGPT Work in the ChatGPT
+desktop app, Claude Code and any other local agent share one store and pass
+projects to each other.
+
+| Finding | Fix |
+|---|---|
+| The project came from the MCP process's working directory: over HTTP that is the server's own folder for every client, and desktop apps start stdio servers outside the repository | `project` argument on the tools; HTTP never uses the server's directory; stdio uses git only inside a repository, else `MUNINN_PROJECT`, else `global` |
+| Memories never recorded which agent wrote them (`source_agent` was always `unknown`) | Agent from MCP `clientInfo` (aliases such as `claude-ai` → `claude-desktop`), `?agent=` or `MUNINN_AGENT_NAME` |
+| Handoffs existed only as export/import bundles between stores; notes over 1000 characters were split into chunks | `agent_handoffs` table (outside consolidation) with open → claimed → done lifecycle; tools `create_handoff`, `resume_handoff`, `complete_handoff`; REST `/handoffs` |
+| No session-start routine | `get_project_context` / `GET /context`: goal, open handoffs, rules, recent memories by agent, global preferences |
+| Server instructions were one sentence; prompts were empty stubs | The shared-memory protocol ships as server instructions (read by Codex, Claude Code, Claude Desktop, Gemini CLI), per toolset; MCP prompts `start`, `resume`, `handoff`, `remember` on every transport |
+
+Verified with the official MCP SDK: Codex over HTTP (2026-07-28) stores a
+memory and a handoff; Claude Desktop over stdio, started outside any
+repository, sees both in its briefing, claims the handoff and completes it.
+
+### Local conversation history (2026-09-26)
+
+Legacy discovery found transcript files but imported them as fixed-size raw
+chunks, all under one project, stamped with the import time. It also scanned
+folders that hold credentials: Gemini's `oauth_creds.json` matched
+`~/.gemini/**/*.json`, and the Claude and ChatGPT app-data scans matched
+`claude_desktop_config.json` and similar files. And it ignored `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`, Codex `archived_sessions` and `.zst` rollouts.
+
+| Piece | What it does |
+|---|---|
+| `muninn/history/locations.py` | App locations from the apps' own settings (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, per-OS app data, `MUNINN_HISTORY_HOMES`) plus their retention settings |
+| `muninn/history/vault.py` | Compressed private copy in `<data dir>/history_vault`; never deletes; keeps versions when a file shrinks; marks files the app deleted |
+| `muninn/history/parsers.py` | Claude Code (queued mid-turn messages, compaction summaries, Desktop titles), Codex (current and early layouts, `.zst`, thread titles), Gemini, ChatGPT/Claude exports, prompt histories |
+| `muninn/history/importer.py` | One memory per turn (ordered parts, not truncated) with original time, project (git remote or repository; worktree-aware), directory, branch, agent, thread id and turn number; compaction and thread-summary memories; secrets redacted; incremental |
+| `muninn/history/service.py` | Sync every 30 min; automatic import after the first applied import |
+| Interfaces | `/history/*`, `python -m muninn.cli history`, MCP `get_thread` and `import_agent_history`, `recent_threads` in `get_project_context` |
+
+Legacy discovery now honours the relocation variables, never reads credential
+files, and its "import all" skips the agent transcripts the importer handles.
+Verified on a real Claude Desktop transcript: 19 turns and a compaction
+summary, all under project `Muninn`, re-read in order and found by search.
+
+### Hooks and thread understanding (2026-09-26)
+
+- `POST /hooks/{agent}` plus `python -m muninn.cli hooks install`. Claude Code
+  uses `http` hooks; Codex uses command hooks through `muninn/hook_client.py`
+  (standard library only, about 50 ms startup, always exits 0). SessionStart
+  injects the project briefing. PreCompact, Stop (throttled) and SessionEnd
+  vault and import that one thread in the background; the endpoint answers in
+  about 10 ms.
+- `history analyze` (`muninn/history/insights.py`): per thread, a model
+  extracts a summary, status, topics and insights (decision, preference,
+  convention, fact, fix, open_item). Each insight is stored as a semantic
+  memory dated to its source turn. Recent in-progress threads with open items
+  become handoffs. Providers: OpenRouter, with `provider.zdr = true` and
+  `data_collection = deny` on every request, or local Ollama. The thread
+  catalog gains status and topic filters.
+- Import speed: batching fastembed gave no gain on the test CPU (8.1 s one at
+  a time vs 9.2 s batched for 64 turns), so it was not added. Imported turns
+  skip the per-turn LLM entity extraction instead. Cloud embeddings would force
+  a store-wide re-embed and send every future memory to the cloud, so they are
+  documented as a trade-off rather than enabled.
+
+### One timeline across apps; validated analysis (2026-09-26)
+
+- Turn fingerprints (original time + text) stop resumed or forked sessions
+  from storing copied turns twice. The new thread records `continues_thread`.
+  The project timeline (`history timeline`, `/history/timeline`, `get_thread`
+  with `timeline=true`) interleaves every app's turns with handoff events and
+  agent switches.
+- Analysis reads each project's threads oldest first, with "Meanwhile"
+  markers and other threads' timestamped insights. Superseded insights are
+  archived; re-analysis replaces a thread's insights.
+- OpenRouter: the CLI asks for a key on first run (verified, saved with
+  owner-only permissions). Default `openai/gpt-6-luna-pro` with DeepSeek V4
+  Flash and Gemini 3.5 Flash-Lite fallbacks, chosen from the live ZDR endpoint
+  list; OpenRouter accepts at most three models, and `:batch` ids are used as
+  their direct model.
+  The previous default, `google/gemini-2.5-flash`, expires 2026-10-20.
+  Requests use a strict JSON Schema with `require_parameters`, and send only
+  parameters all three models' ZDR endpoints accept. Every reply is validated
+  before storage.
+- Whole conversations go in one call. The old 2,500-character cap per turn
+  dropped about 60% of a real long session before any model saw it.
+- Refusals are detected (refusal field, content-filter or safety stop,
+  moderation error, empty reply, refusal wording in the summary) and the
+  request moves to the next model. When all refuse, nothing is stored and the
+  thread records `analysis_error`; `--retry-refused` tries again.
+- Live test on a real 15.8 MB Claude Desktop transcript (Windows paths, 6
+  compactions, subfolder `cd`s): every human prompt was kept, and 114 memories
+  were written in time order with compactions in place. One Luna Pro call
+  cost $0.05 and returned an accurate summary, status and 9 insights, with no
+  schema retries. It exposed two fixes: Windows paths now name their project
+  on any OS, and a session belongs to the folder it was started in, not the
+  last `cd`. OpenRouter billed about 1.3 characters per prompt token, so the
+  cost preview now uses that rate.
+
+Next for this area:
+
+- MCP resources (project briefing as `muninn://project/{name}`) for hosts that
+  attach resources without a tool call.
+- Show handoffs and agent labels in the Huginn dashboard.
+- An `.mcpb` Desktop Extension for one-click Claude Desktop install.
+- OAuth 2.1 on `/mcp` so ChatGPT and claude.ai can connect directly without a
+  tunnel.
+- The stdio wrapper logs the generated temporary token to stderr, and hosts
+  keep stderr in log files; log that a token was generated, not its value.
+- Drop the non-existent `2025-11-05` from `SUPPORTED_PROTOCOL_VERSIONS`.
 
 ## P0 — consolidation correctness (silent failures)
 

@@ -35,12 +35,15 @@ def _do_get_git_info() -> Dict[str, str]:
             **kwargs
         ).strip()
         
-        repo_url = subprocess.check_output(
-            ["git", "config", "--get", "remote.origin.url"], 
-            **kwargs
-        ).strip()
-        
-        project = repo_url.split("/")[-1].replace(".git", "") if repo_url else "unknown"
+        # A repository without a remote makes this exit 1; that is not an error.
+        repo_url = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"], stdout=subprocess.PIPE, check=False, **kwargs
+        ).stdout.strip()
+
+        from muninn.core.projects import name_from_remote, project_for_directory
+
+        # Same naming as imported history: remote name, else the main repository folder.
+        project = name_from_remote(repo_url) if repo_url else (project_for_directory(os.getcwd()) or "unknown")
         return {"branch": branch, "project": project}
     except Exception:
         return {"branch": "unknown", "project": os.path.basename(os.getcwd())}
@@ -97,6 +100,10 @@ def truncate_tool_text(text: str, name: str) -> str:
 def format_tool_result_text(result: Dict[str, Any], name: str) -> str:
     """Convert backend JSON result to standard text representation for tool output."""
     if not result.get("success"):
+        # FastAPI HTTPException bodies are {"detail": ...} with no success key.
+        detail = result.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return f"Error: {detail}"
         error_value = result.get("error")
         if isinstance(error_value, str) and error_value.strip():
             return f"Error: {error_value}"
@@ -154,12 +161,11 @@ def negotiated_protocol_version(requested: Optional[str]) -> Optional[str]:
         return SUPPORTED_PROTOCOL_VERSIONS[0]
     return None
 
-def build_initialize_instructions(startup_warnings: Optional[List[str]] = None) -> str:
-    """Build a set of instructions for the client during initialization."""
-    base_instructions = (
-        "Muninn MCP server. Set project goals, store/search memories, and use handoff tools "
-        "for cross-assistant continuity."
-    )
+def build_initialize_instructions(startup_warnings: Optional[List[str]] = None, toolset: str = "full") -> str:
+    """Server instructions: the shared-memory protocol for the session's toolset, plus startup checks."""
+    from .prompts import protocol_for
+
+    base_instructions = protocol_for(toolset)
     session_profile = _read_operator_model_profile("MUNINN_OPERATOR_MODEL_PROFILE")
     if session_profile:
         base_instructions = (

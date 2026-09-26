@@ -193,7 +193,7 @@ def test_initialize_without_warnings_uses_base_instructions(monkeypatch):
     assert len(sent) == 1
     instructions = sent[0]["result"]["instructions"]
     assert "Startup checks:" not in instructions
-    assert "cross-assistant continuity" in instructions
+    assert "get_project_context" in instructions and "create_handoff" in instructions
 
 
 def test_initialize_includes_session_model_profile(monkeypatch):
@@ -559,7 +559,7 @@ def test_unknown_notification_method_is_ignored(monkeypatch):
         ("resources/templates/list", {}, "resourceTemplates"),
         ("resources/read", {"uri": "memory://noop"}, "contents"),
         ("prompts/list", {}, "prompts"),
-        ("prompts/get", {"name": "noop"}, "messages"),
+        ("prompts/get", {"name": "start"}, "messages"),
     ],
 )
 def test_optional_capability_methods_return_non_fatal_responses(
@@ -2052,8 +2052,9 @@ def test_set_model_profiles_requires_field(monkeypatch):
 
     assert sent
     assert sent[0]["id"] == "req-set-profiles-empty"
-    assert sent[0]["error"]["code"] == -32603
-    assert "requires at least one profile field" in sent[0]["error"]["message"]
+    # Validation failures are tool results the model can read (MCP 2025-11-25).
+    assert sent[0]["result"]["isError"] is True
+    assert "requires at least one profile field" in sent[0]["result"]["content"][0]["text"]
 
 
 def test_get_model_profile_events_tool_call_payload(monkeypatch):

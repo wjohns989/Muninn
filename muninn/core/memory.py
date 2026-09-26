@@ -1747,6 +1747,28 @@ class MuninnMemory:
         )
         return result
 
+    async def get(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        """Return one memory by id (archived included), or None when it does not exist."""
+        self._check_initialized()
+        record = await asyncio.to_thread(self._metadata.get, memory_id)
+        if record is None:
+            return None
+        return {
+            "id": record.id,
+            "memory": record.content,
+            "memory_type": record.memory_type.value,
+            "media_type": record.media_type.value,
+            "importance": record.importance,
+            "created_at": record.created_at,
+            "access_count": record.access_count,
+            "project": record.project,
+            "namespace": record.namespace,
+            "scope": record.scope,
+            "archived": record.archived,
+            "parent_id": record.parent_id,
+            "metadata": record.metadata,
+        }
+
     async def restore(self, memory_id: str) -> Dict[str, Any]:
         """Bring an archived memory back into search by re-indexing its content."""
         self._check_initialized()

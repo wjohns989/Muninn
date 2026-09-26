@@ -101,3 +101,38 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmp:
         test_sqlite_concurrency(Path(tmp))
         print("SQLite concurrency test passed")
+
+
+def _open_metadata_store(db_path, errors):
+    try:
+        SQLiteMetadataStore(db_path)
+    except Exception as exc:  # reported to the parent
+        errors.put(f"{type(exc).__name__}: {exc}")
+
+
+@pytest.mark.parametrize("existing", ["fresh", "before-history-columns"])
+def test_processes_opening_one_database_at_once_all_succeed(tmp_path, existing):
+    """Server, CLI and hook processes can start together; schema upgrades must not race."""
+    import sqlite3
+
+    errors = multiprocessing.Queue()
+    for round_ in range(3):
+        db_path = tmp_path / f"{existing}-{round_}.db"
+        if existing != "fresh":   # a database from before the newer history_threads columns
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE history_threads (thread_key TEXT PRIMARY KEY, provider TEXT NOT NULL, "
+                         "agent TEXT NOT NULL, session_id TEXT NOT NULL, project TEXT, directory TEXT, branch TEXT, "
+                         "title TEXT, started_at REAL, ended_at REAL, turns_imported INTEGER NOT NULL DEFAULT 0, "
+                         "compactions_imported INTEGER NOT NULL DEFAULT 0, summary_memory_id TEXT, "
+                         "updated_at REAL NOT NULL)")
+            conn.commit()
+            conn.close()
+        processes = [multiprocessing.Process(target=_open_metadata_store, args=(db_path, errors)) for _ in range(6)]
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join()
+        found = [errors.get() for _ in range(errors.qsize())] if not errors.empty() else []
+        assert found == []
+        columns = {row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(history_threads)")}
+        assert {"analysis_error", "continues_thread", "duplicate_turns", "source_path"} <= columns

@@ -11,7 +11,7 @@ import time
 import math
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
 from muninn.store.lock import get_store_lock
@@ -188,6 +188,83 @@ CREATE TABLE IF NOT EXISTS importance_predictions (
 );
 """
 
+# Agent-to-agent handoffs. Kept out of `memories` so consolidation never merges,
+# decays or archives them, and long notes are never split into chunks.
+AGENT_HANDOFFS = """
+CREATE TABLE IF NOT EXISTS agent_handoffs (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    project      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    from_agent   TEXT NOT NULL,
+    to_agent     TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',
+    claimed_by   TEXT,
+    note         TEXT,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL
+);
+"""
+
+HANDOFF_STATUSES = ("open", "claimed", "done", "cancelled")
+
+# Conversations imported from local AI apps: one row per thread, so re-imports
+# only add new turns and a thread can be listed and re-read in order.
+HISTORY_THREADS = """
+CREATE TABLE IF NOT EXISTS history_threads (
+    thread_key           TEXT PRIMARY KEY,
+    provider             TEXT NOT NULL,
+    agent                TEXT NOT NULL,
+    session_id           TEXT NOT NULL,
+    project              TEXT NOT NULL,
+    directory            TEXT,
+    branch               TEXT,
+    title                TEXT,
+    started_at           REAL,
+    ended_at             REAL,
+    turns_imported       INTEGER NOT NULL DEFAULT 0,
+    compactions_imported INTEGER NOT NULL DEFAULT 0,
+    summary_memory_id    TEXT,
+    updated_at           REAL NOT NULL,
+    source_path          TEXT,
+    status               TEXT,
+    topics_json          TEXT,
+    analyzed_turns       INTEGER NOT NULL DEFAULT 0,
+    analyzed_at          REAL,
+    continues_thread     TEXT,
+    duplicate_turns      INTEGER NOT NULL DEFAULT 0,
+    analysis_error       TEXT
+);
+"""
+
+# Columns added after history_threads first shipped; created on older databases at startup.
+HISTORY_THREAD_COLUMNS = {
+    "source_path": "TEXT", "status": "TEXT", "topics_json": "TEXT",
+    "analyzed_turns": "INTEGER NOT NULL DEFAULT 0", "analyzed_at": "REAL",
+    "continues_thread": "TEXT", "duplicate_turns": "INTEGER NOT NULL DEFAULT 0",
+    "analysis_error": "TEXT",
+}
+
+# One row per imported turn. Resuming or forking a session writes a new transcript that starts
+# with a copy of the earlier conversation; fingerprints (original time + text) catch the copies.
+HISTORY_TURNS = """
+CREATE TABLE IF NOT EXISTS history_turns (
+    fingerprint TEXT PRIMARY KEY,
+    thread_key  TEXT NOT NULL,
+    turn_index  INTEGER,
+    at          REAL
+);
+"""
+
+HISTORY_PROMPTS = """
+CREATE TABLE IF NOT EXISTS history_prompts_imported (
+    digest      TEXT PRIMARY KEY,
+    imported_at REAL NOT NULL
+);
+"""
+
 
 class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
@@ -235,6 +312,26 @@ class SQLiteMetadataStore:
         conn.execute(LEGACY_SOURCES_CACHE)
         conn.execute(ACCESS_EVENTS)
         conn.execute(IMPORTANCE_PREDICTIONS)
+        conn.execute(AGENT_HANDOFFS)
+        conn.execute(HISTORY_THREADS)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(history_threads)")}
+        for column, ddl in HISTORY_THREAD_COLUMNS.items():
+            if column not in existing:
+                try:
+                    conn.execute(f"ALTER TABLE history_threads ADD COLUMN {column} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    # Another process opening the same database added it first.
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+        conn.execute(HISTORY_PROMPTS)
+        conn.execute(HISTORY_TURNS)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_history_threads_project ON history_threads(project, ended_at);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_handoffs_project "
+            "ON agent_handoffs(user_id, project, status, created_at);"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_access_events_memory_time ON access_events(memory_id, accessed_at);"
         )
@@ -1486,6 +1583,243 @@ class SQLiteMetadataStore:
             rows,
         )
         conn.commit()
+
+    # --- Agent handoffs -----------------------------------------------------
+
+    @staticmethod
+    def _handoff_row(row: sqlite3.Row) -> Dict[str, Any]:
+        item = dict(row)
+        item["details"] = json.loads(item.pop("details_json") or "{}")
+        return item
+
+    def add_handoff(self, handoff: Dict[str, Any]) -> Dict[str, Any]:
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO agent_handoffs (id, user_id, project, title, summary, details_json, from_agent, "
+            "to_agent, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
+            (
+                handoff["id"], handoff["user_id"], handoff["project"], handoff["title"], handoff["summary"],
+                json.dumps(handoff.get("details") or {}), handoff["from_agent"], handoff.get("to_agent"),
+                handoff["created_at"], handoff["created_at"],
+            ),
+        )
+        conn.commit()
+        return self.get_handoff(handoff["id"])
+
+    def get_handoff(self, handoff_id: str) -> Optional[Dict[str, Any]]:
+        row = self._get_conn().execute("SELECT * FROM agent_handoffs WHERE id = ?", (handoff_id,)).fetchone()
+        return self._handoff_row(row) if row else None
+
+    def list_handoffs(
+        self,
+        user_id: str,
+        project: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Newest first; ``project=None`` lists every project."""
+        conditions, params = ["user_id = ?"], [user_id]
+        if project:
+            conditions.append("project = ?")
+            params.append(project)
+        if statuses:
+            conditions.append(f"status IN ({', '.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        rows = self._get_conn().execute(
+            f"SELECT * FROM agent_handoffs WHERE {' AND '.join(conditions)} ORDER BY created_at DESC LIMIT ?",
+            (*params, int(limit)),
+        ).fetchall()
+        return [self._handoff_row(row) for row in rows]
+
+    def transition_handoff(
+        self,
+        handoff_id: str,
+        status: str,
+        *,
+        agent: str,
+        note: Optional[str] = None,
+        allowed_from: Sequence[str] = HANDOFF_STATUSES,
+        now: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Move a handoff to ``status`` if it is currently in ``allowed_from``; None otherwise."""
+        if status not in HANDOFF_STATUSES:
+            raise ValueError(f"Unknown handoff status: {status}")
+        conn = self._get_conn()
+        cursor = conn.execute(
+            f"UPDATE agent_handoffs SET status = ?, claimed_by = ?, note = COALESCE(?, note), updated_at = ? "
+            f"WHERE id = ? AND status IN ({', '.join('?' for _ in allowed_from)})",
+            (status, agent, note, now if now is not None else time.time(), handoff_id, *allowed_from),
+        )
+        conn.commit()
+        return self.get_handoff(handoff_id) if cursor.rowcount else None
+
+    # --- Imported conversation threads ----------------------------------------
+
+    def get_history_thread(self, thread_key: str) -> Optional[Dict[str, Any]]:
+        row = self._get_conn().execute("SELECT * FROM history_threads WHERE thread_key = ?", (thread_key,)).fetchone()
+        return dict(row) if row else None
+
+    def upsert_history_thread(self, thread: Dict[str, Any]) -> None:
+        columns = [
+            "thread_key", "provider", "agent", "session_id", "project", "directory", "branch", "title",
+            "started_at", "ended_at", "turns_imported", "compactions_imported", "summary_memory_id", "updated_at",
+        ] + [column for column in HISTORY_THREAD_COLUMNS if column in thread]
+        values = [thread.get(column) for column in columns]
+        updates = ", ".join(f"{column}=excluded.{column}" for column in columns[1:])
+        conn = self._get_conn()
+        conn.execute(
+            f"INSERT INTO history_threads ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+            f"ON CONFLICT(thread_key) DO UPDATE SET {updates}",
+            values,
+        )
+        conn.commit()
+
+    def list_history_threads(
+        self,
+        project: Optional[str] = None,
+        limit: int = 20,
+        *,
+        agent: Optional[str] = None,
+        status: Optional[str] = None,
+        topic: Optional[str] = None,
+        text: Optional[str] = None,
+        since: Optional[float] = None,
+        needs_analysis: bool = False,
+        retry_refused: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """The thread catalog, newest first, filtered by project, agent, status, topic, title text or date."""
+        conditions, params = [], []
+        for column, value in (("project", project), ("agent", agent), ("status", status)):
+            if value:
+                conditions.append(f"{column} = ?")
+                params.append(value)
+        if topic:
+            conditions.append("topics_json LIKE ?")
+            params.append(f'%"{topic}"%')
+        if text:
+            conditions.append("title LIKE ?")
+            params.append(f"%{text}%")
+        if since:
+            conditions.append("ended_at >= ?")
+            params.append(since)
+        if needs_analysis:
+            conditions.append("(analyzed_turns < turns_imported OR analysis_error IS NOT NULL)"
+                              if retry_refused else "analyzed_turns < turns_imported")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._get_conn().execute(
+            f"SELECT * FROM history_threads{where} ORDER BY ended_at DESC LIMIT ?", (*params, int(limit))
+        ).fetchall()
+        threads = []
+        for row in rows:
+            item = dict(row)
+            item["topics"] = json.loads(item.pop("topics_json") or "[]")
+            threads.append(item)
+        return threads
+
+    def set_history_analysis(self, thread_key: str, *, status: str, topics: List[str], analyzed_turns: int) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE history_threads SET status = ?, topics_json = ?, analyzed_turns = ?, analyzed_at = ?, "
+            "analysis_error = NULL WHERE thread_key = ?",
+            (status, json.dumps(topics), analyzed_turns, time.time(), thread_key),
+        )
+        conn.commit()
+
+    def set_history_analysis_error(self, thread_key: str, *, error: str, analyzed_turns: int) -> None:
+        """Record why a thread could not be analyzed; it is retried when it grows or on request."""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE history_threads SET analysis_error = ?, analyzed_turns = ?, analyzed_at = ? WHERE thread_key = ?",
+            (error[:500], analyzed_turns, time.time(), thread_key),
+        )
+        conn.commit()
+
+    def history_prompt_seen(self, digest: str) -> bool:
+        return self._get_conn().execute(
+            "SELECT 1 FROM history_prompts_imported WHERE digest = ?", (digest,)
+        ).fetchone() is not None
+
+    def mark_history_prompts(self, digests: Iterable[str]) -> None:
+        conn = self._get_conn()
+        conn.executemany(
+            "INSERT OR IGNORE INTO history_prompts_imported (digest, imported_at) VALUES (?, ?)",
+            [(digest, time.time()) for digest in digests],
+        )
+        conn.commit()
+
+    def seen_turns(self, fingerprints: List[str]) -> Dict[str, str]:
+        """Fingerprint -> thread that already holds that turn."""
+        found: Dict[str, str] = {}
+        conn = self._get_conn()
+        for i in range(0, len(fingerprints), self._SQLITE_MAX_VARS):
+            chunk = fingerprints[i: i + self._SQLITE_MAX_VARS]
+            rows = conn.execute(
+                "SELECT fingerprint, thread_key FROM history_turns "
+                f"WHERE fingerprint IN ({', '.join('?' * len(chunk))})",
+                chunk,
+            ).fetchall()
+            found.update({row["fingerprint"]: row["thread_key"] for row in rows})
+        return found
+
+    def mark_turns(self, rows: List[Tuple[str, str, Optional[int], Optional[float]]]) -> None:
+        conn = self._get_conn()
+        conn.executemany(
+            "INSERT OR IGNORE INTO history_turns (fingerprint, thread_key, turn_index, at) VALUES (?, ?, ?, ?)", rows
+        )
+        conn.commit()
+
+    def get_project_timeline(
+        self,
+        project: str,
+        offset: int = 0,
+        limit: int = 100,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+    ) -> List[MemoryRecord]:
+        """Every imported conversation turn of a project, across apps and threads, in time order."""
+        kinds = ("conversation_turn", "compaction_summary", "recovered_prompt")
+        if self._json1_available:
+            conditions = [
+                "project = ?", "json_extract(metadata, '$.import_source') = 'agent_history'",
+                f"json_extract(metadata, '$.kind') IN ({', '.join('?' * len(kinds))})",
+            ]
+            params: List[Any] = [project, *kinds]
+            order = ("created_at, json_extract(metadata, '$.thread_id'), "
+                     "CAST(json_extract(metadata, '$.turn_index') AS INTEGER), "
+                     "CAST(json_extract(metadata, '$.part') AS INTEGER), id")
+        else:
+            conditions = ["project = ?", "metadata LIKE ?"]
+            params = [project, '%"import_source": "agent_history"%']
+            order = "created_at, id"
+        if since is not None:
+            conditions.append("created_at >= ?")
+            params.append(since)
+        if until is not None:
+            conditions.append("created_at <= ?")
+            params.append(until)
+        rows = self._get_conn().execute(
+            f"SELECT * FROM memories WHERE {' AND '.join(conditions)} ORDER BY {order} LIMIT ? OFFSET ?",
+            (*params, int(limit), int(offset)),
+        ).fetchall()
+        records = [self._row_to_record(row) for row in rows]
+        if not self._json1_available:
+            records = [r for r in records if (r.metadata or {}).get("kind") in kinds]
+        return records
+
+    def get_thread_memories(self, thread_key: str, offset: int = 0, limit: int = 200) -> List[MemoryRecord]:
+        """Memories imported from one conversation thread, in conversation order."""
+        if self._json1_available:
+            where = "json_extract(metadata, '$.thread_id') = ?"
+            order = ("created_at, CAST(json_extract(metadata, '$.turn_index') AS INTEGER), "
+                     "CAST(json_extract(metadata, '$.part') AS INTEGER)")
+            param = thread_key
+        else:
+            where, order, param = "metadata LIKE ?", "created_at", f'%"thread_id": "{thread_key}"%'
+        rows = self._get_conn().execute(
+            f"SELECT * FROM memories WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            (param, int(limit), int(offset)),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
 
     def pop_due_importance_predictions(self, due_before: float, limit: int = 1000) -> List[Dict[str, Any]]:
         """Remove and return predictions made at or before ``due_before`` (oldest first)."""

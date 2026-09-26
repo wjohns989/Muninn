@@ -40,6 +40,33 @@ def test_normalize_handles_other_shapes():
     assert scoped["scope"] == "project" and scoped["metadata"]["project"] == "muninn"
 
 
+def test_normalize_keeps_type_archive_flag_and_json_metadata_of_a_muninn_row():
+    row = {"id": "old-1", "content": "Deploys go through staging", "memory_type": "procedural", "archived": 1,
+           "metadata": json.dumps({"project": "webapp", "tags": ["ops"]}), "created_at": 1700000000.0}
+    item = normalize_legacy_record(row, source="muninn-legacy")
+    assert item["memory_type"].value == "procedural" and item["archived"] is True
+    assert item["scope"] == "project" and item["metadata"]["tags"] == ["ops"]
+    assert normalize_legacy_record({"content": "x", "memory_type": "working"})["memory_type"] is None
+    assert normalize_legacy_record({"content": "x", "metadata": "not json"})["metadata"] == {"import_source": "legacy"}
+
+
+@pytest.mark.asyncio
+async def test_import_restores_type_and_archive_state(tmp_path):
+    engine = _engine(tmp_path)
+
+    async def fake_add(content, **kwargs):
+        engine._metadata.add(MemoryRecord(id=content[:4], content=content, memory_type=kwargs.get("memory_type")
+                                          or "episodic", metadata=kwargs["metadata"]))
+        return {"id": content[:4], "event": "ADD"}
+
+    engine.add = AsyncMock(side_effect=fake_add)
+    rows = [{"content": "live fact", "memory_type": "semantic"}, {"content": "gone fact", "archived": True}]
+    report = await import_memories(engine, rows, source="muninn-legacy", dry_run=False)
+    assert report["imported"] == 2 and report["archived"] == 1
+    assert engine._metadata.get("gone").archived is True and engine._metadata.get("live").archived is False
+    assert engine.add.await_args_list[0].kwargs["memory_type"].value == "semantic"
+
+
 def _engine(tmp_path, with_vectors=False):
     store = SQLiteMetadataStore(tmp_path / "meta.db")
     engine = SimpleNamespace(_metadata=store, _check_initialized=lambda: None, _bm25=BM25Index())
@@ -73,7 +100,7 @@ async def test_import_dry_run_then_apply_keeps_timestamps_and_skips_duplicates(t
 
     dry = await import_memories(engine, records, source="mem0")
     assert dry == {"dry_run": True, "read": 4, "invalid": 1, "duplicates": 2,
-                   "imported": 1, "merged": 0, "skipped": 0}
+                   "imported": 1, "merged": 0, "skipped": 0, "archived": 0}
     engine.add.assert_not_awaited()
 
     applied = await import_memories(engine, records, source="mem0", dry_run=False)

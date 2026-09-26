@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Tuple
 
 JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
@@ -13,12 +13,186 @@ SUPPORTED_MODEL_PROFILES = ("low_latency", "balanced", "high_reasoning")
 
 TOOLS_SCHEMAS: List[Dict[str, Any]] = [
     {
+        "name": "get_project_context",
+        "description": (
+            "Call this FIRST in every session, before other work. Returns the project's goal, handoffs "
+            "other agents left (Claude Code, Claude Desktop, Codex, Gemini...), project rules, recent "
+            "memories with the agent that wrote each, and global user preferences. If it reports an open "
+            "handoff, call resume_handoff to pick it up."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "The repository or folder name you are working in (use the same name every session)."
+                    ),
+                },
+                "recent_limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50,
+                                 "description": "How many recent project memories to include."},
+            },
+        },
+    },
+    {
+        "name": "create_handoff",
+        "description": (
+            "Hand the current work to another agent or a later session. Call it when the user says to "
+            "hand off, when you stop mid-task, or at the end of a session with unfinished work. Write it "
+            "so an agent with no access to this conversation can continue: what was done, the current "
+            "state, and concrete next steps."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "The repository or folder name you are working in (use the same name every session)."
+                    ),
+                },
+                "summary": {"type": "string", "description": "What was done and where things stand now."},
+                "title": {"type": "string", "description": "Short headline; defaults to the start of summary."},
+                "next_steps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ordered, concrete next actions.",
+                },
+                "open_questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Unresolved questions or decisions for the user.",
+                },
+                "decisions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Decisions made and why, so they are not relitigated.",
+                },
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Relevant files or paths, relative to the project root.",
+                },
+                "branch": {"type": "string", "description": "Git branch holding the work, if any."},
+                "to_agent": {
+                    "type": "string",
+                    "description": "Preferred agent (e.g. codex, claude-code, claude-desktop); omit for anyone.",
+                },
+            },
+            "required": ["project", "summary"],
+        },
+    },
+    {
+        "name": "resume_handoff",
+        "description": (
+            "Pick up work another agent handed off. Claims the newest open handoff for the project "
+            "(or the given handoff_id) so other agents see it is taken, and returns its summary, next "
+            "steps, decisions and files. Set claim=false to only read it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "The repository or folder name you are working in (use the same name every session)."
+                    ),
+                },
+                "handoff_id": {"type": "string", "description": "A specific handoff to resume."},
+                "claim": {"type": "boolean", "default": True, "description": "Mark it as claimed by you."},
+            },
+        },
+    },
+    {
+        "name": "get_thread",
+        "description": (
+            "Re-read an earlier conversation from any app (Claude Code, Claude Desktop, Codex, Gemini CLI, "
+            "ChatGPT or Claude exports) in its original order, including the parts that were compacted away. "
+            "Without thread_id, lists the project's threads, newest first. With timeline=true, returns the "
+            "project's work across all apps interleaved in time order, with handoffs and agent switches."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {"type": "string", "description": "Thread id from get_project_context or a listing."},
+                "project": {"type": "string", "description": "Project whose threads to list when no thread_id."},
+                "timeline": {"type": "boolean", "default": False,
+                             "description": "Project timeline across apps instead of one thread."},
+                "since": {"type": "string", "description": "Timeline start (ISO date)."},
+                "offset": {"type": "integer", "default": 0, "minimum": 0, "description": "Entries to skip."},
+                "limit": {"type": "integer", "default": 30, "minimum": 1, "maximum": 200},
+            },
+        },
+    },
+    {
+        "name": "import_agent_history",
+        "description": (
+            "Import local conversation history from Claude Code, Claude Desktop, Codex (CLI and ChatGPT app) "
+            "and Gemini CLI, plus ChatGPT/Claude data exports, as memories filed under their original project "
+            "and time. Dry run by default: reports what would be imported. apply=true runs it in the background; "
+            "later runs only add new turns."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "apply": {"type": "boolean", "default": False, "description": "Actually import (else dry run)."},
+                "providers": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["claude_code", "codex", "gemini_cli", "chatgpt", "claude_ai"]},
+                    "description": "Limit to these sources.",
+                },
+                "since": {"type": "string", "description": "Only threads active since this ISO date."},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra files, e.g. a ChatGPT or Claude export (conversations.json or .zip).",
+                },
+                "project": {"type": "string", "description": "Limit analysis to this project."},
+                "analyze": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Instead of importing, extract decisions, preferences, fixes and open items from "
+                        "imported threads with an LLM (the user's OpenRouter zero-data-retention key or local "
+                        "Ollama). Dry run unless apply=true."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "complete_handoff",
+        "description": (
+            "Close a handoff you resumed: status 'done' when the work is finished, 'cancelled' if it is "
+            "no longer needed, or 'open' to release it for another agent. Add a note on the outcome."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "handoff_id": {
+                    "type": "string",
+                    "description": "The handoff id from resume_handoff or get_project_context.",
+                },
+                "status": {"type": "string", "enum": ["done", "cancelled", "open"], "default": "done"},
+                "note": {"type": "string", "description": "Outcome, or why it was released or cancelled."},
+            },
+            "required": ["handoff_id"],
+        },
+    },
+    {
         "name": "add_memory",
         "description": "Add a new memory to the knowledge base. Use this to store facts, preferences, or important information that should be remembered across sessions. Use scope='global' for universal rules/preferences that should always be visible; use scope='project' (default) for project-specific information.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "The information to remember."},
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Project this belongs to: the repository or folder name you are working in. "
+                        "Pass it so every agent files and finds the same project's memories."
+                    ),
+                },
                 "metadata": {"type": "object", "description": "Optional metadata tags (e.g., {'project': 'phoenix', 'category': 'api'})."},
                 "scope": {
                     "type": "string",
@@ -55,12 +229,19 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
     },
     {
         "name": "set_project_instruction",
-        "description": "Convenience tool to create a project-scoped instruction memory. The memory is tagged with the current git project and scope='project', ensuring it NEVER appears when working in a different repository. Use for project-specific coding conventions, constraints, or guidelines.",
+        "description": "Convenience tool to create a project-scoped instruction memory. The memory is tagged with the project and scope='project', ensuring it NEVER appears when working in a different repository. Use for project-specific coding conventions, constraints, or guidelines.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "instruction": {"type": "string", "description": "The project-specific instruction or convention to remember (e.g., 'Always use async/await for I/O operations in this codebase')."},
-                "category": {"type": "string", "description": "Optional category tag for the instruction (e.g., 'coding_conventions', 'architecture', 'testing')."}
+                "category": {"type": "string", "description": "Optional category tag for the instruction (e.g., 'coding_conventions', 'architecture', 'testing')."},
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Project this belongs to: the repository or folder name you are working in. "
+                        "Pass it so every agent files and finds the same project's memories."
+                    ),
+                }
             },
             "required": ["instruction"]
         }
@@ -72,6 +253,13 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "The search query."},
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Project to search: the repository or folder name you are working in. Memories with scope "
+                        "'global' are always included. Pass it to find what other agents stored for this project."
+                    ),
+                },
                 "limit": {"type": "integer", "default": 5, "description": "Max number of results (default 5)"},
                 "rerank": {"type": "boolean", "default": True, "description": "Enable SOTA reranking for precision (default true)"},
                 "explain": {"type": "boolean", "default": False, "description": "Include per-result recall trace explaining retrieval signals (v3.1.0)"},
@@ -641,6 +829,7 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
+    "get_project_context", "get_thread",
     "search_memory", "hunt_memory", "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
     "export_handoff", "discover_legacy_sources",
@@ -649,9 +838,12 @@ READ_ONLY_TOOLS = {
     "detect_information_gaps", "forage_knowledge"
 }
 
-DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories"}
+# Tools that overwrite or remove existing memories. MCP defaults destructiveHint
+# to true for non-read-only tools, so every write tool states it explicitly.
+DESTRUCTIVE_TOOLS = {"delete_memory", "delete_all_memories", "update_memory", "correct_fact"}
 
 IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
+    "resume_handoff", "complete_handoff",
     "update_memory", "delete_memory", "delete_all_memories",
     "set_project_goal", "set_user_profile", "set_model_profiles",
     "import_handoff", "apply_federation_bundle",
@@ -667,3 +859,97 @@ IDEMPOTENT_TOOLS = READ_ONLY_TOOLS.union({
 # mimir_relay creates a new interop_runs record on every call and may have
 # side-effects on the remote agent — it is therefore not read-only or idempotent.
 MIMIR_TOOLS = {"mimir_relay"}
+
+# Only mimir_relay reaches beyond the local memory store (other agent CLIs).
+OPEN_WORLD_TOOLS = set(MIMIR_TOOLS)
+
+# ChatGPT connectors outside Developer Mode (deep research, company knowledge)
+# only call two read-only tools with these exact names and result shapes.
+CHATGPT_TOOLS_SCHEMAS: List[Dict[str, Any]] = [
+    {
+        "name": "search",
+        "description": (
+            "Search Muninn memories. Returns matching memory ids with a short title; "
+            "call fetch with an id to read the full memory."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Natural-language search query."}},
+            "required": ["query"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "url": {"type": "string"},
+                        },
+                        "required": ["id", "title", "url"],
+                    },
+                }
+            },
+            "required": ["results"],
+        },
+    },
+    {
+        "name": "fetch",
+        "description": "Fetch the full content and metadata of one Muninn memory by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "Memory id returned by search."}},
+            "required": ["id"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "title": {"type": "string"},
+                "text": {"type": "string"},
+                "url": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["id", "title", "text", "url"],
+        },
+    },
+]
+READ_ONLY_TOOLS |= {"search", "fetch"}
+IDEMPOTENT_TOOLS |= {"search", "fetch"}
+
+# Tool profiles let a client load only what it needs: Cursor caps active tools
+# at 40 across all servers, and every schema costs context on each request.
+CORE_TOOLS = (
+    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
+    "add_memory", "search_memory", "hunt_memory", "update_memory", "delete_memory",
+    "record_retrieval_feedback", "get_project_goal", "set_project_goal", "set_project_instruction",
+    "get_user_profile", "correct_fact",
+)
+TOOLSETS: Dict[str, Tuple[str, ...]] = {
+    "full": tuple(schema["name"] for schema in TOOLS_SCHEMAS),
+    "core": CORE_TOOLS,
+    "readonly": tuple(schema["name"] for schema in TOOLS_SCHEMAS if schema["name"] in READ_ONLY_TOOLS),
+    "chatgpt": ("search", "fetch"),
+}
+DEFAULT_TOOLSET = "full"
+
+_ALL_SCHEMAS = {schema["name"]: schema for schema in TOOLS_SCHEMAS + CHATGPT_TOOLS_SCHEMAS}
+
+
+def resolve_toolset(name: Any) -> str:
+    """Return a known toolset name; unknown or empty values fall back to the default."""
+    if isinstance(name, str) and name.strip().lower() in TOOLSETS:
+        return name.strip().lower()
+    return DEFAULT_TOOLSET
+
+
+def toolset_schemas(name: Any) -> List[Dict[str, Any]]:
+    return [_ALL_SCHEMAS[tool] for tool in TOOLSETS[resolve_toolset(name)]]
+
+
+def tool_title(name: str) -> str:
+    """Human-readable display name, e.g. add_memory -> Add Memory."""
+    return " ".join(word.capitalize() for word in name.split("_"))

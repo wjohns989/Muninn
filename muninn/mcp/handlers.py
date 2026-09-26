@@ -15,8 +15,8 @@ from muninn.version import __version__ as _MUNINN_VERSION
 from .state import _SESSION_STATE
 from .definitions import (
     SUPPORTED_PROTOCOL_VERSIONS, TOOLS_SCHEMAS, JSON_SCHEMA_2020_12,
-    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS,
-    SUPPORTED_MODEL_PROFILES, MIMIR_TOOLS,
+    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS, OPEN_WORLD_TOOLS,
+    SUPPORTED_MODEL_PROFILES, MIMIR_TOOLS, TOOLSETS, resolve_toolset, toolset_schemas, tool_title,
 )
 from .tasks import (
     create_task, lookup_task_locked, purge_and_retain_tasks_locked, 
@@ -57,7 +57,7 @@ def _write_timeout_seconds() -> float:
 
 def _initialize_capabilities_for_protocol(protocol_version: str) -> Dict[str, Any]:
     """Advertise only capabilities defined for the negotiated MCP version."""
-    capabilities: Dict[str, Any] = {"tools": {"listChanged": False}}
+    capabilities: Dict[str, Any] = {"tools": {"listChanged": False}, "prompts": {"listChanged": False}}
     if protocol_version == "2025-11-25":
         capabilities["io.modelcontextprotocol.elicitation"] = {"modes": ["form"]}
         capabilities["tasks"] = {
@@ -128,41 +128,63 @@ def handle_initialize(msg_id: Any, params: Dict[str, Any], send_error_fn, send_r
         "protocolVersion": negotiated_version,
         "capabilities": _initialize_capabilities_for_protocol(negotiated_version),
         "serverInfo": {"name": "muninn-mcp", "version": _MUNINN_VERSION},
-        "instructions": build_initialize_instructions(startup_warnings)
+        "instructions": build_initialize_instructions(startup_warnings, toolset=active_toolset())
     }
     send_result_fn(msg_id, result)
 
-def handle_list_tools(msg_id: Any, send_result_fn):
-    """List available tools with schemas and hints."""
-    from muninn.core.security import get_token
-    # In Phase 10, Listing tools is allowed, but execution requires token parity.
-    
-    tools_list = []
-    for schema_def in TOOLS_SCHEMAS:
-        name = schema_def["name"]
-        tool_def = {
-            "name": name,
-            "description": schema_def["description"],
-            "inputSchema": schema_def["inputSchema"]
-        }
-        # Add JSON schema and hints for SOTA clients
-        if isinstance(tool_def["inputSchema"], dict) and "$schema" not in tool_def["inputSchema"]:
-            tool_def["inputSchema"]["$schema"] = JSON_SCHEMA_2020_12
-        
-        # Mapping hints to legacy annotations
-        read_only = name in READ_ONLY_TOOLS
-        annotations = {
+def active_toolset() -> str:
+    """Toolset for this session: the transport's choice, else MUNINN_MCP_TOOLSET, else full."""
+    chosen = _SESSION_STATE.get("toolset")
+    return resolve_toolset(chosen or os.environ.get("MUNINN_MCP_TOOLSET"))
+
+
+def tool_definition(schema_def: Dict[str, Any]) -> Dict[str, Any]:
+    name = schema_def["name"]
+    input_schema = dict(schema_def["inputSchema"])
+    input_schema.setdefault("$schema", JSON_SCHEMA_2020_12)
+    read_only = name in READ_ONLY_TOOLS
+    return {
+        "name": name,
+        "title": tool_title(name),
+        "description": schema_def["description"],
+        "inputSchema": input_schema,
+        "annotations": {
+            "title": tool_title(name),
             "readOnlyHint": read_only,
             "destructiveHint": name in DESTRUCTIVE_TOOLS,
             "idempotentHint": name in IDEMPOTENT_TOOLS or read_only,
-            "openWorldHint": True,
-        }
-        tool_def["annotations"] = annotations
-        tool_def["execution"] = {"taskSupport": "optional"}
-            
-        tools_list.append(tool_def)
-        
+            # Everything but mimir_relay stays inside the local memory store.
+            "openWorldHint": name in OPEN_WORLD_TOOLS,
+        },
+        "execution": {"taskSupport": "optional"},
+        **({"outputSchema": schema_def["outputSchema"]} if "outputSchema" in schema_def else {}),
+    }
+
+
+def handle_list_tools(msg_id: Any, send_result_fn):
+    """List the tools in the session's toolset with schemas and hints."""
+    tools_list = [tool_definition(schema_def) for schema_def in toolset_schemas(active_toolset())]
     send_result_fn(msg_id, {"tools": tools_list})
+
+def handle_list_prompts(msg_id: Any, send_result_fn):
+    from .prompts import list_prompts
+
+    send_result_fn(msg_id, {"prompts": list_prompts(active_toolset())})
+
+
+def handle_get_prompt(msg_id: Any, params: Any, send_error_fn, send_result_fn):
+    from .prompts import get_prompt
+
+    if not isinstance(params, dict):
+        send_error_fn(msg_id, -32602, "prompts/get params must be an object.")
+        return
+    try:
+        result = get_prompt(params.get("name"), params.get("arguments"), active_toolset())
+    except ValueError as exc:
+        send_error_fn(msg_id, -32602, str(exc))
+        return
+    send_result_fn(msg_id, result)
+
 
 def handle_call_tool_with_task(session_id: str, msg_id: Any, name: str, arguments: Dict[str, Any], task_request: Dict[str, Any], send_result_fn, send_notification_fn=None, worker_fn=None):
     """Create a task for a tool call and return immediately."""
@@ -367,7 +389,7 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
     
     # Validation for specific tools that need early exit
     if name == "delete_all_memories" and not arguments.get("confirm", False):
-        send_error_fn(msg_id, -32602, "Must set 'confirm: true' to delete all memories")
+        send_result_fn(msg_id, tool_error_result("Must set 'confirm: true' to delete all memories"))
         return
 
     # Metrics tracking (integrated into threading)
@@ -392,13 +414,23 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
             send_error_fn(msg_id, -32601, f"Method not found: {name}")
             return
 
-        # Truncate if needed (SOTA pattern)
-        text_response = format_tool_result_text(res, name)
+        structured = None
+        if name in EXACT_JSON_TOOLS and res.get("success"):
+            # Exact JSON: the preview compactor cuts anything nested past two levels.
+            text_response = json.dumps(res["data"], indent=1, default=str)
+            if name in STRUCTURED_TOOLS:
+                structured = res["data"]
+        else:
+            text_response = format_tool_result_text(res, name)
         truncated_text = truncate_tool_text(text_response, name)
 
-        send_result_fn(msg_id, {
-            "content": [{"type": "text", "text": truncated_text}]
-        })
+        result = {"content": [{"type": "text", "text": truncated_text}]}
+        if structured is not None:
+            result["structuredContent"] = structured
+        if not res.get("success"):
+            result["isError"] = True
+            tool_metrics["saw_error"] = True
+        send_result_fn(msg_id, result)
         
         # Update metrics for success
         tool_metrics["response_count"] += 1
@@ -409,9 +441,9 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
     except Exception as e:
         logger.exception("Tool execution failed: %s", name)
         tool_metrics["saw_error"] = True
-        # Use a more user-friendly error message if available
-        err_msg = str(e)
-        send_error_fn(msg_id, -32603, str(e))
+        # MCP 2025-11-25: execution and input-validation failures are tool
+        # results with isError so the model can read them and self-correct.
+        send_result_fn(msg_id, tool_error_result(str(e) or type(e).__name__))
     finally:
         # Telemetry logging matching the original wrapper
         elapsed_ms = (time.monotonic() - tool_call_started_monotonic) * 1000.0
@@ -425,8 +457,14 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
             tool_metrics["response_bytes_max"]
         )
         setattr(_thread_local, "tool_call_metrics", None)
+def tool_error_result(message: str) -> Dict[str, Any]:
+    return {"content": [{"type": "text", "text": f"Error: {message}"}], "isError": True}
+
+
 def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional[float]) -> Optional[Dict[str, Any]]:
     """Dispatch to internal tool implementations."""
+    if name not in TOOLSETS[active_toolset()]:
+        return None
     dispatch = {
         "add_memory": _do_add_memory,
         "add_image_memory": _do_add_image_memory,
@@ -437,6 +475,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "delete_memory": _do_delete_memory,
         "delete_all_memories": _do_delete_all_memories,
         "set_project_instruction": _do_set_project_instruction,
+        "set_project_goal": _do_set_project_goal,
         "get_project_goal": _do_get_project_goal,
         "set_user_profile": _do_set_user_profile,
         "get_user_profile": _do_get_user_profile,
@@ -460,6 +499,18 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "create_federation_bundle": _do_create_federation_bundle,
         "apply_federation_bundle": _do_apply_federation_bundle,
         "mimir_relay": _do_mimir_relay,
+        "detect_information_gaps": _do_detect_information_gaps,
+        "trigger_distillation": _do_trigger_distillation,
+        "correct_fact": _do_correct_fact,
+        "forage_knowledge": _do_forage_knowledge,
+        "get_project_context": _do_get_project_context,
+        "create_handoff": _do_create_handoff,
+        "resume_handoff": _do_resume_handoff,
+        "complete_handoff": _do_complete_handoff,
+        "get_thread": _do_get_thread,
+        "import_agent_history": _do_import_agent_history,
+        "search": _do_chatgpt_search,
+        "fetch": _do_chatgpt_fetch,
     }
     
     handler = dispatch.get(name)
@@ -467,11 +518,70 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         return None
     return handler(arguments, deadline)
 
+# --- Who is calling, and for which project -------------------------------------
+# Several agents (Claude Code, Claude Desktop, Codex in the ChatGPT app, Gemini,
+# Cursor...) share one store, so every write records the agent and the project.
+# Over HTTP the MCP code runs inside the server process, whose working directory
+# says nothing about the client's repository, so the project must come from the
+# tool arguments there; stdio wrappers run in the client's directory and may
+# fall back to git.
+
+_AGENT_ALIASES = {
+    "claude-ai": "claude-desktop",
+    "codex-mcp-client": "codex",
+    "gemini-cli-mcp-client": "gemini-cli",
+    "cursor-vscode": "cursor",
+    "visual-studio-code": "vscode",
+}
+
+
+def _network_session() -> bool:
+    from .state import get_current_session_id
+
+    return get_current_session_id() not in ("default", "stdio")
+
+
+def _normalize_agent(name: Any) -> str:
+    text = "-".join(str(name or "").strip().lower().split())
+    return _AGENT_ALIASES.get(text, text)[:64]
+
+
+def client_agent() -> str:
+    """Agent label: ?agent= on the MCP URL, MUNINN_AGENT_NAME (stdio), else the MCP clientInfo name."""
+    chosen = _SESSION_STATE.get("agent_name")
+    if not chosen and not _network_session():
+        chosen = os.environ.get("MUNINN_AGENT_NAME")
+    if not chosen:
+        chosen = (_SESSION_STATE.get("client_info") or {}).get("name")
+    return _normalize_agent(chosen) or "unknown"
+
+
+def client_project(args: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
+    """Project for this call: explicit argument, then (stdio only) MUNINN_PROJECT or the git repo."""
+    args = args if isinstance(args, dict) else {}
+    explicit = args.get("project")
+    if isinstance(explicit, str) and explicit.strip():
+        branch = args.get("branch")
+        return {"project": explicit.strip(), "branch": branch if isinstance(branch, str) and branch else None}
+    if _network_session():
+        return {"project": None, "branch": None}
+    pinned = os.environ.get("MUNINN_PROJECT", "").strip()
+    if pinned:
+        return {"project": pinned, "branch": None}
+    git = get_git_info()
+    if git.get("branch") in (None, "", "unknown"):
+        return {"project": None, "branch": None}  # not inside a repository
+    return {"project": git.get("project") or None, "branch": git.get("branch")}
+
+
 def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     metadata = inject_operator_profile_metadata(args.get("metadata", {}), operation="add")
-    git = get_git_info()
-    metadata.setdefault("project", git["project"])
-    metadata.setdefault("branch", git["branch"])
+    git = client_project(args)
+    metadata.setdefault("project", git["project"] or "global")
+    if git["branch"]:
+        metadata.setdefault("branch", git["branch"])
+    agent = client_agent()
+    metadata.setdefault("agent", agent)
 
     # v3.11.0: Pass scope so the server persists it correctly
     scope = args.get("scope", "project")
@@ -485,6 +595,7 @@ def _do_add_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str,
         "content": args.get("content"),
         "metadata": metadata,
         "user_id": "global_user",
+        "agent_id": agent,
         "scope": scope,
         "media_type": media_type,
     }
@@ -504,17 +615,19 @@ def _do_add_image_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dic
     if not image_path or not description:
         return {"success": False, "error": "image_path and description are required"}
 
-    git = get_git_info()
+    git = client_project(args)
     metadata = inject_operator_profile_metadata(args.get("metadata", {}), operation="add")
-    metadata.setdefault("project", args.get("project") or git["project"])
-    metadata.setdefault("branch", git["branch"])
+    metadata.setdefault("project", git["project"] or "global")
+    if git["branch"]:
+        metadata.setdefault("branch", git["branch"])
+    metadata.setdefault("agent", client_agent())
     scope = args.get("scope", "project")
     if scope not in ("project", "global"):
         scope = "project"
     payload = {
         "image_path": image_path,
         "description": description,
-        "project": args.get("project") or git["project"],
+        "project": git["project"] or "global",
         "namespace": args.get("namespace", "global"),
         "scope": scope,
         "metadata": metadata,
@@ -541,16 +654,20 @@ def _do_set_project_instruction(args: Dict[str, Any], deadline: Optional[float])
     if not instruction:
         return {"success": False, "error": "instruction is required"}
 
-    git = get_git_info()
+    git = client_project(args)
+    agent = client_agent()
     metadata = inject_operator_profile_metadata(
-        {"project": git["project"], "branch": git["branch"], "category": category},
+        {"project": git["project"] or "global", "category": category, "agent": agent},
         operation="add",
     )
+    if git["branch"]:
+        metadata["branch"] = git["branch"]
 
     payload = {
         "content": instruction,
         "metadata": metadata,
         "user_id": "global_user",
+        "agent_id": agent,
         "scope": "project",
     }
     resp = make_request_with_retry(
@@ -579,10 +696,10 @@ def _search_session_id() -> Optional[str]:
 
 
 def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    git = get_git_info()
+    git = client_project(args)
     filters = dict(args.get("filters") or {})
     auto_project = False
-    if "project" not in filters:
+    if "project" not in filters and git["project"]:
         filters["project"] = git["project"]
         auto_project = True
 
@@ -661,11 +778,11 @@ def _do_delete_all_memories(args: Dict[str, Any], deadline: Optional[float]) -> 
     return resp.json()
 
 def _do_set_project_goal(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    git = get_git_info()
+    git = client_project(args)
     payload = {
         "user_id": "global_user",
         "namespace": args.get("namespace", "global"),
-        "project": args.get("project", git["project"]),
+        "project": git["project"] or "global",
         "goal_statement": args.get("goal_statement"),
         "constraints": args.get("constraints", []),
     }
@@ -673,11 +790,11 @@ def _do_set_project_goal(args: Dict[str, Any], deadline: Optional[float]) -> Dic
     return resp.json()
 
 def _do_get_project_goal(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    git = get_git_info()
+    git = client_project(args)
     params = {
         "user_id": "global_user",
         "namespace": args.get("namespace", "global"),
-        "project": args.get("project", git["project"]),
+        "project": git["project"] or "global",
     }
     resp = make_request_with_retry("GET", f"{SERVER_URL}/goal/get", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT)
     return resp.json()
@@ -734,30 +851,30 @@ def _do_get_model_profile_alerts(args: Dict[str, Any], deadline: Optional[float]
     return resp.json()
 
 def _do_export_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    git = get_git_info()
+    git = client_project(args)
     payload = {
         "user_id": "global_user",
         "namespace": args.get("namespace", "global"),
-        "project": args.get("project", git["project"]),
+        "project": git["project"] or "global",
         "limit": args.get("limit", 25),
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/handoff/export", deadline_epoch=deadline, json=payload, timeout=30)
     return resp.json()
 
 def _do_import_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    git = get_git_info()
+    git = client_project(args)
     payload = {
         "bundle": args.get("bundle"),
         "user_id": "global_user",
         "namespace": args.get("namespace", "global"),
-        "project": args.get("project", git["project"]),
+        "project": git["project"] or "global",
         "source": args.get("source", "mcp_import"),
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/handoff/import", deadline_epoch=deadline, json=payload, timeout=30)
     return resp.json()
 
 def _do_record_retrieval_feedback(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    git = get_git_info()
+    git = client_project(args)
     payload = {
         "query": args.get("query"),
         "memory_id": args.get("memory_id"),
@@ -767,21 +884,21 @@ def _do_record_retrieval_feedback(args: Dict[str, Any], deadline: Optional[float
         "signals": args.get("signals", {}),
         "user_id": "global_user",
         "namespace": args.get("namespace", "global"),
-        "project": args.get("project", git["project"]),
+        "project": git["project"] or "global",
         "source": args.get("source", "mcp_feedback"),
     }
     resp = make_request_with_retry("POST", f"{SERVER_URL}/feedback/retrieval", deadline_epoch=deadline, json=payload, timeout=15)
     return resp.json()
 
 def _do_ingest_sources(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    git = get_git_info()
+    git = client_project(args)
     payload = {
         "sources": args.get("sources", []),
         "recursive": args.get("recursive", False),
         "chronological_order": args.get("chronological_order", "none"),
         "user_id": "global_user",
         "namespace": args.get("namespace", "global"),
-        "project": args.get("project", git["project"]),
+        "project": git["project"] or "global",
         "metadata": inject_operator_profile_metadata(args.get("metadata", {}), operation="ingest"),
         "max_file_size_bytes": args.get("max_file_size_bytes"),
         "chunk_size_chars": args.get("chunk_size_chars"),
@@ -802,7 +919,7 @@ def _do_discover_legacy_sources(args: Dict[str, Any], deadline: Optional[float])
     return resp.json()
 
 def _do_ingest_legacy_sources(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
-    git = get_git_info()
+    git = client_project(args)
     payload = {
         "selected_source_ids": args.get("selected_source_ids", []),
         "selected_paths": args.get("selected_paths", []),
@@ -814,7 +931,7 @@ def _do_ingest_legacy_sources(args: Dict[str, Any], deadline: Optional[float]) -
         "chronological_order": args.get("chronological_order", "none"),
         "user_id": "global_user",
         "namespace": args.get("namespace", "global"),
-        "project": args.get("project", git["project"]),
+        "project": git["project"] or "global",
         "metadata": inject_operator_profile_metadata(args.get("metadata", {}), operation="legacy_ingest"),
         "max_file_size_bytes": args.get("max_file_size_bytes"),
         "chunk_size_chars": args.get("chunk_size_chars"),
@@ -876,6 +993,203 @@ def _do_apply_federation_bundle(args: Dict[str, Any], deadline: Optional[float])
     resp = make_request_with_retry("POST", f"{SERVER_URL}/federation/apply", deadline_epoch=deadline, json=payload, timeout=30)
     return resp.json()
 
+
+def _do_detect_information_gaps(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {
+        "query": args.get("query"),
+        "context": args.get("context"),
+        "user_id": "global_user",
+        "limit": args.get("limit", 10),
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/reasoning/detect-gaps", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
+    return resp.json()
+
+def _do_trigger_distillation(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"force": bool(args.get("force", True))}
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/optimization/distill", deadline_epoch=deadline, json=payload, timeout=_write_timeout_seconds())
+    return resp.json()
+
+def _do_correct_fact(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"memory_id": args.get("memory_id"), "correction": args.get("correction")}
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/optimization/correct", deadline_epoch=deadline, json=payload, timeout=_write_timeout_seconds())
+    return resp.json()
+
+def _do_forage_knowledge(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {
+        "query": args.get("query"),
+        "ambiguity_threshold": args.get("ambiguity_threshold", 0.7),
+        "user_id": "global_user",
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/optimization/forage", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
+    return resp.json()
+
+def _do_get_project_context(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    params = {"user_id": "global_user", "recent_limit": args.get("recent_limit", 10)}
+    project = client_project(args)["project"]
+    if project:
+        params["project"] = project
+    resp = make_request_with_retry(
+        "GET", f"{SERVER_URL}/context", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT
+    )
+    return resp.json()
+
+def _do_create_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    git = client_project(args)
+    if not git["project"]:
+        raise ValueError("create_handoff needs project: the repository or folder name you are working in")
+    details = {field: args.get(field) for field in ("next_steps", "open_questions", "decisions", "files")}
+    details["branch"] = args.get("branch") or git["branch"]
+    payload = {
+        "project": git["project"],
+        "summary": args.get("summary"),
+        "title": args.get("title"),
+        "to_agent": args.get("to_agent"),
+        "from_agent": client_agent(),
+        "details": {key: value for key, value in details.items() if value},
+        "user_id": "global_user",
+    }
+    resp = make_request_with_retry(
+        "POST", f"{SERVER_URL}/handoffs", deadline_epoch=deadline, json=payload, timeout=_write_timeout_seconds()
+    )
+    return resp.json()
+
+def _do_resume_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {
+        "agent": client_agent(),
+        "project": client_project(args)["project"],
+        "handoff_id": args.get("handoff_id"),
+        "claim": bool(args.get("claim", True)),
+        "user_id": "global_user",
+    }
+    resp = make_request_with_retry(
+        "POST", f"{SERVER_URL}/handoffs/resume", deadline_epoch=deadline, json=payload, timeout=_write_timeout_seconds()
+    )
+    return resp.json()
+
+def _do_complete_handoff(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    handoff_id = str(args.get("handoff_id") or "")
+    if not handoff_id:
+        raise ValueError("complete_handoff requires handoff_id")
+    payload = {
+        "agent": client_agent(),
+        "status": args.get("status", "done"),
+        "note": args.get("note"),
+        "user_id": "global_user",
+    }
+    resp = make_request_with_retry(
+        "POST", f"{SERVER_URL}/handoffs/{quote(handoff_id, safe='')}/finish",
+        deadline_epoch=deadline, json=payload, timeout=_write_timeout_seconds(),
+    )
+    return resp.json()
+
+def _do_get_thread(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    thread_id = str(args.get("thread_id") or "")
+    if args.get("timeline") and not thread_id:
+        project = client_project(args)["project"]
+        if not project:
+            raise ValueError("timeline needs project: the repository or folder name")
+        params = {"project": project, "offset": args.get("offset", 0), "limit": args.get("limit", 30)}
+        if args.get("since"):
+            params["since"] = args["since"]
+        resp = make_request_with_retry(
+            "GET", f"{SERVER_URL}/history/timeline", deadline_epoch=deadline, params=params,
+            timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+        return resp.json()
+    if thread_id:
+        params = {"offset": args.get("offset", 0), "limit": args.get("limit", 30)}
+        resp = make_request_with_retry(
+            "GET", f"{SERVER_URL}/history/threads/{quote(thread_id, safe=':')}",
+            deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+        return resp.json()
+    params = {"limit": args.get("limit", 30)}
+    project = client_project(args)["project"]
+    if project:
+        params["project"] = project
+    resp = make_request_with_retry(
+        "GET", f"{SERVER_URL}/history/threads", deadline_epoch=deadline, params=params, timeout=DEFAULT_HTTP_TIMEOUT
+    )
+    return resp.json()
+
+def _do_import_agent_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    if args.get("analyze"):
+        payload = {"apply": bool(args.get("apply"))}
+        project = client_project(args)["project"]
+        if project:
+            payload["project"] = project
+        path = "/history/analyze"
+    else:
+        payload = {key: args.get(key) for key in ("apply", "providers", "since", "paths") if args.get(key) is not None}
+        path = "/history/import"
+    resp = make_request_with_retry("POST", f"{SERVER_URL}{path}", deadline_epoch=deadline, json=payload, timeout=120)
+    return resp.json()
+
+CHATGPT_SEARCH_LIMIT = 10
+# Tools with an outputSchema return structuredContent alongside the text block.
+STRUCTURED_TOOLS = {"search", "fetch"}
+# Nested briefings and handoffs are returned whole rather than preview-compacted.
+EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {
+    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
+    "import_agent_history",
+}
+_TITLE_CHARS = 80
+
+
+def _memory_url(memory_id: str) -> str:
+    return f"muninn://memory/{quote(memory_id, safe='')}"
+
+
+def _memory_title(content: str) -> str:
+    first_line = " ".join((content or "").split())
+    return first_line if len(first_line) <= _TITLE_CHARS else first_line[: _TITLE_CHARS - 1] + "…"
+
+
+def _do_chatgpt_search(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    """ChatGPT connector search: {results: [{id, title, url}]} across all projects."""
+    payload = {
+        "query": args.get("query"),
+        "limit": CHATGPT_SEARCH_LIMIT,
+        "rerank": True,
+        "user_id": "global_user",
+        "session_id": _search_session_id(),
+    }
+    resp = make_request_with_retry("POST", f"{SERVER_URL}/search", deadline_epoch=deadline, json=payload, timeout=DEFAULT_HTTP_TIMEOUT)
+    result = resp.json()
+    if not result.get("success"):
+        return result
+    hits = [
+        {"id": item["id"], "title": _memory_title(item.get("memory", "")), "url": _memory_url(item["id"])}
+        for item in result.get("data") or []
+        if isinstance(item, dict) and item.get("id")
+    ]
+    return {"success": True, "data": {"results": hits}}
+
+
+def _do_chatgpt_fetch(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    """ChatGPT connector fetch: {id, title, text, url, metadata} for one memory."""
+    memory_id = str(args.get("id") or "")
+    if not memory_id:
+        raise ValueError("fetch requires an 'id' returned by search")
+    resp = make_request_with_retry("GET", f"{SERVER_URL}/memory/{quote(memory_id, safe='')}", deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT)
+    result = resp.json()
+    if not result.get("success"):
+        return result
+    record = result["data"]
+    metadata = {
+        key: record.get(key)
+        for key in ("memory_type", "project", "namespace", "importance", "created_at", "archived")
+    }
+    return {
+        "success": True,
+        "data": {
+            "id": record["id"],
+            "title": _memory_title(record.get("memory", "")),
+            "text": record.get("memory", ""),
+            "url": _memory_url(record["id"]),
+            "metadata": metadata,
+        },
+    }
 
 def _do_mimir_relay(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     """Relay an instruction to a remote AI agent via the IRP/1 protocol.

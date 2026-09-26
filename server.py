@@ -30,12 +30,12 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import TYPE_CHECKING, Optional, Dict, Any, List
 from pathlib import Path
 
 import uvicorn
 import requests
-from fastapi import FastAPI, HTTPException, Depends, Security, status
+from fastapi import FastAPI, HTTPException, Depends, Request, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
@@ -47,6 +47,7 @@ from muninn.core.env_loader import load_project_env
 load_project_env(Path(__file__).parent)
 
 from muninn.core.memory import MuninnMemory
+from muninn.core import handoffs
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.core.feature_flags import FeatureDisabledError
 from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
@@ -100,6 +101,9 @@ _mimir_store: Optional[MimirStore] = None
 _mimir_relay: Optional[MimirRelay] = None
 _periodic_ingestion: Optional[PeriodicIngestionScheduler] = None
 _legacy_discovery: Optional[LegacyDiscoveryScheduler] = None
+_history: Optional["HistoryService"] = None
+if TYPE_CHECKING:
+    from muninn.history.service import HistoryService
 _SERVER_INSTANCE_LOCK_HANDLE: Optional[portalocker.Lock] = None
 _SERVER_INSTANCE_LOCK_PATH: Optional[Path] = None
 
@@ -386,7 +390,7 @@ def _release_server_instance_lock() -> None:
 # --- Application Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global memory, _mimir_store, _mimir_relay, _periodic_ingestion, _legacy_discovery
+    global memory, _mimir_store, _mimir_relay, _periodic_ingestion, _legacy_discovery, _history
 
     logger.info("Muninn Server starting...")
 
@@ -449,9 +453,21 @@ async def lifespan(app: FastAPI):
                 config.legacy_discovery.interval_hours,
             )
 
+        # Keep a private copy of local AI conversation history (the apps delete theirs) and,
+        # once the user has imported it, keep importing new turns. MUNINN_HISTORY_VAULT=0 disables.
+        if os.environ.get("MUNINN_HISTORY_VAULT", "1").strip().lower() not in ("0", "false", "no", "off"):
+            from muninn.history.service import HistoryService
+
+            _history = HistoryService(memory, Path(config.data_dir) / "history_vault")
+            await _history.start()
+            logger.info("History vault enabled (sync every %.0f min)", _history.interval / 60)
+
         yield
     finally:
         logger.info("Shutting down Muninn Server...")
+        if _history:
+            await _history.stop()
+            _history = None
         if _legacy_discovery:
             await _legacy_discovery.stop()
             _legacy_discovery = None
@@ -487,18 +503,21 @@ app.include_router(streamable_http_router)
 app.include_router(sse_router)
 
 # --- CORS ---
-# Security design: Muninn runs on localhost only and all data-mutating endpoints
-# require a Bearer token (Depends(verify_token)).  The wildcard origin is needed
-# so the static dashboard (opened as file:// or from a different local port) can
-# reach the API.  Per the Fetch spec, wildcard origins CANNOT be combined with
-# allow_credentials=True, so session cookies are not usable — this is intentional.
-# Authentication is Bearer-token only (Authorization header), which browsers do
-# NOT send automatically; no cross-site request forgery is possible.
-# allow_methods is restricted to the verbs actually used by the server.
+# Security design: Muninn runs on localhost and, unless MUNINN_AUTH_TOKEN or
+# MUNINN_API_KEY is set, does not require a token. Browsers attach Origin to
+# cross-site requests, so OriginGuardMiddleware rejects any origin that is not
+# local or listed in MUNINN_ALLOWED_ORIGINS; this blocks other web pages and
+# DNS rebinding (the MCP Streamable HTTP spec requires the check). CORS mirrors
+# the same allow-list. Non-browser clients send no Origin and are unaffected.
+# The dashboard opened as file:// sends Origin "null": add "null" to opt in.
 from fastapi.middleware.cors import CORSMiddleware
+
+from muninn.core.origin import LOCAL_ORIGIN_REGEX, OriginGuardMiddleware, configured_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(configured_origins()),
+    allow_origin_regex=LOCAL_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=[
@@ -507,9 +526,14 @@ app.add_middleware(
         "Accept",
         "Mcp-Session-Id",
         "Mcp-Protocol-Version",
+        "Mcp-Method",
+        "Mcp-Name",
         "Last-Event-ID",
     ],
+    expose_headers=["Mcp-Session-Id"],
 )
+# Added last so it runs first, before CORS answers a preflight.
+app.add_middleware(OriginGuardMiddleware)
 
 DASHBOARD_HTML_PATH = Path(__file__).with_name("dashboard.html")
 
@@ -1227,7 +1251,13 @@ async def ingest_all_legacy_sources_endpoint():
             return {"success": True, "data": {"imported": 0, "total_discovered": 0, "message": "No sources found"}}
 
         # Step 2: Extract all source IDs
-        all_ids = [s["source_id"] for s in sources if s.get("parser_supported", False)]
+        from muninn.ingestion.discovery import HISTORY_MANAGED_PROVIDERS
+
+        # Agent transcripts are imported as ordered, project-tagged memories by /history/import.
+        all_ids = [
+            s["source_id"] for s in sources
+            if s.get("parser_supported", False) and s.get("provider") not in HISTORY_MANAGED_PROVIDERS
+        ]
         logger.info("Bulk import: %d parser-supported sources out of %d total", len(all_ids), len(sources))
 
         if not all_ids:
@@ -1380,6 +1410,17 @@ async def get_all_memories_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/memory/{memory_id}", dependencies=[Depends(verify_token)])
+async def get_memory_endpoint(memory_id: str):
+    """Get one memory by id, including archived memories."""
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    record = await memory.get(memory_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
+    return {"success": True, "data": record}
+
+
 @app.put("/update", dependencies=[Depends(verify_token)])
 async def update_memory_endpoint(req: UpdateMemoryRequest):
     """Update a specific memory."""
@@ -1434,6 +1475,236 @@ async def import_memories_endpoint(req: ImportMemoriesRequest):
         memory, req.records, user_id=req.user_id, namespace=req.namespace,
         source=req.source, dry_run=req.dry_run,
     )}
+
+
+# --- Local AI conversation history ------------------------------------------
+
+class HistoryImportRequest(BaseModel):
+    apply: bool = False
+    providers: Optional[List[str]] = None
+    since: Optional[str] = None
+    paths: Optional[List[str]] = None
+
+
+def _require_history():
+    _require_memory()
+    if _history is None:
+        raise HTTPException(status_code=409, detail="History vault is disabled (MUNINN_HISTORY_VAULT=0)")
+    return _history
+
+
+def _parse_since(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    from muninn.history.parsers import parse_time
+
+    parsed = parse_time(value)
+    if parsed is None:
+        raise HTTPException(status_code=400, detail="since must be an ISO date or epoch seconds")
+    return parsed
+
+
+@app.get("/history/status", dependencies=[Depends(verify_token)])
+async def history_status_endpoint():
+    """Vault contents, where each app keeps history, retention warnings, import progress."""
+    return {"success": True, "data": _require_history().status()}
+
+
+@app.post("/history/sync", dependencies=[Depends(verify_token)])
+async def history_sync_endpoint(paths: Optional[List[str]] = None):
+    """Copy new and changed conversation files into the vault now."""
+    return {"success": True, "data": await _require_history().sync(paths)}
+
+
+@app.post("/history/import", dependencies=[Depends(verify_token)])
+async def history_import_endpoint(req: HistoryImportRequest):
+    """Dry run (default) reports what would become memories; apply imports in the background."""
+    service = _require_history()
+    since = _parse_since(req.since)
+    if req.paths:
+        await service.sync(req.paths)
+    if not req.apply:
+        return {"success": True, "data": await service.run_import(apply=False, providers=req.providers, since=since)}
+    if not service.last_sync:
+        await service.sync()
+    started = service.start_import(providers=req.providers, since=since)
+    return {"success": True, "data": {"started": started, "message": (
+        "Import running; follow it with GET /history/status" if started else "An import is already running")}}
+
+
+class HistoryAnalyzeRequest(BaseModel):
+    apply: bool = False
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    project: Optional[str] = None
+    limit: int = 50
+    create_handoffs: bool = True
+    retry_refused: bool = False
+
+
+@app.post("/history/analyze", dependencies=[Depends(verify_token)])
+async def history_analyze_endpoint(req: HistoryAnalyzeRequest):
+    """Extract decisions, preferences, conventions, fixes and open items from imported threads (opt-in LLM)."""
+    service = _require_history()
+    options = {"provider": req.provider, "model": req.model, "project": req.project,
+               "limit": max(1, min(req.limit, 1000)), "create_handoffs": req.create_handoffs,
+               "retry_refused": req.retry_refused}
+    if not req.apply:
+        return {"success": True, "data": await service.run_analysis(apply=False, **options)}
+    try:
+        from muninn.history.insights import Provider
+
+        Provider.from_env(req.provider, req.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    started = service.start_analysis(**options)
+    return {"success": True, "data": {"started": started, "message": (
+        "Analysis running; follow it with GET /history/status" if started else "Another job is running")}}
+
+
+@app.get("/history/threads", dependencies=[Depends(verify_token)])
+async def history_threads_endpoint(
+    project: Optional[str] = None, agent: Optional[str] = None, status: Optional[str] = None,
+    topic: Optional[str] = None, q: Optional[str] = None, since: Optional[str] = None, limit: int = 20,
+):
+    """The catalog of imported conversation threads, most recent first."""
+    _require_memory()
+    data = await asyncio.to_thread(
+        lambda: memory._metadata.list_history_threads(
+            project, max(1, min(limit, 200)), agent=agent, status=status, topic=topic, text=q,
+            since=_parse_since(since)))
+    return {"success": True, "data": data}
+
+
+@app.get("/history/timeline", dependencies=[Depends(verify_token)])
+async def history_timeline_endpoint(
+    project: str, since: Optional[str] = None, until: Optional[str] = None, offset: int = 0, limit: int = 100,
+):
+    """A project's conversations from every app in one time-ordered stream, with handoffs and agent switches."""
+    _require_memory()
+    from muninn.history.importer import read_project_timeline
+
+    data = await read_project_timeline(memory, project, since=_parse_since(since), until=_parse_since(until),
+                                       offset=max(0, offset), limit=max(1, min(limit, 500)))
+    return {"success": True, "data": data}
+
+
+@app.get("/history/threads/{thread_key:path}", dependencies=[Depends(verify_token)])
+async def history_thread_endpoint(thread_key: str, offset: int = 0, limit: int = 50):
+    """Re-read one conversation thread in order, including turns compaction removed."""
+    _require_memory()
+    from muninn.history.importer import read_thread
+
+    data = await read_thread(memory, thread_key, max(0, offset), max(1, min(limit, 200)))
+    if data["thread"] is None and not data["entries"]:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_key} not found")
+    return {"success": True, "data": data}
+
+
+@app.post("/hooks/{agent}", dependencies=[Depends(verify_token)])
+async def agent_hook_endpoint(agent: str, request: Request):
+    """Claude Code / Codex hook events: session-start briefing, transcript capture at compaction and exit."""
+    _require_memory()
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+    from muninn.history.hooks import handle_hook
+
+    return await handle_hook(agent, payload if isinstance(payload, dict) else {}, memory, _history)
+
+
+# --- Agent handoffs and session briefing ------------------------------------
+
+class CreateHandoffRequest(BaseModel):
+    project: str
+    summary: str
+    from_agent: str = "unknown"
+    title: Optional[str] = None
+    to_agent: Optional[str] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
+    user_id: str = "global_user"
+
+
+class ResumeHandoffRequest(BaseModel):
+    agent: str = "unknown"
+    project: Optional[str] = None
+    handoff_id: Optional[str] = None
+    claim: bool = True
+    user_id: str = "global_user"
+
+
+class FinishHandoffRequest(BaseModel):
+    agent: str = "unknown"
+    status: str = "done"
+    note: Optional[str] = None
+    user_id: str = "global_user"
+
+
+def _require_memory() -> None:
+    if memory is None:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+
+@app.post("/handoffs", dependencies=[Depends(verify_token)])
+async def create_handoff_endpoint(req: CreateHandoffRequest):
+    """Leave work for another agent: what was done, where it stands, what comes next."""
+    _require_memory()
+    try:
+        handoff = await handoffs.create_handoff(
+            memory, project=req.project, summary=req.summary, from_agent=req.from_agent,
+            title=req.title, to_agent=req.to_agent, details=req.details, user_id=req.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"success": True, "data": handoff}
+
+
+@app.get("/handoffs", dependencies=[Depends(verify_token)])
+async def list_handoffs_endpoint(
+    project: Optional[str] = None, status: Optional[str] = None, limit: int = 20, user_id: str = "global_user"
+):
+    """List handoffs, newest first; status is a comma-separated filter (open,claimed,done,cancelled)."""
+    _require_memory()
+    statuses = [part.strip() for part in status.split(",") if part.strip()] if status else None
+    data = await handoffs.list_handoffs(memory, project=project, statuses=statuses, limit=limit, user_id=user_id)
+    return {"success": True, "data": data}
+
+
+@app.post("/handoffs/resume", dependencies=[Depends(verify_token)])
+async def resume_handoff_endpoint(req: ResumeHandoffRequest):
+    """Claim the newest open handoff for a project (or a given id) for the calling agent."""
+    _require_memory()
+    data = await handoffs.resume_handoff(
+        memory, agent=req.agent, project=req.project, handoff_id=req.handoff_id, claim=req.claim,
+        user_id=req.user_id,
+    )
+    return {"success": True, "data": data}
+
+
+@app.post("/handoffs/{handoff_id}/finish", dependencies=[Depends(verify_token)])
+async def finish_handoff_endpoint(handoff_id: str, req: FinishHandoffRequest):
+    """Mark a handoff done or cancelled, or release it back to open."""
+    _require_memory()
+    try:
+        data = await handoffs.finish_handoff(
+            memory, handoff_id=handoff_id, agent=req.agent, status=req.status, note=req.note, user_id=req.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Handoff {handoff_id} not found")
+    return {"success": True, "data": data}
+
+
+@app.get("/context", dependencies=[Depends(verify_token)])
+async def project_context_endpoint(
+    project: Optional[str] = None, recent_limit: int = 10, user_id: str = "global_user"
+):
+    """Session-start briefing: goal, active handoffs, project rules, recent work, global preferences."""
+    _require_memory()
+    data = await handoffs.project_context(memory, project=project, recent_limit=recent_limit, user_id=user_id)
+    return {"success": True, "data": data}
 
 
 @app.post("/restore/{memory_id}", dependencies=[Depends(verify_token)])
