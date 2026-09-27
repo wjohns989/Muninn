@@ -64,6 +64,10 @@ class IngestionManager:
             or self.config.extraction.model_profile
         )
         skip_extraction = bool(scoped_metadata.get("muninn_skip_extraction", False))
+        rule_only_extraction = bool(scoped_metadata.get("muninn_rule_only_extraction", False)) or (
+            getattr(self.config.extraction, "defer_llm_on_add", False)
+            and not scoped_metadata.get("muninn_force_llm_extraction", False)
+        )
         extraction_timeout_value = scoped_metadata.get("muninn_extraction_timeout_seconds")
         extraction_timeout_seconds: Optional[float] = None
         if extraction_timeout_value is not None:
@@ -78,6 +82,12 @@ class IngestionManager:
         if skip_extraction:
             extraction = ExtractionResult()
             entity_names = []
+        elif rule_only_extraction:
+            from muninn.extraction.rules import rule_based_extract
+            extraction = rule_based_extract(content)
+            entity_names = self.memory._extract_entity_names(extraction)
+            if entity_names:
+                scoped_metadata["entity_names"] = entity_names
         else:
             with self._otel.span("muninn.ingestion.extract", {"model_profile": extraction_profile}):
                 if extraction_timeout_seconds is not None:

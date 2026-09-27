@@ -44,10 +44,13 @@ class ExtractionPipeline:
         ollama_model: str = "llama3.2:3b",
         ollama_balanced_model: str = "qwen3:8b",
         ollama_high_reasoning_model: str = "qwen3:14b",
+        ollama_keep_alive: str = "0",
+        ollama_timeout_seconds: float = 120.0,
         model_profile: str = "balanced",
         instructor_base_url: Optional[str] = None,
         instructor_model: Optional[str] = None,
         instructor_api_key: str = "not-needed",
+        instructor_provider: str = "custom",
     ):
         self.xlam_url = xlam_url
         self.xlam_model = xlam_model
@@ -84,17 +87,28 @@ class ExtractionPipeline:
                             instructor_model,
                         ),
                     )
-                extractor_cache: Dict[Tuple[str, str], InstructorExtractor] = {}
+                extractor_cache: Dict[Tuple[str, str, bool], InstructorExtractor] = {}
                 for profile, specs in route_specs_by_profile.items():
                     self._instructor_routes_by_profile[profile] = []
                     for label, base_url, model in specs:
-                        cache_key = (base_url, model)
+                        native_ollama = bool(
+                            ollama_url
+                            and base_url == self._normalize_openai_base_url(ollama_url)
+                            and (
+                                label.startswith("ollama-")
+                                or (label.startswith("instructor-explicit:")
+                                    and instructor_provider == "ollama")
+                            )
+                        )
+                        cache_key = (base_url, model, native_ollama)
                         extractor = extractor_cache.get(cache_key)
                         if extractor is None:
                             extractor = InstructorExtractor(
                                 base_url=base_url,
                                 model=model,
                                 api_key=instructor_api_key,
+                                timeout=ollama_timeout_seconds if native_ollama else 30.0,
+                                ollama_keep_alive=ollama_keep_alive if native_ollama else None,
                             )
                             extractor_cache[cache_key] = extractor
                         self._instructor_routes_by_profile[profile].append((label, extractor))

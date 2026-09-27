@@ -900,16 +900,42 @@ def _read_export(path: Path) -> list:
 
 def cmd_import(args: argparse.Namespace) -> int:
     """Import exported memories (JSONL, JSON array, or a Mem0 /memories response)."""
+    from muninn.core.maintenance import content_hash, normalize_legacy_record
+
     records = _read_export(args.file)
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be positive")
     totals: dict = {}
+    dry_run_seen: set[str] = set()
     for start in range(0, len(records), args.batch_size):
+        batch = records[start:start + args.batch_size]
+        cross_batch_duplicates = 0
+        if not args.apply:
+            filtered = []
+            for raw in batch:
+                item = normalize_legacy_record(
+                    raw, user_id=args.user_id, namespace=args.namespace, source=args.source
+                )
+                if item is None:
+                    filtered.append(raw)
+                    continue
+                digest = content_hash(item["content"])
+                if digest in dry_run_seen:
+                    cross_batch_duplicates += 1
+                    continue
+                dry_run_seen.add(digest)
+                filtered.append(raw)
+            batch = filtered
         report = _admin_post(args, "/admin/import", {
-            "records": records[start:start + args.batch_size],
+            "records": batch,
             "user_id": args.user_id,
             "namespace": args.namespace,
             "source": args.source,
             "dry_run": not args.apply,
         })
+        if not args.apply:
+            report["read"] += cross_batch_duplicates
+            report["duplicates"] += cross_batch_duplicates
         for key, value in report.items():
             if isinstance(value, int) and not isinstance(value, bool):
                 totals[key] = totals.get(key, 0) + value

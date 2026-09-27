@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import logging
 import os
 import time
@@ -56,6 +57,9 @@ class HistoryService:
         self.progress: Dict[str, Any] = {}
         self._captured: Dict[str, float] = {}
         self._background: set = set()
+        self._auto_task: Optional[asyncio.Task] = None
+        self._analysis_lock = asyncio.Lock()
+        self.last_auto_route: Optional[Dict[str, Any]] = None
 
     # --- settings ---------------------------------------------------------------
 
@@ -113,19 +117,21 @@ class HistoryService:
 
         if not apply:
             return await analyze_threads(self.memory, self.vault, apply=False, **options)
-        self.progress = {"running": True, "analysis": True, "started_at": time.time()}
-        try:
-            report = await analyze_threads(self.memory, self.vault, apply=True, progress=self.progress, **options)
-        finally:
-            self.progress["running"] = False
-        report["finished_at"] = time.time()
-        self.last_analysis = report
-        return report
+        async with self._analysis_lock:
+            self.progress = {"running": True, "analysis": True, "started_at": time.time()}
+            try:
+                report = await analyze_threads(self.memory, self.vault, apply=True, progress=self.progress, **options)
+            finally:
+                self.progress["running"] = False
+            report["finished_at"] = time.time()
+            self.last_analysis = report
+            return report
 
     def start_analysis(self, **options: Any) -> bool:
         if self._job and not self._job.done():
             return False
-        self._job = asyncio.create_task(self._guarded(self.run_analysis(apply=True, **options)))
+        self._job = asyncio.create_task(self._guarded(self.run_analysis(apply=True, **options),
+                                                       operation="analysis"))
         return True
 
     def start_import(self, *, providers: Optional[List[str]] = None, since: Optional[float] = None) -> bool:
@@ -135,12 +141,15 @@ class HistoryService:
         self._job = asyncio.create_task(self._guarded(self.run_import(apply=True, providers=providers, since=since)))
         return True
 
-    async def _guarded(self, coro) -> None:
+    async def _guarded(self, coro, *, operation: str = "import") -> None:
         try:
             await coro
         except Exception as exc:
-            logger.exception("History import failed")
-            self.last_import = {"error": str(exc), "finished_at": time.time()}
+            logger.exception("History %s failed", operation)
+            if operation == "import":
+                self.last_import = {"error": str(exc), "finished_at": time.time()}
+            elif operation == "analysis":
+                self.last_analysis = {"error": str(exc), "finished_at": time.time()}
 
     async def capture(self, path: str, provider: str, *, force: bool = False) -> Dict[str, Any]:
         """Vault and import one transcript now (called by agent hooks)."""
@@ -154,12 +163,14 @@ class HistoryService:
             if outcome == "missing":
                 return {"captured": False}
             report = await import_history(self.memory, self.vault, apply=True, sources=[key])
+        self._launch_auto_analysis()
         return {"captured": True, "vault": outcome, "turn_memories": report["turn_memories"],
                 "compaction_memories": report["compaction_memories"]}
 
     def capture_later(self, path: str, provider: str, *, force: bool = False) -> None:
         """Hooks must answer fast (Codex allows 1 s at session end): capture in the background."""
-        task = asyncio.create_task(self._guarded(self.capture(path, provider, force=force)))
+        task = asyncio.create_task(self._guarded(self.capture(path, provider, force=force),
+                                                operation="capture"))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
@@ -181,6 +192,7 @@ class HistoryService:
             "last_import": self.last_import,
             "last_analysis": self.last_analysis,
             "auto_analyze": _flag("MUNINN_INSIGHTS_AUTO"),
+            "last_auto_route": self.last_auto_route,
             "import_progress": self.progress,
             "warnings": self.retention_warnings(),
         }
@@ -189,14 +201,74 @@ class HistoryService:
 
     async def start(self) -> None:
         if self._task is None:
+            self._auto_since()
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        for task in (self._task, self._job, *self._background):
+        for task in (self._task, self._job, self._auto_task, *self._background):
             if task and not task.done():
                 task.cancel()
         self._task = None
         self.vault.close()
+
+    def _auto_since(self) -> Optional[float]:
+        """First activation excludes existing historical threads from auto-analysis.
+
+        Manual Phase 9 analysis can still process them after its separate approval.
+        """
+        if not _flag("MUNINN_INSIGHTS_AUTO"):
+            return None
+        key = "history_auto_insights_since"
+        value = self.memory._metadata.get_meta(key)
+        if value is None:
+            value = str(time.time())
+            self.memory._metadata.set_meta(key, value)
+        return float(value)
+
+    def _launch_auto_analysis(self) -> None:
+        if not (_flag("MUNINN_INSIGHTS_AUTO") and self.auto_import_enabled()):
+            return
+        if self._auto_task and not self._auto_task.done():
+            return
+        if self._job and not self._job.done():
+            return
+        self._auto_task = asyncio.create_task(self._guarded(self._auto_analyze(),
+                                                            operation="analysis"))
+
+    async def _auto_analyze(self) -> None:
+        """Analyze at most two new threads without occupying a busy GPU."""
+        from muninn.history.auto_routing import (
+            choose_route, configured_model_hints, guarded_openrouter_available,
+            probe_gpu, probe_ollama,
+        )
+
+        since = self._auto_since()
+        if since is None:
+            return
+        gpu = await asyncio.to_thread(probe_gpu)
+        installed, loaded = await asyncio.to_thread(
+            probe_ollama, os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434")
+        )
+        if gpu is not None:
+            gpu = replace(gpu, loaded_models=loaded)
+        route = choose_route(gpu, installed, model_hints=configured_model_hints(),
+                             cloud_allowed=False)
+        if route.provider == "deferred":
+            # Do not touch credentials or OpenRouter when a local route fits.
+            # Remote fallback needs a provider-enforced daily key limit.
+            cloud_ready = await asyncio.to_thread(guarded_openrouter_available, 1.0)
+            if cloud_ready:
+                route = choose_route(gpu, installed, model_hints=configured_model_hints(),
+                                     cloud_allowed=True, cloud_available=True)
+        self.last_auto_route = {"provider": route.provider, "model": route.model,
+                                "reason": route.reason, "free_mib": route.free_mib,
+                                "at": time.time()}
+        if route.provider == "ollama":
+            await self.run_analysis(apply=True, provider="ollama", model=route.model,
+                                    since=since, limit=2, concurrency=1)
+        elif route.provider == "openrouter":
+            await self.run_analysis(apply=True, provider="openrouter", since=since,
+                                    limit=1, concurrency=1)
 
     async def _loop(self) -> None:
         while True:
@@ -204,8 +276,7 @@ class HistoryService:
                 await self.sync()
                 if self.auto_import_enabled() and not (self._job and not self._job.done()):
                     await self.run_import(apply=True)
-                    if _flag("MUNINN_INSIGHTS_AUTO"):
-                        await self.run_analysis(apply=True)
+                    self._launch_auto_analysis()
             except asyncio.CancelledError:
                 raise
             except Exception:

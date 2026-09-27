@@ -125,6 +125,36 @@ def test_missing_key_explains_how_to_set_it():
         Provider.from_env("openrouter")
 
 
+def test_local_ollama_analysis_unloads_model_after_request(monkeypatch):
+    monkeypatch.setenv("MUNINN_OLLAMA_KEEP_ALIVE", "0")
+    sent = {}
+
+    def respond(request):
+        sent["path"] = request.url.path
+        sent["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "model": "local-test",
+            "message": {"content": json.dumps(GOOD)},
+            "done_reason": "stop",
+            "prompt_eval_count": 12,
+            "eval_count": 8,
+        })
+
+    provider = Provider("ollama", "http://localhost:11434/v1", ["local-test"])
+
+    async def call():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await provider.complete(client, [{"role": "user", "content": "x"}])
+
+    content, meta = asyncio.run(call())
+    assert sent["path"] == "/api/chat"
+    assert sent["body"]["keep_alive"] == "0"
+    assert sent["body"]["format"]["type"] == "object"
+    assert sent["body"]["stream"] is False
+    assert json.loads(content) == GOOD
+    assert meta["prompt_tokens"] == 12 and meta["completion_tokens"] == 8
+
+
 # --- validation ---------------------------------------------------------------------------------
 
 def test_validation_normalizes_before_storage():

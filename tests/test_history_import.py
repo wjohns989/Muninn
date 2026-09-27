@@ -291,6 +291,28 @@ def test_collect_files_threads_under_their_projects(env):
     assert [t.session.started_at for t in collected.threads] == sorted(t.session.started_at for t in collected.threads)
 
 
+def test_history_import_serializes_writes_for_local_vector_store(env):
+    """Qdrant local count/upsert cannot safely overlap within an import."""
+    env.vault.sync()
+    original_add = env.memory.add
+    active = 0
+    peak = 0
+
+    async def tracked_add(*args, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0)
+            return await original_add(*args, **kwargs)
+        finally:
+            active -= 1
+
+    env.memory.add = tracked_add
+    run(import_history(env.memory, env.vault, apply=True, providers=["claude_code"]))
+    assert peak == 1
+
+
 def test_import_is_ordered_complete_and_incremental(env):
     env.vault.sync()
     dry = run(import_history(env.memory, env.vault, apply=False))

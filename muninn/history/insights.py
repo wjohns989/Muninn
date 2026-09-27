@@ -315,6 +315,15 @@ class Provider:
         raise ValueError("provider must be 'openrouter' or 'ollama'")
 
     def request_body(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        if self.name == "ollama":
+            return {
+                "model": self.model,
+                "messages": messages,
+                "format": _schema(),
+                "stream": False,
+                "keep_alive": os.environ.get("MUNINN_OLLAMA_KEEP_ALIVE", "0"),
+                "options": {"temperature": 0.1},
+            }
         body: Dict[str, Any] = {"model": self.model, "messages": messages, "response_format": RESPONSE_FORMAT}
         if self.name == "openrouter":
             # Only parameters every chosen model's ZDR endpoints support: temperature and
@@ -333,8 +342,18 @@ class Provider:
         headers = {"Content-Type": "application/json", "X-Title": "Muninn"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        response = await client.post(f"{self.base_url}/chat/completions", json=self.request_body(messages),
-                                     headers=headers)
+        endpoint = (
+            f"{self.base_url.removesuffix('/v1')}/api/chat"
+            if self.name == "ollama" else f"{self.base_url}/chat/completions"
+        )
+        if self.name == "ollama":
+            from muninn.extraction.ollama_slot import async_ollama_slot
+            async with async_ollama_slot():
+                response = await client.post(endpoint, json=self.request_body(messages),
+                                             headers=headers)
+        else:
+            response = await client.post(endpoint, json=self.request_body(messages),
+                                         headers=headers)
         if response.status_code in (400, 403, 451) and _FILTER_ERROR.search(response.text[:2000]):
             # Moderation or a provider content filter rejected the input: another model may accept it.
             raise ModelRefusal(_error_model(response) or self.model,
@@ -347,6 +366,17 @@ class Provider:
                            f"(account setting: {llm_settings.PRIVACY_PAGE})")
             raise RuntimeError(f"{self.name} {response.status_code}: {detail}")
         data = response.json()
+        if self.name == "ollama":
+            # Normalize native Ollama's response to the existing refusal and
+            # accounting path. The model is unloaded by the request itself.
+            data = {
+                "model": data.get("model") or self.model,
+                "choices": [{"message": data.get("message") or {},
+                             "finish_reason": data.get("done_reason")}],
+                "usage": {"prompt_tokens": data.get("prompt_eval_count", 0),
+                          "completion_tokens": data.get("eval_count", 0)},
+                "error": data.get("error"),
+            }
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
@@ -674,6 +704,7 @@ async def analyze_threads(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     project: Optional[str] = None,
+    since: Optional[float] = None,
     limit: int = 50,
     concurrency: int = 4,
     create_handoffs: bool = True,
@@ -687,7 +718,8 @@ async def analyze_threads(
     """
     store = memory._metadata
     pending = await asyncio.to_thread(
-        lambda: store.list_history_threads(project, limit, needs_analysis=True, retry_refused=retry_refused))
+        lambda: store.list_history_threads(project, limit, since=since,
+                                           needs_analysis=True, retry_refused=retry_refused))
     sources = [t["source_path"] for t in pending if t.get("source_path")]
     collected = await asyncio.to_thread(collect, vault, None, None, sources) if sources else None
     by_key = {t.key: t for t in (collected.threads if collected else [])}

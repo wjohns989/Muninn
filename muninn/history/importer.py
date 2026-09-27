@@ -374,7 +374,7 @@ async def _write(memory: "MuninnMemory", fn: Callable[..., Any], *args: Any, **k
 
 async def _add(memory: "MuninnMemory", item: Dict[str, Any], scope: str) -> Optional[str]:
     # Bulk history uses the fast rule-based entity pass, not a per-turn LLM call.
-    metadata = dict(item["metadata"], operator_model_profile="low_latency", muninn_extraction_timeout_seconds=10)
+    metadata = dict(item["metadata"], muninn_rule_only_extraction=True)
     result = await memory.add(
         content=item["content"],
         user_id="global_user",
@@ -456,13 +456,10 @@ async def import_history(
             # Always project-scoped: conversations outside any repository file under "global" and
             # show up in unfiltered searches, but do not leak into every project's results.
             scope = "project"
-            semaphore = asyncio.Semaphore(4)
-
-            async def add_one(item: Dict[str, Any]) -> None:
-                async with semaphore:
-                    await _add(memory, item, scope)
-
-            await asyncio.gather(*(add_one(item) for item in items + compactions))
+            # Qdrant's embedded local collection is not safe for overlapping
+            # count/upsert calls. Keep each complete memory.add sequential.
+            for item in items + compactions:
+                await _add(memory, item, scope)
             await _write(memory, store.mark_turns, fresh_fps)
             summary = summary_memory(thread, continues)
             summary_id = state["summary_memory_id"] if state else None

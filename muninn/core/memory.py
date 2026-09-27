@@ -123,6 +123,9 @@ class MuninnMemory:
 
         # Locking
         self._write_lock = asyncio.Lock()
+        # Embedded Qdrant collection reads during ingestion cannot overlap
+        # another add's upsert, even though persistence already has a lock.
+        self._add_lock = asyncio.Lock()
 
         # Embedding
         self._embed_model = None
@@ -169,6 +172,8 @@ class MuninnMemory:
             ollama_model=self.config.extraction.ollama_model,
             ollama_balanced_model=self.config.extraction.ollama_balanced_model,
             ollama_high_reasoning_model=self.config.extraction.ollama_high_reasoning_model,
+            ollama_keep_alive=self.config.extraction.ollama_keep_alive,
+            ollama_timeout_seconds=self.config.extraction.ollama_timeout_seconds,
             model_profile=self.config.extraction.model_profile,
             instructor_base_url=(
                 self.config.extraction.instructor_base_url
@@ -177,6 +182,7 @@ class MuninnMemory:
             ),
             instructor_model=self.config.extraction.instructor_model,
             instructor_api_key=self.config.extraction.instructor_api_key,
+            instructor_provider=self.config.extraction.instructor_provider,
         )
 
         # Read feature flags once; used for all gated subsystem initialization below.
@@ -488,6 +494,26 @@ class MuninnMemory:
             return 0
 
     async def add(
+        self,
+        content: str,
+        user_id: str = "global_user",
+        agent_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        namespace: str = "global",
+        memory_type: MemoryType = MemoryType.EPISODIC,
+        provenance: Provenance = Provenance.AUTO_EXTRACTED,
+        scope: str = "project",
+        media_type: str = "text",
+    ) -> Dict[str, Any]:
+        """Serialize a complete add, including pre-persistence vector reads."""
+        async with self._add_lock:
+            return await self._add_unlocked(
+                content=content, user_id=user_id, agent_id=agent_id,
+                metadata=metadata, namespace=namespace, memory_type=memory_type,
+                provenance=provenance, scope=scope, media_type=media_type,
+            )
+
+    async def _add_unlocked(
         self,
         content: str,
         user_id: str = "global_user",
@@ -1821,10 +1847,16 @@ class MuninnMemory:
 
         # If content changed, re-extract and re-embed
         if data is not None:
-            extraction = await self._extract_with_profile(
-                data,
-                model_profile=self.config.extraction.runtime_model_profile,
-            )
+            if self.config.extraction.defer_llm_on_add and not record.metadata.get(
+                "muninn_force_llm_extraction", False
+            ):
+                from muninn.extraction.rules import rule_based_extract
+                extraction = rule_based_extract(data)
+            else:
+                extraction = await self._extract_with_profile(
+                    data,
+                    model_profile=self.config.extraction.runtime_model_profile,
+                )
             entity_names = self._extract_entity_names(extraction)
             updated_metadata = dict(record.metadata or {})
             if entity_names:
@@ -2421,28 +2453,34 @@ class MuninnMemory:
                 return embeddings[0].tolist()
             return await asyncio.to_thread(_run_fastembed)
         else:
-            # Ollama fallback (already using httpx but wrapped in sync func, let's offload it or make it async if possible)
-            # _ollama_embed uses httpx.post synchronously.
+            # Keep the emergency fallback CPU-only; chat capture must never
+            # acquire VRAM merely because FastEmbed is unavailable.
             return await asyncio.to_thread(self._ollama_embed, text)
 
     def _ollama_embed(self, text: str) -> List[float]:
         """Generate embedding via Ollama API."""
         import httpx
+        from muninn.extraction.ollama_slot import ollama_slot
         try:
-            response = httpx.post(
-                f"{self.config.embedding.ollama_url}/api/embeddings",
-                json={
-                    "model": self.config.embedding.model,
-                    "prompt": text,
-                },
-                timeout=30.0,
-            )
+            with ollama_slot():
+                response = httpx.post(
+                    f"{self.config.embedding.ollama_url}/api/embeddings",
+                    json={
+                        "model": self.config.embedding.model,
+                        "prompt": text,
+                        "keep_alive": "0",
+                        "options": {"num_gpu": 0},
+                    },
+                    timeout=30.0,
+                )
             response.raise_for_status()
-            return response.json()["embedding"]
+            embedding = response.json()["embedding"]
+            if not embedding or not any(embedding):
+                raise ValueError("CPU embedding returned an empty or zero vector")
+            return embedding
         except Exception as e:
-            logger.error("Ollama embedding failed: %s", e)
-            # Return zero vector as absolute fallback
-            return [0.0] * self.config.embedding.dimensions
+            logger.error("CPU embedding fallback failed: %s", e)
+            raise RuntimeError("CPU embedding unavailable; memory was not indexed") from e
 
     async def _extract(self, content: str, model_profile: Optional[str] = None) -> ExtractionResult:
         """Run extraction pipeline on content."""
