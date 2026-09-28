@@ -1,15 +1,15 @@
-"""Agent hooks: brief a new session, and capture transcripts before compaction or at the end.
+"""Agent hooks: brief a new session, and capture transcripts around compaction/end.
 
-Claude Code calls ``POST /hooks/claude-code`` directly (``type: "http"`` hooks);
-Codex runs ``muninn/hook_client.py`` (command hooks), which posts the same
-payload to ``/hooks/codex``. Both send ``hook_event_name``, ``session_id``,
-``transcript_path`` and ``cwd``.
+Claude Code and Codex run ``muninn/hook_client.py`` (command hooks), which
+posts to ``/hooks/<agent>``. Claude Code, Codex and Gemini CLI send
+``hook_event_name``, ``session_id``, ``transcript_path`` and ``cwd``.
 
 - SessionStart: returns the project briefing as ``additionalContext``, which
   both hosts add to the new session's context.
-- PreCompact, PostCompact, SessionEnd: copy the transcript to the vault and
-  import that thread now, so what compaction drops is saved at that moment.
-- Stop (after every reply): the same, at most every couple of minutes per thread.
+- PreCompact, PostCompact, PreCompress, SessionEnd: capture the transcript in
+  the encrypted archive. Strict mode indexes it on CPU, without importing
+  plaintext turns into ordinary memory.
+- Stop or AfterAgent (after every reply): the same, throttled per thread.
 
 Hooks answer immediately; capture runs in the background.
 """
@@ -25,8 +25,9 @@ if TYPE_CHECKING:
     from muninn.core.memory import MuninnMemory
     from muninn.history.service import HistoryService
 
-PROVIDER_FOR_AGENT = {"claude-code": "claude_code", "codex": "codex"}
-_CAPTURE_NOW = {"PreCompact", "PostCompact", "SessionEnd"}
+PROVIDER_FOR_AGENT = {"claude-code": "claude_code", "codex": "codex",
+                      "gemini-cli": "gemini_cli"}
+_CAPTURE_NOW = {"PreCompact", "PostCompact", "PreCompress", "SessionEnd"}
 
 
 async def handle_hook(
@@ -39,7 +40,7 @@ async def handle_hook(
     if service is not None and provider and isinstance(transcript, str) and transcript:
         if event in _CAPTURE_NOW or (event == "SessionStart" and started_from in ("compact", "resume")):
             service.capture_later(transcript, provider, force=True)
-        elif event == "Stop":
+        elif event in ("Stop", "AfterAgent"):
             service.capture_later(transcript, provider)
     if event != "SessionStart":
         return {}

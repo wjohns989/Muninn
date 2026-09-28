@@ -106,9 +106,16 @@ class HistoryService:
         return self.secure_archive
 
     def _validate_capture_source(self, path: str, provider: str) -> Path:
-        if provider not in ("codex", "claude_code"):
+        if provider not in ("codex", "claude_code", "gemini_cli"):
             raise ValueError("Strict hook capture only accepts configured chat providers")
         source_path = Path(path).resolve(strict=True)
+        if provider == "gemini_cli":
+            for home in history_homes(self.home):
+                try:
+                    return self._validate_sync_source(source_path, provider, "transcript", home)
+                except ValueError:
+                    continue
+            raise ValueError("Transcript is outside configured provider history roots")
         for home in history_homes(self.home):
             for configured in history_sources(home):
                 if configured.provider != provider or not source_path.is_relative_to(configured.home.resolve()):

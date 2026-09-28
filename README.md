@@ -430,7 +430,10 @@ memories or analyze chats; live Codex `state_*.sqlite` files are reported as
 skipped until an encrypted online-SQLite snapshot is available. Claude Code and
 Codex hooks can capture new transcripts into an initialized archive under the
 same Windows user; the separate CPU-only worker indexes encrypted snapshots
-when `MUNINN_HISTORY_INDEX_AUTO=1`. It does not hold an Ollama model in VRAM.
+when `MUNINN_HISTORY_INDEX_AUTO=1`. Claude Code, Codex and Gemini CLI have
+optional local lifecycle hooks installed with `python -m muninn.cli hooks install
+--apply`; Claude Desktop's non-Code client uses MCP and scheduled sync instead.
+It does not hold an Ollama model in VRAM.
 A restored archive can be
 opened with the recovery passphrase on another machine and rebound to that
 Windows user with `python -m muninn.history.secure_archive rebind --root

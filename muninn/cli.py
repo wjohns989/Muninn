@@ -720,10 +720,10 @@ def _admin_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
 
 
 def cmd_hooks(args: argparse.Namespace) -> int:
-    """Install Muninn's session hooks into Claude Code and Codex (dry run unless --apply)."""
+    """Install local session hooks (dry run unless --apply)."""
     from muninn.history import hook_install
 
-    apps = args.app or ["claude", "codex"]
+    apps = args.app or ["claude", "codex", "gemini"]
     install = args.action == "install"
     server_url = _resolve_server_url(args.server_url)
     plans = []
@@ -731,6 +731,8 @@ def cmd_hooks(args: argparse.Namespace) -> int:
         plans.append(hook_install.claude_plan(server_url, install=install))
     if "codex" in apps:
         plans.append(hook_install.codex_plan(install=install))
+    if "gemini" in apps:
+        plans.append(hook_install.gemini_plan(server_url, install=install))
     for plan in plans:
         present = hook_install.installed(plan)
         print(f"{plan.app}: {plan.path}")
@@ -1151,7 +1153,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     hooks = subparsers.add_parser(
         "hooks",
-        help="Add Muninn session hooks to Claude Code and Codex.",
+        help="Add Muninn session hooks to Claude Code, Codex, and Gemini CLI.",
         description=(
             "Session start: the agent receives the project briefing (goal, open handoffs, earlier\n"
             "threads from every app). Before compaction and at session end: the transcript is copied\n"
@@ -1161,7 +1163,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     hooks.add_argument("action", choices=["status", "install", "uninstall"])
-    hooks.add_argument("--app", action="append", choices=["claude", "codex"], help="Only this app (repeatable).")
+    hooks.add_argument("--app", action="append", choices=["claude", "codex", "gemini"],
+                       help="Only this app (repeatable).")
     hooks.add_argument("--server-url", default=None, help="Muninn server URL the hooks call.")
     hooks.add_argument("--apply", action="store_true", help="Write the settings.")
 

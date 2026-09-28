@@ -136,6 +136,15 @@ async def test_strict_hook_capture_uses_encrypted_archive_without_normal_memory(
     note.write_bytes(b"not a session")
     with pytest.raises(ValueError, match="outside configured"):
         await service.capture(str(note), "claude_code")
+    gemini = tmp_path / ".gemini" / "tmp" / "project-hash" / "chats" / "session.json"
+    gemini.parent.mkdir(parents=True)
+    gemini.write_bytes(b'{"sessionId":"local","messages":[]}')
+    assert (await service.capture(str(gemini), "gemini_cli"))["captured"] is True
+    assert service._validate_capture_source(str(gemini), "gemini_cli") == gemini.resolve()
+    wrong_gemini = tmp_path / ".gemini" / "settings.json"
+    wrong_gemini.write_text("{}")
+    with pytest.raises(ValueError, match="outside configured"):
+        await service.capture(str(wrong_gemini), "gemini_cli")
     newest = sorted(root.glob("manifest-*.enc"))[-1]
     raw = bytearray(newest.read_bytes())
     raw[-1] ^= 1

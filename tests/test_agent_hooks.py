@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -83,6 +84,26 @@ def test_unknown_agents_and_missing_transcripts_are_ignored(memory):
     assert service.calls == []
 
 
+@pytest.mark.parametrize("event,force", [
+    ("PreCompress", True), ("AfterAgent", False), ("SessionEnd", True),
+])
+def test_gemini_events_capture_without_blocking(memory, event, force):
+    service = RecordingService()
+    out = asyncio.run(handle_hook("gemini-cli", {
+        "hook_event_name": event, "transcript_path": "/chat.json",
+        "cwd": "/nowhere"}, memory, service))
+    assert out == {}
+    assert service.calls == [("/chat.json", "gemini_cli", force)]
+
+
+def test_gemini_session_start_returns_context(memory, repo):
+    out = asyncio.run(handle_hook("gemini-cli", {
+        "hook_event_name": "SessionStart", "source": "startup",
+        "cwd": str(repo)}, memory, RecordingService()))
+    assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert out["hookSpecificOutput"]["additionalContext"]
+
+
 def test_capture_imports_one_thread_and_debounces(tmp_path, monkeypatch):
     from muninn.history.service import HistoryService
 
@@ -118,8 +139,16 @@ def test_install_keeps_user_hooks_and_uninstall_restores_them(tmp_path, monkeypa
     plan = hook_install.claude_plan("http://127.0.0.1:42069", home=tmp_path)
     assert plan.changed and hook_install.installed(plan) == []
     stop = plan.after["hooks"]["Stop"]
-    assert stop[0]["hooks"][0]["command"] == "notify.sh" and stop[1]["hooks"][0]["type"] == "http"
+    assert stop[0]["hooks"][0]["command"] == "notify.sh" and stop[1]["hooks"][0]["type"] == "command"
     assert plan.after["hooks"]["SessionStart"][0]["matcher"] == "startup|resume|clear|compact"
+    start_handler = plan.after["hooks"]["SessionStart"][0]["hooks"][0]
+    assert start_handler["type"] == "command"
+    assert start_handler["command"].endswith('hook_client.py" claude-code "http://127.0.0.1:42069"')
+    assert start_handler["timeout"] == 10
+    for event in ("SessionStart", "PreCompact", "Stop", "SessionEnd"):
+        handler = plan.after["hooks"][event][-1]["hooks"][0]
+        assert handler["type"] == "command"
+        assert 'hook_client.py" claude-code "http://127.0.0.1:42069"' in handler["command"]
     backup = hook_install.apply_plan(plan)
     assert backup and json.loads(backup.read_text()) == original
 
@@ -139,14 +168,42 @@ def test_codex_plan_uses_the_stdlib_client_and_honours_codex_home(tmp_path, monk
     assert handler["timeout"] == 1 and set(plan.after["hooks"]) == {"SessionStart", "PreCompact", "Stop", "SessionEnd"}
 
 
+def test_gemini_plan_preserves_unrelated_hooks_and_uses_millisecond_timeouts(tmp_path):
+    settings = tmp_path / ".gemini" / "settings.json"
+    settings.parent.mkdir()
+    original = {"model": {"name": "keep"}, "hooks": {
+        "SessionEnd": [{"hooks": [{"name": "other", "type": "command", "command": "notify.exe"}]}]}}
+    settings.write_text(json.dumps(original))
+    plan = hook_install.gemini_plan("http://127.0.0.1:42069", home=tmp_path,
+                                    python="C:/Python/python.exe")
+    assert plan.changed
+    assert plan.after["model"] == original["model"]
+    assert plan.after["hooks"]["SessionEnd"][0] == original["hooks"]["SessionEnd"][0]
+    assert set(plan.after["hooks"]) == {"SessionStart", "PreCompress", "AfterAgent", "SessionEnd"}
+    for event, timeout in hook_install.GEMINI_EVENTS_MS.items():
+        handler = plan.after["hooks"][event][-1]["hooks"][0]
+        assert handler["name"] == "muninn-local-memory"
+        assert handler["timeout"] == timeout
+        assert handler["command"].endswith('hook_client.py" gemini-cli "http://127.0.0.1:42069"')
+    backup = hook_install.apply_plan(plan)
+    assert backup and json.loads(backup.read_text()) == original
+    assert not hook_install.gemini_plan("http://127.0.0.1:42069", home=tmp_path,
+                                         python="C:/Python/python.exe").changed
+    hook_install.apply_plan(hook_install.gemini_plan("http://127.0.0.1:42069",
+                                                       install=False, home=tmp_path))
+    assert json.loads(settings.read_text()) == original
+
+
 # --- the command-hook client -----------------------------------------------------------
 
 CLIENT = Path(__file__).resolve().parent.parent / "muninn" / "hook_client.py"
 
 
 def _run_client(payload, env):
+    # Windows sockets need SystemRoot even in a deliberately sparse test env.
+    base = {key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ}
     return subprocess.run([sys.executable, "-I", str(CLIENT), "codex"], input=json.dumps(payload),
-                          capture_output=True, text=True, env=env, timeout=20)
+                          capture_output=True, text=True, env={**base, **env}, timeout=20)
 
 
 def test_client_forwards_and_prints_the_briefing():
@@ -171,7 +228,8 @@ def test_client_forwards_and_prints_the_briefing():
     env = {"MUNINN_SERVER_URL": f"http://127.0.0.1:{server.server_port}", "MUNINN_AUTH_TOKEN": "tok"}
     result = _run_client({"hook_event_name": "SessionStart", "cwd": "/x"}, env)
     server.server_close()
-    assert result.returncode == 0 and json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] == "brief"
+    assert result.returncode == 0 and result.stdout, result.stderr
+    assert json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] == "brief"
     assert received == {"path": "/hooks/codex", "auth": "Bearer tok",
                         "body": {"hook_event_name": "SessionStart", "cwd": "/x"}}
 
@@ -179,3 +237,24 @@ def test_client_forwards_and_prints_the_briefing():
 def test_client_never_blocks_the_agent_when_the_server_is_down():
     result = _run_client({"hook_event_name": "SessionEnd"}, {"MUNINN_SERVER_URL": "http://127.0.0.1:9"})
     assert result.returncode == 0 and result.stdout == "" and "not reachable" in result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows User environment fallback")
+def test_client_reads_windows_user_token_when_process_token_is_missing(monkeypatch):
+    from contextlib import nullcontext
+
+    import winreg
+
+    from muninn import hook_client
+
+    monkeypatch.delenv("MUNINN_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(winreg, "OpenKey", lambda *_: nullcontext(None))
+    monkeypatch.setattr(winreg, "QueryValueEx", lambda *_: ("test-only-token", winreg.REG_SZ))
+    assert hook_client._auth_token() == "test-only-token"
+
+
+def test_gemini_after_agent_client_timeout_is_shorter_than_host_deadline():
+    from muninn import hook_client
+
+    assert "AfterAgent" in hook_client.FAST_EVENTS
+    assert hook_install.GEMINI_EVENTS_MS["AfterAgent"] > 800

@@ -163,19 +163,25 @@ python -m muninn.cli hooks uninstall --apply
 | Event | What Muninn does |
 |---|---|
 | Session start (also after resume, clear, compaction) | Injects the project briefing into the new session: goal, open handoffs, earlier threads from every app, project rules, recent memories, preferences |
-| Before compaction | Copies the transcript to the vault and imports the thread right away, so what compaction drops is saved at that moment |
-| After each reply | Same, at most every two minutes per thread |
-| Session end | Same, immediately |
+| Before compaction | Copies the transcript into the encrypted archive; CPU indexing follows in the background |
+| After each reply | Same, throttled per thread |
+| Session end | Same when the host delivers the event; scheduled sync covers missed exits |
 
-- **Claude Code** (CLI, IDE extensions, Claude Desktop's Code tab): `http` hooks
-  in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) that call
-  `http://127.0.0.1:42069/hooks/claude-code`.
+- **Claude Code** (CLI, IDE extensions, Claude Desktop's Code tab): command
+  hooks in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) that run the
+  local `muninn/hook_client.py` bridge. Claude Code does not run HTTP handlers
+  for `SessionStart`.
 - **Codex** (CLI, IDE extension, ChatGPT desktop app): command hooks in
   `~/.codex/hooks.json` (or `$CODEX_HOME`) that run `muninn/hook_client.py`, a
   standard-library script that starts in about 50 ms (Codex gives session-end
   hooks one second) and never blocks Codex if the server is down.
-- With a server token, export `MUNINN_AUTH_TOKEN` in the environment the apps
-  start from; the hooks send it.
+- **Gemini CLI**: command hooks in `~/.gemini/settings.json` for SessionStart,
+  PreCompress, AfterAgent and SessionEnd. AfterAgent captures a real local
+  transcript at a bounded cadence. Gemini's PreCompress and SessionEnd are
+  best-effort, so scheduled encrypted sync remains the safety net.
+- With a server token, set `MUNINN_AUTH_TOKEN` in the apps' environment. On
+  Windows, the command bridge also reads the User environment value when an
+  already-running app has not inherited a newly set token. It never prints it.
 
 ## Understanding imported threads (optional LLM step)
 
