@@ -544,7 +544,7 @@ class HistoryService:
         if route.provider == "deferred":
             # Do not touch credentials or OpenRouter when a local route fits.
             # Remote fallback needs a provider-enforced daily key limit.
-            cloud_ready = await asyncio.to_thread(guarded_openrouter_available, 1.0)
+            cloud_ready = await asyncio.to_thread(guarded_openrouter_available)
             if cloud_ready:
                 route = choose_route(gpu, installed, model_hints=hints,
                                      cloud_allowed=True, cloud_available=True)

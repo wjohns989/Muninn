@@ -500,7 +500,8 @@ async def messages_endpoint(request: Request, session_id: str):
     params = msg.get("params")
     if (msg.get("method") == "tools/call" and isinstance(params, dict)
             and params.get("name") in {
-                "search_secure_history", "fetch_secure_history", "search_credential_metadata",
+                "search_secure_history", "fetch_secure_history", "analyze_secure_history",
+                "search_credential_metadata",
             }):
         require_loopback_peer(request)
         supplied = request.headers.get("authorization", "")

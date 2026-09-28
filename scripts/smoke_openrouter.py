@@ -12,6 +12,7 @@ import re
 import httpx
 
 from muninn.history import llm_settings
+from muninn.history.auto_routing import guarded_openrouter_available, openrouter_budget_ceiling
 from muninn.history.insights import Provider
 
 
@@ -44,11 +45,8 @@ def main() -> int:
             info = _key_info(client, key)
             cap = info.get("limit")
             remaining = info.get("limit_remaining")
-            cap_ok = (
-                info.get("limit_reset") == "daily" and cap is not None
-                and remaining is not None and 0 < float(cap) <= 1.0
-                and float(remaining) > 0 and not info.get("disabled", False)
-            )
+            cap_ok = guarded_openrouter_available()
+            daily_ceiling, monthly_ceiling = openrouter_budget_ceiling()
             catalog_response = client.get(
                 f"{llm_settings.OPENROUTER_API}/models",
                 params={"zdr": "true"},
@@ -62,7 +60,9 @@ def main() -> int:
             "key_daily_limit_usd": cap,
             "key_remaining_usd": remaining,
             "key_limit_reset": info.get("limit_reset"),
-            "daily_cap_ok": cap_ok,
+            "budget_policy_ok": cap_ok,
+            "local_daily_ceiling_usd": daily_ceiling,
+            "local_monthly_ceiling_usd": monthly_ceiling,
             "zdr_request_shape_ok": policy_ok,
             "configured_zdr_models": matched,
             "inference_sent": False,

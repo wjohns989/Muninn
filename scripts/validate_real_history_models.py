@@ -1,8 +1,8 @@
 """Read one imported thread and test actual Ollama/OpenRouter understanding without writes.
 
 Only loopback Muninn/Ollama endpoints are accepted. OpenRouter requires the
-MUNINN_OPENROUTER_API_KEY environment variable and a provider-enforced $1/day
-key cap. The complete selected thread must fit the requested input limit; this
+MUNINN_OPENROUTER_API_KEY environment variable and a provider-enforced key
+cap within the local daily/monthly ceilings. The complete selected thread must fit the requested input limit; this
 tool never silently samples or truncates, or stores generated understanding.
 """
 
@@ -113,7 +113,7 @@ async def _run(server_url: str, ollama_url: str, vault_root: Path,
             print(json.dumps({"ok": False, "reason": "environment_key_required",
                               "inference_sent": False}))
             return 2
-        if not guarded_openrouter_available(1.0):
+        if not guarded_openrouter_available():
             print(json.dumps({"ok": False, "reason": "daily_key_cap_unverified",
                               "inference_sent": False}))
             return 2

@@ -1,11 +1,12 @@
 """An encrypted derived index must never become a plaintext history store."""
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from muninn.history.blind_index import SecureHistoryBlindIndex
+from muninn.history.blind_index import _STRUCTURED_PARSE_LIMIT, SecureHistoryBlindIndex
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.secure_archive import SecureHistoryArchive
 
@@ -45,6 +46,36 @@ def test_blind_index_returns_only_safe_metadata_and_no_plaintext(tmp_path: Path)
     assert "lunar-widget parser" in span["redacted_text"]
     assert "CANARY-SECRET-91919" not in str(span)
     assert "[REDACTED_SENSITIVE_LINE]" in span["redacted_text"]
+
+
+def test_structured_fetch_keeps_message_when_jsonl_metadata_has_secret(tmp_path: Path) -> None:
+    source = tmp_path / "codex-session.jsonl"
+    source.write_text(json.dumps({
+        "type": "event_msg", "timestamp": "2026-09-28T12:00:00Z",
+        "payload": {"type": "user_message", "message": "Fix the lunar-widget parser",
+                    "api_key": "CANARY-SECRET-91919"},
+    }) + "\n", encoding="utf-8")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", PASSPHRASE)
+    archive.archive_file(source, "codex")
+    index = SecureHistoryBlindIndex(archive)
+    index.build()
+    capability = index.search("lunar-widget")["matches"][0]["fetch_capability"]
+    span = index.fetch_span(capability)
+    assert "Fix the lunar-widget parser" in span["redacted_text"]
+    assert "CANARY-SECRET-91919" not in str(span)
+
+
+def test_structured_parse_does_not_collect_oversize_snapshot(tmp_path: Path, monkeypatch) -> None:
+    archive, _ = _archive(tmp_path)
+    index = SecureHistoryBlindIndex(archive)
+
+    def unexpected_collect(*args, **kwargs):
+        raise AssertionError("oversize snapshot must not be collected in memory")
+
+    monkeypatch.setattr(archive, "_verify_entry", unexpected_collect)
+    assert index._structured_span({
+        "kind": "transcript", "provider": "codex", "size": _STRUCTURED_PARSE_LIMIT + 1,
+    }, "lunar-widget", max_chars=3000) is None
 
 
 def test_fetch_capability_rejects_tampering_and_expiry(tmp_path: Path, monkeypatch) -> None:

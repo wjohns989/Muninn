@@ -620,7 +620,8 @@ async def _handle_post(request: Request) -> Response:
             _json_error("server-error", -32600, "Invalid or oversized JSON-RPC batch"),
         )
 
-    private_tools = {"search_secure_history", "fetch_secure_history", "search_credential_metadata"}
+    private_tools = {"search_secure_history", "fetch_secure_history",
+                     "analyze_secure_history", "search_credential_metadata"}
     if any(msg.get("method") == "tools/call" and isinstance(msg.get("params"), dict)
            and msg["params"].get("name") in private_tools for msg in messages):
         try:

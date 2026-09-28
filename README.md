@@ -374,17 +374,21 @@ Key environment variables:
 | `MUNINN_HISTORY_INDEX_AUTO` | off for direct server starts; on in Windows shared launcher | Build a resumable CPU-only encrypted transcript index in bounded batches; no model or GPU use |
 | `MUNINN_HISTORY_SYNC_MINUTES` | `30` | Legacy-mode plaintext sync interval only; strict encrypted backfill is manual until its recovery and indexing checks pass |
 | `MUNINN_HISTORY_AUTO_IMPORT` | off in strict mode | Legacy-mode automatic import switch; ignored by strict mode |
-| `OPENROUTER_API_KEY` | - | Enables `history analyze` through OpenRouter (or save one with `openrouter set`; the CLI asks on first run); every request enforces zero data retention |
+| `MUNINN_OPENROUTER_API_KEY` | - | Preferred environment key for optional ZDR OpenRouter use; a Windows user-scoped value is picked up by the running service without putting the key in repo files |
 | `MUNINN_INSIGHTS_PROVIDER` | auto | `openrouter` or `ollama` for thread analysis (auto: OpenRouter when a key is set) |
 | `MUNINN_INSIGHTS_MODEL` | `openai/gpt-6-luna-pro` | Primary model for thread analysis; falls back to DeepSeek V4 Flash, then Gemini 3.5 Flash-Lite (all zero data retention), including when a model refuses. A `:batch` suffix is dropped. `python -m muninn.cli openrouter set` saves a key and model |
 | `MUNINN_INSIGHTS_WINDOW_TOKENS` | `200000` | Conversation per analysis call; larger threads are split and merged |
-| `MUNINN_INSIGHTS_AUTO` | off | `1` analyzes new threads after each automatic import |
+| `MUNINN_INSIGHTS_AUTO` | off | Legacy-mode analysis after automatic import; does not enable strict encrypted-history enrichment |
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
 | `MUNINN_DATA_DIR` | platform data directory | All Muninn stores; choose a private directory with enough space for your own history, not a repository checkout |
 | `MUNINN_OLLAMA_URL` | `http://localhost:11434` | Your Ollama endpoint; no particular model directory or drive letter is assumed |
 | `MUNINN_OLLAMA_MODEL` | `llama3.2:3b` | Model for explicitly requested Ollama analysis |
-| `MUNINN_AUTO_LOCAL_MODEL_HINTS` | `qwen2.5:7b,qwen35` | Comma-separated installed model-name fragments in preferred order for idle-GPU automatic analysis; inspect `ollama list` and choose models that fit your GPU |
+| `MUNINN_AUTO_LOCAL_MODEL_HINTS` | local measured defaults | Comma-separated installed model tags in preferred order for strict on-demand analysis; unlisted installed chat-capable models remain fallback candidates. Legacy analysis also accepts model-name fragments |
 | `MUNINN_OLLAMA_KEEP_ALIVE` | `0` | Release an Ollama model after an analysis request instead of leaving it resident in VRAM |
+| `MUNINN_STRICT_REMOTE_ANALYSIS` | off | Set to `1` in the local user environment to make private ZDR OpenRouter available when no local model fits; each `analyze_secure_history` call must also set `allow_remote=true` |
+| `MUNINN_OPENROUTER_MAX_DAILY_USD` | `10` | Local daily ceiling; larger values are clamped to $10 unless the explicit local budget override is set |
+| `MUNINN_OPENROUTER_MAX_MONTHLY_USD` | `100` | Local monthly ceiling; larger values are clamped to $100 unless the explicit local budget override is set |
+| `MUNINN_OPENROUTER_BUDGET_OVERRIDE` | off | Set to `1` only to explicitly permit locally configured ceilings above $10/day or $100/month; a finite provider key cap is still mandatory |
 | `MUNINN_CREDENTIAL_API_TOKEN` | unset (API disabled) | Dedicated 32+-character bearer token for loopback-only credential metadata search and explicit passphrase reveal; keep it in your local user environment, not a checked-in file |
 | `MUNINN_CREDENTIAL_AGENT_SEARCH` | off | Set `1` to let authenticated loopback MCP/API clients search allowlisted vault metadata; secret-value reveal remains unavailable to agents |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
@@ -404,7 +408,11 @@ writing transcript text to ordinary indexes. A rebuildable, owner-only encrypted
 lexical index supports `search_secure_history`; each match includes an opaque
 reference, source metadata, and a ten-minute fetch grant. `fetch_secure_history`
 authenticates the complete archived snapshot before returning one bounded,
-best-effort redacted span. Both require the normal authenticated local service.
+best-effort redacted span. For supported chat transcripts up to 8 MiB, it parses
+the authenticated conversation before redaction so JSONL metadata on the same
+physical line cannot erase a useful user/assistant message. Larger snapshots
+use the bounded streaming fallback. Both operations require the normal
+authenticated local service.
 The index may initially be incomplete while the CPU-only worker catches up;
 search reports coverage. Neither operation reveals the exact raw original.
 Redaction recognizes common credentials and suppresses suspicious lines, but
@@ -434,6 +442,37 @@ when `MUNINN_HISTORY_INDEX_AUTO=1`. Claude Code, Codex and Gemini CLI have
 optional local lifecycle hooks installed with `python -m muninn.cli hooks install
 --apply`; Claude Desktop's non-Code client uses MCP and scheduled sync instead.
 It does not hold an Ollama model in VRAM.
+Strict mode does **not yet** automatically analyze archive snapshots into durable
+insights. Its capture, encrypted search, agent transcript retrieval, and ordinary
+memory services work without resident models. An agent can call
+`analyze_secure_history` on a pertinent search hit: Muninn authenticates the
+expiring capability, selects a fitting installed Ollama completion model using
+live GPU telemetry, and returns bounded, sanitized analysis without persisting
+the prompt or answer. When locally enabled, a call with `allow_remote=true` may
+use ZDR OpenRouter if no local model fits; `prefer_remote=true` explicitly
+selects that route for one hit when `allow_remote=true`. Local model failure never
+silently switches to remote. `MUNINN_INSIGHTS_AUTO` applies only
+to legacy history import and must not be treated as enabling strict-mode enrichment.
+To compare installed Ollama models on actual checked-in Muninn code without storing
+results, run `python scripts/verify_live_model_routes.py --models <installed-tag>`.
+Add `--archive-query <search-term>` to test a bounded, redacted excerpt of your
+own encrypted history locally. OpenRouter validation requires an environment key,
+provider-enforced daily cap, and ZDR route; `--openrouter` uses checked-in source
+by default. Testing a private excerpt remotely additionally requires
+`--allow-private-openrouter`, and remains best-effort credential-scrubbed rather
+than proof that arbitrary secrets are absent. All Ollama requests use
+`keep_alive=0`; the script reports post-request model residency. Model tags and
+data directories are discovered or provided by the operator, not tied to a
+particular drive or download directory.
+OpenRouter API keys have one provider-enforced reset period (daily or monthly).
+Muninn checks that finite key limit against the matching local ceiling and checks
+provider-reported usage for the other period before each request. This secondary
+check is not a hard provider-side cap for an individual in-flight request; use
+OpenRouter account/workspace guardrails if both periods must be hard-enforced.
+Changing Muninn's local ceiling does not raise the API key's own limit. On
+Windows, set `MUNINN_STRICT_REMOTE_ANALYSIS=1` in the User environment to keep
+the route enabled across launches; set it to `0` to rescind it. A future local
+settings UI can control the same policy without requiring a shell.
 A restored archive can be
 opened with the recovery passphrase on another machine and rebound to that
 Windows user with `python -m muninn.history.secure_archive rebind --root

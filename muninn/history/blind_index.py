@@ -36,6 +36,7 @@ _TOKENIZER = 1
 _HASHES = 4
 _TERM = re.compile(r"\w+", re.UNICODE)
 _TEXT_KINDS = {"transcript", "prompt_history", "desktop_session", "export"}
+_STRUCTURED_PARSE_LIMIT = 8 * 1024 * 1024
 
 
 def _terms(value: str) -> list[str]:
@@ -464,6 +465,10 @@ class SecureHistoryBlindIndex:
             raise ValueError("Invalid bounded history span")
         entry, version, data = self._entry_for_capability(capability)
         term = data["term"]
+        structured = self._structured_span(entry, term, max_chars=max_chars)
+        if structured is not None:
+            return {"redacted_text": structured, "redaction": "strict-best-effort",
+                    "version": version, "truncated": False}
         decoder = codecs.getincrementaldecoder("utf-8")("strict")
         carry = ""
         snippet = ""
@@ -494,6 +499,41 @@ class SecureHistoryBlindIndex:
         redacted = sanitize_agent_span(snippet[:12000], max_chars=max_chars)
         return {"redacted_text": redacted, "redaction": "strict-best-effort",
                 "version": version, "truncated": len(snippet) > max_chars}
+
+    def _structured_span(self, entry: dict, term: str, *, max_chars: int) -> str | None:
+        """Parse a verified, bounded chat snapshot before sanitizing message text.
+
+        JSONL metadata may contain a credential on the same physical line as a
+        useful message. Sanitizing that raw line first would hide the message.
+        The parser discards metadata and tool payloads before release.
+        """
+        if (entry.get("kind") != "transcript"
+                or entry.get("provider") not in {"codex", "claude_code", "gemini_cli"}
+                or not 0 < entry.get("size", 0) <= _STRUCTURED_PARSE_LIMIT):
+            return None
+        from muninn.history.parsers import parse_claude_code, parse_codex, parse_gemini
+
+        verified = self.archive._verify_entry(entry, collect=True)
+        assert verified is not None
+        try:
+            transcript = verified.decode("utf-8", "strict")
+        except UnicodeDecodeError as exc:
+            raise VaultIntegrityError("History text is not valid UTF-8") from exc
+        parser = {"codex": parse_codex, "claude_code": parse_claude_code,
+                  "gemini_cli": parse_gemini}[entry["provider"]]
+        session = parser(transcript)
+        if session is None:
+            return None
+        for turn in session.turns:
+            for role, message in (("User", turn.user), ("Assistant", turn.assistant)):
+                position = message.casefold().find(term)
+                if position < 0:
+                    continue
+                snippet = f"{role}: " + message[max(0, position - 1000):position + 7000]
+                redacted = sanitize_agent_span(snippet[:12000], max_chars=max_chars)
+                if redacted.strip() and redacted.strip() != "[REDACTED_SENSITIVE_LINE]":
+                    return redacted
+        return None
 
 
 def main() -> int:

@@ -11,6 +11,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -136,26 +137,73 @@ def model_hints_for_thread(turns_imported: int, *,
     return COMPLEX_MODEL_HINTS if turns_imported >= COMPLEX_THREAD_TURNS else DEFAULT_MODEL_HINTS
 
 
-def guarded_openrouter_available(daily_cap_usd: float = 1.0) -> bool:
-    """Require a provider-enforced daily key limit before automatic egress.
+def _local_setting(name: str) -> str:
+    value = os.environ.get(name, "")
+    if value or os.name != "nt":
+        return value
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            return str(winreg.QueryValueEx(key, name)[0])
+    except (ImportError, FileNotFoundError, OSError):
+        return ""
+
+
+def openrouter_budget_ceiling() -> tuple[float, float]:
+    """User-local policy, capped at $10/day and $100/month absent override."""
+    try:
+        daily = float(_local_setting("MUNINN_OPENROUTER_MAX_DAILY_USD") or "10")
+        monthly = float(_local_setting("MUNINN_OPENROUTER_MAX_MONTHLY_USD") or "100")
+        if not (0 < daily < float("inf") and 0 < monthly < float("inf")):
+            return 0.0, 0.0
+        if _local_setting("MUNINN_OPENROUTER_BUDGET_OVERRIDE") != "1":
+            daily, monthly = min(daily, 10.0), min(monthly, 100.0)
+        return daily, monthly
+    except ValueError:
+        return 0.0, 0.0
+
+
+def guarded_openrouter_available(daily_cap_usd: float | None = None,
+                                 monthly_cap_usd: float | None = None) -> bool:
+    """Require a finite provider-enforced key cap and both period ceilings.
 
     Application-side estimates cannot enforce a hard dollar cap if a response
-    costs more than forecast. A dedicated OpenRouter key with a daily limit can.
+    costs more than forecast. A dedicated OpenRouter key enforces its chosen
+    reset period; the secondary period uses provider-reported usage as a guard.
     The key is never returned, logged, or placed in the route decision.
     """
     from muninn.history import llm_settings
 
     key = llm_settings.api_key()
-    if not key or daily_cap_usd <= 0:
+    configured_daily, configured_monthly = openrouter_budget_ceiling()
+    daily_cap = min(configured_daily, daily_cap_usd) if daily_cap_usd is not None else configured_daily
+    monthly_cap = min(configured_monthly, monthly_cap_usd) if monthly_cap_usd is not None else configured_monthly
+    if not key or daily_cap <= 0 or monthly_cap <= 0:
+        return False
+    endpoint = urlsplit(llm_settings.OPENROUTER_API)
+    if (endpoint.scheme != "https" or endpoint.netloc != "openrouter.ai"
+            or endpoint.path != "/api/v1" or endpoint.query or endpoint.fragment):
         return False
     try:
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=5.0, trust_env=False) as client:
             response = client.get(f"{llm_settings.OPENROUTER_API}/key",
                                   headers={"Authorization": f"Bearer {key}"})
             response.raise_for_status()
         data = response.json().get("data") or {}
         limit = float(data["limit"])
         remaining = float(data["limit_remaining"])
-        return data.get("limit_reset") == "daily" and 0 < limit <= daily_cap_usd and remaining > 0
+        if data.get("disabled") or not (0 < limit < float("inf") and remaining > 0):
+            return False
+        daily_used = float(data["usage_daily"])
+        monthly_used = float(data["usage_monthly"])
+        if not (0 <= daily_used < daily_cap and 0 <= monthly_used < monthly_cap):
+            return False
+        reset = data.get("limit_reset")
+        if reset == "daily":
+            return limit <= daily_cap
+        if reset == "monthly":
+            return limit <= monthly_cap
+        return False
     except (httpx.HTTPError, KeyError, TypeError, ValueError):
         return False

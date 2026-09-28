@@ -115,6 +115,8 @@ _credential_reveal_limiter = RevealLimiter()
 _credential_agent_search_times: deque[float] = deque()
 _secure_history_fetch_slots = asyncio.Semaphore(1)
 _secure_history_fetch_times: deque[float] = deque()
+_secure_history_analyze_slots = asyncio.Semaphore(1)
+_secure_history_analyze_times: deque[float] = deque()
 
 
 # --- Pydantic Models (API compatibility) ---
@@ -1686,6 +1688,12 @@ class SecureHistoryFetchRequest(BaseModel):
     max_chars: int = 3000
 
 
+class SecureHistoryAnalyzeRequest(BaseModel):
+    capability: str
+    allow_remote: bool = False
+    prefer_remote: bool = False
+
+
 @app.post("/history/secure/search", dependencies=[Depends(verify_main_local_token)])
 async def secure_history_search_endpoint(req: SecureHistorySearchRequest):
     """Local encrypted-index lookup; return metadata and expiring fetch capability."""
@@ -1723,6 +1731,37 @@ async def secure_history_fetch_endpoint(req: SecureHistoryFetchRequest):
         return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
     finally:
         _secure_history_fetch_slots.release()
+
+
+@app.post("/history/secure/analyze", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_analyze_endpoint(req: SecureHistoryAnalyzeRequest):
+    """Interpret one authenticated history hit without storing its text or answer."""
+    from muninn.history.secure_analysis import analyze_secure_hit
+
+    now = time.monotonic()
+    while _secure_history_analyze_times and now - _secure_history_analyze_times[0] > 60:
+        _secure_history_analyze_times.popleft()
+    if len(_secure_history_analyze_times) >= 3:
+        raise HTTPException(status_code=429, detail="History analysis rate limit reached")
+    try:
+        await asyncio.wait_for(_secure_history_analyze_slots.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=429, detail="History analysis already running") from None
+    _secure_history_analyze_times.append(now)
+    try:
+        try:
+            data = await analyze_secure_hit(_require_history(), req.capability,
+                                            allow_remote=req.allow_remote,
+                                            prefer_remote=req.prefer_remote)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid secure history analysis") from exc
+        except (VaultIntegrityError, RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=409, detail="Secure history analysis unavailable") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Secure history model unavailable") from exc
+        return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+    finally:
+        _secure_history_analyze_slots.release()
 
 
 @app.post("/history/sync", dependencies=[Depends(verify_token)])

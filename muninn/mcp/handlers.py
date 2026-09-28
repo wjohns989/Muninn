@@ -471,6 +471,7 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "search_memory": _do_search_memory,
         "search_secure_history": _do_search_secure_history,
         "fetch_secure_history": _do_fetch_secure_history,
+        "analyze_secure_history": _do_analyze_secure_history,
         "search_credential_metadata": _do_search_credential_metadata,
         "hunt_memory": _do_hunt_memory,
         "get_all_memories": _do_get_all_memories,
@@ -712,6 +713,17 @@ def _do_fetch_secure_history(args: Dict[str, Any], deadline: Optional[float]) ->
     response = make_request_with_retry(
         "POST", f"{SERVER_URL}/history/secure/fetch", deadline_epoch=deadline,
         json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_analyze_secure_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"capability": args.get("capability"),
+               "allow_remote": args.get("allow_remote", False),
+               "prefer_remote": args.get("prefer_remote", False)}
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/analyze", deadline_epoch=deadline,
+        json=payload, timeout=180.0,
     )
     return response.json()
 
@@ -1162,6 +1174,7 @@ STRUCTURED_TOOLS = {"search", "fetch"}
 EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
     "import_agent_history", "search_secure_history", "fetch_secure_history",
+    "analyze_secure_history",
     "search_credential_metadata",
 }
 _TITLE_CHARS = 80

@@ -14,6 +14,97 @@ def _legacy_history_test_mode(monkeypatch):
 from muninn.history.auto_routing import GpuState, choose_route, model_hints_for_thread
 
 
+def test_openrouter_budget_ceiling_requires_explicit_override(monkeypatch):
+    from muninn.history import auto_routing
+
+    values = {"MUNINN_OPENROUTER_MAX_DAILY_USD": "25",
+              "MUNINN_OPENROUTER_MAX_MONTHLY_USD": "250"}
+    monkeypatch.setattr(auto_routing, "_local_setting", lambda name: values.get(name, ""))
+    assert auto_routing.openrouter_budget_ceiling() == (10.0, 100.0)
+    values["MUNINN_OPENROUTER_BUDGET_OVERRIDE"] = "1"
+    assert auto_routing.openrouter_budget_ceiling() == (25.0, 250.0)
+    values["MUNINN_OPENROUTER_MAX_DAILY_USD"] = "not-a-number"
+    assert auto_routing.openrouter_budget_ceiling() == (0.0, 0.0)
+
+
+@pytest.mark.parametrize(("reset", "limit", "daily_used", "monthly_used", "allowed"), [
+    ("daily", 5, 0, 0, True),
+    ("daily", 11, 0, 0, False),
+    ("monthly", 50, 0, 0, True),
+    ("monthly", 101, 0, 0, False),
+    ("monthly", 50, 10, 0, False),
+    ("daily", 5, 0, 100, False),
+    (None, 5, 0, 0, False),
+])
+def test_openrouter_key_must_fit_both_periods(
+    monkeypatch, reset, limit, daily_used, monthly_used, allowed,
+):
+    from muninn.history import auto_routing, llm_settings
+
+    monkeypatch.setattr(llm_settings, "api_key", lambda: "fixture-key")
+    monkeypatch.setattr(auto_routing, "_local_setting", lambda _name: "")
+    info = {"limit_reset": reset, "limit": limit, "limit_remaining": 1,
+            "usage_daily": daily_used, "usage_monthly": monthly_used}
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, *_args, **_kwargs):
+            return SimpleNamespace(raise_for_status=lambda: None,
+                                   json=lambda: {"data": info})
+
+    monkeypatch.setattr(auto_routing.httpx, "Client", FakeClient)
+    assert auto_routing.guarded_openrouter_available() is allowed
+
+
+def test_openrouter_budget_probe_ignores_proxy_environment(monkeypatch):
+    from muninn.history import auto_routing, llm_settings
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://untrusted-proxy.invalid:8080")
+    monkeypatch.setattr(llm_settings, "api_key", lambda: "fixture-key")
+    monkeypatch.setattr(auto_routing, "_local_setting", lambda _name: "")
+    client_options = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            client_options.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {"data": {"limit_reset": "daily", "limit": 1,
+                                       "limit_remaining": 1, "usage_daily": 0,
+                                       "usage_monthly": 0}},
+            )
+
+    monkeypatch.setattr(auto_routing.httpx, "Client", FakeClient)
+    assert auto_routing.guarded_openrouter_available() is True
+    assert client_options["trust_env"] is False
+
+
+def test_openrouter_budget_probe_rejects_non_https_endpoint(monkeypatch):
+    from muninn.history import auto_routing, llm_settings
+
+    monkeypatch.setattr(llm_settings, "api_key", lambda: "fixture-key")
+    monkeypatch.setattr(llm_settings, "OPENROUTER_API", "http://openrouter.ai/api/v1")
+    monkeypatch.setattr(auto_routing.httpx, "Client",
+                        lambda **_kwargs: pytest.fail("unsafe endpoint must not be contacted"))
+    assert auto_routing.guarded_openrouter_available() is False
+
+
 def _gpu(free=13_600, used=1, loaded=()):
     return GpuState(free, 16_376, used, 100.0, loaded)
 
@@ -103,7 +194,7 @@ async def test_auto_analysis_routes_only_new_threads_to_idle_local_model(monkeyp
     monkeypatch.setattr(auto_routing, "probe_gpu", lambda: GpuState(13_600, 16_376, 1, time.time()))
     monkeypatch.setattr(auto_routing, "probe_ollama", lambda _base: (MODELS, ()))
     monkeypatch.setattr(auto_routing, "guarded_openrouter_available",
-                        lambda _cap: pytest.fail("local route must not query OpenRouter"))
+                        lambda: pytest.fail("local route must not query OpenRouter"))
     await service._auto_analyze()
     assert service.run_analysis.await_args.kwargs == {
         "apply": True, "provider": "ollama", "model": "qwen2.5:7b",
@@ -127,7 +218,7 @@ async def test_auto_analysis_defers_when_gpu_busy(monkeypatch):
     service.last_auto_route = None
     monkeypatch.setattr(auto_routing, "probe_gpu", lambda: GpuState(13_600, 16_376, 90, time.time()))
     monkeypatch.setattr(auto_routing, "probe_ollama", lambda _base: (MODELS, ()))
-    monkeypatch.setattr(auto_routing, "guarded_openrouter_available", lambda _cap: False)
+    monkeypatch.setattr(auto_routing, "guarded_openrouter_available", lambda: False)
     await service._auto_analyze()
     service.run_analysis.assert_not_awaited()
     assert service.last_auto_route["reason"] == "gpu_busy"
@@ -148,7 +239,7 @@ async def test_auto_analysis_uses_budgeted_cloud_when_gpu_busy(monkeypatch):
     service.last_auto_route = None
     monkeypatch.setattr(auto_routing, "probe_gpu", lambda: GpuState(13_600, 16_376, 90, time.time()))
     monkeypatch.setattr(auto_routing, "probe_ollama", lambda _base: (MODELS, ()))
-    monkeypatch.setattr(auto_routing, "guarded_openrouter_available", lambda cap: cap == 1.0)
+    monkeypatch.setattr(auto_routing, "guarded_openrouter_available", lambda: True)
     await service._auto_analyze()
     assert service.run_analysis.await_args.kwargs == {
         "apply": True, "provider": "openrouter", "since": 100.0,

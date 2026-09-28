@@ -313,6 +313,27 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "analyze_secure_history",
+        "description": (
+            "Interpret one authenticated encrypted-history hit on demand. Selects a fitting "
+            "installed local Ollama chat model and unloads it afterward; if none fits, "
+            "OpenRouter ZDR is available only when locally enabled and allow_remote is true. "
+            "Returns bounded best-effort credential-redacted analysis without storing it. "
+            "Use only after a pertinent search; never treat the result as execution proof."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "capability": {"type": "string", "description": "Expiring capability from search_secure_history."},
+                "allow_remote": {"type": "boolean", "default": False,
+                                 "description": "Allow locally enabled, budgeted ZDR OpenRouter if no local model fits."},
+                "prefer_remote": {"type": "boolean", "default": False,
+                                  "description": "Explicitly request ZDR OpenRouter for this hit; requires allow_remote."},
+            },
+            "required": ["capability"],
+        },
+    },
+    {
         "name": "search_credential_metadata",
         "description": (
             "Find whether a credential is recorded and which project-relative .env file contains it. "
@@ -974,6 +995,7 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 CORE_TOOLS = (
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
     "add_memory", "search_memory", "search_secure_history", "fetch_secure_history",
+    "analyze_secure_history",
     "search_credential_metadata",
     "hunt_memory", "update_memory", "delete_memory",
     "record_retrieval_feedback", "get_project_goal", "set_project_goal", "set_project_instruction",

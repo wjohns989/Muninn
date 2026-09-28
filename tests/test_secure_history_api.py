@@ -67,6 +67,7 @@ async def test_history_search_fetch_requires_auth_and_never_returns_secret(tmp_p
 def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
     assert "search_secure_history" in TOOLSETS["core"]
     assert "fetch_secure_history" in TOOLSETS["core"]
+    assert "analyze_secure_history" in TOOLSETS["core"]
     assert not any("reveal" in name for name in TOOLSETS["core"])
 
 
@@ -75,6 +76,8 @@ def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
      {"matches": [{"fetch_capability": "SAFE_CAPABILITY_MARKER"}]}, "SAFE_CAPABILITY_MARKER"),
     ("fetch_secure_history", {"capability": "SAFE_CAPABILITY_MARKER"},
      {"redacted_text": "SAFE_TRANSCRIPT_MARKER"}, "SAFE_TRANSCRIPT_MARKER"),
+    ("analyze_secure_history", {"capability": "SAFE_CAPABILITY_MARKER"},
+     {"status": "ok", "analysis": {"summary": "SAFE_SUMMARY_MARKER"}}, "SAFE_SUMMARY_MARKER"),
     ("search_credential_metadata", {"query": "openrouter"},
      [{"source_hint": "config/.env.local"}], "config/.env.local"),
 ])
@@ -96,6 +99,40 @@ def test_private_mcp_result_preserves_required_fields(monkeypatch, name, argumen
     assert len(received) == 1
     assert received[0].get("isError") is not True
     assert marker in received[0]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_secure_analysis_endpoint_is_local_and_auth_only(monkeypatch):
+    from muninn.history import secure_analysis
+
+    token = "test-main-auth-token-aaaaaaaaaaaaaaaaaaaaaaaa"
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", token)
+    monkeypatch.setenv("MUNINN_NO_AUTH", "0")
+    monkeypatch.setattr(server, "is_security_enabled", lambda: True)
+    monkeypatch.setattr(server, "_require_history", lambda: object())
+    server._secure_history_analyze_times.clear()
+    seen = {}
+
+    async def fake_analyze(_history, capability, *, allow_remote, prefer_remote):
+        seen.update({"capability": capability, "allow_remote": allow_remote,
+                     "prefer_remote": prefer_remote})
+        return {"status": "ok", "provider": "ollama", "analysis": {"summary": "safe"}}
+
+    monkeypatch.setattr(secure_analysis, "analyze_secure_hit", fake_analyze)
+    path = "/history/secure/analyze"
+    local = httpx.ASGITransport(app=server.app, client=("127.0.0.1", 1234))
+    async with httpx.AsyncClient(transport=local, base_url="http://localhost") as client:
+        assert (await client.post(path, json={"capability": "opaque"})).status_code == 401
+        response = await client.post(path, json={"capability": "opaque"},
+                                     headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert seen == {"capability": "opaque", "allow_remote": False,
+                        "prefer_remote": False}
+    remote = httpx.ASGITransport(app=server.app, client=("192.168.1.2", 1234))
+    async with httpx.AsyncClient(transport=remote, base_url="http://localhost") as client:
+        assert (await client.post(path, json={"capability": "opaque"},
+                                  headers={"Authorization": f"Bearer {token}"})).status_code == 404
 
 
 @pytest.mark.asyncio
