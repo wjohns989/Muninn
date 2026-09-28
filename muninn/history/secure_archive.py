@@ -424,16 +424,11 @@ class SecureHistoryArchive:
             verify_private(self._header_path)
 
     @classmethod
-    def restore_from_backup(cls, backup_root: Path, destination: Path,
-                            passphrase: str) -> "SecureHistoryArchive":
-        """Copy ciphertext to a fresh owner-only root, then authenticate the manifest.
-
-        Originals and the backup are unchanged. A failed restore is preserved
-        for inspection and never silently promoted to an active archive.
-        """
-        backup_root = Path(backup_root)
+    def _copy_archive_files(cls, source_root: Path, destination: Path) -> None:
+        """Copy ciphertext only into a new owner-only root; never mutate source."""
+        source_root = Path(source_root)
         destination = Path(destination)
-        if (_is_link(backup_root) or not backup_root.is_dir() or destination.exists()
+        if (_is_link(source_root) or not source_root.is_dir() or destination.exists()
                 or _is_link(destination) or not destination.parent.is_dir()):
             raise ValueError("Invalid history archive restore locations")
         create_private_directory(destination)
@@ -448,20 +443,38 @@ class SecureHistoryArchive:
                 write.flush()
                 os.fsync(write.fileno())
 
-        copy_sealed(backup_root / "header.json", destination / "header.json")
+        copy_sealed(source_root / "header.json", destination / "header.json")
         _write_private(destination / "archive.lock", b"\0")
-        if _is_link(backup_root / "blobs") or not (backup_root / "blobs").is_dir():
+        if _is_link(source_root / "blobs") or not (source_root / "blobs").is_dir():
             raise VaultIntegrityError("History backup blob directory is missing or linked")
-        manifests = list(backup_root.glob("manifest-*.enc"))
+        manifests = list(source_root.glob("manifest-*.enc"))
         if not manifests:
             raise VaultIntegrityError("History backup has no authenticated manifest")
         for source in manifests:
             copy_sealed(source, destination / source.name)
-        for source in (backup_root / "blobs").glob("*.enc"):
+        for source in (source_root / "blobs").glob("*.enc"):
             copy_sealed(source, destination / "blobs" / source.name)
+
+    @classmethod
+    def restore_from_backup(cls, backup_root: Path, destination: Path,
+                            passphrase: str) -> "SecureHistoryArchive":
+        """Portable restore to a new private root; verify all snapshots."""
+        cls._copy_archive_files(backup_root, destination)
         restored = cls(destination, passphrase)
         restored.verify_all()
         return restored
+
+    def backup_to(self, destination: Path) -> dict[str, int]:
+        """Take a consistent owner-only ciphertext backup under this Windows user."""
+        if os.name != "nt":
+            raise VaultIntegrityError("Local unattended backup requires Windows user protection")
+        with self._write_lock():
+            self._load_manifest()
+            self._copy_archive_files(self.root, destination)
+            backup = SecureHistoryArchive(destination)
+            if backup.vault_id != self.vault_id:
+                raise VaultIntegrityError("History backup identity mismatch")
+            return backup.verify_all()
 
     def metadata_catalog(self, *, provider: str | None = None, offset: int = 0,
                          limit: int = 100) -> list[SafeHistoryMetadata]:
@@ -493,9 +506,15 @@ def main() -> int:
     import asyncio
 
     parser = argparse.ArgumentParser(description="Local encrypted Muninn history archive")
-    parser.add_argument("action", choices=("init", "status", "plan", "sync", "catalog", "verify", "restore", "rebind"))
+    parser.add_argument(
+        "action",
+        choices=("init", "status", "plan", "sync", "catalog", "verify", "backup", "restore", "rebind"),
+    )
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--backup-root", type=Path, help="Existing encrypted archive backup to restore")
+    parser.add_argument(
+        "--backup-root", type=Path,
+        help="New backup destination, or existing backup source for restore",
+    )
     parser.add_argument("--home", type=Path, help="Home whose configured agent history is scanned for sync")
     parser.add_argument("--portable", action="store_true", help="Prompt for recovery passphrase for status")
     args = parser.parse_args()
@@ -517,7 +536,11 @@ def main() -> int:
         archive = SecureHistoryArchive(args.root, getpass.getpass("Recovery passphrase: ") if portable else None)
     if args.action == "rebind":
         archive.rebind_windows_user()
-    if args.action in ("plan", "sync"):
+    if args.action == "backup":
+        if args.backup_root is None:
+            parser.error("backup requires --backup-root as a new destination")
+        report = archive.backup_to(args.backup_root)
+    elif args.action in ("plan", "sync"):
         from muninn.history.service import HistoryService
 
         service = HistoryService(None, args.root.parent / "history_vault", home=args.home,

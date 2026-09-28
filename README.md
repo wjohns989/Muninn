@@ -391,6 +391,7 @@ python -m muninn.history.secure_archive plan --root '<your-private-data-dir>\his
 python -m muninn.history.secure_archive sync --root '<your-private-data-dir>\history_secure_archive' --home '<your-home-dir>'
 python -m muninn.history.secure_archive catalog --root '<your-private-data-dir>\history_secure_archive'
 python -m muninn.history.secure_archive verify --root '<your-private-data-dir>\history_secure_archive'
+python -m muninn.history.secure_archive backup --root '<your-private-data-dir>\history_secure_archive' --backup-root '<new-private-backup-dir>'
 ```
 
 `sync` is a manual, resumable, encrypted copy-only operation. It does not import
@@ -403,6 +404,9 @@ Windows user with `python -m muninn.history.secure_archive rebind --root
 '<restored-archive>'`. The `restore --backup-root '<backup>' --root
 '<new-private-destination>'` action copies ciphertext into a new owner-only
 directory, verifies every encrypted snapshot, and leaves the backup unchanged.
+The `backup` action requires a new destination, holds the archive writer lock
+while copying ciphertext, and authenticates the complete backup before success.
+Keep the recovery passphrase outside both the archive and its backups.
 Existing older gzip history copies and source transcripts are **not**
 converted or removed by strict mode; protect them and their backups separately.
 

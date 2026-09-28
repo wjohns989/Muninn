@@ -108,3 +108,23 @@ def test_portable_restore_rewraps_only_on_explicit_request(tmp_path):
     assert original.read_file(source) == b"backup payload"
     assert restored.status() == original.status()
     assert restored.verify_all()["snapshots_verified"] == 1
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="unattended backup uses Windows DPAPI")
+def test_unattended_backup_is_new_verified_ciphertext_copy(tmp_path):
+    source = tmp_path / "chat.jsonl"
+    source.write_bytes(b"private backup payload")
+    original = SecureHistoryArchive.create(tmp_path / "original", PASSPHRASE)
+    original.archive_file(source, "codex")
+    backup_root = tmp_path / "backup"
+
+    report = original.backup_to(backup_root)
+
+    assert report["snapshots_verified"] == 1
+    assert SecureHistoryArchive(backup_root, PASSPHRASE).read_file(source) == source.read_bytes()
+    assert original.read_file(source) == source.read_bytes()
+    assert b"private backup payload" not in b"".join(
+        path.read_bytes() for path in backup_root.rglob("*") if path.is_file()
+    )
+    with pytest.raises(ValueError, match="Invalid history archive restore locations"):
+        original.backup_to(backup_root)
