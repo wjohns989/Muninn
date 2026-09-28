@@ -248,6 +248,42 @@ class CredentialStore:
             os.rename(staging, destination)
             return len(backup_rows)
 
+    @classmethod
+    def restore(cls, source: Path, destination: Path, *, passphrase: str) -> CredentialStore:
+        """Re-home a portable encrypted backup under this account's private ACL.
+
+        The source may have been copied from another machine/account. It is never
+        opened as a live vault, modified, or trusted before private staging and
+        full authenticated validation.
+        """
+        source, destination = Path(source), Path(destination)
+        if destination.exists() or destination.is_symlink():
+            raise VaultIntegrityError("Credential restore destination exists")
+        header_source, db_source = source / "header.json", source / "records.db"
+        if (source.is_symlink() or not source.is_dir()
+                or any(path.is_symlink() or not path.is_file() for path in (header_source, db_source))
+                or header_source.stat().st_size > 4096 or db_source.stat().st_size > 1_073_741_824
+                or (source / "records.db-wal").exists()):
+            raise VaultIntegrityError("Invalid credential backup source")
+        staging = destination.with_name(f".{destination.name}.incomplete-{uuid.uuid4().hex}")
+        create_private_directory(staging)
+        for name in ("header.json", "records.db", "vault.lock"):
+            create_private_file(staging / name)
+        (staging / "vault.lock").write_bytes(b"\0")
+        shutil.copyfile(header_source, staging / "header.json")
+        shutil.copyfile(db_source, staging / "records.db")
+        restored = cls(staging)
+        with restored._connect(readonly=True) as db:
+            key = restored._unlock(db, passphrase)
+            for row in db.execute("SELECT * FROM credentials"):
+                meta = _metadata(row["service"], row["project"], row["source_hash"])
+                decrypt_record(key, restored.header, row["id"], meta,
+                               EncryptedValue.from_json(row["envelope"]))
+        if destination.exists() or destination.is_symlink():
+            raise VaultIntegrityError("Credential restore destination appeared during restore")
+        os.rename(staging, destination)
+        return cls(destination)
+
 
 def source_fingerprint(source: str) -> str:
     """Hash a source locator before storing it as searchable metadata."""

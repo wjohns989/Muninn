@@ -874,6 +874,37 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_credentials(args: argparse.Namespace) -> int:
+    """Explicit local-only access to the separate encrypted credential vault."""
+    import getpass
+
+    from muninn.core.config import DEFAULT_DATA_DIR
+    from muninn.history.credential_store import CredentialStore
+
+    root = args.root or Path(os.environ.get("MUNINN_DATA_DIR", DEFAULT_DATA_DIR)) / "credential_vault"
+    if args.action == "search":
+        print(json.dumps(CredentialStore(root).search(args.query), indent=2))
+        return 0
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise SystemExit("Credential unlock and reveal require an interactive local terminal.")
+    passphrase = getpass.getpass("Credential vault passphrase (hidden): ")
+    if args.action == "init":
+        if passphrase != getpass.getpass("Confirm passphrase (hidden): "):
+            raise SystemExit("Passphrases did not match; no vault created.")
+        CredentialStore.create(root, passphrase)
+        print(f"Encrypted credential vault created at {root}.")
+    elif args.action == "reveal":
+        # Reveal is intentionally printed only to an interactive local terminal.
+        print(CredentialStore(root).reveal(args.record_id, passphrase=passphrase))
+    elif args.action == "backup":
+        count = CredentialStore(root).backup(args.destination, passphrase=passphrase)
+        print(f"Validated encrypted backup at {args.destination} ({count} records).")
+    elif args.action == "restore":
+        CredentialStore.restore(args.source, root, passphrase=passphrase)
+        print(f"Validated encrypted vault restored at {root}.")
+    return 0
+
+
 def cmd_reindex(args: argparse.Namespace) -> int:
     """Rebuild vectors/BM25 from metadata.db via the running server."""
     report = _admin_post(args, "/admin/reindex", {
@@ -1107,6 +1138,17 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--offset", type=int, default=0)
     history.add_argument("--limit", type=int, default=50)
 
+    credentials = subparsers.add_parser(
+        "credentials",
+        help="Manage the separate encrypted credential vault (not yet wired to history import).",
+    )
+    credentials.add_argument("action", choices=["init", "search", "reveal", "backup", "restore"])
+    credentials.add_argument("query", nargs="?", help="Metadata-only query for 'search'.")
+    credentials.add_argument("--root", type=Path, help="Vault location (default: MUNINN_DATA_DIR/credential_vault).")
+    credentials.add_argument("--record-id", help="Record id for explicit 'reveal'.")
+    credentials.add_argument("--destination", type=Path, help="New directory for 'backup'.")
+    credentials.add_argument("--source", type=Path, help="Existing encrypted backup directory for 'restore'.")
+
     hooks = subparsers.add_parser(
         "hooks",
         help="Add Muninn session hooks to Claude Code and Codex.",
@@ -1156,6 +1198,16 @@ def main() -> int:
         return cmd_import(args)
     if args.command == "history":
         return cmd_history(args)
+    if args.command == "credentials":
+        if args.action == "search" and not args.query:
+            parser.error("credentials search requires a metadata query")
+        if args.action == "reveal" and not args.record_id:
+            parser.error("credentials reveal requires --record-id")
+        if args.action == "backup" and not args.destination:
+            parser.error("credentials backup requires --destination")
+        if args.action == "restore" and not args.source:
+            parser.error("credentials restore requires --source")
+        return cmd_credentials(args)
     if args.command == "hooks":
         return cmd_hooks(args)
     if args.command == "openrouter":

@@ -355,6 +355,11 @@ Key environment variables:
 | `MUNINN_INSIGHTS_WINDOW_TOKENS` | `200000` | Conversation per analysis call; larger threads are split and merged |
 | `MUNINN_INSIGHTS_AUTO` | off | `1` analyzes new threads after each automatic import |
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
+| `MUNINN_DATA_DIR` | platform data directory | All Muninn stores; choose a private directory with enough space for your own history, not a repository checkout |
+| `MUNINN_OLLAMA_URL` | `http://localhost:11434` | Your Ollama endpoint; no particular model directory or drive letter is assumed |
+| `MUNINN_OLLAMA_MODEL` | `llama3.2:3b` | Model for explicitly requested Ollama analysis |
+| `MUNINN_AUTO_LOCAL_MODEL_HINTS` | `qwen2.5:7b,qwen35` | Comma-separated installed model-name fragments in preferred order for idle-GPU automatic analysis; inspect `ollama list` and choose models that fit your GPU |
+| `MUNINN_OLLAMA_KEEP_ALIVE` | `0` | Release an Ollama model after an analysis request instead of leaving it resident in VRAM |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
 | `MUNINN_ALLOWED_ORIGINS` | - | Extra browser origins allowed besides localhost (comma-separated; `null` allows `file://`, `*` disables the check) |
 
@@ -374,6 +379,16 @@ Codex hooks that brief every new session and capture transcripts before
 compaction, and `history analyze` (OpenRouter with zero data retention, or local
 Ollama) extracts decisions, preferences, fixes and open items per thread.
 Details: [`docs/CLIENTS.md`](docs/CLIENTS.md#bring-in-your-existing-conversations).
+
+Security status: transcript copies and ordinary imported memories are **not yet
+credential-quarantined**. Do not run `history import --apply` on chats or project
+files containing secrets until the credential boundary is integrated and verified.
+The optional `muninn-mcp[credential-vault]` extra provides an inactive local
+encrypted credential store and `python -m muninn.cli credentials --help` for
+interactive setup, metadata search, explicit reveal, and portable backup/restore.
+It does not yet scan or isolate credentials from normal history ingestion, and
+there is no credential-reveal API endpoint yet. Choose any suitable data and
+model locations via the settings above; examples do not require a `D:` drive.
 
 ### Upgrading and migrating memories
 
@@ -459,6 +474,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 - **Default data dir**: `~/.local/share/AntigravityLabs/muninn/` (Linux/macOS) · `%LOCALAPPDATA%\AntigravityLabs\muninn\` (Windows)
 - **Storage**: SQLite (metadata) + Qdrant (vectors) + KuzuDB (memory chains graph)
 - **No cloud dependency**: All data local by default
+- **Credential-vault work in progress**: the separate encrypted store uses a locally prompted passphrase and owner-only filesystem access, but is not yet wired into history import. Existing transcript copies can contain plaintext secrets; restrict access to the Muninn data directory and its backups.
 - **Auth**: when `MUNINN_AUTH_TOKEN` or `MUNINN_API_KEY` is set, every API and MCP call needs it as a Bearer token; without one, only local callers are expected
 - **Browser origins**: requests from web pages other than `localhost` are rejected (blocks cross-site access and DNS rebinding); extend with `MUNINN_ALLOWED_ORIGINS`
 - **Namespace isolation**: `user_id` + `namespace` + `project` boundaries enforced at every retrieval layer

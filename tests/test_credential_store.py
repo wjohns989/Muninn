@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -78,6 +79,21 @@ def test_backup_is_portable_and_detects_invalid_journal(tmp_path: Path) -> None:
     (backup / "records.db-wal").touch()
     with pytest.raises(VaultIntegrityError):
         CredentialStore(backup)
+
+
+def test_portable_restore_rehomes_permissive_transfer_copy(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    record_id = _add(store)
+    store.backup(tmp_path / "backup", passphrase=_PASSPHRASE)
+    transfer = tmp_path / "transfer"
+    transfer.mkdir()
+    shutil.copyfile(tmp_path / "backup" / "header.json", transfer / "header.json")
+    shutil.copyfile(tmp_path / "backup" / "records.db", transfer / "records.db")
+    with pytest.raises(VaultIntegrityError):
+        CredentialStore.restore(transfer, tmp_path / "wrong", passphrase="wrong-passphrase")
+    assert not (tmp_path / "wrong").exists()
+    restored = CredentialStore.restore(transfer, tmp_path / "restored", passphrase=_PASSPHRASE)
+    assert restored.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
 
 
 def test_backup_blocks_same_process_write_and_copies_one_snapshot(tmp_path: Path) -> None:
