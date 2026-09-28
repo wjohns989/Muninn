@@ -88,6 +88,7 @@ ingestion = [
 ]
 credential-vault = [
     "cryptography>=46.0.0",
+    "pywin32>=311; sys_platform == 'win32'",
 ]
 sdk = [
     "requests>=2.31.0",
