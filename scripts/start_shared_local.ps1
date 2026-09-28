@@ -91,7 +91,8 @@ foreach ($name in @("MUNINN_OLLAMA_MODEL", "MUNINN_AUTO_LOCAL_MODEL_HINTS")) {
 if ($DataDir) {
     $env:MUNINN_DATA_DIR = $DataDir
 } elseif (-not $env:MUNINN_DATA_DIR) {
-    $env:MUNINN_DATA_DIR = ".muninn_runtime"
+    $userDataDir = [Environment]::GetEnvironmentVariable("MUNINN_DATA_DIR", "User")
+    $env:MUNINN_DATA_DIR = if ($userDataDir) { $userDataDir } else { ".muninn_runtime" }
 }
 
 $runtime = Join-Path $RepoRoot ".muninn_runtime"
