@@ -69,6 +69,10 @@ if ($otherListeners.Count -gt 0) {
 }
 
 $env:MUNINN_AUTH_TOKEN = $token
+$credentialApiToken = [Environment]::GetEnvironmentVariable("MUNINN_CREDENTIAL_API_TOKEN", "User")
+if ($credentialApiToken) {
+    $env:MUNINN_CREDENTIAL_API_TOKEN = $credentialApiToken
+}
 $env:MUNINN_NO_AUTH = "0"
 $env:MUNINN_HOST = "127.0.0.1"
 $env:MUNINN_PORT = [string]$Port
@@ -80,6 +84,10 @@ $env:MUNINN_INSIGHTS_AUTO = "0"
 $env:MUNINN_XLAM_ENABLED = "false"
 $env:MUNINN_INSTRUCTOR_ENABLED = "false"
 $env:MUNINN_RERANKER_ENABLED = "false"
+foreach ($name in @("MUNINN_OLLAMA_MODEL", "MUNINN_AUTO_LOCAL_MODEL_HINTS")) {
+    $userValue = [Environment]::GetEnvironmentVariable($name, "User")
+    if ($userValue) { Set-Item -Path "Env:$name" -Value $userValue }
+}
 if ($DataDir) {
     $env:MUNINN_DATA_DIR = $DataDir
 } elseif (-not $env:MUNINN_DATA_DIR) {

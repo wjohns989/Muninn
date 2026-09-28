@@ -47,7 +47,9 @@ class CredentialStore:
     """Closed-by-default encrypted records, no long-lived passphrase or key."""
 
     def __init__(self, root: Path):
-        self.root = Path(root)
+        # SQLite's read-only URI needs an absolute path; keep the spelling
+        # (rather than resolving links) so verify_private can reject links.
+        self.root = Path(root).absolute()
         self.header_path = self.root / "header.json"
         self.db_path = self.root / "records.db"
         self.lock_path = self.root / "vault.lock"

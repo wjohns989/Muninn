@@ -27,6 +27,13 @@ def _add(store: CredentialStore) -> str:
                      source_hash=source_fingerprint("test-source"))
 
 
+def test_existing_vault_opens_from_relative_data_directory(tmp_path: Path, monkeypatch) -> None:
+    _new(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    store = CredentialStore(Path("credential-vault"))
+    assert store.search("example") == []
+
+
 def _other_process_add(root: str, started, done) -> None:
     store = CredentialStore(Path(root))
     started.set()
