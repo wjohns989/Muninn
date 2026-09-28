@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -311,6 +312,86 @@ def test_history_import_serializes_writes_for_local_vector_store(env):
     env.memory.add = tracked_add
     run(import_history(env.memory, env.vault, apply=True, providers=["claude_code"]))
     assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_long_import_allows_live_vault_capture(env, tmp_path, monkeypatch):
+    """A backfill may wait on one thread, but it must not block vault capture."""
+    from muninn.history.service import HistoryService
+
+    service = HistoryService(env.memory, tmp_path / "live-vault", home=env.home)
+    await service.sync()
+    first_add = asyncio.Event()
+    release_add = asyncio.Event()
+    captured = asyncio.Event()
+    original_add = env.memory.add
+    original_capture = service.vault.capture
+    first = True
+
+    async def slow_add(*args, **kwargs):
+        nonlocal first
+        if first:
+            first = False
+            first_add.set()
+            await release_add.wait()
+        return await original_add(*args, **kwargs)
+
+    # The sync capture runs in a worker thread, so keep the main loop reference.
+    loop = asyncio.get_running_loop()
+
+    def tracked_capture(*args, **kwargs):
+        result = original_capture(*args, **kwargs)
+        loop.call_soon_threadsafe(captured.set)
+        return result
+
+    monkeypatch.setattr(env.memory, "add", slow_add)
+    monkeypatch.setattr(service.vault, "capture", tracked_capture)
+    transcript = env.home / ".claude" / "projects" / "-home-code-webapp" / "c-111.jsonl"
+    backfill = asyncio.create_task(service.run_import(apply=True, providers=["claude_code"]))
+    capture = None
+    try:
+        await asyncio.wait_for(first_add.wait(), timeout=5)
+        capture = asyncio.create_task(service.capture(str(transcript), "claude_code"))
+        await asyncio.wait_for(captured.wait(), timeout=2)
+        assert not capture.done()  # Import waits for the current thread checkpoint.
+    finally:
+        release_add.set()
+        await asyncio.wait_for(backfill, timeout=15)
+        if capture is not None:
+            await asyncio.wait_for(capture, timeout=15)
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_imports_recheck_recovered_prompt_under_unit_lock(env, monkeypatch):
+    env.vault.sync()
+    snapshot = env.vault.files()
+    unit_lock = asyncio.Lock()
+    original_seen = env.store.history_prompt_seen
+    prechecks = threading.Barrier(2)
+    guard = threading.Lock()
+    count = 0
+
+    def paired_precheck(digest):
+        nonlocal count
+        with guard:
+            count += 1
+            first_pair = count <= 2
+        seen = original_seen(digest)
+        if first_pair:
+            prechecks.wait(timeout=5)
+        return seen
+
+    monkeypatch.setattr(env.store, "history_prompt_seen", paired_precheck)
+    reports = await asyncio.gather(*(
+        import_history(env.memory, env.vault, apply=True, vault_files=snapshot,
+                       unit_lock=unit_lock) for _ in range(2)
+    ))
+    recovered = [r for r in env.store.get_all(limit=500)
+                 if (r.metadata or {}).get("kind") == "recovered_prompt"]
+    assert count >= 2
+    assert len(recovered) == 1
+    assert sum(report["recovered_prompts"] for report in reports) == 1
 
 
 def test_import_is_ordered_complete_and_incremental(env):

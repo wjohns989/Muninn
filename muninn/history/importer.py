@@ -262,6 +262,18 @@ class Collected:
     errors: List[str] = field(default_factory=list)
 
 
+class VaultListing:
+    """Stable manifest listing; vault files themselves are atomically replaced."""
+
+    def __init__(self, entries: Iterable[Any]):
+        self.entries = tuple(entries)
+
+    def files(self, provider: Optional[str] = None, kind: Optional[str] = None) -> List[Any]:
+        return [item for item in self.entries
+                if (provider is None or item.provider == provider)
+                and (kind is None or item.kind == kind)]
+
+
 def collect(
     vault: HistoryVault,
     providers: Optional[List[str]] = None,
@@ -399,9 +411,12 @@ async def import_history(
     since: Optional[float] = None,
     progress: Optional[Dict[str, Any]] = None,
     sources: Optional[Iterable[str]] = None,
+    vault_files: Optional[Iterable[Any]] = None,
+    unit_lock: Optional[asyncio.Lock] = None,
 ) -> Dict[str, Any]:
     """Dry run by default: report what would be imported. With ``apply`` write only what is new."""
-    collected = await asyncio.to_thread(collect, vault, providers, since, sources)
+    listing = VaultListing(vault_files) if vault_files is not None else vault
+    collected = await asyncio.to_thread(collect, listing, providers, since, sources)
     store = memory._metadata
     progress = progress if progress is not None else {}
     report: Dict[str, Any] = {
@@ -412,7 +427,7 @@ async def import_history(
     progress.update({"threads_total": len(collected.threads), "threads_done": 0})
     report["duplicate_turns"] = 0
     batch_seen: Dict[str, str] = {}   # fingerprints claimed earlier in this run (threads go oldest first)
-    for thread in collected.threads:
+    async def process_thread(thread: Thread) -> None:
         session = thread.session
         state = await asyncio.to_thread(store.get_history_thread, thread.key)
         done_turns = state["turns_imported"] if state else 0
@@ -479,11 +494,23 @@ async def import_history(
             })
         progress["threads_done"] = progress.get("threads_done", 0) + 1
 
+    for thread in collected.threads:
+        if apply and unit_lock is not None:
+            async with unit_lock:
+                await process_thread(thread)
+        else:
+            await process_thread(thread)
+
     prompts = [p for p in recovered_prompts(collected)
                if not await asyncio.to_thread(store.history_prompt_seen, _prompt_digest(p))]
-    report["recovered_prompts"] = len(prompts)
+    report["recovered_prompts"] = len(prompts) if not apply else 0
     if apply and prompts:
-        for entry in prompts:
+        async def add_prompt(entry: parsers.PromptEntry) -> None:
+            digest = _prompt_digest(entry)
+            # Another importer may have completed this prompt while this run
+            # waited for the per-unit lock.
+            if await asyncio.to_thread(store.history_prompt_seen, digest):
+                return
             project = project_for_directory(entry.cwd)
             agent = {"claude_code": "claude-code", "codex": "codex", "gemini_cli": "gemini-cli"}.get(
                 entry.provider, entry.provider)
@@ -497,7 +524,15 @@ async def import_history(
                              **({"session_id": entry.session_id} if entry.session_id else {})},
             }
             await _add(memory, item, "project")
-        await _write(memory, store.mark_history_prompts, [_prompt_digest(p) for p in prompts])
+            await _write(memory, store.mark_history_prompts, [digest])
+            report["recovered_prompts"] += 1
+
+        for entry in prompts:
+            if unit_lock is not None:
+                async with unit_lock:
+                    await add_prompt(entry)
+            else:
+                await add_prompt(entry)
     for key in ("oldest", "newest"):
         if report[key]:
             report[key] = _stamp(report[key])

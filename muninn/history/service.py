@@ -10,10 +10,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 import logging
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -50,7 +50,9 @@ class HistoryService:
         self.interval = (interval_minutes or _minutes()) * 60.0
         self._task: Optional[asyncio.Task] = None
         self._job: Optional[asyncio.Task] = None
-        self._lock = asyncio.Lock()
+        self._vault_lock = asyncio.Lock()
+        self._import_lock = asyncio.Lock()
+        self._run_lock = asyncio.Lock()
         self.last_sync: Optional[Dict[str, Any]] = None
         self.last_import: Optional[Dict[str, Any]] = None
         self.last_analysis: Optional[Dict[str, Any]] = None
@@ -90,7 +92,7 @@ class HistoryService:
     # --- operations ---------------------------------------------------------------
 
     async def sync(self, extra_paths: Optional[List[str]] = None) -> Dict[str, Any]:
-        async with self._lock:
+        async with self._vault_lock:
             report = await asyncio.to_thread(self.vault.sync, extra_paths)
         report["at"] = time.time()
         self.last_sync = report
@@ -98,11 +100,16 @@ class HistoryService:
 
     async def run_import(self, *, apply: bool, providers: Optional[List[str]] = None,
                          since: Optional[float] = None) -> Dict[str, Any]:
-        async with self._lock:
+        async with self._run_lock:
+            # Snapshot the manifest quickly. Vault copies are atomically
+            # replaced, so sync/capture can proceed during a long backfill.
+            async with self._vault_lock:
+                vault_files = await asyncio.to_thread(self.vault.files)
             self.progress = {"running": True, "apply": apply, "started_at": time.time()}
             try:
                 report = await import_history(self.memory, self.vault, apply=apply, providers=providers,
-                                              since=since, progress=self.progress)
+                                              since=since, progress=self.progress,
+                                              vault_files=vault_files, unit_lock=self._import_lock)
             finally:
                 self.progress["running"] = False
         if apply:
@@ -158,11 +165,13 @@ class HistoryService:
         if not force and now - self._captured.get(key, 0.0) < CAPTURE_DEBOUNCE_SECONDS:
             return {"skipped": "debounced"}
         self._captured[key] = now
-        async with self._lock:
+        async with self._vault_lock:
             outcome = await asyncio.to_thread(self.vault.capture, Path(path), provider)
             if outcome == "missing":
                 return {"captured": False}
-            report = await import_history(self.memory, self.vault, apply=True, sources=[key])
+            vault_files = await asyncio.to_thread(self.vault.files)
+        report = await import_history(self.memory, self.vault, apply=True, sources=[key],
+                                      vault_files=vault_files, unit_lock=self._import_lock)
         self._launch_auto_analysis()
         return {"captured": True, "vault": outcome, "turn_memories": report["turn_memories"],
                 "compaction_memories": report["compaction_memories"]}
@@ -238,8 +247,11 @@ class HistoryService:
     async def _auto_analyze(self) -> None:
         """Analyze at most two new threads without occupying a busy GPU."""
         from muninn.history.auto_routing import (
-            choose_route, configured_model_hints, guarded_openrouter_available,
-            probe_gpu, probe_ollama,
+            choose_route,
+            configured_model_hints,
+            guarded_openrouter_available,
+            probe_gpu,
+            probe_ollama,
         )
 
         since = self._auto_since()
