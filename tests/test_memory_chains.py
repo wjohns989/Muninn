@@ -109,6 +109,52 @@ def test_add_persists_chain_links_when_detector_enabled():
     assert stored_record.metadata["entity_names"] == ["Redis", "Queue"]
 
 
+def test_raw_imported_history_skips_graph_but_keeps_search_indexes():
+    memory = MuninnMemory()
+    memory._initialized = True
+    memory._metadata = MagicMock()
+    memory._vectors = MagicMock()
+    memory._vectors.count.return_value = 0
+    memory._graph = MagicMock()
+    memory._bm25 = MagicMock()
+    memory._goal_compass = None
+    memory._chain_detector = MagicMock()
+    memory._ingestion_manager = IngestionManager(memory)
+
+    async def _extract(_content: str) -> ExtractionResult:
+        return ExtractionResult(entities=[], relations=[])
+
+    async def _embed(_content: str):
+        return [0.1, 0.2, 0.3]
+
+    memory._extract = _extract
+    memory._embed = _embed
+    result = asyncio.run(memory.add(
+        "A historical turn",
+        metadata={"import_source": "agent_history", "kind": "conversation_turn",
+                  "thread_id": "thread-1", "project": "test"},
+        provenance=Provenance.INGESTED,
+    ))
+
+    assert result["event"] == "ADD"
+    memory._metadata.add.assert_called_once()
+    memory._vectors.upsert.assert_called_once()
+    memory._bm25.add.assert_called_once()
+    memory._graph.add_memory_node.assert_not_called()
+    memory._graph.add_chain_link.assert_not_called()
+
+    live = asyncio.run(memory.add(
+        "A live preference",
+        metadata={"project": "test"},
+        provenance=Provenance.USER_EXPLICIT,
+    ))
+    assert live["event"] == "ADD"
+    assert memory._metadata.add.call_count == 2
+    assert memory._vectors.upsert.call_count == 2
+    assert memory._bm25.add.call_count == 2
+    memory._graph.add_memory_node.assert_called_once()
+
+
 def test_metadata_only_update_preserves_content_without_rebuilding_chains():
     memory = MuninnMemory()
     memory._initialized = True

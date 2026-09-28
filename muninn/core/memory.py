@@ -493,6 +493,18 @@ class MuninnMemory:
             logger.warning("Memory-chain linking failed (non-fatal): %s", e)
             return 0
 
+    @staticmethod
+    def _raw_history_without_graph(record: MemoryRecord) -> bool:
+        """Raw transcript records use searchable stores, not the live entity graph."""
+        meta = record.metadata or {}
+        return (
+            record.provenance == Provenance.INGESTED
+            and meta.get("import_source") == "agent_history"
+            and meta.get("kind") in {
+                "conversation_turn", "compaction_summary", "thread_summary",
+            }
+        )
+
     async def add(
         self,
         content: str,
@@ -616,6 +628,7 @@ class MuninnMemory:
             embedding = processed["embedding"]
             entity_names = processed["entity_names"]
             conflict_info = processed["conflict_info"]
+            raw_history_without_graph = self._raw_history_without_graph(record)
 
             # Acquire write lock only for the persistence phase
             async with self._write_lock:
@@ -628,6 +641,7 @@ class MuninnMemory:
                         embedding=embedding,
                         metadata={
                             "content": content[:500],
+                            "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                             "memory_type": memory_type.value,
                             "namespace": namespace,
                             "importance": record.importance,
@@ -640,6 +654,8 @@ class MuninnMemory:
                     )
 
                 def _write_graph():
+                    if raw_history_without_graph:
+                        return
                     uid = record.metadata.get("user_id", "global")
                     ns = record.namespace
                     self._graph.add_memory_node(
@@ -678,7 +694,7 @@ class MuninnMemory:
                     asyncio.to_thread(_write_colbert),
                 )
 
-                chain_links_created = await asyncio.to_thread(
+                chain_links_created = 0 if raw_history_without_graph else await asyncio.to_thread(
                     self._upsert_memory_chain_links,
                     successor_record=record,
                     successor_content=content,
@@ -1886,6 +1902,7 @@ class MuninnMemory:
                         embedding=embedding,
                         metadata={
                             "content": record.content[:500],
+                            "content_sha256": hashlib.sha256(record.content.encode("utf-8")).hexdigest(),
                             "memory_type": record.memory_type.value,
                             "namespace": record.namespace,
                             "importance": record.importance,
@@ -1904,7 +1921,7 @@ class MuninnMemory:
                     })
 
             def _update_graph():
-                if data is not None:
+                if data is not None and not self._raw_history_without_graph(record):
                     uid = record.metadata.get("user_id", "global")
                     ns = record.namespace
                     self._graph.delete_memory_references(record.id)
@@ -1947,7 +1964,7 @@ class MuninnMemory:
                 asyncio.to_thread(_update_colbert),
             )
 
-            if data is not None:
+            if data is not None and not self._raw_history_without_graph(record):
                 chain_links_created = await asyncio.to_thread(
                     self._upsert_memory_chain_links,
                     successor_record=record,

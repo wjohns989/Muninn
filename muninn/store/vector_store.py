@@ -13,11 +13,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
-    VectorParams,
-    PointStruct,
-    Filter,
     FieldCondition,
+    Filter,
     MatchValue,
+    PointStruct,
+    VectorParams,
 )
 
 logger = logging.getLogger("Muninn.Vector")
@@ -104,7 +104,7 @@ class VectorStore:
         Search for similar vectors.
         Returns list of (memory_id, score) tuples.
         """
-        from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
+        from qdrant_client.models import MatchAny
         client = self._get_client()
         query_filter = None
         if filters:
@@ -162,6 +162,29 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to retrieve vector for {memory_id}: {e}")
             return None
+
+    def get_integrity(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        """Return only point identity, content digest, and vector dimension for audits."""
+        client = self._get_client()
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, memory_id))
+        results = client.retrieve(
+            collection_name=self.collection_name,
+            ids=[point_id],
+            with_vectors=True,
+            with_payload=True,
+        )
+        if not results:
+            return None
+        point = results[0]
+        vector = point.vector
+        if isinstance(vector, dict):
+            vector = vector.get("default") or next(iter(vector.values()), None)
+        payload = point.payload or {}
+        return {
+            "memory_id": payload.get("memory_id"),
+            "content_sha256": payload.get("content_sha256"),
+            "dimension": len(vector) if vector is not None else None,
+        }
 
     def get_vectors(self, memory_ids: List[str]) -> Dict[str, List[float]]:
         """

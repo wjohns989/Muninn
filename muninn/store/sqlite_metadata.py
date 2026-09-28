@@ -302,6 +302,9 @@ class SQLiteMetadataStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_user_id_json ON memories(json_extract(metadata, '$.user_id'));"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_thread_id_json ON memories(json_extract(metadata, '$.thread_id'));"
+            )
         conn.execute(SCHEMA_META)
         conn.execute(USER_SCOPE_BACKFILL_FAILURES)
         conn.execute(PROJECT_GOALS)

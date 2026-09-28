@@ -299,6 +299,8 @@ class FakeMemory:
 
     def __init__(self, store):
         self._metadata = store
+        self._vectors = SimpleNamespace(points={}, get_integrity=lambda memory_id: self._vectors.points.get(memory_id))
+        self._bm25 = SimpleNamespace(digests={}, content_digest=lambda memory_id: self._bm25.digests.get(memory_id))
 
     async def add(self, content, user_id, agent_id=None, metadata=None, memory_type=None, provenance=None,
                   scope="project", **_):
@@ -306,6 +308,9 @@ class FakeMemory:
         record = MemoryRecord(content=content, project=metadata.get("project", "global"), scope=scope,
                               source_agent=agent_id or "unknown", branch=metadata.get("branch"), metadata=metadata)
         self._metadata.add(record)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        self._vectors.points[record.id] = {"memory_id": record.id, "content_sha256": digest, "dimension": 1}
+        self._bm25.digests[record.id] = digest
         return {"id": record.id, "event": "ADD"}
 
     async def update(self, memory_id, data=None, metadata_patch=None, archived=None, **_):
@@ -315,10 +320,16 @@ class FakeMemory:
         if archived is not None:
             fields["archived"] = int(archived)
         self._metadata.update(memory_id, **fields)
+        if data is not None:
+            digest = hashlib.sha256(data.encode("utf-8")).hexdigest()
+            self._vectors.points[memory_id]["content_sha256"] = digest
+            self._bm25.digests[memory_id] = digest
         return {"id": memory_id}
 
     async def delete(self, memory_id):
         self._metadata.delete(memory_id)
+        self._vectors.points.pop(memory_id, None)
+        self._bm25.digests.pop(memory_id, None)
         return {"id": memory_id, "event": "DELETE"}
 
 
@@ -685,6 +696,55 @@ def test_resumed_sessions_do_not_duplicate_turns(relay):
     assert len(texts) == 1 and "claude step 7" in texts[0]
     again = run(import_history(relay.memory, relay.vault, apply=True))
     assert again["turn_memories"] == 0 and again["duplicate_turns"] == 0
+
+
+def test_partial_turn_write_is_reused_after_checkpoint_interruption(env):
+    env.vault.sync()
+    thread = next(t for t in collect(env.vault, providers=["claude_code"]).threads
+                  if t.session.session_id == "c-111")
+    part = turn_memories(thread, 0, thread.session.turns[0])[0]
+    run(env.memory.add(part["content"], user_id="global_user", metadata=part["metadata"]))
+    assert env.store.get_history_thread(thread.key) is None
+
+    run(import_history(env.memory, env.vault, providers=["claude_code"], apply=True))
+    records = env.store.get_thread_memories(thread.key, limit=100)
+    matches = [record for record in records if (record.metadata or {}).get("kind") == "conversation_turn"
+               and (record.metadata or {}).get("turn_index") == 0
+               and (record.metadata or {}).get("part") == 1]
+    assert len(matches) == 1
+    assert env.store.get_history_thread(thread.key)["turns_imported"] == len(thread.session.turns)
+    again = run(import_history(env.memory, env.vault, providers=["claude_code"], apply=True))
+    assert again["turn_memories"] == 0
+
+
+def test_partial_turn_missing_vector_fails_closed(env):
+    env.vault.sync()
+    thread = next(t for t in collect(env.vault, providers=["claude_code"]).threads
+                  if t.session.session_id == "c-111")
+    part = turn_memories(thread, 0, thread.session.turns[0])[0]
+    added = run(env.memory.add(part["content"], user_id="global_user", metadata=part["metadata"]))
+    del env.memory._vectors.points[added["id"]]
+
+    with pytest.raises(RuntimeError, match="vector"):
+        run(import_history(env.memory, env.vault, providers=["claude_code"], apply=True))
+    records = env.store.get_thread_memories(thread.key, limit=100)
+    assert len([r for r in records if (r.metadata or {}).get("kind") == "conversation_turn"]) == 1
+
+
+@pytest.mark.parametrize("store_kind", ["vector", "bm25"])
+def test_partial_turn_stale_search_content_fails_closed(env, store_kind):
+    env.vault.sync()
+    thread = next(t for t in collect(env.vault, providers=["claude_code"]).threads
+                  if t.session.session_id == "c-111")
+    part = turn_memories(thread, 0, thread.session.turns[0])[0]
+    added = run(env.memory.add(part["content"], user_id="global_user", metadata=part["metadata"]))
+    if store_kind == "vector":
+        env.memory._vectors.points[added["id"]]["content_sha256"] = "0" * 64
+    else:
+        env.memory._bm25.digests[added["id"]] = "0" * 64
+    with pytest.raises(RuntimeError, match="(?i)" + store_kind):
+        run(import_history(env.memory, env.vault, providers=["claude_code"], apply=True))
+    assert env.store.get_history_thread(thread.key) is None
 
 
 def test_project_timeline_interleaves_apps_in_time_order(relay):

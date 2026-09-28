@@ -27,3 +27,11 @@ def test_archived_false_still_excludes_archived_points(store):
     hits = store.search([0.1, 0.2, 0.3, 0.4], 5, filters={"user_id": "u1", "archived": False})
 
     assert [memory_id for memory_id, _ in hits] == ["live"]
+
+
+def test_point_integrity_reports_identity_digest_and_dimension(store):
+    assert store.get_integrity("missing") is None
+    store.upsert("history-part", [0.1, 0.2, 0.3, 0.4], {"content_sha256": "a" * 64})
+    assert store.get_integrity("history-part") == {
+        "memory_id": "history-part", "content_sha256": "a" * 64, "dimension": 4,
+    }

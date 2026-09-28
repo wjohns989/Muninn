@@ -406,6 +406,55 @@ async def _add(memory: "MuninnMemory", item: Dict[str, Any], scope: str) -> Opti
     return memory_id
 
 
+def _part_identity(metadata: Dict[str, Any]) -> Optional[Tuple[str, int, int]]:
+    """Logical identity of a raw history part, independent of its generated memory ID."""
+    kind = metadata.get("kind")
+    if kind == "conversation_turn":
+        return kind, int(metadata["turn_index"]), int(metadata.get("part", 1))
+    if kind == "compaction_summary":
+        return kind, int(metadata["compaction_index"]), int(metadata.get("part", 1))
+    if kind == "thread_summary":
+        return kind, -1, 1
+    return None
+
+
+async def _existing_parts(memory: "MuninnMemory", thread_key: str) -> Dict[Tuple[str, int, int], Any]:
+    """Include uncheckpointed parts left by an interrupted import."""
+    found: Dict[Tuple[str, int, int], Any] = {}
+    offset = 0
+    while True:
+        records = await asyncio.to_thread(memory._metadata.get_thread_memories, thread_key, offset, 500)
+        for record in records:
+            meta = record.metadata or {}
+            if meta.get("import_source") != IMPORT_SOURCE:
+                continue
+            key = _part_identity(meta)
+            if key is None:
+                continue
+            if key in found:
+                raise RuntimeError("duplicate logical history part; import stopped")
+            found[key] = record
+        if len(records) < 500:
+            return found
+        offset += len(records)
+
+
+async def _verify_part(memory: "MuninnMemory", record: Any,
+                       item: Dict[str, Any], scope: str) -> None:
+    """A checkpoint may skip a part only when its searchable stores agree."""
+    if record.content != item["content"] or record.scope != scope:
+        raise RuntimeError("history part content or scope mismatch; import stopped")
+    expected_digest = hashlib.sha256(item["content"].encode("utf-8")).hexdigest()
+    vector = await asyncio.to_thread(memory._vectors.get_integrity, record.id)
+    dimensions = getattr(getattr(getattr(memory, "config", None), "vector", None), "dimensions", None)
+    if (vector is None or vector.get("memory_id") != record.id
+            or vector.get("content_sha256") != expected_digest
+            or (dimensions is not None and vector.get("dimension") != dimensions)):
+        raise RuntimeError("history part vector missing or mismatched; import stopped")
+    if memory._bm25.content_digest(record.id) != expected_digest:
+        raise RuntimeError("history part BM25 entry missing or mismatched; import stopped")
+
+
 async def import_history(
     memory: "MuninnMemory",
     vault: HistoryVault,
@@ -425,7 +474,8 @@ async def import_history(
     progress = progress if progress is not None else {}
     report: Dict[str, Any] = {
         "apply": apply, "threads": 0, "threads_new": 0, "threads_grown": 0, "turn_memories": 0,
-        "compaction_memories": 0, "summaries": 0, "recovered_prompts": 0, "by_project": {}, "by_agent": {},
+        "compaction_memories": 0, "summaries": 0, "already_present_parts": 0,
+        "recovered_prompts": 0, "by_project": {}, "by_agent": {},
         "oldest": None, "newest": None, "errors": collected.errors,
     }
     progress.update({"threads_total": len(collected.threads), "threads_done": 0})
@@ -471,22 +521,45 @@ async def import_history(
                 report["newest"] = max(report["newest"] or stamp, stamp)
         needs_summary = bool(items or compactions or state is None)
         report["summaries"] += needs_summary
+        existing = await _existing_parts(memory, thread.key) if needs_summary else {}
+        item_keys = [_part_identity(item["metadata"]) for item in items + compactions]
+        if len(item_keys) != len(set(item_keys)):
+            raise RuntimeError("duplicate logical history part in source; import stopped")
+        report["already_present_parts"] += sum(key in existing for key in item_keys)
         if apply and needs_summary:
             # Always project-scoped: conversations outside any repository file under "global" and
             # show up in unfiltered searches, but do not leak into every project's results.
             scope = "project"
             # Qdrant's embedded local collection is not safe for overlapping
             # count/upsert calls. Keep each complete memory.add sequential.
-            for item in items + compactions:
-                await _add(memory, item, scope)
-            await _write(memory, store.mark_turns, fresh_fps)
+            for item, key in zip(items + compactions, item_keys):
+                if key in existing:
+                    await _verify_part(memory, existing[key], item, scope)
+                    continue
+                memory_id = await _add(memory, item, scope)
+                if not memory_id:
+                    raise RuntimeError("history part was not persisted; import stopped")
+                record = await asyncio.to_thread(store.get, memory_id)
+                await _verify_part(memory, record, item, scope)
+                existing[key] = record
             summary = summary_memory(thread, continues)
+            previous_summary = existing.get(_part_identity(summary["metadata"]))
             summary_id = state["summary_memory_id"] if state else None
-            if summary_id and await asyncio.to_thread(store.get, summary_id):
+            if summary_id and previous_summary and summary_id != previous_summary.id:
+                raise RuntimeError("history summary identity mismatch; import stopped")
+            if previous_summary and summary_id:
                 await memory.update(summary_id, data=summary["content"], metadata_patch=summary["metadata"])
                 await _write(memory, store.update, summary_id, created_at=float(summary["created_at"] or time.time()))
+                previous_summary = await asyncio.to_thread(store.get, summary_id)
+            elif previous_summary:
+                summary_id = previous_summary.id
             else:
                 summary_id = await _add(memory, summary, scope)
+                if not summary_id:
+                    raise RuntimeError("history summary was not persisted; import stopped")
+                previous_summary = await asyncio.to_thread(store.get, summary_id)
+            await _verify_part(memory, previous_summary, summary, scope)
+            await _write(memory, store.mark_turns, fresh_fps)
             await _write(memory, store.upsert_history_thread, {
                 "thread_key": thread.key, "provider": session.provider, "agent": session.agent,
                 "session_id": session.session_id, "project": thread.project_name, "directory": session.cwd,

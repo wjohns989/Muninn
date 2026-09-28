@@ -6,11 +6,12 @@ Complements vector search by catching exact terms that
 embedding models might miss (e.g., version numbers, UUIDs, paths).
 """
 
+import hashlib
+import logging
 import math
 import re
-import logging
-from typing import List, Tuple, Dict, Optional, Set
 from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("Muninn.BM25")
 
@@ -64,6 +65,7 @@ class BM25Index:
         self._n: int = 0
         # Metadata store: id → (user_id, namespace)
         self._metadata: Dict[str, Tuple[str, str]] = {}
+        self._content_hashes: Dict[str, str] = {}
 
     def add(
         self,
@@ -79,6 +81,7 @@ class BM25Index:
 
         tokens = tokenize(text)
         self._docs[doc_id] = tokens
+        self._content_hashes[doc_id] = hashlib.sha256(text.encode("utf-8")).hexdigest()
         self._doc_lengths[doc_id] = len(tokens)
         self._metadata[doc_id] = (user_id, namespace)
 
@@ -112,6 +115,7 @@ class BM25Index:
                 seen_terms.add(token)
 
         del self._docs[doc_id]
+        self._content_hashes.pop(doc_id, None)
         del self._doc_lengths[doc_id]
         if doc_id in self._metadata:
             del self._metadata[doc_id]
@@ -180,6 +184,7 @@ class BM25Index:
         self._df.clear()
         self._doc_lengths.clear()
         self._metadata.clear()
+        self._content_hashes.clear()
         self._avg_dl = 0.0
         self._n = 0
 
@@ -200,6 +205,7 @@ class BM25Index:
         for doc_id, text in documents.items():
             tokens = tokenize(text)
             self._docs[doc_id] = tokens
+            self._content_hashes[doc_id] = hashlib.sha256(text.encode("utf-8")).hexdigest()
             self._doc_lengths[doc_id] = len(tokens)
             if doc_id in scopes:
                 self._metadata[doc_id] = scopes[doc_id]
@@ -221,6 +227,10 @@ class BM25Index:
     def size(self) -> int:
         """Number of documents in the index."""
         return self._n
+
+    def content_digest(self, doc_id: str) -> Optional[str]:
+        """Digest of the exact source text used to build a searchable document."""
+        return self._content_hashes.get(doc_id)
 
     def _recompute_avg_dl(self) -> None:
         """Recompute average document length."""
