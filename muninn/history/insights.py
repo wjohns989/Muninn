@@ -73,6 +73,9 @@ what fixed it), open_item (work left unfinished).
 Rules: only durable knowledge, not chit-chat or step-by-step narration; prefer the final state when \
 something changed during the conversation; never include secrets, tokens, passwords or personal \
 data; scope "global" only for preferences that apply beyond this project, otherwise "project".
+Evidence matters: a plan, proposed patch/diff, validation command, or assistant claim is not proof \
+that code changed or a test passed. Without explicit successful execution evidence in the conversation, \
+describe such work as proposed and still open; do not label it an applied fix or completed work.
 Other agents may have worked on the same project in between (marked "Meanwhile" in the transcript), \
 and notes already recorded from other conversations are listed with their time and id. Use them to \
 read this conversation in order: set "current" to false for an insight that a later note or later \
