@@ -86,12 +86,15 @@ ingestion = [
     # Codex compresses older and archived rollouts with Zstandard.
     "zstandard>=0.23.0",
 ]
+credential-vault = [
+    "cryptography>=46.0.0",
+]
 sdk = [
     "requests>=2.31.0",
     "httpx>=0.24.0",
 ]
 all = [
-    "muninn-mcp[instructor,tray,dev,observability,conflict,ingestion,sdk]",
+    "muninn-mcp[instructor,tray,dev,observability,conflict,ingestion,credential-vault,sdk]",
 ]
 
 [project.scripts]
