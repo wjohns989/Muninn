@@ -3,9 +3,10 @@
 For each imported conversation a model reads the (redacted) turns and returns
 a summary, a status (completed / in_progress / abandoned / answered), topics,
 and durable insights: decisions, preferences, conventions, facts, fixes and
-open items. Each insight becomes a semantic memory dated at the turn it came
-from and linked to the thread. Re-analysing a thread that grew replaces its
-earlier insights. Recent unfinished threads can become handoffs.
+open items. Safe provisional insights become semantic memories dated at the
+source turn and linked to the thread. Re-analysis deduplicates identical
+insights and preserves earlier ones; model output cannot archive them or create
+actionable handoffs.
 
 Getting results stored correctly:
 - the request carries a strict JSON Schema (``response_format.json_schema``) and,
@@ -40,7 +41,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from muninn.core import handoffs
 from muninn.core.types import MemoryType, Provenance
 from muninn.history import llm_settings
 from muninn.history.importer import AGENT_NAMES, Thread, _stamp, _write, collect, redact
@@ -58,8 +58,12 @@ CHARS_PER_TOKEN = 3.5          # window sizing: typical tokenizers on code-heavy
 # characters per prompt token on real transcripts, so the preview errs high for other models.
 BILLED_CHARS_PER_TOKEN = 1.3
 TURN_CHARS = 40_000            # per side of one turn: keeps a pasted log from swamping a window
-HANDOFF_MAX_AGE_DAYS = 14      # unfinished threads newer than this can become handoffs
 MAX_INSIGHTS = 20
+_UNVERIFIED_OPERATIONAL_CLAIM = re.compile(
+    r"\b(?:implemented|added|applied|fixed|resolved|completed|verified|validated|"
+    r"successfully|tests? passed|build passed|root cause|due to|caused by)\b",
+    re.IGNORECASE,
+)
 
 SYSTEM_PROMPT = """You read a conversation between a user and an AI coding/chat assistant and extract \
 what is worth remembering for future sessions.
@@ -441,6 +445,10 @@ def render_turns(thread: Thread, window_chars: int = 700_000,
             parts.append("Assistant: " + _cap(turn.assistant))
         if turn.actions:
             parts.append("Actions: " + "; ".join(turn.actions[:20]))
+        if turn.tool_events:
+            parts.append("Tool results: " + "; ".join(
+                event.summary() for event in turn.tool_events[:20]
+            ))
         blocks.append((turn.at or 0, redact("\n".join(parts))))
     for compaction in thread.session.compactions:
         blocks.append((compaction.at or 0, redact(f"### Compaction summary ({_stamp(compaction.at)})\n"
@@ -611,74 +619,81 @@ def _turn_time(thread: Thread, turn: Optional[int]) -> float:
     return thread.session.ended_at or time.time()
 
 
-async def _drop_previous_insights(memory: "MuninnMemory", thread_key: str) -> int:
-    """A re-analysis replaces the thread's earlier insights instead of piling up near-duplicates."""
-    records = await asyncio.to_thread(memory._metadata.get_thread_memories, thread_key, 0, 10_000)
-    old = [r.id for r in records if (r.metadata or {}).get("kind") == "thread_insight"]
-    for memory_id in old:
-        await memory.delete(memory_id)
-    return len(old)
+def _provisional_insights(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Retain interpretations that do not assert an unbound operational outcome."""
+    return [item for item in result.get("insights") or []
+            if item.get("kind") != "fix"
+            and (item.get("kind") in {"preference", "open_item"}
+                 or not _UNVERIFIED_OPERATIONAL_CLAIM.search(str(item.get("text") or "")))]
+
+
+def storage_safety_preview(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Describe the fail-closed model-to-memory boundary without changing state."""
+    insights = result.get("insights") or []
+    kept = _provisional_insights(result)
+    return {
+        "status_stored": "unverified",
+        "provisional_insights": len(kept),
+        "unverified_fixes_suppressed": sum(item.get("kind") == "fix" for item in insights),
+        "unsupported_operational_claims_suppressed": len(insights) - len(kept)
+        - sum(item.get("kind") == "fix" for item in insights),
+        "supersedes_suppressed": len(result.get("supersedes") or []),
+        "model_summary_overwrites_source": False,
+        "automatic_handoff_created": False,
+    }
 
 
 async def store_understanding(memory: "MuninnMemory", thread: Thread, result: Dict[str, Any],
                               create_handoffs: bool = True, model: Optional[str] = None) -> Dict[str, int]:
+    """Store model interpretations as provisional, never as verified outcomes.
+
+    Tool-result parsing now exposes bounded evidence, but no model insight is
+    claim-to-event bound. A successful tool call elsewhere in the thread cannot
+    prove a particular fix or the overall task complete. Until that binding is
+    available, preserve the raw imported summary and fail closed on these claims.
+    """
     session = thread.session
     store = memory._metadata
     agent = AGENT_NAMES.get(session.agent, session.agent)
-    replaced = await _drop_previous_insights(memory, thread.key)
+    policy = storage_safety_preview(result)
+    provisional = _provisional_insights(result)
+    previous = await asyncio.to_thread(store.get_thread_memories, thread.key, 0, 10_000)
+    existing = {(record.content, (record.metadata or {}).get("insight_kind"),
+                 (record.metadata or {}).get("turn_index"))
+                for record in previous if (record.metadata or {}).get("kind") == "thread_insight"}
     written = 0
-    for insight in result["insights"]:
+    for insight in provisional:
         at = _turn_time(thread, insight["turn"])
         label = insight["kind"].replace("_", " ").capitalize()
-        content = (f"{label}: {insight['text']}\n(from {agent} thread \"{session.title or 'untitled'}\" "
+        content = (f"Unverified history inference · {label}: {insight['text']}\n"
+                   f"(from {agent} thread \"{session.title or 'untitled'}\" "
                    f"in {thread.project_name}, {_stamp(at)})")
+        identity = (content, insight["kind"], insight["turn"])
+        if identity in existing:
+            continue
         metadata = {
             "import_source": "thread_insight", "kind": "thread_insight", "insight_kind": insight["kind"],
+            "evidence_state": "model_inferred_unverified",
             "thread_id": thread.key, "turn_index": insight["turn"], "part": 0, "project": thread.project_name,
             "agent": session.agent, "topics": result["topics"], "operator_model_profile": "low_latency",
             **({"insight_model": model} if model else {}),
         }
-        if not insight.get("current", True):
-            metadata["superseded"] = True   # replaced by later work: kept for the record, out of search
         added = await memory.add(content=content, user_id="global_user", agent_id=session.agent, metadata=metadata,
                                  memory_type=MemoryType.SEMANTIC, provenance=Provenance.AUTO_EXTRACTED,
                                  scope=insight["scope"])
         if added.get("id"):
             await _write(memory, store.update, added["id"], created_at=float(at))
-            if not insight.get("current", True):
-                await _write(memory, store.update, added["id"], archived=True)
+            existing.add(identity)
             written += 1
-    superseded = 0
-    for memory_id in result.get("supersedes", []):
-        # An earlier note from another agent that this conversation replaced: archived, restorable.
-        await memory.update(memory_id, archived=True, metadata_patch={
-            "superseded": True, "superseded_by_thread": thread.key, "superseded_at": time.time()})
-        superseded += 1
-    state = await asyncio.to_thread(store.get_history_thread, thread.key)
-    summary_id = state.get("summary_memory_id") if state else None
-    if summary_id and result["summary"]:
-        text = (f"Thread summary · {agent} · {thread.project_name}"
-                f"{f' (branch {session.branch})' if session.branch else ''} · \"{session.title or 'untitled'}\"\n"
-                f"{_stamp(session.started_at)} to {_stamp(session.ended_at)} · status: {result['status']}"
-                f" · topics: {', '.join(result['topics'])}\n{result['summary']}")
-        await memory.update(summary_id, data=text, metadata_patch={"status": result["status"],
-                                                                   "topics": result["topics"]})
-    await _write(memory, store.set_history_analysis, thread.key, status=result["status"],
+    # Model-suggested supersession is not proof that a prior memory became false.
+    # Nor is a model summary proof of what happened: keep the importer's source-based summary.
+    await _write(memory, store.set_history_analysis, thread.key, status=policy["status_stored"],
                  topics=result["topics"], analyzed_turns=len(session.turns))
-    handoff = 0
-    open_items = [i["text"] for i in result["insights"] if i["kind"] == "open_item"]
-    recent = (session.ended_at or 0) > time.time() - HANDOFF_MAX_AGE_DAYS * 86400
-    if create_handoffs and result["status"] == "in_progress" and open_items and recent and thread.project:
-        existing = await handoffs.list_handoffs(memory, project=thread.project, statuses=["open", "claimed"])
-        if not any((h.get("details") or {}).get("thread_id") == thread.key for h in existing):
-            await handoffs.create_handoff(
-                memory, project=thread.project, from_agent=session.agent,
-                title=f"Unfinished: {session.title or 'conversation'}"[:80],
-                summary=result["summary"] or f"Unfinished {agent} conversation",
-                details={"next_steps": open_items, "branch": session.branch or "", "thread_id": thread.key},
-            )
-            handoff = 1
-    return {"insights": written, "replaced": replaced, "superseded": superseded, "handoffs": handoff}
+    # Likewise, do not auto-create actionable handoffs from unverified interpretations.
+    return {"insights": written, "replaced": 0, "superseded": 0, "handoffs": 0,
+            "unverified_fixes_suppressed": policy["unverified_fixes_suppressed"],
+            "unsupported_operational_claims_suppressed": policy["unsupported_operational_claims_suppressed"],
+            "supersedes_suppressed": policy["supersedes_suppressed"]}
 
 
 async def estimate_cost(models: List[str], input_tokens: int, output_tokens: int,
@@ -750,6 +765,8 @@ async def analyze_threads(
     report: Dict[str, Any] = {
         "apply": apply, "threads": len(threads), "approx_input_tokens": input_tokens,
         "insights": 0, "replaced_insights": 0, "handoffs": 0, "errors": [], "refused_threads": [],
+        "unverified_fixes_suppressed": 0, "unsupported_operational_claims_suppressed": 0,
+        "supersedes_suppressed": 0,
     }
     if chosen:
         report.update({"provider": chosen.name, "models": chosen.models,
@@ -786,6 +803,10 @@ async def analyze_threads(
                 report["replaced_insights"] += counts["replaced"]
                 report["superseded_insights"] += counts["superseded"]
                 report["handoffs"] += counts["handoffs"]
+                report["unverified_fixes_suppressed"] += counts["unverified_fixes_suppressed"]
+                report["unsupported_operational_claims_suppressed"] += counts[
+                    "unsupported_operational_claims_suppressed"]
+                report["supersedes_suppressed"] += counts["supersedes_suppressed"]
             except ModelRefusal as refusal:
                 # Nothing is stored: the thread keeps its imported turns and status, and says why.
                 report["refused_threads"].append({"thread": thread.key, "reason": refusal.reason[:300]})

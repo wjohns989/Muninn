@@ -14,12 +14,14 @@ import json
 import os
 import sqlite3
 import time
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
 import httpx
 
+from muninn.history import llm_settings
 from muninn.history.auto_routing import (
     choose_route,
     guarded_openrouter_available,
@@ -27,7 +29,13 @@ from muninn.history.auto_routing import (
     probe_ollama,
 )
 from muninn.history.importer import collect, redact
-from muninn.history.insights import CallStats, Provider, render_turns, understand
+from muninn.history.insights import (
+    CallStats,
+    Provider,
+    render_turns,
+    storage_safety_preview,
+    understand,
+)
 from muninn.history.vault import VaultFile
 
 
@@ -65,7 +73,7 @@ class ReadOnlyVault:
 
 async def _run(server_url: str, ollama_url: str, vault_root: Path,
                thread_key: str, provider_name: str, model: str | None,
-               max_chars: int) -> int:
+               max_chars: int, audit_only: bool) -> int:
     with httpx.Client(timeout=30.0) as client:
         response = client.get(
             f"{server_url}/history/threads/{quote(thread_key, safe='')}?limit=1",
@@ -87,8 +95,21 @@ async def _run(server_url: str, ollama_url: str, vault_root: Path,
         print(json.dumps({"ok": False, "reason": "thread_not_found_in_vault"}))
         return 2
     thread = threads[0]
+    events = [event for turn in thread.session.turns for event in turn.tool_events]
+    if audit_only:
+        print(json.dumps({
+            "ok": True, "inference_sent": False, "source_turns": len(thread.session.turns),
+            "tool_calls": len(events),
+            "tool_results_observed": sum(event.result_observed for event in events),
+            "tool_events": dict(Counter(f"{event.action}:{event.outcome}" for event in events)),
+            "unmatched_results": thread.session.unmatched_tool_results,
+        }))
+        return 0
     if provider_name == "openrouter":
-        if not os.environ.get("MUNINN_OPENROUTER_API_KEY", "").strip():
+        if llm_settings.key_source() not in {
+            "environment (MUNINN_OPENROUTER_API_KEY)",
+            "user environment (MUNINN_OPENROUTER_API_KEY)",
+        }:
             print(json.dumps({"ok": False, "reason": "environment_key_required",
                               "inference_sent": False}))
             return 2
@@ -135,12 +156,14 @@ async def _run(server_url: str, ollama_url: str, vault_root: Path,
         "ok": True, "provider": provider_name,
         "requested_models": provider.models,
         "source_turns": len(thread.session.turns),
+        "tool_events": dict(Counter(f"{event.action}:{event.outcome}" for event in events)),
         "input_chars": input_chars,
         "elapsed_seconds": round(time.monotonic() - started, 1),
         "model_resident_after": model in resident if provider_name == "ollama" else None,
         "response_models": stats.models,
         "reported_cost_usd": round(stats.cost, 6) if provider_name == "openrouter" else None,
         "calls": stats.calls,
+        "storage_preview": storage_safety_preview(result),
         "result": safe_result,
     }, ensure_ascii=False))
     return 0
@@ -154,12 +177,13 @@ def main() -> int:
     parser.add_argument("--provider", choices=("ollama", "openrouter"), default="ollama")
     parser.add_argument("--model")
     parser.add_argument("--max-chars", type=int, default=50_000)
+    parser.add_argument("--audit-only", action="store_true", help="show result counts without inference")
     args = parser.parse_args()
     try:
         server_url = _loopback(args.server_url)
         ollama_url = _loopback(os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434"))
         return asyncio.run(_run(server_url, ollama_url, Path(args.vault_root), args.thread_key,
-                                args.provider, args.model, args.max_chars))
+                                args.provider, args.model, args.max_chars, args.audit_only))
     except (httpx.HTTPError, KeyError, ValueError, TypeError, sqlite3.Error,
             RuntimeError) as exc:
         print(json.dumps({"ok": False, "error_type": type(exc).__name__}))

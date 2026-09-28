@@ -19,13 +19,12 @@ MODELS = [
 ]
 
 
-def test_normal_thread_uses_small_model_and_complex_thread_prefers_q8():
-    for turns in (0, 59):
+def test_real_history_quality_keeps_small_model_first_until_q8_is_proven():
+    for turns in (0, 59, 60, 61):
         assert choose_route(_gpu(), MODELS, model_hints=model_hints_for_thread(turns),
                             now=100.0).model == "qwen2.5:7b"
-    for turns in (60, 61):
-        assert choose_route(_gpu(), MODELS, model_hints=model_hints_for_thread(turns),
-                            now=100.0).model == MODELS[0]["name"]
+    assert choose_route(_gpu(), MODELS, model_hints=("qwen35",),
+                        now=100.0).model == MODELS[0]["name"]
     assert model_hints_for_thread(60, configured=("custom",)) == ("custom",)
 
 

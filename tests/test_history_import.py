@@ -15,7 +15,8 @@ import pytest
 
 from muninn.core.types import MemoryRecord
 from muninn.history import parsers
-from muninn.history.importer import PART_CHARS, collect, import_history, read_thread, redact
+from muninn.history.importer import PART_CHARS, Thread, collect, import_history, read_thread, redact, turn_memories
+from muninn.history.insights import render_turns
 from muninn.history.locations import history_sources
 from muninn.history.vault import HistoryVault, read_text, version_path
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
@@ -84,6 +85,145 @@ def codex_rows(cwd: str):
             "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Tax fixed."}]}},
         {"timestamp": iso(1100), "type": "compacted", "payload": {"message": "Earlier: tax uses banker's rounding."}},
     ]
+
+
+def test_claude_tool_results_are_correlated_bounded_and_not_raw():
+    rows = [
+        {"type": "user", "sessionId": "c-tool", "timestamp": iso(0),
+         "message": {"content": "Fix login"}},
+        {"type": "assistant", "sessionId": "c-tool", "timestamp": iso(1),
+         "message": {"content": [
+             {"type": "tool_use", "id": "edit-1", "name": "Edit",
+              "input": {"file_path": "login.py"}},
+             {"type": "tool_use", "id": "test-1", "name": "Bash",
+              "input": {"command": "pytest -q"}},
+         ]}},
+        {"type": "user", "sessionId": "c-tool", "timestamp": iso(2),
+         "message": {"content": [
+             {"type": "tool_result", "tool_use_id": "edit-1", "content": "Edit applied",
+              "is_error": False},
+             {"type": "tool_result", "tool_use_id": "test-1",
+              "content": "Exit code 0\n12 passed\nAPI_KEY=supersecretvalue12345678",
+              "is_error": False},
+             {"type": "tool_result", "tool_use_id": "other", "content": "99 passed",
+              "is_error": False},
+         ]}},
+    ]
+    session = parsers.parse_claude_code("\n".join(json.dumps(row) for row in rows))
+    events = session.turns[0].tool_events
+    assert [(event.name, event.outcome, event.exit_code) for event in events] == [
+        ("Edit", "success", None), ("Bash", "success", None),
+    ]
+    assert events[1].tests_passed == 12
+    assert "12 passed" in events[1].summary()
+    assert "supersecret" not in repr(events)
+    assert session.unmatched_tool_results == 1
+    thread = Thread(session=session, project="sample", source="local")
+    rendered = render_turns(thread)[0]
+    stored_turn = turn_memories(thread, 0, session.turns[0])[0]["content"]
+    assert "Tool results: Edit (edit): success" in rendered
+    assert "12 passed" in rendered and "12 passed" in stored_turn
+    assert "supersecret" not in rendered and "supersecret" not in stored_turn
+
+
+def test_codex_and_gemini_tool_results_need_matching_ids():
+    codex = [
+        {"type": "session_meta", "payload": {"id": "codex-results"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Run tests"}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command",
+                                               "call_id": "run-1", "arguments": '{"cmd":"pytest -q"}'}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "run-1",
+                                               "output": '{"exit_code":1,"output":"2 failed"}'}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command",
+                                               "call_id": "run-2", "arguments": '{"cmd":"pytest -q"}'}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "run-2",
+                                               "output": '{"exit_code":0,"output":"99 passed"}'}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command",
+                                               "call_id": "run-3", "arguments": '{"cmd":"pytest -q"}'}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "run-3",
+                                               "output": {"exit_code": 1,
+                                                          "output": "2 failed API_KEY=supersecretvalue12345678"}}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "missing", "output": "0 passed"}},
+    ]
+    parsed = parsers.parse_codex("\n".join(json.dumps(row) for row in codex))
+    assert parsed.turns[0].tool_events[0].outcome == "unknown"
+    assert parsed.turns[0].tool_events[0].exit_code is None
+    assert parsed.turns[0].tool_events[1].outcome == "unknown"  # content cannot self-certify success
+    assert parsed.turns[0].tool_events[2].outcome == "error"
+    assert parsed.turns[0].tool_events[2].exit_code == 1
+    assert parsed.unmatched_tool_results == 1
+    codex_thread = Thread(session=parsed, project="sample", source="local")
+    assert "supersecret" not in repr(parsed.turns[0].tool_events)
+    assert "supersecret" not in render_turns(codex_thread)[0]
+    assert "supersecret" not in turn_memories(codex_thread, 0, parsed.turns[0])[0]["content"]
+
+    gemini = {"sessionId": "g-results", "messages": [
+        {"type": "user", "content": "Run tests"},
+        {"type": "gemini", "content": "Checking.", "toolCalls": [
+            {"id": "g-1", "name": "run_shell_command", "args": {"command": "pytest -q"},
+             "status": "success", "result": [{"text": "3 passed API_KEY=supersecretvalue12345678"}]},
+            {"id": "g-2", "name": "replace", "args": {"file_path": "login.py"},
+             "status": "error", "result": [{"text": "failed"}]},
+        ]},
+    ]}
+    parsed = parsers.parse_gemini(json.dumps(gemini))
+    assert [(event.outcome, event.tests_passed) for event in parsed.turns[0].tool_events] == [
+        ("success", 3), ("error", None),
+    ]
+    gemini_thread = Thread(session=parsed, project="sample", source="local")
+    assert "supersecret" not in repr(parsed.turns[0].tool_events)
+    assert "supersecret" not in render_turns(gemini_thread)[0]
+    assert "supersecret" not in turn_memories(gemini_thread, 0, parsed.turns[0])[0]["content"]
+
+
+def test_duplicate_tool_call_id_never_confirms_an_edit():
+    rows = [
+        {"type": "user", "sessionId": "duplicate", "message": {"content": "Edit"}},
+        {"type": "assistant", "sessionId": "duplicate", "message": {"content": [
+            {"type": "tool_use", "id": "same", "name": "Edit", "input": {"file_path": "a.py"}},
+            {"type": "tool_use", "id": "same", "name": "Edit", "input": {"file_path": "b.py"}},
+        ]}},
+        {"type": "user", "sessionId": "duplicate", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "same", "is_error": False, "content": "OK"},
+        ]}},
+    ]
+    session = parsers.parse_claude_code("\n".join(json.dumps(row) for row in rows))
+    assert [event.outcome for event in session.turns[0].tool_events] == ["unknown", "unknown"]
+    assert session.unmatched_tool_results == 1
+
+
+def test_gemini_duplicate_tool_call_id_never_confirms_an_edit():
+    session = parsers.parse_gemini(json.dumps({"sessionId": "g-duplicate", "messages": [
+        {"type": "user", "content": "Edit"},
+        {"type": "gemini", "toolCalls": [
+            {"id": "same", "name": "replace", "args": {"file_path": "a.py"},
+             "status": "success", "result": "Edit applied"},
+            {"id": "same", "name": "replace", "args": {"file_path": "b.py"},
+             "status": "success", "result": "Edit applied"},
+        ]},
+    ]}))
+    assert [event.outcome for event in session.turns[0].tool_events] == ["unknown", "unknown"]
+    assert session.unmatched_tool_results == 1
+
+
+def test_codex_duplicate_tool_call_id_never_confirms_an_edit():
+    rows = [
+        {"type": "session_meta", "payload": {"id": "codex-duplicate"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Edit"}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "apply_patch",
+                                               "call_id": "same", "arguments": "{}"}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "apply_patch",
+                                               "call_id": "same", "arguments": "{}"}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "same", "output": "Edit applied"}},
+    ]
+    session = parsers.parse_codex("\n".join(json.dumps(row) for row in rows))
+    assert [event.outcome for event in session.turns[0].tool_events] == ["unknown", "unknown"]
+    assert session.unmatched_tool_results == 1
 
 
 @pytest.fixture

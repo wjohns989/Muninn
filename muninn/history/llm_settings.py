@@ -74,14 +74,40 @@ def api_key() -> Optional[str]:
         value = os.environ.get(name, "").strip()
         if value:
             return value
+    value = _windows_user_env("MUNINN_OPENROUTER_API_KEY")
+    if value:
+        return value
     value = str(load().get("api_key") or "").strip()
     return value or None
+
+
+def _windows_user_env(name: str) -> Optional[str]:
+    """Read one User-scoped environment value after this process already started.
+
+    Windows stores User environment variables under HKCU. A long-lived service
+    does not receive later environment-block updates, so process env alone can
+    miss a key the operator just saved. Never enumerate or log this value.
+    """
+    if os.name != "nt" or name != "MUNINN_OPENROUTER_API_KEY":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+        if isinstance(value, str):
+            return value.strip() or None
+        return None
+    except (ImportError, FileNotFoundError, PermissionError, OSError):
+        return None
 
 
 def key_source() -> Optional[str]:
     for name in ("MUNINN_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"):
         if os.environ.get(name, "").strip():
             return f"environment ({name})"
+    if _windows_user_env("MUNINN_OPENROUTER_API_KEY"):
+        return "user environment (MUNINN_OPENROUTER_API_KEY)"
     return str(settings_path()) if load().get("api_key") else None
 
 

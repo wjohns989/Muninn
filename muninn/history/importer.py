@@ -164,6 +164,10 @@ def turn_memories(thread: Thread, index: int, turn: parsers.Turn) -> List[Dict[s
         body.append(f"Assistant: {turn.assistant}")
     if turn.actions:
         body.append("Actions: " + "; ".join(dict.fromkeys(turn.actions)))
+    if turn.tool_events:
+        body.append("Tool results: " + "; ".join(
+            event.summary() for event in turn.tool_events[:20]
+        ))
     pieces = _split(redact("\n\n".join(body)), PART_CHARS)
     header = f"[{_stamp(turn.at)}] {thread.header(index)}"
     memories = []

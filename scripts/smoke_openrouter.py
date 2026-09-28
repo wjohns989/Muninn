@@ -7,7 +7,6 @@ inference check. This preflight never sends conversation content.
 from __future__ import annotations
 
 import json
-import os
 import re
 
 import httpx
@@ -26,7 +25,12 @@ def _key_info(client: httpx.Client, key: str) -> dict:
 
 
 def main() -> int:
-    key = os.environ.get("MUNINN_OPENROUTER_API_KEY", "").strip()
+    source = llm_settings.key_source()
+    if source not in {"environment (MUNINN_OPENROUTER_API_KEY)",
+                      "user environment (MUNINN_OPENROUTER_API_KEY)"}:
+        print(json.dumps({"key_configured": False, "inference_sent": False}))
+        return 2
+    key = llm_settings.api_key()
     if not key:
         print(json.dumps({"key_configured": False, "inference_sent": False}))
         return 2

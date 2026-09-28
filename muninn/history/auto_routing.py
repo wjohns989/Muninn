@@ -16,7 +16,7 @@ import httpx
 
 _MIB = 1024 * 1024
 DEFAULT_MODEL_HINTS = ("qwen2.5:7b", "qwen35")
-COMPLEX_MODEL_HINTS = ("qwen35", "qwen2.5:7b")
+COMPLEX_MODEL_HINTS = DEFAULT_MODEL_HINTS
 COMPLEX_THREAD_TURNS = 60
 
 
@@ -122,10 +122,12 @@ def configured_model_hints() -> tuple[str, ...]:
 
 def model_hints_for_thread(turns_imported: int, *,
                            configured: Optional[tuple[str, ...]] = None) -> tuple[str, ...]:
-    """Favor the fast model routinely; escalate long threads when headroom allows.
+    """Favor the measured fast model until Q8 demonstrates better real-history accuracy.
 
     The turn count is the durable imported count in the history catalog. An
-    explicit model order always wins over this heuristic.
+    explicit model order always wins over this conservative default. On the
+    first real-history comparison, Q8 took longer and hallucinated more applied
+    patches, so thread length alone must not select it.
     """
     if configured is not None:
         return configured

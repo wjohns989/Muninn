@@ -17,6 +17,35 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 _MAX_ACTIONS_PER_TURN = 40
+_MAX_RESULT_SCAN_CHARS = 20_000
+
+
+@dataclass
+class ToolEvent:
+    """Correlated tool outcome; never retains raw tool output or credentials."""
+
+    provider: str
+    name: str
+    call_id: str
+    action: str
+    outcome: str = "unknown"  # success | error | unknown
+    result_observed: bool = False
+    exit_code: Optional[int] = None
+    tests_passed: Optional[int] = None
+    tests_failed: Optional[int] = None
+
+    def summary(self) -> str:
+        state = self.outcome if self.outcome != "unknown" else (
+            "result observed, outcome unverified" if self.result_observed else "no result"
+        )
+        parts = [f"{self.name} ({self.action}): {state}"]
+        if self.exit_code is not None:
+            parts.append(f"exit {self.exit_code}")
+        if self.tests_passed is not None:
+            parts.append(f"{self.tests_passed} passed")
+        if self.tests_failed is not None:
+            parts.append(f"{self.tests_failed} failed")
+        return ", ".join(parts)
 
 
 @dataclass
@@ -26,6 +55,7 @@ class Turn:
     assistant: str = ""
     files: List[str] = field(default_factory=list)
     actions: List[str] = field(default_factory=list)  # "edit path", "run: pytest -q", ...
+    tool_events: List[ToolEvent] = field(default_factory=list)
 
 
 @dataclass
@@ -52,6 +82,7 @@ class Session:
     ended_at: Optional[float] = None
     source_name: str = ""
     compactions: List[Compaction] = field(default_factory=list)
+    unmatched_tool_results: int = 0
 
     @property
     def key(self) -> str:
@@ -127,19 +158,20 @@ def _append_reply(turn: Turn, text: str) -> None:
         turn.assistant = f"{turn.assistant}\n\n{text}".strip() if turn.assistant else text
 
 
-def _note_action(turn: Turn, name: str, tool_input: Any) -> None:
+def _note_action(turn: Turn, name: str, tool_input: Any, *, provider: str = "",
+                 call_id: str = "") -> Optional[ToolEvent]:
     """Record what a tool call did (files touched, commands run) without its output."""
     paths = _paths_from_tool_input(tool_input)
     turn.files.extend(paths)
     if len(turn.actions) >= _MAX_ACTIONS_PER_TURN:
-        return
+        return None
     data = tool_input
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except ValueError:
             data = {}
-    command = data.get("command") if isinstance(data, dict) else None
+    command = (data.get("command") or data.get("cmd")) if isinstance(data, dict) else None
     if isinstance(command, list):
         command = " ".join(str(part) for part in command)
     if isinstance(command, str) and command.strip():
@@ -148,6 +180,94 @@ def _note_action(turn: Turn, name: str, tool_input: Any) -> None:
         turn.actions.append(f"{name.lower()}: {', '.join(paths[:3])}")
     elif name:
         turn.actions.append(name)
+    lowered = name.lower()
+    if lowered in {"edit", "write", "multiedit", "apply_patch", "replace", "write_file"}:
+        action = "edit"
+    elif isinstance(command, str) and re.search(
+        r"(?i)(?:^|[;&| ]|python\s+-m\s+)(?:pytest|unittest|npm\s+test|go\s+test|cargo\s+test)\b",
+        command,
+    ):
+        action = "test"
+    elif isinstance(command, str):
+        action = "command"
+    else:
+        action = "other"
+    event = ToolEvent(provider=provider, name=name[:80], call_id=call_id[:160], action=action)
+    turn.tool_events.append(event)
+    return event
+
+
+def _result_details(value: Any) -> tuple[str, Optional[int]]:
+    """Extract typed exit status and bounded text for statistics; do not retain text."""
+    if isinstance(value, str):
+        # Text may be arbitrary command output, including a forged JSON object
+        # or an echoed "exit code 0". Neither is trusted exit metadata.
+        return value[:_MAX_RESULT_SCAN_CHARS], None
+    if isinstance(value, list):
+        details = [_result_details(item) for item in value[:20]]
+        return "\n".join(text for text, _ in details)[:_MAX_RESULT_SCAN_CHARS], next(
+            (code for _, code in details if code is not None), None,
+        )
+    if isinstance(value, dict):
+        code = value.get("exit_code", value.get("exitCode"))
+        code = int(code) if isinstance(code, int) and not isinstance(code, bool) else None
+        child = next((value[key] for key in ("output", "content", "result", "text")
+                      if key in value), None)
+        text, nested_code = _result_details(child) if child is not None else ("", None)
+        return text, code if code is not None else nested_code
+    return "", None
+
+
+def _register_call(calls: Dict[str, Optional[ToolEvent]], call_id: str,
+                   event: Optional[ToolEvent]) -> None:
+    if not call_id or event is None:
+        return
+    if call_id in calls:
+        old = calls[call_id]
+        if old is not None:
+            old.outcome = "unknown"
+            old.exit_code = None
+            old.tests_passed = None
+            old.tests_failed = None
+        # Neither invocation can safely claim a result for this reused ID.
+        calls[call_id] = None
+    else:
+        calls[call_id] = event
+
+
+def _record_result(session: Session, calls: Dict[str, Optional[ToolEvent]], call_id: Any,
+                   value: Any, *, is_error: Optional[bool] = None,
+                   status: Optional[str] = None) -> None:
+    event = calls.get(str(call_id)) if call_id else None
+    if event is None:
+        session.unmatched_tool_results += 1
+        return
+    if event.result_observed:
+        # Conflicting duplicate results cannot authorize a positive claim.
+        event.outcome = "unknown"
+        event.exit_code = None
+        event.tests_passed = None
+        event.tests_failed = None
+        return
+    event.result_observed = True
+    output, code = _result_details(value)
+    event.exit_code = code
+    reported = ({"success": True, "error": False, "failed": False}.get(status.lower())
+                if isinstance(status, str) else None)
+    # A zero exit code embedded in output text can be printed by the command
+    # itself. Only the provider's outer result metadata may assert success.
+    positive = is_error is False or reported is True
+    negative = is_error is True or reported is False
+    if code is not None:
+        negative = negative or code != 0
+    event.outcome = "unknown" if positive and negative else (
+        "success" if positive else "error" if negative else "unknown"
+    )
+    if event.action == "test":
+        passed = re.findall(r"\b(\d+)\s+passed\b", output, re.IGNORECASE)
+        failed = re.findall(r"\b(\d+)\s+failed\b", output, re.IGNORECASE)
+        event.tests_passed = int(passed[-1]) if passed else None
+        event.tests_failed = int(failed[-1]) if failed else None
 
 
 _PATH_KEYS = ("file_path", "path", "notebook_path", "filePath", "target_file")
@@ -202,6 +322,7 @@ def parse_claude_code(
 ) -> Optional[Session]:
     session: Optional[Session] = None
     current: Optional[Turn] = None
+    calls: Dict[str, Optional[ToolEvent]] = {}
     for line in _lines(text):
         kind = line.get("type")
         if session is None and line.get("sessionId"):
@@ -241,6 +362,10 @@ def parse_claude_code(
             if line.get("promptSource") == "system" or origin.get("kind") not in (None, "human"):
                 continue
             raw = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+            for block in blocks:
+                if block.get("type") == "tool_result":
+                    _record_result(session, calls, block.get("tool_use_id"), block.get("content"),
+                                   is_error=block.get("is_error"))
             if line.get("isCompactSummary") or raw.lower().startswith(_COMPACTION_PREFIX):
                 session.compactions.append(Compaction(at=at, text=raw))
                 continue
@@ -256,7 +381,10 @@ def parse_claude_code(
             if block.get("type") == "text":
                 _append_reply(current, block.get("text", ""))
             elif block.get("type") == "tool_use":
-                _note_action(current, str(block.get("name") or ""), block.get("input"))
+                call_id = str(block.get("id") or "")
+                event = _note_action(current, str(block.get("name") or ""), block.get("input"),
+                                     provider="claude_code", call_id=call_id)
+                _register_call(calls, call_id, event)
     if session and desktop_titles and session.session_id in desktop_titles:
         session.title = desktop_titles[session.session_id] or session.title
         session.agent = "claude-desktop"
@@ -300,6 +428,7 @@ def parse_codex(text: str, source_name: str = "", titles: Optional[Dict[str, str
         for line in lines
     )
     current: Optional[Turn] = None
+    calls: Dict[str, Optional[ToolEvent]] = {}
     for index, line in enumerate(lines):
         kind = line.get("type")
         payload = line.get("payload") if isinstance(line.get("payload"), dict) else None
@@ -332,8 +461,15 @@ def parse_codex(text: str, source_name: str = "", titles: Optional[Dict[str, str
             if kind != "event_msg":
                 if kind == "response_item" and item_type in ("function_call", "custom_tool_call", "local_shell_call") \
                         and current:
-                    _note_action(current, str(payload.get("name") or "shell"),
-                                 payload.get("arguments") or payload.get("input") or payload.get("action"))
+                    call_id = str(payload.get("call_id") or "")
+                    event = _note_action(current, str(payload.get("name") or "shell"),
+                                         payload.get("arguments") or payload.get("input") or payload.get("action"),
+                                         provider="codex", call_id=call_id)
+                    _register_call(calls, call_id, event)
+                elif kind == "response_item" and item_type in (
+                    "function_call_output", "custom_tool_call_output", "local_shell_call_output",
+                ):
+                    _record_result(session, calls, payload.get("call_id"), payload.get("output"))
                 continue
             if item_type == "user_message":
                 words = clean_user_text(payload.get("message", ""))
@@ -360,8 +496,13 @@ def parse_codex(text: str, source_name: str = "", titles: Optional[Dict[str, str
                     session.turns.append(current)
                 _append_reply(current, words)
         elif item_type in ("function_call", "custom_tool_call", "local_shell_call") and current:
-            _note_action(current, str(payload.get("name") or "shell"),
-                         payload.get("arguments") or payload.get("input") or payload.get("action"))
+            call_id = str(payload.get("call_id") or "")
+            event = _note_action(current, str(payload.get("name") or "shell"),
+                                 payload.get("arguments") or payload.get("input") or payload.get("action"),
+                                 provider="codex", call_id=call_id)
+            _register_call(calls, call_id, event)
+        elif item_type in ("function_call_output", "custom_tool_call_output", "local_shell_call_output"):
+            _record_result(session, calls, payload.get("call_id"), payload.get("output"))
     if not session.session_id:
         match = re.search(r"([0-9a-f]{8}-[0-9a-f-]{27,})", source_name)
         session.session_id = match.group(1) if match else source_name
@@ -397,6 +538,7 @@ def parse_gemini(text: str, source_name: str = "") -> Optional[Session]:
     session.project = None
     session.surface = header.get("projectHash")
     current: Optional[Turn] = None
+    calls: Dict[str, Optional[ToolEvent]] = {}
     for message in messages:
         if not isinstance(message, dict):
             continue
@@ -415,7 +557,13 @@ def parse_gemini(text: str, source_name: str = "") -> Optional[Session]:
             _append_reply(current, words)
             for call in message.get("toolCalls") or []:
                 if isinstance(call, dict):
-                    _note_action(current, str(call.get("name") or ""), call.get("args"))
+                    call_id = str(call.get("id") or "")
+                    event = _note_action(current, str(call.get("name") or ""), call.get("args"),
+                                         provider="gemini_cli", call_id=call_id)
+                    _register_call(calls, call_id, event)
+                    if event and call_id and ("result" in call or "status" in call):
+                        _record_result(session, calls, call_id, call.get("result"),
+                                       status=call.get("status"))
     return _finish(session)
 
 

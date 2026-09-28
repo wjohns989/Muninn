@@ -9,9 +9,16 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from muninn.history import insights, llm_settings
+from muninn.history import llm_settings
 from muninn.history.importer import collect, import_history, read_thread
-from muninn.history.insights import Provider, analyze_threads, parse_reply, render_turns, validate_reply
+from muninn.history.insights import (
+    Provider,
+    analyze_threads,
+    parse_reply,
+    render_turns,
+    store_understanding,
+    validate_reply,
+)
 from muninn.history.vault import HistoryVault
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 
@@ -28,6 +35,7 @@ def isolated_settings(tmp_path, monkeypatch):
     for var in ("OPENROUTER_API_KEY", "MUNINN_OPENROUTER_API_KEY", "MUNINN_INSIGHTS_PROVIDER",
                 "MUNINN_INSIGHTS_MODEL", "MUNINN_INSIGHTS_WINDOW_TOKENS"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(llm_settings, "_windows_user_env", lambda name: None)
     monkeypatch.setenv("MUNINN_CONFIG_DIR", str(tmp_path / "config"))
 
 
@@ -44,6 +52,23 @@ def test_key_is_saved_privately_and_env_wins(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY")
     llm_settings.decline()
     assert llm_settings.api_key() is None and not llm_settings.should_prompt()
+
+
+def test_user_scoped_environment_key_is_visible_to_existing_process(monkeypatch):
+    monkeypatch.setattr(llm_settings, "_windows_user_env",
+                        lambda name: "sk-or-user" if name == "MUNINN_OPENROUTER_API_KEY" else None,
+                        raising=False)
+    assert llm_settings.api_key() == "sk-or-user"
+    assert llm_settings.key_source() == "user environment (MUNINN_OPENROUTER_API_KEY)"
+    monkeypatch.setenv("MUNINN_OPENROUTER_API_KEY", "sk-or-process")
+    assert llm_settings.api_key() == "sk-or-process"
+    assert llm_settings.key_source() == "environment (MUNINN_OPENROUTER_API_KEY)"
+
+
+def test_saved_key_remains_last_fallback_when_user_environment_missing():
+    llm_settings.save_key("sk-or-saved")
+    assert llm_settings.api_key() == "sk-or-saved"
+    assert llm_settings.key_source() == str(llm_settings.settings_path())
 
 
 def test_default_models_are_luna_pro_then_zdr_fallbacks():
@@ -217,7 +242,6 @@ def test_render_uses_whole_conversation_and_redacts(imported):
 
 def test_analysis_validates_retries_and_stores(imported, monkeypatch):
     llm_settings.save_key("sk-or-k")
-    monkeypatch.setattr(insights, "HANDOFF_MAX_AGE_DAYS", 100_000)
     sent = []
     # First thread: an invalid reply, then a valid one after the schema error is sent back.
     answers = ["not json at all", json.dumps(GOOD), json.dumps(GOOD)]
@@ -242,12 +266,67 @@ def test_analysis_validates_retries_and_stores(imported, monkeypatch):
     assert {i["kind"] for i in view["insights"]} == {"decision", "open_item"}
     assert all(e["kind"] != "thread_insight" for e in view["entries"])
     thread = imported.store.list_history_threads("webapp", topic="auth")[0]
-    assert thread["status"] == "in_progress" and thread["topics"] == ["auth", "frontend"]
+    assert thread["status"] == "unverified" and thread["topics"] == ["auth", "frontend"]
     handoffs = imported.store.list_handoffs("global_user", "webapp", ["open"])
-    assert handoffs and handoffs[0]["details"]["next_steps"] == ["Add logout confirmation."]
+    assert handoffs == []  # unverified model output cannot create an actionable handoff
 
 
-def test_reanalysis_replaces_insights_and_giant_threads_are_merged(imported, monkeypatch):
+def test_unverified_model_fix_cannot_become_completed_history(imported):
+    key = "claude_code:c-111"
+    thread = next(t for t in collect(imported.vault).threads if t.key == key)
+    summary_id = imported.store.get_history_thread(key)["summary_memory_id"]
+    original_summary = imported.store.get(summary_id).content
+    result = validate_reply(json.dumps({
+        "summary": "Applied the patch and all tests passed.",
+        "status": "completed", "topics": ["auth"],
+        "insights": [
+            {"kind": "fix", "text": "Applied the login patch and tests passed.",
+             "turn": 0, "scope": "project", "current": True},
+            {"kind": "convention", "text": "Implemented a safe load pattern.",
+             "turn": 0, "scope": "project", "current": True},
+            {"kind": "fact", "text": "The stall was due to VRAM contention.",
+             "turn": 0, "scope": "project", "current": True},
+            {"kind": "decision", "text": "Sessions use JWT cookies.",
+             "turn": 0, "scope": "project", "current": True},
+        ], "supersedes": [],
+    }), turn_count=len(thread.session.turns))
+    result["supersedes"] = [summary_id]
+
+    for _ in range(2):
+        asyncio.run(store_understanding(imported.memory, thread, result, model="local-test"))
+        insights_stored = [r for r in imported.store.get_thread_memories(key, 0, 100)
+                           if (r.metadata or {}).get("kind") == "thread_insight"]
+        assert len(insights_stored) == 1
+        assert insights_stored[0].metadata["insight_kind"] == "decision"
+        assert insights_stored[0].metadata["evidence_state"] == "model_inferred_unverified"
+        assert insights_stored[0].content.startswith("Unverified history inference")
+        assert imported.store.get_history_thread(key)["status"] == "unverified"
+        assert imported.store.get(summary_id).content == original_summary
+        assert not imported.store.get(summary_id).archived
+
+
+def test_reanalysis_preserves_previous_insights_and_ignores_model_current(imported):
+    key = "claude_code:c-111"
+    thread = next(t for t in collect(imported.vault).threads if t.key == key)
+    original = {"summary": "", "status": "in_progress", "topics": [], "supersedes": [],
+                "insights": [{"kind": "decision", "text": "Use JWT cookies.", "turn": 0,
+                              "scope": "project", "current": True}]}
+    asyncio.run(store_understanding(imported.memory, thread, original))
+    old = next(r for r in imported.store.get_thread_memories(key, 0, 100)
+               if (r.metadata or {}).get("kind") == "thread_insight")
+    replacement = {"summary": "", "status": "completed", "topics": [], "supersedes": [old.id],
+                   "insights": [{"kind": "fact", "text": "JWT cookies are configured.", "turn": 0,
+                                 "scope": "project", "current": False}]}
+    for _ in range(2):
+        counts = asyncio.run(store_understanding(imported.memory, thread, replacement))
+        stored = [r for r in imported.store.get_thread_memories(key, 0, 100)
+                  if (r.metadata or {}).get("kind") == "thread_insight"]
+        assert len(stored) == 2 and all(not r.archived for r in stored)
+        assert imported.store.get(old.id) is not None
+        assert counts["replaced"] == 0 and counts["supersedes_suppressed"] == 1
+
+
+def test_reanalysis_preserves_and_deduplicates_insights_and_giant_threads_are_merged(imported, monkeypatch):
     llm_settings.save_key("sk-or-k")
     monkeypatch.setenv("MUNINN_INSIGHTS_WINDOW_TOKENS", "2000")   # force several windows
     part = json.dumps({**GOOD, "insights": GOOD["insights"][:1]})
@@ -270,7 +349,7 @@ def test_reanalysis_replaces_insights_and_giant_threads_are_merged(imported, mon
     imported.store.set_history_analysis(key, status="completed", topics=[], analyzed_turns=0)  # thread "grew"
     second = asyncio.run(analyze_threads(imported.memory, imported.vault, apply=True, concurrency=1,
                                          project="webapp", limit=1, transport=_openrouter(answers(), [])))
-    assert second["replaced_insights"] == before and count() == before
+    assert second["replaced_insights"] == 0 and second["insights"] == 0 and count() == before
 
 
 def test_selected_thread_key_does_not_drift_to_a_newer_thread(imported):
@@ -342,13 +421,14 @@ def test_analysis_reads_projects_in_order_across_apps(relay, monkeypatch):  # no
 
     insights_by_text = {r.content.split("\n")[0]: r for r in relay.store.get_all(limit=200)
                         if (r.metadata or {}).get("kind") == "thread_insight"}
-    rest = insights_by_text["Decision: The API uses REST."]
-    assert rest.archived and rest.metadata["superseded"] is True
-    graphql = insights_by_text["Decision: The API moves to GraphQL."]
+    rest = insights_by_text["Unverified history inference · Decision: The API uses REST."]
+    assert not rest.archived and rest.metadata["evidence_state"] == "model_inferred_unverified"
+    graphql = insights_by_text["Unverified history inference · Decision: The API moves to GraphQL."]
     assert not graphql.archived
-    assert report["superseded_insights"] == 1
-    replaced_here = insights_by_text["Fact: A temporary mock server was used."]
-    assert replaced_here.archived and replaced_here.metadata["superseded"] is True
+    assert report["superseded_insights"] == 0 and report["supersedes_suppressed"] == 1
+    replaced_here = insights_by_text["Unverified history inference · Fact: A temporary mock server was used."]
+    assert not replaced_here.archived
+    assert replaced_here.metadata.get("superseded") is not True
 
 
 # --- refusals ------------------------------------------------------------------------------------
