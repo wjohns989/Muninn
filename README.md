@@ -364,6 +364,7 @@ Key environment variables:
 | `MUNINN_OLLAMA_KEEP_ALIVE` | `0` | Release an Ollama model after an analysis request instead of leaving it resident in VRAM |
 | `MUNINN_CREDENTIAL_API_TOKEN` | unset (API disabled) | Dedicated 32+-character bearer token for loopback-only credential metadata search and explicit passphrase reveal; keep it in your local user environment, not a checked-in file |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
+| `MUNINN_MCP_AUTO_START` | off | MCP clients only connect to the shared server; they do not launch a detached backend when it is down. Set `1` only if client-managed startup is explicitly desired |
 | `MUNINN_ALLOWED_ORIGINS` | - | Extra browser origins allowed besides localhost (comma-separated; `null` allows `file://`, `*` disables the check) |
 
 `config.template.yaml` contains conservative, relative-path defaults. Keep real

@@ -196,6 +196,7 @@ def _startup_spawn_lock():
         yield
 
 def ensure_server_running() -> bool:
+    """Check the shared backend; spawn it only with explicit client opt-in."""
     def _wait_for_ready(max_wait_sec: float) -> bool:
         deadline = time.monotonic() + max_wait_sec
         while time.monotonic() < deadline:
@@ -206,6 +207,13 @@ def ensure_server_running() -> bool:
 
     if is_server_running():
         return True
+    # MCP clients are consumers of the shared server, not its lifecycle owner.
+    # Older wrapper flags may still request an autostart check, but they cannot
+    # authorize a detached backend without this explicit setting.
+    if os.environ.get("MUNINN_MCP_AUTO_START", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return False
     try:
         with _startup_spawn_lock():
             if is_server_running():
