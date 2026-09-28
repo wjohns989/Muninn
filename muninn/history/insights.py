@@ -735,6 +735,8 @@ async def analyze_threads(
 
     ``retry_refused`` also retries threads every model refused earlier (for example with another model).
     """
+    from muninn.history.vault import require_legacy_history_disabled
+    require_legacy_history_disabled()
     store = memory._metadata
     if thread_key is not None:
         selected = await asyncio.to_thread(store.get_history_thread, thread_key)

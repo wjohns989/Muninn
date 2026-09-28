@@ -10,6 +10,11 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _legacy_history_test_mode(monkeypatch):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
+
 from muninn.history import hook_install
 from muninn.history.hooks import handle_hook
 from muninn.store.sqlite_metadata import SQLiteMetadataStore

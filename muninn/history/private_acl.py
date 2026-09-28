@@ -15,6 +15,10 @@ class VaultPermissionError(PermissionError):
     """The credential vault path is not private to the current user."""
 
 
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
 def _windows_identity():
     try:
         import win32api
@@ -48,7 +52,7 @@ def _protect_new_windows(path: Path) -> None:
 
 def verify_private(path: Path) -> None:
     path = Path(path)
-    if path.is_symlink() or not path.exists():
+    if _is_link(path) or not path.exists():
         raise VaultPermissionError("Credential vault path is missing or linked")
     if os.name == "nt":
         security, user = _windows_identity()
@@ -83,7 +87,7 @@ def verify_private(path: Path) -> None:
 def create_private_directory(path: Path) -> None:
     """Create a new owner-only directory; never alter an existing directory."""
     path = Path(path)
-    if path.exists() or path.is_symlink():
+    if path.exists() or _is_link(path):
         raise VaultPermissionError("Credential vault directory already exists")
     try:
         path.mkdir(mode=0o700, parents=False)

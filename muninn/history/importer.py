@@ -468,6 +468,8 @@ async def import_history(
     unit_lock: Optional[asyncio.Lock] = None,
 ) -> Dict[str, Any]:
     """Dry run by default: report what would be imported. With ``apply`` write only what is new."""
+    from muninn.history.vault import require_legacy_history_disabled
+    require_legacy_history_disabled()
     listing = VaultListing(vault_files) if vault_files is not None else vault
     collected = await asyncio.to_thread(collect, listing, providers, since, sources)
     store = memory._metadata

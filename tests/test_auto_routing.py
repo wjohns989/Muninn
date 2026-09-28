@@ -6,6 +6,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _legacy_history_test_mode(monkeypatch):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
+
 from muninn.history.auto_routing import GpuState, choose_route, model_hints_for_thread
 
 

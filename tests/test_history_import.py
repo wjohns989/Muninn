@@ -19,6 +19,11 @@ from muninn.history.importer import PART_CHARS, Thread, collect, import_history,
 from muninn.history.insights import render_turns
 from muninn.history.locations import history_sources
 from muninn.history.vault import HistoryVault, read_text, version_path
+
+
+@pytest.fixture(autouse=True)
+def _legacy_history_test_mode(monkeypatch):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 
 T0 = 1_780_000_000.0  # 2026-05-28
@@ -335,7 +340,7 @@ class FakeMemory:
 
 @pytest.fixture
 def env(home, tmp_path):
-    vault = HistoryVault(tmp_path / "vault", home=home)
+    vault = HistoryVault(tmp_path / "vault", home=home, allow_plaintext=True)
     store = SQLiteMetadataStore(tmp_path / "metadata.db")
     yield SimpleNamespace(home=home, vault=vault, store=store, memory=FakeMemory(store))
     vault.close()
@@ -677,7 +682,7 @@ def relay(tmp_path, monkeypatch):
     # `claude --resume`: a new session file that starts with a copy of cc-1, then new work.
     jsonl(home / ".claude" / "projects" / "-relay" / "cc-2.jsonl",
           _claude("cc-2", str(repo), claude_first + [(600, "claude step 7", "done 7")]))
-    vault = HistoryVault(tmp_path / "vault", home=home)
+    vault = HistoryVault(tmp_path / "vault", home=home, allow_plaintext=True)
     memory = FakeMemory(SQLiteMetadataStore(tmp_path / "metadata.db"))
     yield SimpleNamespace(home=home, repo=repo, codex_file=codex_file, vault=vault, memory=memory,
                           store=memory._metadata)

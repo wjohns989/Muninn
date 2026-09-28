@@ -76,6 +76,7 @@ from muninn.mimir.api import init_mimir, mimir_router
 from muninn.mimir.relay import MimirRelay
 from muninn.mimir.store import MimirStore
 from muninn.history.credential_api import NO_STORE, RevealLimiter, authenticate_local, read_passphrase
+from muninn.history.credential_crypto import VaultIntegrityError
 
 # Configure detailed logging to file with a robust, absolute path
 server_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'muninn_server.log'))
@@ -428,11 +429,13 @@ async def lifespan(app: FastAPI):
         logger.info("Mimir relay initialised (db=%s)", memory._metadata.db_path)
 
         periodic_settings = PeriodicIngestionSettings.from_env()
+        from muninn.history.vault import strict_history_mode
+
         _periodic_ingestion = PeriodicIngestionScheduler(
             memory=memory,
             settings=periodic_settings,
         )
-        if periodic_settings.enabled_on_startup:
+        if periodic_settings.enabled_on_startup and not strict_history_mode():
             started = await _periodic_ingestion.start()
             if started:
                 logger.info(
@@ -444,7 +447,7 @@ async def lifespan(app: FastAPI):
                     "Periodic ingestion requested on startup but scheduler did not start"
                 )
 
-        if config.legacy_discovery.enabled:
+        if config.legacy_discovery.enabled and not strict_history_mode():
             _legacy_discovery = LegacyDiscoveryScheduler(
                 memory=memory,
                 interval_seconds=config.legacy_discovery.interval_hours * 3600.0,
@@ -462,7 +465,14 @@ async def lifespan(app: FastAPI):
 
             _history = HistoryService(memory, Path(config.data_dir) / "history_vault")
             await _history.start()
-            logger.info("History vault enabled (sync every %.0f min)", _history.interval / 60)
+            if strict_history_mode():
+                archive_health = _history.status()["vault"]
+                if archive_health["ready"]:
+                    logger.info("Strict encrypted history archive ready; automatic plaintext import disabled")
+                else:
+                    logger.warning("Strict history enabled but encrypted archive unavailable; history capture is paused")
+            else:
+                logger.warning("Legacy plaintext history vault enabled by explicit opt-in")
 
         yield
     finally:
@@ -1128,9 +1138,17 @@ async def retrieval_feedback_endpoint(req: RetrievalFeedbackRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _require_legacy_file_ingestion() -> None:
+    from muninn.history.vault import strict_history_mode
+
+    if strict_history_mode():
+        raise HTTPException(status_code=409, detail="File ingestion is paused until vault-first projection is ready")
+
+
 @app.post("/ingest", dependencies=[Depends(verify_token)])
 async def ingest_sources_endpoint(req: IngestSourcesRequest):
     """Ingest multiple local sources with fail-open behavior per source/chunk."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1163,6 +1181,7 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
 @app.post("/ingest/legacy/discover", dependencies=[Depends(verify_token)])
 async def discover_legacy_sources_endpoint(req: DiscoverLegacySourcesRequest):
     """Discover local legacy assistant/MCP memory artifacts available for import."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1187,6 +1206,7 @@ async def legacy_catalog_endpoint(
     providers: Optional[str] = None,
 ):
     """Retrieve the cached catalog of discovered legacy sources."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1206,6 +1226,7 @@ async def legacy_catalog_endpoint(
 @app.post("/ingest/legacy/import", dependencies=[Depends(verify_token)])
 async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
     """Ingest user-selected legacy assistant/MCP sources with contextual metadata."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1238,6 +1259,7 @@ async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
 @app.post("/ingest/legacy/import-all", dependencies=[Depends(verify_token)])
 async def ingest_all_legacy_sources_endpoint():
     """Discover and import ALL legacy sources in one shot."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1305,6 +1327,7 @@ async def ingest_all_legacy_sources_endpoint():
 @app.get("/ingest/legacy/status", dependencies=[Depends(verify_token)])
 async def legacy_discovery_status_endpoint():
     """Get runtime status for the background legacy scan scheduler."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1325,6 +1348,7 @@ async def legacy_discovery_status_endpoint():
 @app.post("/ingest/legacy/run", dependencies=[Depends(verify_token)])
 async def legacy_discovery_run_endpoint():
     """Manually trigger a background legacy discovery scan."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
     if _legacy_discovery is None:
@@ -1337,6 +1361,7 @@ async def legacy_discovery_run_endpoint():
 @app.get("/ingest/periodic/status", dependencies=[Depends(verify_token)])
 async def periodic_ingestion_status_endpoint():
     """Get runtime status for the periodic ingestion scheduler."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1355,6 +1380,7 @@ async def periodic_ingestion_status_endpoint():
 
 @app.post("/ingest/periodic/run", dependencies=[Depends(verify_token)])
 async def periodic_ingestion_run_endpoint():
+    _require_legacy_file_ingestion()
     """Manually trigger one periodic-ingestion cycle."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
@@ -1367,6 +1393,7 @@ async def periodic_ingestion_run_endpoint():
 
 @app.post("/ingest/periodic/start", dependencies=[Depends(verify_token)])
 async def periodic_ingestion_start_endpoint():
+    _require_legacy_file_ingestion()
     """Start periodic ingestion loop without restarting server."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
@@ -1565,6 +1592,14 @@ def _require_history():
     return _history
 
 
+def _require_legacy_history():
+    from muninn.history.vault import strict_history_mode
+
+    if strict_history_mode():
+        raise HTTPException(status_code=409, detail="Legacy history endpoints are disabled in strict history mode")
+    return _require_history()
+
+
 def _parse_since(value: Optional[str]) -> Optional[float]:
     if not value:
         return None
@@ -1582,16 +1617,30 @@ async def history_status_endpoint():
     return {"success": True, "data": _require_history().status()}
 
 
+@app.get("/history/secure/catalog", dependencies=[Depends(verify_token)])
+async def secure_history_catalog_endpoint(provider: Optional[str] = None, offset: int = 0, limit: int = 100):
+    """Search only allowlisted encrypted-archive metadata; never return transcript text or paths."""
+    try:
+        data = _require_history().secure_catalog(provider=provider, offset=offset, limit=limit)
+    except VaultIntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Encrypted history catalog unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail="Encrypted history catalog unavailable") from exc
+    return {"success": True, "data": data}
+
+
 @app.post("/history/sync", dependencies=[Depends(verify_token)])
 async def history_sync_endpoint(paths: Optional[List[str]] = None):
     """Copy new and changed conversation files into the vault now."""
-    return {"success": True, "data": await _require_history().sync(paths)}
+    return {"success": True, "data": await _require_legacy_history().sync(paths)}
 
 
 @app.post("/history/import", dependencies=[Depends(verify_token)])
 async def history_import_endpoint(req: HistoryImportRequest):
     """Dry run (default) reports what would become memories; apply imports in the background."""
-    service = _require_history()
+    service = _require_legacy_history()
     since = _parse_since(req.since)
     if req.paths:
         await service.sync(req.paths)
@@ -1617,7 +1666,7 @@ class HistoryAnalyzeRequest(BaseModel):
 @app.post("/history/analyze", dependencies=[Depends(verify_token)])
 async def history_analyze_endpoint(req: HistoryAnalyzeRequest):
     """Extract decisions, preferences, conventions, fixes and open items from imported threads (opt-in LLM)."""
-    service = _require_history()
+    service = _require_legacy_history()
     options = {"provider": req.provider, "model": req.model, "project": req.project,
                "limit": max(1, min(req.limit, 1000)), "create_handoffs": req.create_handoffs,
                "retry_refused": req.retry_refused}
@@ -1640,6 +1689,7 @@ async def history_threads_endpoint(
     topic: Optional[str] = None, q: Optional[str] = None, since: Optional[str] = None, limit: int = 20,
 ):
     """The catalog of imported conversation threads, most recent first."""
+    _require_legacy_history()
     _require_memory()
     data = await asyncio.to_thread(
         lambda: memory._metadata.list_history_threads(
@@ -1653,6 +1703,7 @@ async def history_timeline_endpoint(
     project: str, since: Optional[str] = None, until: Optional[str] = None, offset: int = 0, limit: int = 100,
 ):
     """A project's conversations from every app in one time-ordered stream, with handoffs and agent switches."""
+    _require_legacy_history()
     _require_memory()
     from muninn.history.importer import read_project_timeline
 
@@ -1664,6 +1715,7 @@ async def history_timeline_endpoint(
 @app.get("/history/threads/{thread_key:path}", dependencies=[Depends(verify_token)])
 async def history_thread_endpoint(thread_key: str, offset: int = 0, limit: int = 50):
     """Re-read one conversation thread in order, including turns compaction removed."""
+    _require_legacy_history()
     _require_memory()
     from muninn.history.importer import read_thread
 

@@ -1514,6 +1514,9 @@ class MuninnMemory:
         Each source is parsed independently. Parser/source failures are recorded
         and ingestion continues for remaining sources.
         """
+        from muninn.history.vault import require_legacy_history_disabled
+
+        require_legacy_history_disabled()
         self._check_initialized()
         if not sources:
             raise ValueError("sources must be a non-empty list")
@@ -1556,6 +1559,9 @@ class MuninnMemory:
         max_results_per_provider: int = 100,
         use_cache: bool = True,
     ) -> Dict[str, Any]:
+        from muninn.history.vault import require_legacy_history_disabled
+
+        require_legacy_history_disabled()
         self._check_initialized()
 
         # v3.25.0: Cache-first discovery for performance and reliability.
@@ -1635,6 +1641,9 @@ class MuninnMemory:
         chunk_overlap_chars: Optional[int] = None,
         min_chunk_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
+        from muninn.history.vault import require_legacy_history_disabled
+
+        require_legacy_history_disabled()
         self._check_initialized()
         ingestion = self._require_ingestion_pipeline()
         normalized_roots = self._normalize_discovery_roots(

@@ -25,6 +25,11 @@ from muninn.store.sqlite_metadata import SQLiteMetadataStore
 sys.path.insert(0, str(Path(__file__).parent))
 from test_history_import import T0, FakeMemory, home, relay  # noqa: E402,F401  (fixtures)
 
+
+@pytest.fixture(autouse=True)
+def _legacy_history_test_mode(monkeypatch):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
+
 GOOD = {"summary": "Built the login page; logout pending.", "status": "in_progress", "topics": ["Auth", "frontend"],
         "insights": [{"kind": "decision", "text": "Sessions use JWT cookies.", "turn": 0, "scope": "project"},
                      {"kind": "open_item", "text": "Add logout confirmation.", "turn": 2, "scope": "project"}]}
@@ -206,7 +211,7 @@ def test_validation_normalizes_before_storage():
 
 @pytest.fixture
 def imported(home, tmp_path):  # noqa: F811
-    vault = HistoryVault(tmp_path / "vault", home=home)
+    vault = HistoryVault(tmp_path / "vault", home=home, allow_plaintext=True)
     memory = FakeMemory(SQLiteMetadataStore(tmp_path / "metadata.db"))
     vault.sync()
     asyncio.run(import_history(memory, vault, apply=True, providers=["claude_code"]))

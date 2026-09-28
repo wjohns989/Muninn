@@ -73,7 +73,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 ### Multi-Assistant Interop
 
 - **Handoff Bundles**: Export/import memory checkpoints with checksum verification and idempotent replay
-- **Legacy Migration**: Discover and import memories from prior assistant sessions (JSONL chat history, SQLite state) — uncapped provider limits
+- **Legacy Migration**: Explicit opt-in for the older plaintext importer; vault-first encrypted capture is the safe default
 - **Bulk Import**: `POST /ingest/legacy/import-all` ingests all discovered sources in batches of 50 with per-batch error isolation
 - **Hive Mind Federation**: Push-based low-latency memory synchronization across assistant runtimes
 - **MCP 2025-11 Compliant**: Full protocol negotiation, lifecycle gating, schema annotations
@@ -203,7 +203,7 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | `resume_handoff` | Claim the newest open handoff for a project (or a given id) |
 | `complete_handoff` | Mark a resumed handoff done or cancelled, or release it |
 | `get_thread` | Re-read an imported conversation in order, or list a project's threads |
-| `import_agent_history` | Import local Claude/Codex/Gemini history and chat exports as memories (dry run by default) |
+| `import_agent_history` | Older plaintext import tool, disabled by default in strict history mode |
 | `add_memory` | Store a memory with optional `scope`, `project`, `namespace`, `media_type` |
 | `add_image_memory` | Store a local image plus a searchable description and optional memory links |
 | `search_memory` | Hybrid 5-signal search with `media_type` filtering and recall traces |
@@ -347,8 +347,10 @@ Key environment variables:
 | `MUNINN_AGENT_NAME` | client name | Agent label recorded on memories and handoffs for a stdio client (HTTP clients use `?agent=`) |
 | `MUNINN_PROJECT` | git repo | Project for a stdio client started outside a repository (e.g. by Claude Desktop) |
 | `MUNINN_HISTORY_VAULT` | on | Keep a private copy of Claude Code/Desktop, Codex and Gemini CLI transcripts (the apps delete theirs); see `docs/CLIENTS.md` |
-| `MUNINN_HISTORY_SYNC_MINUTES` | `30` | How often new conversation history is copied (and, after the first import, imported) |
-| `MUNINN_HISTORY_AUTO_IMPORT` | after first import | `1`/`0` forces automatic import of new turns on or off |
+| `MUNINN_HISTORY_SECURITY` | `strict` | Vault-first protection is the default. `legacy` explicitly enables the older plaintext vault and file-ingestion paths; do not use it with secret-bearing material |
+| `MUNINN_HISTORY_ARCHIVE_DIR` | `<data_dir>/history_secure_archive` | Owner-only encrypted history archive location; set this to a private directory with enough space, on any drive |
+| `MUNINN_HISTORY_SYNC_MINUTES` | `30` | Legacy-mode plaintext sync interval only; strict encrypted backfill is manual until its recovery and indexing checks pass |
+| `MUNINN_HISTORY_AUTO_IMPORT` | off in strict mode | Legacy-mode automatic import switch; ignored by strict mode |
 | `OPENROUTER_API_KEY` | - | Enables `history analyze` through OpenRouter (or save one with `openrouter set`; the CLI asks on first run); every request enforces zero data retention |
 | `MUNINN_INSIGHTS_PROVIDER` | auto | `openrouter` or `ollama` for thread analysis (auto: OpenRouter when a key is set) |
 | `MUNINN_INSIGHTS_MODEL` | `openai/gpt-6-luna-pro` | Primary model for thread analysis; falls back to DeepSeek V4 Flash, then Gemini 3.5 Flash-Lite (all zero data retention), including when a model refuses. A `:batch` suffix is dropped. `python -m muninn.cli openrouter set` saves a key and model |
@@ -369,25 +371,51 @@ tokens and machine-specific data paths in private environment/configuration file
 
 ### Importing your existing AI conversations
 
-`python -m muninn.cli history import` (dry run, then `--apply`) turns the
-conversations already on this machine (Claude Code and Claude Desktop, Codex
-CLI and the ChatGPT desktop app, Gemini CLI, and ChatGPT/Claude data exports)
-into memories. Each turn is filed under its original project, directory, branch,
-agent and time, so it can be searched and re-read in order with `get_thread`.
-The server also keeps a vault copy of these transcripts so nothing the apps
-clean up is lost. `python -m muninn.cli hooks install --apply` adds Claude Code and
-Codex hooks that brief every new session and capture transcripts before
-compaction, and `history analyze` (OpenRouter with zero data retention, or local
-Ollama) extracts decisions, preferences, fixes and open items per thread.
-Details: [`docs/CLIENTS.md`](docs/CLIENTS.md#bring-in-your-existing-conversations).
+Strict history mode is now the default. It blocks the old gzip/plaintext vault,
+legacy chat import and analysis, generic project-file ingestion, and automatic
+legacy discovery. Ordinary memory features remain available, but strict history
+does **not yet** provide full-text transcript recall or credential extraction.
+The encrypted archive keeps raw snapshots locally, without invoking Ollama or
+OpenRouter or writing transcript text to ordinary indexes. A small searchable
+catalog exposes only an opaque reference, provider, kind, capture day, size
+bucket, and version count. The normal Muninn bearer token authorizes this
+non-secret catalog; it does not authorize transcript or credential reveal.
 
-Security status: transcript copies and ordinary imported memories are **not yet
-credential-quarantined**. Do not run `history import --apply` on chats or project
-files containing secrets until the credential boundary is integrated and verified.
+Initialize the archive interactively with a recovery passphrase you keep outside
+Muninn and its backups. Never pass the passphrase on the command line or in chat:
+
+```powershell
+python -m muninn.history.secure_archive init --root '<your-private-data-dir>\history_secure_archive'
+python -m muninn.history.secure_archive status --root '<your-private-data-dir>\history_secure_archive'
+python -m muninn.history.secure_archive plan --root '<your-private-data-dir>\history_secure_archive' --home '<your-home-dir>'
+python -m muninn.history.secure_archive sync --root '<your-private-data-dir>\history_secure_archive' --home '<your-home-dir>'
+python -m muninn.history.secure_archive catalog --root '<your-private-data-dir>\history_secure_archive'
+python -m muninn.history.secure_archive verify --root '<your-private-data-dir>\history_secure_archive'
+```
+
+`sync` is a manual, resumable, encrypted copy-only operation. It does not import
+memories or analyze chats; live Codex `state_*.sqlite` files are reported as
+skipped until an encrypted online-SQLite snapshot is available. Claude Code and
+Codex hooks can capture new transcripts into an initialized archive under the
+same Windows user; they do not index raw chat text. A restored archive can be
+opened with the recovery passphrase on another machine and rebound to that
+Windows user with `python -m muninn.history.secure_archive rebind --root
+'<restored-archive>'`. The `restore --backup-root '<backup>' --root
+'<new-private-destination>'` action copies ciphertext into a new owner-only
+directory, verifies every encrypted snapshot, and leaves the backup unchanged.
+Existing older gzip history copies and source transcripts are **not**
+converted or removed by strict mode; protect them and their backups separately.
+
+The older `python -m muninn.cli history import` workflow is available only by
+explicitly setting `MUNINN_HISTORY_SECURITY=legacy`. It stores transcript text
+in ordinary memories and gzip copies, and is unsafe for secrets. Do not select
+legacy mode for vault-first use. Details of the older workflow remain in
+[`docs/CLIENTS.md`](docs/CLIENTS.md#bring-in-your-existing-conversations).
+
 The optional `muninn-mcp[credential-vault]` extra provides an inactive local
 encrypted credential store and `python -m muninn.cli credentials --help` for
 interactive setup, metadata search, explicit reveal, and portable backup/restore.
-It does not yet scan or isolate credentials from normal history ingestion.
+It does not yet scan or isolate credentials from transcript/project-file content.
 The separate `/credentials/search` and `/credentials/reveal/{id}` API routes
 are disabled unless a dedicated `MUNINN_CREDENTIAL_API_TOKEN` is configured;
 reveal also requires the vault passphrase in a bounded JSON body and accepts
