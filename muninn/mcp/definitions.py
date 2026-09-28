@@ -281,6 +281,53 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         }
     },
     {
+        "name": "search_secure_history",
+        "description": (
+            "Search encrypted local transcripts. Returns source metadata and an expiring "
+            "capability for fetching a bounded redacted span; never credential values. "
+            "Results may be incomplete until the private index is built."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words to find in archived transcripts."},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "fetch_secure_history",
+        "description": (
+            "Fetch one authenticated, bounded, best-effort redacted transcript span using a "
+            "capability from search_secure_history. This is private context, not a safe "
+            "source of credential values; never use it for automatic credential execution."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "capability": {"type": "string", "description": "Expiring capability from search_secure_history."},
+                "max_chars": {"type": "integer", "default": 3000, "minimum": 1, "maximum": 4000},
+            },
+            "required": ["capability"],
+        },
+    },
+    {
+        "name": "search_credential_metadata",
+        "description": (
+            "Find whether a credential is recorded and which project-relative .env file contains it. "
+            "Returns only metadata; never a secret value. Requires opt-in local authorization."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Service, project, or .env filename."},
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 20},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "hunt_memory",
         "description": "Agentic proactive retrieval. Analyzes the query to identify key entities and relationships, then performs a multi-hop discovery pass across the knowledge graph and vector store to surface hidden context and 'forgotten' wisdom. Best for deep-diving into complex topics or resolving ambiguities.",
         "inputSchema": {
@@ -830,7 +877,9 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
     "get_project_context", "get_thread",
-    "search_memory", "hunt_memory", "get_all_memories", "get_project_goal",
+    "search_memory", "search_secure_history", "fetch_secure_history",
+    "search_credential_metadata", "hunt_memory",
+    "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
     "export_handoff", "discover_legacy_sources",
     "get_periodic_ingestion_status",
@@ -924,7 +973,9 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 # at 40 across all servers, and every schema costs context on each request.
 CORE_TOOLS = (
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
-    "add_memory", "search_memory", "hunt_memory", "update_memory", "delete_memory",
+    "add_memory", "search_memory", "search_secure_history", "fetch_secure_history",
+    "search_credential_metadata",
+    "hunt_memory", "update_memory", "delete_memory",
     "record_retrieval_feedback", "get_project_goal", "set_project_goal", "set_project_instruction",
     "get_user_profile", "correct_fact",
 )

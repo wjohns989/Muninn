@@ -226,6 +226,9 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | `add_memory` | Store a memory with optional `scope`, `project`, `namespace`, `media_type` |
 | `add_image_memory` | Store a local image plus a searchable description and optional memory links |
 | `search_memory` | Hybrid 5-signal search with `media_type` filtering and recall traces |
+| `search_secure_history` | Search an owner-only encrypted lexical index for archived transcript references and short-lived fetch grants |
+| `fetch_secure_history` | Retrieve one authenticated, bounded, best-effort redacted transcript span from a search grant |
+| `search_credential_metadata` | Opt-in lookup of vault record existence and project-relative `.env` location; never a secret value |
 | `get_all_memories` | Paginated memory listing with filters |
 | `update_memory` | Update content or metadata of an existing memory |
 | `delete_memory` | Remove a memory by ID |
@@ -368,6 +371,7 @@ Key environment variables:
 | `MUNINN_HISTORY_VAULT` | on | Keep a private copy of Claude Code/Desktop, Codex and Gemini CLI transcripts (the apps delete theirs); see `docs/CLIENTS.md` |
 | `MUNINN_HISTORY_SECURITY` | `strict` | Vault-first protection is the default. `legacy` explicitly enables the older plaintext vault and file-ingestion paths; do not use it with secret-bearing material |
 | `MUNINN_HISTORY_ARCHIVE_DIR` | `<data_dir>/history_secure_archive` | Owner-only encrypted history archive location; set this to a private directory with enough space, on any drive |
+| `MUNINN_HISTORY_INDEX_AUTO` | off for direct server starts; on in Windows shared launcher | Build a resumable CPU-only encrypted transcript index in bounded batches; no model or GPU use |
 | `MUNINN_HISTORY_SYNC_MINUTES` | `30` | Legacy-mode plaintext sync interval only; strict encrypted backfill is manual until its recovery and indexing checks pass |
 | `MUNINN_HISTORY_AUTO_IMPORT` | off in strict mode | Legacy-mode automatic import switch; ignored by strict mode |
 | `OPENROUTER_API_KEY` | - | Enables `history analyze` through OpenRouter (or save one with `openrouter set`; the CLI asks on first run); every request enforces zero data retention |
@@ -382,6 +386,7 @@ Key environment variables:
 | `MUNINN_AUTO_LOCAL_MODEL_HINTS` | `qwen2.5:7b,qwen35` | Comma-separated installed model-name fragments in preferred order for idle-GPU automatic analysis; inspect `ollama list` and choose models that fit your GPU |
 | `MUNINN_OLLAMA_KEEP_ALIVE` | `0` | Release an Ollama model after an analysis request instead of leaving it resident in VRAM |
 | `MUNINN_CREDENTIAL_API_TOKEN` | unset (API disabled) | Dedicated 32+-character bearer token for loopback-only credential metadata search and explicit passphrase reveal; keep it in your local user environment, not a checked-in file |
+| `MUNINN_CREDENTIAL_AGENT_SEARCH` | off | Set `1` to let authenticated loopback MCP/API clients search allowlisted vault metadata; secret-value reveal remains unavailable to agents |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
 | `MUNINN_MCP_AUTO_START` | off | MCP clients only connect to the shared server; they do not launch a detached backend when it is down. Set `1` only if client-managed startup is explicitly desired |
 | `MUNINN_ALLOWED_ORIGINS` | - | Extra browser origins allowed besides localhost (comma-separated; `null` allows `file://`, `*` disables the check) |
@@ -393,13 +398,19 @@ tokens and machine-specific data paths in private environment/configuration file
 
 Strict history mode is now the default. It blocks the old gzip/plaintext vault,
 legacy chat import and analysis, generic project-file ingestion, and automatic
-legacy discovery. Ordinary memory features remain available, but strict history
-does **not yet** provide full-text transcript recall or credential extraction.
-The encrypted archive keeps raw snapshots locally, without invoking Ollama or
-OpenRouter or writing transcript text to ordinary indexes. A small searchable
-catalog exposes only an opaque reference, provider, kind, capture day, size
-bucket, and version count. The normal Muninn bearer token authorizes this
-non-secret catalog; it does not authorize transcript or credential reveal.
+legacy discovery. Ordinary memory features remain available. The encrypted
+archive keeps raw snapshots locally, without invoking Ollama or OpenRouter or
+writing transcript text to ordinary indexes. A rebuildable, owner-only encrypted
+lexical index supports `search_secure_history`; each match includes an opaque
+reference, source metadata, and a ten-minute fetch grant. `fetch_secure_history`
+authenticates the complete archived snapshot before returning one bounded,
+best-effort redacted span. Both require the normal authenticated local service.
+The index may initially be incomplete while the CPU-only worker catches up;
+search reports coverage. Neither operation reveals the exact raw original.
+Redaction recognizes common credentials and suppresses suspicious lines, but
+arbitrary unknown secrets cannot be proven absent from transcript text; treat
+agent-visible spans as private data and do not use them for automatic credential
+execution. Credential-value reveal remains a separate local-only operation.
 
 Initialize the archive interactively with a recovery passphrase you keep outside
 Muninn and its backups. Never pass the passphrase on the command line or in chat:
@@ -418,7 +429,9 @@ python -m muninn.history.secure_archive backup --root '<your-private-data-dir>\h
 memories or analyze chats; live Codex `state_*.sqlite` files are reported as
 skipped until an encrypted online-SQLite snapshot is available. Claude Code and
 Codex hooks can capture new transcripts into an initialized archive under the
-same Windows user; they do not index raw chat text. A restored archive can be
+same Windows user; the separate CPU-only worker indexes encrypted snapshots
+when `MUNINN_HISTORY_INDEX_AUTO=1`. It does not hold an Ollama model in VRAM.
+A restored archive can be
 opened with the recovery passphrase on another machine and rebound to that
 Windows user with `python -m muninn.history.secure_archive rebind --root
 '<restored-archive>'`. The `restore --backup-root '<backup>' --root
@@ -436,10 +449,14 @@ in ordinary memories and gzip copies, and is unsafe for secrets. Do not select
 legacy mode for vault-first use. Details of the older workflow remain in
 [`docs/CLIENTS.md`](docs/CLIENTS.md#bring-in-your-existing-conversations).
 
-The optional `muninn-mcp[credential-vault]` extra provides an inactive local
+The optional `muninn-mcp[credential-vault]` extra provides a separate local
 encrypted credential store and `python -m muninn.cli credentials --help` for
 interactive setup, metadata search, explicit reveal, and portable backup/restore.
-It does not yet scan or isolate credentials from transcript/project-file content.
+Records may include a validated project-relative `.env` hint; the agent-facing
+`search_credential_metadata` tool requires `MUNINN_CREDENTIAL_AGENT_SEARCH=1`
+and returns metadata only. It does not yet scan or isolate credentials from
+transcript/project-file content, so an empty vault search is not evidence that
+a credential is absent from those sources.
 The separate `/credentials/search` and `/credentials/reveal/{id}` API routes
 are disabled unless a dedicated `MUNINN_CREDENTIAL_API_TOKEN` is configured;
 reveal also requires the vault passphrase in a bounded JSON body and accepts

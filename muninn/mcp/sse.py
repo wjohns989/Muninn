@@ -10,8 +10,9 @@ from fastapi import APIRouter, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sse_starlette.sse import EventSourceResponse
 
-from muninn.core.security import is_security_enabled
+from muninn.core.security import is_security_enabled, verify_main_token
 from muninn.core.security import verify_token as core_verify_token
+from muninn.history.credential_api import require_loopback_peer
 from muninn.mcp.handlers import (
     handle_call_tool as _handle_call_tool,
 )
@@ -495,6 +496,17 @@ async def messages_endpoint(request: Request, session_id: str):
         raise HTTPException(status_code=400, detail="Invalid JSON")
     if not isinstance(msg, dict):
         raise HTTPException(status_code=400, detail="JSON-RPC message must be an object")
+
+    params = msg.get("params")
+    if (msg.get("method") == "tools/call" and isinstance(params, dict)
+            and params.get("name") in {
+                "search_secure_history", "fetch_secure_history", "search_credential_metadata",
+            }):
+        require_loopback_peer(request)
+        supplied = request.headers.get("authorization", "")
+        scheme, _, token = supplied.partition(" ")
+        if scheme.lower() != "bearer" or not verify_main_token(token):
+            raise HTTPException(status_code=401, detail="Authentication required")
 
     # Dispatch in a bounded task set so slow tools cannot accumulate unbounded
     # request bodies, thread work, or task references.

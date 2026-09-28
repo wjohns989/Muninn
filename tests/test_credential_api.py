@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections import deque
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +15,7 @@ import pytest
 import server
 from muninn.history.credential_api import RevealLimiter
 from muninn.history.credential_store import CredentialStore, source_fingerprint
+from muninn.mcp.definitions import TOOLSETS
 
 _TOKEN = "synthetic-local-credential-api-token-123456"
 _PASSPHRASE = "synthetic local passphrase with enough entropy"
@@ -80,6 +82,41 @@ async def test_metadata_and_reveal_are_separate_audited_and_not_logged(tmp_path,
     assert _PASSPHRASE not in caplog.text and _VALUE not in caplog.text
     with store._connect(readonly=True) as db:
         assert db.execute("SELECT COUNT(*) FROM reveal_audit").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_opt_in_agent_metadata_search_never_reveals_values(tmp_path, monkeypatch) -> None:
+    main_token = "test-main-auth-token-aaaaaaaaaaaaaaaaaaaaaaaa"
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", main_token)
+    monkeypatch.setenv("MUNINN_API_KEY", "different-api-key-bbbbbbbbbbbbbbbbbbbbbbbb")
+    monkeypatch.setenv("MUNINN_NO_AUTH", "0")
+    monkeypatch.setattr(server, "memory", SimpleNamespace(config=SimpleNamespace(data_dir=str(tmp_path))))
+    monkeypatch.setattr(server, "is_security_enabled", lambda: True)
+    monkeypatch.setattr(server, "_credential_agent_search_times", deque())
+    store = CredentialStore.create(tmp_path / "credential_vault", _PASSPHRASE)
+    store.add(passphrase=_PASSPHRASE, value=_VALUE, service="openrouter", project="example",
+              source_hash=source_fingerprint("private-source"), source_hint="config/.env.local")
+    headers = {"Authorization": f"Bearer {main_token}"}
+    async with _client("127.0.0.1") as client:
+        disabled = await client.post("/credentials/agent-search", json={"query": "openrouter"}, headers=headers)
+        assert disabled.status_code == 404
+        monkeypatch.setenv("MUNINN_CREDENTIAL_AGENT_SEARCH", "1")
+        assert (await client.post("/credentials/agent-search", json={"query": "openrouter"})).status_code == 401
+        assert (await client.post("/credentials/agent-search", json={"query": "openrouter"},
+                                  headers={"Authorization": "Bearer different-api-key-bbbbbbbbbbbbbbbbbbbbbbbb"}
+                                  )).status_code == 401
+        found = await client.post("/credentials/agent-search", json={"query": ".env.local"}, headers=headers)
+        assert found.status_code == 200
+        assert found.json()["success"] is True
+        assert found.json()["data"][0]["source_hint"] == "config/.env.local"
+        assert set(found.json()["data"][0]) == {"id", "service", "project", "source_hash", "source_hint"}
+        assert _VALUE not in found.text
+        assert found.headers["cache-control"] == "no-store"
+    async with _client("192.168.1.2") as remote:
+        assert (await remote.post("/credentials/agent-search", json={"query": "openrouter"},
+                                  headers=headers)).status_code == 404
+    assert "search_credential_metadata" in TOOLSETS["core"]
+    assert not any("reveal" in tool for tool in TOOLSETS["core"])
 
 
 def test_limiter_is_concurrent_and_expires() -> None:

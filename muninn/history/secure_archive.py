@@ -22,7 +22,7 @@ import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator
+from typing import Any, BinaryIO, Callable, Iterator
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -339,7 +339,8 @@ class SecureHistoryArchive:
         assert result is not None
         return result
 
-    def _verify_entry(self, entry: dict[str, Any], *, collect: bool) -> bytes | None:
+    def _verify_entry(self, entry: dict[str, Any], *, collect: bool,
+                      on_chunk: Callable[[bytes], None] | None = None) -> bytes | None:
         blob_id = entry["blob"]
         if not isinstance(blob_id, str) or len(blob_id) != 32 or any(c not in "0123456789abcdef" for c in blob_id):
             raise VaultIntegrityError("History archive blob identity is invalid")
@@ -378,6 +379,8 @@ class SecureHistoryArchive:
                         size += len(chunk)
                         if output is not None:
                             output.extend(chunk)
+                        if on_chunk is not None:
+                            on_chunk(chunk)
                         digest.update(chunk)
                 except (InvalidTag, ValueError, zlib.error) as exc:
                     raise VaultIntegrityError("History blob authentication failed") from exc

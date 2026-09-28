@@ -31,16 +31,39 @@ _SENTINEL_ID = "__vault_sentinel__"
 _SENTINEL_VALUE = "muninn-credential-vault-v1"
 _SAFE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}\Z")
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
+_HINT_PART = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
+_OLD_COLUMNS = ["id", "service", "project", "source_hash", "envelope"]
+_NEW_COLUMNS = [*_OLD_COLUMNS, "source_hint"]
 
 
-def _metadata(service: str, project: str, source_hash: str) -> dict[str, str]:
+def _validated_source_hint(value: str) -> str:
+    """Keep agent-facing locations project-relative and limited to .env files."""
+    if value == "":
+        return value
+    if not isinstance(value, str) or len(value) > 160 or "\\" in value or ":" in value:
+        raise VaultIntegrityError("Invalid credential source hint")
+    parts = value.split("/")
+    if any(not _HINT_PART.fullmatch(part) or part in (".", "..") for part in parts):
+        raise VaultIntegrityError("Invalid credential source hint")
+    basename = parts[-1]
+    if basename != ".env" and not basename.startswith(".env."):
+        raise VaultIntegrityError("Invalid credential source hint")
+    return value
+
+
+def _metadata(service: str, project: str, source_hash: str,
+              source_hint: str = "") -> dict[str, str]:
     if not isinstance(service, str) or not _SAFE_LABEL.fullmatch(service):
         raise VaultIntegrityError("Invalid credential metadata")
     if not isinstance(project, str) or not _SAFE_LABEL.fullmatch(project):
         raise VaultIntegrityError("Invalid credential metadata")
     if not isinstance(source_hash, str) or not _SHA256.fullmatch(source_hash):
         raise VaultIntegrityError("Invalid credential metadata")
-    return {"service": service, "project": project, "source_hash": source_hash}
+    meta = {"service": service, "project": project, "source_hash": source_hash}
+    hint = _validated_source_hint(source_hint)
+    if hint:
+        meta["source_hint"] = hint
+    return meta
 
 
 class CredentialStore:
@@ -89,7 +112,8 @@ class CredentialStore:
     def _create_schema(db: sqlite3.Connection) -> None:
         db.execute("CREATE TABLE sentinel (id INTEGER PRIMARY KEY CHECK(id=1), envelope TEXT NOT NULL)")
         db.execute("CREATE TABLE credentials (id TEXT PRIMARY KEY, service TEXT NOT NULL, "
-                   "project TEXT NOT NULL, source_hash TEXT NOT NULL, envelope TEXT NOT NULL)")
+                   "project TEXT NOT NULL, source_hash TEXT NOT NULL, envelope TEXT NOT NULL, "
+                   "source_hint TEXT NOT NULL DEFAULT '')")
         db.execute("CREATE TABLE reveal_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                    "record_id TEXT NOT NULL, at REAL NOT NULL)")
 
@@ -146,6 +170,16 @@ class CredentialStore:
             names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if not {"sentinel", "credentials", "reveal_audit"} <= names:
                 raise VaultIntegrityError("Incomplete credential vault database")
+            columns = [row[1] for row in db.execute("PRAGMA table_info(credentials)")]
+        if columns == _OLD_COLUMNS:
+            with self._process_lock(), self._connect() as db:
+                # Recheck under the writer lock: another process may have migrated.
+                columns = [row[1] for row in db.execute("PRAGMA table_info(credentials)")]
+                if columns == _OLD_COLUMNS:
+                    db.execute("ALTER TABLE credentials ADD COLUMN source_hint TEXT NOT NULL DEFAULT ''")
+                    columns = [row[1] for row in db.execute("PRAGMA table_info(credentials)")]
+        if columns != _NEW_COLUMNS:
+            raise VaultIntegrityError("Unexpected credential vault schema")
         if self.db_path.with_name("records.db-wal").exists():
             raise VaultIntegrityError("Credential vault WAL must be recovered before opening")
 
@@ -168,14 +202,15 @@ class CredentialStore:
         return key
 
     def add(self, *, passphrase: str, value: str, service: str,
-            project: str, source_hash: str) -> str:
-        meta = _metadata(service, project, source_hash)
+            project: str, source_hash: str, source_hint: str = "") -> str:
+        meta = _metadata(service, project, source_hash, source_hint)
         record_id = uuid.uuid4().hex
         with self._lock, self._process_lock(), self._connect() as db:
             key = self._unlock(db, passphrase)
             encrypted = encrypt_record(key, self.header, record_id, meta, value)
-            db.execute("INSERT INTO credentials VALUES (?, ?, ?, ?, ?)",
-                       (record_id, service, project, source_hash, encrypted.to_json()))
+            db.execute("INSERT INTO credentials (id, service, project, source_hash, envelope, source_hint) "
+                       "VALUES (?, ?, ?, ?, ?, ?)",
+                       (record_id, service, project, source_hash, encrypted.to_json(), source_hint))
         return record_id
 
     def search(self, query: str, *, limit: int = 50) -> list[dict[str, str]]:
@@ -185,11 +220,12 @@ class CredentialStore:
             .replace("_", "\\_") + "%"
         with self._lock, self._connect(readonly=True) as db:
             rows = db.execute(
-                "SELECT id, service, project, source_hash FROM credentials "
-                "WHERE service LIKE ? ESCAPE '\\' OR project LIKE ? ESCAPE '\\' LIMIT ?",
-                (pattern, pattern, limit),
+                "SELECT id, service, project, source_hash, source_hint FROM credentials "
+                "WHERE service LIKE ? ESCAPE '\\' OR project LIKE ? ESCAPE '\\' "
+                "OR source_hint LIKE ? ESCAPE '\\' LIMIT ?",
+                (pattern, pattern, pattern, limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in rows if _validated_source_hint(row["source_hint"]) is not None]
 
     def reveal(self, record_id: str, *, passphrase: str) -> str:
         if not isinstance(record_id, str) or not re.fullmatch(r"[a-f0-9]{32}", record_id):
@@ -199,7 +235,7 @@ class CredentialStore:
             row = db.execute("SELECT * FROM credentials WHERE id=?", (record_id,)).fetchone()
             if row is None:
                 raise VaultIntegrityError("Credential record unavailable")
-            meta = _metadata(row["service"], row["project"], row["source_hash"])
+            meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"])
             value = decrypt_record(key, self.header, record_id, meta, EncryptedValue.from_json(row["envelope"]))
             db.execute("INSERT INTO reveal_audit (record_id, at) VALUES (?, ?)", (record_id, time.time()))
             return value
@@ -223,7 +259,7 @@ class CredentialStore:
             source_rows = db.execute("SELECT * FROM credentials ORDER BY id").fetchall()
             # Verify all records before and after snapshot, not just the sentinel.
             for row in source_rows:
-                meta = _metadata(row["service"], row["project"], row["source_hash"])
+                meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"])
                 decrypt_record(key, self.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
             create_private_directory(staging)
             create_private_file(staging / "header.json")
@@ -241,7 +277,8 @@ class CredentialStore:
                 for original, copied in zip(source_rows, backup_rows):
                     if tuple(original) != tuple(copied):
                         raise VaultIntegrityError("Credential backup differs from source")
-                    meta = _metadata(copied["service"], copied["project"], copied["source_hash"])
+                    meta = _metadata(copied["service"], copied["project"], copied["source_hash"],
+                                     copied["source_hint"])
                     decrypt_record(restored_key, restored.header, copied["id"], meta,
                                    EncryptedValue.from_json(copied["envelope"]))
             if destination.exists() or destination.is_symlink():
@@ -278,7 +315,7 @@ class CredentialStore:
         with restored._connect(readonly=True) as db:
             key = restored._unlock(db, passphrase)
             for row in db.execute("SELECT * FROM credentials"):
-                meta = _metadata(row["service"], row["project"], row["source_hash"])
+                meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"])
                 decrypt_record(key, restored.header, row["id"], meta,
                                EncryptedValue.from_json(row["envelope"]))
         if destination.exists() or destination.is_symlink():

@@ -73,10 +73,14 @@ $credentialApiToken = [Environment]::GetEnvironmentVariable("MUNINN_CREDENTIAL_A
 if ($credentialApiToken) {
     $env:MUNINN_CREDENTIAL_API_TOKEN = $credentialApiToken
 }
+$credentialAgentSearch = [Environment]::GetEnvironmentVariable("MUNINN_CREDENTIAL_AGENT_SEARCH", "User")
+$env:MUNINN_CREDENTIAL_AGENT_SEARCH = if ($credentialAgentSearch) { $credentialAgentSearch } else { "0" }
 $env:MUNINN_NO_AUTH = "0"
 $env:MUNINN_HOST = "127.0.0.1"
 $env:MUNINN_PORT = [string]$Port
 $env:MUNINN_HISTORY_SECURITY = "strict"
+$indexAuto = [Environment]::GetEnvironmentVariable("MUNINN_HISTORY_INDEX_AUTO", "User")
+$env:MUNINN_HISTORY_INDEX_AUTO = if ($indexAuto) { $indexAuto } else { "1" }
 $env:MUNINN_CONSOLIDATION_DRY_RUN = "1"
 $env:MUNINN_DEFER_LLM_ON_ADD = "true"
 $env:MUNINN_OLLAMA_KEEP_ALIVE = "0"

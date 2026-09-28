@@ -45,7 +45,8 @@ def test_metadata_search_and_explicit_reveal_only(tmp_path: Path) -> None:
     store = _new(tmp_path)
     record_id = _add(store)
     assert store.search("example") == [{"id": record_id, "service": "example", "project": "test-project",
-                                        "source_hash": source_fingerprint("test-source")}]
+                                        "source_hash": source_fingerprint("test-source"),
+                                        "source_hint": ""}]
     assert store.search("missing") == []
     assert _VALUE.encode() not in store.db_path.read_bytes()
     with pytest.raises(VaultIntegrityError):
@@ -53,6 +54,49 @@ def test_metadata_search_and_explicit_reveal_only(tmp_path: Path) -> None:
     assert store.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
     with store._connect(readonly=True) as db:
         assert db.execute("SELECT COUNT(*) FROM reveal_audit").fetchone()[0] == 1
+
+
+def test_project_relative_env_hint_is_searchable_and_authenticated(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    record_id = store.add(
+        passphrase=_PASSPHRASE, value=_VALUE, service="openrouter",
+        project="example-project", source_hash=source_fingerprint("private-source"),
+        source_hint="config/.env.local",
+    )
+    matches = store.search(".env.local")
+    assert matches[0]["source_hint"] == "config/.env.local"
+    assert _VALUE not in str(matches)
+    assert store.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
+    with store._connect() as db:
+        db.execute("UPDATE credentials SET source_hint='.env' WHERE id=?", (record_id,))
+    with pytest.raises(VaultIntegrityError):
+        store.reveal(record_id, passphrase=_PASSPHRASE)
+
+
+@pytest.mark.parametrize("hint", [
+    "C:/Users/name/.env", "../.env", "config//.env", "config\\.env",
+    "/.env", "config/./.env", "config/../.env", "config/passwords.txt",
+])
+def test_credential_source_hint_rejects_unsafe_locations(tmp_path: Path, hint: str) -> None:
+    store = _new(tmp_path)
+    with pytest.raises(VaultIntegrityError):
+        store.add(passphrase=_PASSPHRASE, value=_VALUE, service="example", project="project",
+                  source_hash=source_fingerprint("source"), source_hint=hint)
+
+
+def test_exact_legacy_schema_migrates_without_changing_record_aad(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    record_id = _add(store)
+    with store._connect() as db:
+        db.execute("CREATE TABLE old_credentials (id TEXT PRIMARY KEY, service TEXT NOT NULL, "
+                   "project TEXT NOT NULL, source_hash TEXT NOT NULL, envelope TEXT NOT NULL)")
+        db.execute("INSERT INTO old_credentials SELECT id, service, project, source_hash, envelope "
+                   "FROM credentials")
+        db.execute("DROP TABLE credentials")
+        db.execute("ALTER TABLE old_credentials RENAME TO credentials")
+    migrated = CredentialStore(store.root)
+    assert migrated.search("example")[0]["source_hint"] == ""
+    assert migrated.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
 
 
 def test_header_and_sentinel_tamper_fail_closed(tmp_path: Path) -> None:

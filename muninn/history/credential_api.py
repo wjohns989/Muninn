@@ -18,14 +18,20 @@ _LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1", "::ffff:7f00:1"}
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff"}
 
 
-def authenticate_local(request: Request) -> tuple[str, str]:
-    """Require a separate configured bearer token and the actual socket peer."""
+def require_loopback_peer(request: Request) -> str:
+    """Accept only an actual loopback socket peer, not forwarded headers."""
     try:
         peer = str(ipaddress.ip_address(request.client.host if request.client else ""))
     except ValueError:
         raise HTTPException(404, "Unavailable") from None
     if peer not in _LOOPBACK:
         raise HTTPException(404, "Unavailable")
+    return peer
+
+
+def authenticate_local(request: Request) -> tuple[str, str]:
+    """Require a separate configured bearer token and the actual socket peer."""
+    peer = require_loopback_peer(request)
     expected = os.environ.get("MUNINN_CREDENTIAL_API_TOKEN", "")
     if len(expected) < 32:
         raise HTTPException(404, "Unavailable")

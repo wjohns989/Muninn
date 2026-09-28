@@ -51,6 +51,15 @@ def get_token() -> str:
         return initialize_security()
     return _GLOBAL_AUTH_TOKEN
 
+
+def verify_main_token(token: Optional[str]) -> bool:
+    """Private local capabilities require an explicitly configured main bearer."""
+    expected = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
+    return bool(
+        is_security_enabled() and expected and len(expected) >= 32 and token
+        and secrets.compare_digest(token, expected)
+    )
+
 def verify_token(token: Optional[str]) -> bool:
     """Verify if the provided token matches any configured or runtime token.
 

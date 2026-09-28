@@ -30,6 +30,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 import asyncio
+from collections import deque
 from typing import TYPE_CHECKING, Optional, Dict, Any, List
 from pathlib import Path
 
@@ -50,7 +51,7 @@ from muninn.core.memory import MuninnMemory
 from muninn.core import handoffs
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.core.feature_flags import FeatureDisabledError
-from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
+from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled, verify_main_token
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
     MAX_CHUNK_OVERLAP_CHARS,
@@ -75,7 +76,9 @@ from muninn.retrieval.synthesis import synthesize_hunt_results
 from muninn.mimir.api import init_mimir, mimir_router
 from muninn.mimir.relay import MimirRelay
 from muninn.mimir.store import MimirStore
-from muninn.history.credential_api import NO_STORE, RevealLimiter, authenticate_local, read_passphrase
+from muninn.history.credential_api import (
+    NO_STORE, RevealLimiter, authenticate_local, read_passphrase, require_loopback_peer,
+)
 from muninn.history.credential_crypto import VaultIntegrityError
 
 # Configure detailed logging to file with a robust, absolute path
@@ -109,6 +112,9 @@ if TYPE_CHECKING:
 _SERVER_INSTANCE_LOCK_HANDLE: Optional[portalocker.Lock] = None
 _SERVER_INSTANCE_LOCK_PATH: Optional[Path] = None
 _credential_reveal_limiter = RevealLimiter()
+_credential_agent_search_times: deque[float] = deque()
+_secure_history_fetch_slots = asyncio.Semaphore(1)
+_secure_history_fetch_times: deque[float] = deque()
 
 
 # --- Pydantic Models (API compatibility) ---
@@ -319,6 +325,18 @@ async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Sec
             headers={"WWW-Authenticate": "Bearer"},
         )
     return credentials
+
+
+async def verify_main_local_token(request: Request):
+    """Private history/credential metadata never accepts the generic API key."""
+    require_loopback_peer(request)
+    expected = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
+    if not is_security_enabled() or not expected or len(expected) < 32:
+        raise HTTPException(status_code=404, detail="Unavailable")
+    supplied = request.headers.get("authorization", "")
+    scheme, _, token = supplied.partition(" ")
+    if scheme.lower() != "bearer" or not verify_main_token(token):
+        raise HTTPException(status_code=401, detail="Authentication required")
 
 
 def _server_instance_lock_timeout_seconds() -> float:
@@ -1548,6 +1566,33 @@ async def credential_metadata_search_endpoint(request: Request):
     return JSONResponse({"data": matches}, headers=NO_STORE)
 
 
+class CredentialAgentSearchRequest(BaseModel):
+    query: str
+    limit: int = 10
+
+
+@app.post("/credentials/agent-search", dependencies=[Depends(verify_main_local_token)])
+async def credential_agent_search_endpoint(req: CredentialAgentSearchRequest):
+    """Opt-in agent search of allowlisted credential metadata; never reveal values."""
+    if os.environ.get("MUNINN_CREDENTIAL_AGENT_SEARCH", "").strip() != "1":
+        raise HTTPException(status_code=404, detail="Unavailable")
+    if not 1 <= len(req.query) <= 64 or not 1 <= req.limit <= 20:
+        raise HTTPException(status_code=400, detail="Invalid credential request")
+    now = time.monotonic()
+    while _credential_agent_search_times and now - _credential_agent_search_times[0] > 60:
+        _credential_agent_search_times.popleft()
+    if len(_credential_agent_search_times) >= 30:
+        raise HTTPException(status_code=429, detail="Credential metadata rate limit reached")
+    _credential_agent_search_times.append(now)
+    try:
+        matches = await asyncio.to_thread(_credential_store_for_api().search, req.query, limit=req.limit)
+        safe = [{key: item[key] for key in ("id", "service", "project", "source_hash", "source_hint")}
+                for item in matches]
+    except Exception:
+        raise HTTPException(status_code=404, detail="Unavailable") from None
+    return JSONResponse({"success": True, "data": safe}, headers=NO_STORE)
+
+
 @app.post("/credentials/reveal/{record_id}")
 async def credential_reveal_endpoint(record_id: str, request: Request):
     principal, peer = authenticate_local(request)
@@ -1629,6 +1674,55 @@ async def secure_history_catalog_endpoint(provider: Optional[str] = None, offset
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail="Encrypted history catalog unavailable") from exc
     return {"success": True, "data": data}
+
+
+class SecureHistorySearchRequest(BaseModel):
+    query: str
+    limit: int = 20
+
+
+class SecureHistoryFetchRequest(BaseModel):
+    capability: str
+    max_chars: int = 3000
+
+
+@app.post("/history/secure/search", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_search_endpoint(req: SecureHistorySearchRequest):
+    """Local encrypted-index lookup; return metadata and expiring fetch capability."""
+    try:
+        data = await asyncio.to_thread(_require_history().secure_search, req.query, limit=req.limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (VaultIntegrityError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail="Encrypted history search unavailable") from exc
+    return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+
+
+@app.post("/history/secure/fetch", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_fetch_endpoint(req: SecureHistoryFetchRequest):
+    """Authenticate a selected snapshot and release only a bounded redacted span."""
+    now = time.monotonic()
+    while _secure_history_fetch_times and now - _secure_history_fetch_times[0] > 60:
+        _secure_history_fetch_times.popleft()
+    if len(_secure_history_fetch_times) >= 10:
+        raise HTTPException(status_code=429, detail="History fetch rate limit reached")
+    try:
+        await asyncio.wait_for(_secure_history_fetch_slots.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=429, detail="History fetch already running") from None
+    _secure_history_fetch_times.append(now)
+    try:
+        try:
+            data = await asyncio.to_thread(
+                _require_history().secure_fetch_span, req.capability, max_chars=req.max_chars,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (VaultIntegrityError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail="Encrypted history fetch unavailable") from exc
+        return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+    finally:
+        _secure_history_fetch_slots.release()
 
 
 @app.post("/history/sync", dependencies=[Depends(verify_token)])

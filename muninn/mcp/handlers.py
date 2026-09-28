@@ -469,6 +469,9 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "add_memory": _do_add_memory,
         "add_image_memory": _do_add_image_memory,
         "search_memory": _do_search_memory,
+        "search_secure_history": _do_search_secure_history,
+        "fetch_secure_history": _do_fetch_secure_history,
+        "search_credential_metadata": _do_search_credential_metadata,
         "hunt_memory": _do_hunt_memory,
         "get_all_memories": _do_get_all_memories,
         "update_memory": _do_update_memory,
@@ -693,6 +696,33 @@ def _search_session_id() -> Optional[str]:
         # MCP 2026-07-28 has no sessions; each request's context is throwaway.
         return None
     return _STDIO_SEARCH_SESSION_ID if session_id in ("default", "stdio") else session_id
+
+
+def _do_search_secure_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"query": args.get("query"), "limit": args.get("limit", 20)}
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/search", deadline_epoch=deadline,
+        json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_fetch_secure_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"capability": args.get("capability"), "max_chars": args.get("max_chars", 3000)}
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/fetch", deadline_epoch=deadline,
+        json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_search_credential_metadata(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"query": args.get("query"), "limit": args.get("limit", 10)}
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/credentials/agent-search", deadline_epoch=deadline,
+        json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
 
 
 def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -1131,7 +1161,8 @@ STRUCTURED_TOOLS = {"search", "fetch"}
 # Nested briefings and handoffs are returned whole rather than preview-compacted.
 EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
-    "import_agent_history",
+    "import_agent_history", "search_secure_history", "fetch_secure_history",
+    "search_credential_metadata",
 }
 _TITLE_CHARS = 80
 

@@ -18,10 +18,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from muninn.history.blind_index import SecureHistoryBlindIndex
+from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.importer import import_history, read_thread
 from muninn.history.locations import app_data_dirs, export_candidates, history_homes, history_sources
 from muninn.history.secure_archive import SecureHistoryArchive
-from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.vault import HistoryVault, require_legacy_history_disabled, strict_history_mode
 
 if TYPE_CHECKING:
@@ -77,6 +78,9 @@ class HistoryService:
         self._captured: Dict[str, float] = {}
         self._background: set = set()
         self._auto_task: Optional[asyncio.Task] = None
+        self._secure_index_task: Optional[asyncio.Task] = None
+        self._secure_index_wakeup = asyncio.Event()
+        self.last_secure_index: Optional[Dict[str, Any]] = None
         self._analysis_lock = asyncio.Lock()
         self.last_auto_route: Optional[Dict[str, Any]] = None
 
@@ -249,6 +253,8 @@ class HistoryService:
         report["indexing"] = "none; encrypted copy only"
         report["at"] = time.time()
         self.last_sync = report
+        if report["captured"]:
+            self._secure_index_wakeup.set()
         return report
 
     async def run_import(self, *, apply: bool, providers: Optional[List[str]] = None,
@@ -327,8 +333,10 @@ class HistoryService:
                     return {"skipped": "debounced"}
                 outcome = await asyncio.to_thread(archive.archive_file, source_path, provider)
                 self._captured[key] = time.time()
+            if outcome["status"] == "captured":
+                self._secure_index_wakeup.set()
             return {"captured": outcome["status"] == "captured", "archive": outcome,
-                    "indexing": "metadata-only projector pending"}
+                    "indexing": "CPU-only encrypted index eligible"}
         require_legacy_history_disabled()
         key = str(Path(path).resolve())
         now = time.time()
@@ -370,6 +378,20 @@ class HistoryService:
         return [item.as_dict() for item in archive.metadata_catalog(
             provider=provider, offset=offset, limit=limit)]
 
+    def secure_search(self, query: str, *, limit: int = 20) -> Dict[str, Any]:
+        """Search encrypted history locally; return metadata and short-lived fetch grants."""
+        if not strict_history_mode():
+            raise RuntimeError("Secure history search requires strict history mode")
+        archive = self._require_secure_archive()
+        return SecureHistoryBlindIndex(archive).search(query, limit=limit, max_candidates=20)
+
+    def secure_fetch_span(self, capability: str, *, max_chars: int = 3000) -> Dict[str, Any]:
+        """Return a bounded sanitized span after full snapshot authentication."""
+        if not strict_history_mode():
+            raise RuntimeError("Secure history fetch requires strict history mode")
+        archive = self._require_secure_archive()
+        return SecureHistoryBlindIndex(archive).fetch_span(capability, max_chars=max_chars)
+
     def status(self) -> Dict[str, Any]:
         strict = strict_history_mode()
         if strict:
@@ -405,6 +427,7 @@ class HistoryService:
             "last_analysis": self.last_analysis,
             "auto_analyze": _flag("MUNINN_INSIGHTS_AUTO"),
             "last_auto_route": self.last_auto_route,
+            "last_secure_index": self.last_secure_index,
             "import_progress": self.progress,
             "warnings": ([] if strict else self.retention_warnings()),
         }
@@ -413,18 +436,47 @@ class HistoryService:
 
     async def start(self) -> None:
         if strict_history_mode():
+            if _flag("MUNINN_HISTORY_INDEX_AUTO") and self._secure_index_task is None:
+                self._secure_index_task = asyncio.create_task(self._secure_index_loop())
             return
         if self._task is None:
             self._auto_since()
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        for task in (self._task, self._job, self._auto_task, *self._background):
+        for task in (self._task, self._job, self._auto_task, self._secure_index_task,
+                     *self._background):
             if task and not task.done():
                 task.cancel()
         self._task = None
+        self._secure_index_task = None
         if self.vault is not None:
             self.vault.close()
+
+    async def _secure_index_loop(self) -> None:
+        """CPU-only, resumable history projection; no model or ordinary-memory writes."""
+        while True:
+            try:
+                archive = self._require_secure_archive()
+                report = await asyncio.to_thread(
+                    SecureHistoryBlindIndex(archive).build, max_snapshots=20,
+                )
+                self.last_secure_index = {**report, "at": time.time()}
+                delay = 300 if report["missing"] == 0 else 30
+            except asyncio.CancelledError:
+                raise
+            except RuntimeError as exc:
+                # Another process may own the short-lived builder lock.
+                logger.info("Secure history indexing deferred: %s", type(exc).__name__)
+                delay = 60
+            except Exception:
+                logger.exception("Secure history indexing failed")
+                delay = 300
+            try:
+                await asyncio.wait_for(self._secure_index_wakeup.wait(), timeout=delay)
+                self._secure_index_wakeup.clear()
+            except asyncio.TimeoutError:
+                pass
 
     def _auto_since(self) -> Optional[float]:
         """First activation excludes existing historical threads from auto-analysis.

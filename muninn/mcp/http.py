@@ -18,8 +18,9 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request, Response, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from muninn.core.security import is_security_enabled
+from muninn.core.security import is_security_enabled, verify_main_token
 from muninn.core.security import verify_token as core_verify_token
+from muninn.history.credential_api import require_loopback_peer
 from muninn.mcp.definitions import SUPPORTED_PROTOCOL_VERSIONS
 from muninn.mcp.handlers import active_toolset, handle_get_prompt, handle_list_prompts
 from muninn.mcp.handlers import (
@@ -618,6 +619,20 @@ async def _handle_post(request: Request) -> Response:
             HTTPStatus.BAD_REQUEST,
             _json_error("server-error", -32600, "Invalid or oversized JSON-RPC batch"),
         )
+
+    private_tools = {"search_secure_history", "fetch_secure_history", "search_credential_metadata"}
+    if any(msg.get("method") == "tools/call" and isinstance(msg.get("params"), dict)
+           and msg["params"].get("name") in private_tools for msg in messages):
+        try:
+            require_loopback_peer(request)
+        except HTTPException:
+            return _json_response(HTTPStatus.NOT_FOUND,
+                                  _json_error("server-error", -32601, "Unavailable"))
+        supplied = request.headers.get("authorization", "")
+        scheme, _, token = supplied.partition(" ")
+        if scheme.lower() != "bearer" or not verify_main_token(token):
+            return _json_response(HTTPStatus.UNAUTHORIZED,
+                                  _json_error("server-error", -32001, "Authentication required"))
 
     # A request carrying modern per-request _meta is served statelessly (2026-07-28);
     # modern bodies are always a single message.
