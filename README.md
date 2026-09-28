@@ -104,6 +104,25 @@ Start the backend:
 python server.py
 ```
 
+On Windows, `scripts/start_shared_local.ps1` starts or verifies one authenticated
+loopback service. It reads `MUNINN_AUTH_TOKEN` from the Windows user environment
+without placing the token in a command argument or client config. It refuses to
+report success if anonymous access works or the token fails. Select your own
+data directory and Python installation; no `D:` drive or specific model is
+required. Initialize the encrypted history archive in that data directory
+first (see below); the launcher treats an unready archive as a failed setup:
+
+```powershell
+.\scripts\start_shared_local.ps1 -PythonPath 'C:\path\to\python.exe' -DataDir 'C:\path\to\private-muninn-data'
+```
+
+For an existing installation, omit `-DataDir` to keep the current
+`MUNINN_DATA_DIR` value. If unset, the Windows launcher uses `.muninn_runtime`
+under the checkout. Keep that directory private and backed up. The launcher
+sets strict history mode, deferred chat LLM use, zero Ollama residency, and
+consolidation dry-run; it does not import historical chats or send them to a
+remote model. Start the service explicitly before connecting MCP clients.
+
 Verify it's running:
 
 ```bash
