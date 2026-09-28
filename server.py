@@ -37,7 +37,7 @@ import uvicorn
 import requests
 from fastapi import FastAPI, HTTPException, Depends, Request, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from contextlib import asynccontextmanager
 import secrets
 import portalocker
@@ -75,6 +75,7 @@ from muninn.retrieval.synthesis import synthesize_hunt_results
 from muninn.mimir.api import init_mimir, mimir_router
 from muninn.mimir.relay import MimirRelay
 from muninn.mimir.store import MimirStore
+from muninn.history.credential_api import NO_STORE, RevealLimiter, authenticate_local, read_passphrase
 
 # Configure detailed logging to file with a robust, absolute path
 server_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'muninn_server.log'))
@@ -106,6 +107,7 @@ if TYPE_CHECKING:
     from muninn.history.service import HistoryService
 _SERVER_INSTANCE_LOCK_HANDLE: Optional[portalocker.Lock] = None
 _SERVER_INSTANCE_LOCK_PATH: Optional[Path] = None
+_credential_reveal_limiter = RevealLimiter()
 
 
 # --- Pydantic Models (API compatibility) ---
@@ -1475,6 +1477,76 @@ async def import_memories_endpoint(req: ImportMemoriesRequest):
         memory, req.records, user_id=req.user_id, namespace=req.namespace,
         source=req.source, dry_run=req.dry_run,
     )}
+
+
+# --- Explicit local credential reveal (separate from memory and MCP) ---------
+
+
+@app.middleware("http")
+async def credential_no_store_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/credentials/"):
+        response.headers.update(NO_STORE)
+    return response
+
+
+def _credential_store_for_api():
+    from muninn.history.credential_store import CredentialStore
+
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Unavailable")
+    root = Path(memory.config.data_dir) / "credential_vault"
+    try:
+        return CredentialStore(root)
+    except Exception:
+        # Do not disclose whether the vault is missing, damaged, or inaccessible.
+        raise HTTPException(status_code=404, detail="Unavailable") from None
+
+
+@app.get("/credentials/search")
+async def credential_metadata_search_endpoint(request: Request):
+    authenticate_local(request)
+    query = request.query_params.get("query", "")
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid credential request") from None
+    if not 1 <= len(query) <= 64 or not 1 <= limit <= 100:
+        raise HTTPException(status_code=400, detail="Invalid credential request")
+    store = _credential_store_for_api()
+    try:
+        matches = await asyncio.to_thread(store.search, query, limit=limit)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid credential request") from None
+    return JSONResponse({"data": matches}, headers=NO_STORE)
+
+
+@app.post("/credentials/reveal/{record_id}")
+async def credential_reveal_endpoint(record_id: str, request: Request):
+    principal, peer = authenticate_local(request)
+    passphrase = await read_passphrase(request)
+    store = _credential_store_for_api()
+    key = (principal, peer, str(store.root), record_id)
+    if not _credential_reveal_limiter.begin(key):
+        raise HTTPException(status_code=429, detail="Credential reveal temporarily limited")
+    task = asyncio.create_task(asyncio.to_thread(store.reveal, record_id, passphrase=passphrase))
+
+    def _release_reveal_slot(done: asyncio.Task) -> None:
+        try:
+            done.result()
+        except BaseException:
+            _credential_reveal_limiter.finish(key, success=False)
+        else:
+            _credential_reveal_limiter.finish(key, success=True)
+
+    task.add_done_callback(_release_reveal_slot)
+    try:
+        # A disconnected client does not cancel the worker or leak its slot:
+        # the done callback releases it only after the KDF/reveal actually ends.
+        value = await asyncio.shield(task)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Credential unavailable") from None
+    return JSONResponse({"value": value}, headers=NO_STORE)
 
 
 # --- Local AI conversation history ------------------------------------------
