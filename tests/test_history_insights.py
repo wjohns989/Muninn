@@ -273,6 +273,22 @@ def test_reanalysis_replaces_insights_and_giant_threads_are_merged(imported, mon
     assert second["replaced_insights"] == before and count() == before
 
 
+def test_selected_thread_key_does_not_drift_to_a_newer_thread(imported):
+    pending = imported.store.list_history_threads(limit=10, needs_analysis=True)
+    assert len(pending) >= 2
+    selected = pending[-1]
+    report = asyncio.run(analyze_threads(
+        imported.memory, imported.vault, apply=False, provider="ollama",
+        thread_key=selected["thread_key"], limit=1,
+    ))
+    assert report["threads"] == 1
+    excluded = asyncio.run(analyze_threads(
+        imported.memory, imported.vault, apply=False, provider="ollama",
+        thread_key=selected["thread_key"], since=selected["ended_at"] + 1,
+    ))
+    assert excluded["threads"] == 0
+
+
 def test_catalog_filters(imported):
     store = imported.store
     assert {t["agent"] for t in store.list_history_threads(limit=50)} == {"claude-code", "claude-desktop"}
@@ -353,8 +369,10 @@ REFUSALS = {
     "moderation error": (403, {"error": {
         "code": 403, "message": "Input was flagged by moderation",
         "metadata": {"reasons": ["sexual"], "model_slug": "openai/gpt-6-luna-pro"}}}),
-    "azure content filter": (400, {"error": {"code": "content_filter", "message": "The response was filtered "
-                                             "due to the prompt triggering Azure OpenAI's content management policy."}}),
+    "azure content filter": (400, {"error": {
+        "code": "content_filter",
+        "message": "The response was filtered due to the prompt triggering Azure OpenAI's content management policy.",
+    }}),
 }
 
 

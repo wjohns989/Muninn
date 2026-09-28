@@ -245,11 +245,11 @@ class HistoryService:
                                                             operation="analysis"))
 
     async def _auto_analyze(self) -> None:
-        """Analyze at most two new threads without occupying a busy GPU."""
+        """Analyze one new thread with a model suited to its size and current GPU."""
         from muninn.history.auto_routing import (
             choose_route,
-            configured_model_hints,
             guarded_openrouter_available,
+            model_hints_for_thread,
             probe_gpu,
             probe_ollama,
         )
@@ -257,30 +257,40 @@ class HistoryService:
         since = self._auto_since()
         if since is None:
             return
+        pending = await asyncio.to_thread(
+            self.memory._metadata.list_history_threads, None, 1,
+            since=since, needs_analysis=True,
+        )
+        if not pending:
+            return
+        thread = pending[0]
+        hints = model_hints_for_thread(int(thread["turns_imported"]))
         gpu = await asyncio.to_thread(probe_gpu)
         installed, loaded = await asyncio.to_thread(
             probe_ollama, os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434")
         )
         if gpu is not None:
             gpu = replace(gpu, loaded_models=loaded)
-        route = choose_route(gpu, installed, model_hints=configured_model_hints(),
+        route = choose_route(gpu, installed, model_hints=hints,
                              cloud_allowed=False)
         if route.provider == "deferred":
             # Do not touch credentials or OpenRouter when a local route fits.
             # Remote fallback needs a provider-enforced daily key limit.
             cloud_ready = await asyncio.to_thread(guarded_openrouter_available, 1.0)
             if cloud_ready:
-                route = choose_route(gpu, installed, model_hints=configured_model_hints(),
+                route = choose_route(gpu, installed, model_hints=hints,
                                      cloud_allowed=True, cloud_available=True)
         self.last_auto_route = {"provider": route.provider, "model": route.model,
                                 "reason": route.reason, "free_mib": route.free_mib,
                                 "at": time.time()}
         if route.provider == "ollama":
             await self.run_analysis(apply=True, provider="ollama", model=route.model,
-                                    since=since, limit=2, concurrency=1)
+                                    since=since, limit=1, concurrency=1,
+                                    thread_key=thread["thread_key"])
         elif route.provider == "openrouter":
             await self.run_analysis(apply=True, provider="openrouter", since=since,
-                                    limit=1, concurrency=1)
+                                    limit=1, concurrency=1,
+                                    thread_key=thread["thread_key"])
 
     async def _loop(self) -> None:
         while True:

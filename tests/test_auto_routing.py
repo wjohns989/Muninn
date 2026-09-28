@@ -1,12 +1,12 @@
 """Resource policy tests never load models or make network requests."""
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-import time
 
 import pytest
 
-from muninn.history.auto_routing import GpuState, choose_route
+from muninn.history.auto_routing import GpuState, choose_route, model_hints_for_thread
 
 
 def _gpu(free=13_600, used=1, loaded=()):
@@ -19,9 +19,19 @@ MODELS = [
 ]
 
 
-def test_idle_gpu_chooses_q8_then_smaller_model_when_headroom_falls():
-    assert choose_route(_gpu(), MODELS, now=100.0).model == MODELS[0]["name"]
-    smaller = choose_route(_gpu(free=7_500), MODELS, now=100.0)
+def test_normal_thread_uses_small_model_and_complex_thread_prefers_q8():
+    for turns in (0, 59):
+        assert choose_route(_gpu(), MODELS, model_hints=model_hints_for_thread(turns),
+                            now=100.0).model == "qwen2.5:7b"
+    for turns in (60, 61):
+        assert choose_route(_gpu(), MODELS, model_hints=model_hints_for_thread(turns),
+                            now=100.0).model == MODELS[0]["name"]
+    assert model_hints_for_thread(60, configured=("custom",)) == ("custom",)
+
+
+def test_complex_thread_falls_back_to_smaller_model_when_headroom_falls():
+    smaller = choose_route(_gpu(free=7_500), MODELS,
+                           model_hints=model_hints_for_thread(60), now=100.0)
     assert (smaller.provider, smaller.model) == ("ollama", "qwen2.5:7b")
 
 
@@ -80,6 +90,10 @@ async def test_auto_analysis_routes_only_new_threads_to_idle_local_model(monkeyp
 
     service = HistoryService.__new__(HistoryService)
     service._auto_since = lambda: 100.0
+    service.memory = SimpleNamespace(_metadata=SimpleNamespace(
+        list_history_threads=lambda *_args, **_kwargs: [
+            {"thread_key": "test-thread", "turns_imported": 12}],
+    ))
     service.run_analysis = AsyncMock(return_value={})
     service.last_auto_route = None
     monkeypatch.setattr(auto_routing, "probe_gpu", lambda: GpuState(13_600, 16_376, 1, time.time()))
@@ -88,8 +102,9 @@ async def test_auto_analysis_routes_only_new_threads_to_idle_local_model(monkeyp
                         lambda _cap: pytest.fail("local route must not query OpenRouter"))
     await service._auto_analyze()
     assert service.run_analysis.await_args.kwargs == {
-        "apply": True, "provider": "ollama", "model": MODELS[0]["name"],
-        "since": 100.0, "limit": 2, "concurrency": 1,
+        "apply": True, "provider": "ollama", "model": "qwen2.5:7b",
+        "since": 100.0, "limit": 1, "concurrency": 1,
+        "thread_key": "test-thread",
     }
 
 
@@ -100,6 +115,10 @@ async def test_auto_analysis_defers_when_gpu_busy(monkeypatch):
 
     service = HistoryService.__new__(HistoryService)
     service._auto_since = lambda: 100.0
+    service.memory = SimpleNamespace(_metadata=SimpleNamespace(
+        list_history_threads=lambda *_args, **_kwargs: [
+            {"thread_key": "test-thread", "turns_imported": 12}],
+    ))
     service.run_analysis = AsyncMock()
     service.last_auto_route = None
     monkeypatch.setattr(auto_routing, "probe_gpu", lambda: GpuState(13_600, 16_376, 90, time.time()))
@@ -117,6 +136,10 @@ async def test_auto_analysis_uses_budgeted_cloud_when_gpu_busy(monkeypatch):
 
     service = HistoryService.__new__(HistoryService)
     service._auto_since = lambda: 100.0
+    service.memory = SimpleNamespace(_metadata=SimpleNamespace(
+        list_history_threads=lambda *_args, **_kwargs: [
+            {"thread_key": "test-thread", "turns_imported": 12}],
+    ))
     service.run_analysis = AsyncMock(return_value={})
     service.last_auto_route = None
     monkeypatch.setattr(auto_routing, "probe_gpu", lambda: GpuState(13_600, 16_376, 90, time.time()))
@@ -125,5 +148,5 @@ async def test_auto_analysis_uses_budgeted_cloud_when_gpu_busy(monkeypatch):
     await service._auto_analyze()
     assert service.run_analysis.await_args.kwargs == {
         "apply": True, "provider": "openrouter", "since": 100.0,
-        "limit": 1, "concurrency": 1,
+        "limit": 1, "concurrency": 1, "thread_key": "test-thread",
     }

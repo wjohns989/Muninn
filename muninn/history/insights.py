@@ -711,15 +711,26 @@ async def analyze_threads(
     progress: Optional[Dict[str, Any]] = None,
     transport: Optional[httpx.AsyncBaseTransport] = None,
     retry_refused: bool = False,
+    thread_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Analyze imported threads that grew since their last analysis (dry run reports volume and cost).
 
     ``retry_refused`` also retries threads every model refused earlier (for example with another model).
     """
     store = memory._metadata
-    pending = await asyncio.to_thread(
-        lambda: store.list_history_threads(project, limit, since=since,
-                                           needs_analysis=True, retry_refused=retry_refused))
+    if thread_key is not None:
+        selected = await asyncio.to_thread(store.get_history_thread, thread_key)
+        pending = [selected] if (
+            selected is not None
+            and (since is None or (selected.get("ended_at") or 0) >= since)
+            and (project is None or selected.get("project") == project)
+            and (selected["analyzed_turns"] < selected["turns_imported"]
+                 or (retry_refused and selected.get("analysis_error")))
+        ) else []
+    else:
+        pending = await asyncio.to_thread(
+            lambda: store.list_history_threads(project, limit, since=since,
+                                               needs_analysis=True, retry_refused=retry_refused))
     sources = [t["source_path"] for t in pending if t.get("source_path")]
     collected = await asyncio.to_thread(collect, vault, None, None, sources) if sources else None
     by_key = {t.key: t for t in (collected.threads if collected else [])}

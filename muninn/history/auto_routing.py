@@ -15,7 +15,9 @@ from typing import Any, Iterable, Mapping, Optional
 import httpx
 
 _MIB = 1024 * 1024
-DEFAULT_MODEL_HINTS = ("qwen35", "qwen2.5:7b")
+DEFAULT_MODEL_HINTS = ("qwen2.5:7b", "qwen35")
+COMPLEX_MODEL_HINTS = ("qwen35", "qwen2.5:7b")
+COMPLEX_THREAD_TURNS = 60
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,20 @@ def configured_model_hints() -> tuple[str, ...]:
     raw = os.environ.get("MUNINN_AUTO_LOCAL_MODEL_HINTS", "")
     hints = tuple(item.strip() for item in raw.split(",") if item.strip())
     return hints or DEFAULT_MODEL_HINTS
+
+
+def model_hints_for_thread(turns_imported: int, *,
+                           configured: Optional[tuple[str, ...]] = None) -> tuple[str, ...]:
+    """Favor the fast model routinely; escalate long threads when headroom allows.
+
+    The turn count is the durable imported count in the history catalog. An
+    explicit model order always wins over this heuristic.
+    """
+    if configured is not None:
+        return configured
+    if os.environ.get("MUNINN_AUTO_LOCAL_MODEL_HINTS", "").strip():
+        return configured_model_hints()
+    return COMPLEX_MODEL_HINTS if turns_imported >= COMPLEX_THREAD_TURNS else DEFAULT_MODEL_HINTS
 
 
 def guarded_openrouter_available(daily_cap_usd: float = 1.0) -> bool:
