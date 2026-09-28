@@ -41,7 +41,9 @@ def main() -> int:
         policy_ok = body.get("provider") == {
             "zdr": True, "data_collection": "deny", "require_parameters": True,
         }
-        with httpx.Client(timeout=15.0) as client:
+        # Do not forward the bearer key through proxy settings inherited from
+        # the shell; the application uses the same direct-only policy.
+        with httpx.Client(timeout=15.0, trust_env=False) as client:
             info = _key_info(client, key)
             cap = info.get("limit")
             remaining = info.get("limit_remaining")

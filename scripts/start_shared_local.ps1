@@ -7,7 +7,7 @@ The script never prints the token or stores it in a launch argument or file.
 #>
 param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
-    [string]$PythonPath = "python",
+    [string]$PythonPath = "",
     [string]$DataDir = "",
     [int]$Port = 42069,
     [int]$StartupTimeoutSeconds = 90
@@ -17,6 +17,12 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "server.py"))) {
     throw "Muninn server.py not found in the selected repository."
+}
+if (-not $PythonPath) {
+    $PythonPath = [Environment]::GetEnvironmentVariable("MUNINN_PYTHON_PATH", "User")
+}
+if (-not $PythonPath) {
+    $PythonPath = "python"
 }
 $pythonCommand = Get-Command $PythonPath -ErrorAction Stop
 $PythonPath = $pythonCommand.Source

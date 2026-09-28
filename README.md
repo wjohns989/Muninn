@@ -381,6 +381,7 @@ Key environment variables:
 | `MUNINN_INSIGHTS_AUTO` | off | Legacy-mode analysis after automatic import; does not enable strict encrypted-history enrichment |
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
 | `MUNINN_DATA_DIR` | platform data directory | All Muninn stores; choose a private directory with enough space for your own history, not a repository checkout |
+| `MUNINN_PYTHON_PATH` | `python` on `PATH` | Windows shared launcher interpreter; set a user-scoped path to the Python environment with Muninn's dependencies, or pass `-PythonPath` to the launcher. No interpreter path is hard-coded in the repo |
 | `MUNINN_OLLAMA_URL` | `http://localhost:11434` | Your Ollama endpoint; no particular model directory or drive letter is assumed |
 | `MUNINN_OLLAMA_MODEL` | `llama3.2:3b` | Model for explicitly requested Ollama analysis |
 | `MUNINN_AUTO_LOCAL_MODEL_HINTS` | local measured defaults | Comma-separated installed model tags in preferred order for strict on-demand analysis; unlisted installed chat-capable models remain fallback candidates. Legacy analysis also accepts model-name fragments |
@@ -415,6 +416,17 @@ use the bounded streaming fallback. Both operations require the normal
 authenticated local service.
 The index may initially be incomplete while the CPU-only worker catches up;
 search reports coverage. Neither operation reveals the exact raw original.
+The archive stores authenticated 1 MiB chunks. For large or dense valid UTF-8
+snapshots, the rebuildable search index now writes fixed-size encrypted filters
+per chunk instead of rejecting a whole file as "oversized". Builds use bounded
+memory and publish a completion marker only after the entire snapshot verifies;
+insufficient disk space defers the build for retry. Search still authenticates
+candidate snapshots and may take proportionally longer for very large files.
+Binary or invalid-UTF-8 formats need a format-specific parser and can remain
+unsearchable; `unsearchable` does not by itself mean a file was too large.
+After upgrading an old index, `python -m muninn.history.blind_index retry --root
+'<your-private-data-dir>\history_secure_archive' --max-snapshots 1` upgrades
+one legacy overflow at a time without rewriting archive ciphertext.
 Redaction recognizes common credentials and suppresses suspicious lines, but
 arbitrary unknown secrets cannot be proven absent from transcript text; treat
 agent-visible spans as private data and do not use them for automatic credential
@@ -455,6 +467,11 @@ silently switches to remote. `MUNINN_INSIGHTS_AUTO` applies only
 to legacy history import and must not be treated as enabling strict-mode enrichment.
 To compare installed Ollama models on actual checked-in Muninn code without storing
 results, run `python scripts/verify_live_model_routes.py --models <installed-tag>`.
+To exercise authenticated search, bounded fetch, and actual analysis through the
+running local service without printing transcript or model text, run
+`python -m scripts.smoke_secure_history_routes --query <nonsecret-term>
+--provider ollama` (or `--provider openrouter` only after configuring its
+ZDR key, consent, and finite provider-enforced cap).
 Add `--archive-query <search-term>` to test a bounded, redacted excerpt of your
 own encrypted history locally. OpenRouter validation requires an environment key,
 provider-enforced daily cap, and ZDR route; `--openrouter` uses checked-in source

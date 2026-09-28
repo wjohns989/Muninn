@@ -17,8 +17,10 @@ import re
 import shutil
 import sqlite3
 import struct
+import tempfile
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 from cryptography.exceptions import InvalidTag
@@ -37,6 +39,7 @@ _HASHES = 4
 _TERM = re.compile(r"\w+", re.UNICODE)
 _TEXT_KINDS = {"transcript", "prompt_history", "desktop_session", "export"}
 _STRUCTURED_PARSE_LIMIT = 8 * 1024 * 1024
+_STAGING_NAME = re.compile(r"muninn-chunks-[A-Za-z0-9_-]+\.db(?:-journal)?\Z")
 
 
 def _terms(value: str) -> list[str]:
@@ -77,6 +80,12 @@ class SecureHistoryBlindIndex:
                        "nonce BLOB NOT NULL, sealed BLOB NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS large_filters (blob TEXT PRIMARY KEY, "
                        "filter_bytes INTEGER NOT NULL, nonce BLOB NOT NULL, sealed BLOB NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS chunk_filters (blob TEXT NOT NULL, ordinal INTEGER NOT NULL, "
+                       "filter_bytes INTEGER NOT NULL, nonce BLOB NOT NULL, sealed BLOB NOT NULL, "
+                       "PRIMARY KEY(blob, ordinal))")
+            db.execute("CREATE TABLE IF NOT EXISTS chunk_completions (blob TEXT PRIMARY KEY, chunks INTEGER NOT NULL, "
+                       "size INTEGER NOT NULL, sha256 TEXT NOT NULL, filter_bytes INTEGER NOT NULL, "
+                       "parameters TEXT NOT NULL)")
             row = db.execute("SELECT format, vault_id, filter_bytes FROM meta WHERE id=1").fetchone()
             expected = (_FORMAT, archive.vault_id, filter_bytes)
             if row is None:
@@ -126,6 +135,17 @@ class SecureHistoryBlindIndex:
                 finally:
                     fcntl.flock(handle, fcntl.LOCK_UN)
 
+    def _cleanup_stale_staging(self) -> None:
+        """Only the lock owner removes abandoned, rebuildable encrypted staging."""
+        root = self.archive.root.resolve(strict=True)
+        for candidate in root.glob("muninn-chunks-*.db*"):
+            if not _STAGING_NAME.fullmatch(candidate.name):
+                continue
+            if candidate.is_symlink() or candidate.resolve(strict=True).parent != root:
+                raise VaultIntegrityError("History index staging path is unsafe")
+            verify_private(candidate)
+            candidate.unlink()
+
     def _aad(self, entry: dict, version: int) -> bytes:
         return json.dumps({
             "format": _FORMAT, "vault_id": self.archive.vault_id,
@@ -153,6 +173,13 @@ class SecureHistoryBlindIndex:
             "provider": entry["provider"], "kind": entry["kind"], "version": version,
             "filter_bytes": filter_bytes, "hashes": _HASHES, "tokenizer": _TOKENIZER,
         }, sort_keys=True, separators=(",", ":")).encode("ascii")
+
+    def _chunk_aad(self, entry: dict, version: int, ordinal: int, filter_bytes: int) -> bytes:
+        return json.dumps({"format": 3, "vault_id": self.archive.vault_id,
+            "blob": entry["blob"], "sha256": entry["sha256"], "size": entry["size"],
+            "provider": entry["provider"], "kind": entry["kind"], "version": version,
+            "ordinal": ordinal, "filter_bytes": filter_bytes, "hashes": _HASHES,
+            "tokenizer": _TOKENIZER}, sort_keys=True, separators=(",", ":")).encode("ascii")
 
     def _positions(self, term: str, filter_bytes: int | None = None) -> tuple[int, ...]:
         digest = hmac.new(self._token_key, term.encode("utf-8"), hashlib.sha256).digest()
@@ -296,6 +323,109 @@ class SecureHistoryBlindIndex:
             return b"R" + bytes(bits)
         return b"L" + struct.pack(">I", filter_bytes) + bytes(bits)
 
+    def _build_chunks(self, entry: dict, version: int, filter_bytes: int) -> tuple[str | None, int]:
+        handle = tempfile.NamedTemporaryFile(prefix="muninn-chunks-", suffix=".db", dir=self.archive.root, delete=False)
+        handle.close()
+        os.unlink(handle.name)
+        create_private_file(handle.name)
+        staged = sqlite3.connect(handle.name)
+        keep_staging = False
+        try:
+            staged.execute("CREATE TABLE chunks (ordinal INTEGER PRIMARY KEY, nonce BLOB, sealed BLOB)")
+            decoder = codecs.getincrementaldecoder("utf-8")("strict")
+            carry = ""
+            ordinal = 0
+            invalid = False
+            def accept(chunk: bytes) -> None:
+                nonlocal carry, ordinal, invalid
+                if invalid:
+                    return
+                try:
+                    text = carry + decoder.decode(chunk)
+                except UnicodeDecodeError:
+                    invalid = True
+                    return
+                bits = bytearray(filter_bytes)
+                for term in set(_terms(text)):
+                    for position in self._positions(term, filter_bytes):
+                        bits[position >> 3] |= 1 << (position & 7)
+                nonce = os.urandom(12)
+                staged.execute("INSERT INTO chunks VALUES (?, ?, ?)", (ordinal, nonce, self._large_cipher.encrypt(
+                    nonce, b"L" + struct.pack(">I", filter_bytes) + bytes(bits),
+                    self._chunk_aad(entry, version, ordinal, filter_bytes))))
+                ordinal += 1
+                carry = text[-128:]
+            self.archive._verify_entry(entry, collect=False, on_chunk=accept)
+            if not invalid:
+                try:
+                    decoder.decode(b"", final=True)
+                except UnicodeDecodeError:
+                    invalid = True
+            if invalid:
+                staged.rollback()
+                return None, -1
+            if ordinal != entry["chunks"]:
+                raise VaultIntegrityError("History chunk count does not match authenticated archive")
+            staged.commit()
+            keep_staging = True
+            return handle.name, ordinal
+        except Exception:
+            staged.rollback()
+            raise
+        finally:
+            staged.close()
+            if not keep_staging:
+                Path(handle.name).unlink(missing_ok=True)
+
+    def _commit_chunks(self, entry: dict, staging_path: str,
+                       chunk_count: int, filter_bytes: int) -> None:
+        """Publish only a fully verified staged index, in one transaction."""
+        staged = sqlite3.connect(f"{Path(staging_path).as_uri()}?mode=ro", uri=True)
+        try:
+            with self._connect() as db:
+                db.execute("DELETE FROM chunk_filters WHERE blob=?", (entry["blob"],))
+                db.execute("DELETE FROM chunk_completions WHERE blob=?", (entry["blob"],))
+                count = 0
+                for ordinal, nonce, sealed in staged.execute(
+                        "SELECT ordinal, nonce, sealed FROM chunks ORDER BY ordinal"):
+                    if ordinal != count:
+                        raise VaultIntegrityError("History staged chunk index is incomplete")
+                    db.execute("INSERT INTO chunk_filters VALUES (?, ?, ?, ?, ?)",
+                               (entry["blob"], ordinal, filter_bytes, nonce, sealed))
+                    count += 1
+                if count != chunk_count or count != entry["chunks"]:
+                    raise VaultIntegrityError("History staged chunk index is incomplete")
+                db.execute("INSERT INTO chunk_completions VALUES (?, ?, ?, ?, ?, ?)",
+                           (entry["blob"], chunk_count, entry["size"], entry["sha256"],
+                            filter_bytes, json.dumps({"format": 3, "hashes": _HASHES,
+                                                      "tokenizer": _TOKENIZER}, sort_keys=True)))
+        finally:
+            staged.close()
+            Path(staging_path).unlink(missing_ok=True)
+
+    def _completion(self, db: sqlite3.Connection, entry: dict) -> tuple | None:
+        row = db.execute(
+            "SELECT chunks, size, sha256, filter_bytes, parameters "
+            "FROM chunk_completions WHERE blob=?", (entry["blob"],)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            parameters = json.loads(row[4])
+        except (TypeError, ValueError) as exc:
+            raise VaultIntegrityError("History chunk index metadata is invalid") from exc
+        if (row[:4] != (entry["chunks"], entry["size"], entry["sha256"], self.filter_bytes)
+                or parameters != {"format": 3, "hashes": _HASHES, "tokenizer": _TOKENIZER}):
+            raise VaultIntegrityError("History chunk index metadata is invalid")
+        count, first, last = db.execute(
+            "SELECT COUNT(*), MIN(ordinal), MAX(ordinal) FROM chunk_filters WHERE blob=?",
+            (entry["blob"],),
+        ).fetchone()
+        if (count != entry["chunks"] or
+                (count and (first != 0 or last != count - 1))):
+            raise VaultIntegrityError("History chunk index is incomplete")
+        return row
+
     def build(self, *, max_snapshots: int | None = None,
               retry_unsearchable: bool = False) -> dict[str, int | bool]:
         """Index only missing immutable blobs; one authenticated commit each."""
@@ -304,6 +434,7 @@ class SecureHistoryBlindIndex:
         if retry_unsearchable and (max_snapshots is None or max_snapshots > 10):
             raise ValueError("Retries require a batch of at most ten snapshots")
         with self._build_lock():
+            self._cleanup_stale_staging()
             return self._build_locked(max_snapshots=max_snapshots,
                                       retry_unsearchable=retry_unsearchable)
 
@@ -315,28 +446,57 @@ class SecureHistoryBlindIndex:
         for _source, version, entry, _latest, _versions in self._current():
             desired = self._large_filter_bytes(entry)
             with self._connect() as db:
+                completion = self._completion(db, entry)
+                if completion is not None:
+                    skipped += 1
+                    continue
                 existing = self._lookup_filter(db, entry, version)
             if retry_unsearchable and existing is None:
                 skipped += 1
                 continue
             if existing is not None:
-                if not (retry_unsearchable and existing[0] == b"O" and desired > self.filter_bytes):
-                    skipped += 1
-                    continue
-                # Retry only a currently authenticated v1 overflow row. A v2
-                # overflow is retained rather than repeatedly reprocessing it.
-                with self._connect() as db:
-                    v2 = db.execute("SELECT 1 FROM large_filters WHERE blob=?", (entry["blob"],)).fetchone()
-                if v2 is not None:
+                if not (retry_unsearchable and existing[0] == b"O"):
                     skipped += 1
                     continue
             if max_snapshots is not None and indexed + overflow >= max_snapshots:
                 break
             if desired > self.filter_bytes:
-                required = 1024 * 1024 * 1024 + 2 * desired
-                if shutil.disk_usage(self.archive.root).free < required:
+                segment_bytes = self.filter_bytes
+                projected = entry["chunks"] * (segment_bytes + 64)
+                if shutil.disk_usage(self.archive.root).free < projected * 2:
                     raise RuntimeError("Insufficient free space for encrypted history index")
+                staging_path, chunk_count = self._build_chunks(entry, version, segment_bytes)
+                if chunk_count < 0:
+                    # Authenticated binary/invalid-UTF8 snapshots remain explicitly
+                    # unsearchable and retryable; they are never treated as a match.
+                    nonce = os.urandom(12)
+                    sealed = self._large_cipher.encrypt(nonce, b"O",
+                        self._large_aad(entry, version, desired))
+                    with self._connect() as db:
+                        db.execute("INSERT OR REPLACE INTO large_filters VALUES (?, ?, ?, ?)",
+                                   (entry["blob"], desired, nonce, sealed))
+                    overflow += 1
+                    continue
+                assert staging_path is not None
+                self._commit_chunks(entry, staging_path, chunk_count, segment_bytes)
+                indexed += 1
+                continue
             value = self._build_one(entry, version, desired)
+            if value == b"O":
+                staging_path, chunk_count = self._build_chunks(entry, version, self.filter_bytes)
+                if chunk_count < 0:
+                    nonce = os.urandom(12)
+                    sealed = self._large_cipher.encrypt(nonce, b"O",
+                        self._large_aad(entry, version, desired))
+                    with self._connect() as db:
+                        db.execute("INSERT OR REPLACE INTO large_filters VALUES (?, ?, ?, ?)",
+                                   (entry["blob"], desired, nonce, sealed))
+                    overflow += 1
+                    continue
+                assert staging_path is not None
+                self._commit_chunks(entry, staging_path, chunk_count, self.filter_bytes)
+                indexed += 1
+                continue
             nonce = os.urandom(12)
             if desired > self.filter_bytes:
                 sealed = self._large_cipher.encrypt(nonce, value, self._large_aad(entry, version, desired))
@@ -347,7 +507,7 @@ class SecureHistoryBlindIndex:
             else:
                 sealed = self._cipher.encrypt(nonce, value, self._aad(entry, version))
                 with self._connect() as db:
-                    db.execute("INSERT OR IGNORE INTO filters (blob, nonce, sealed) VALUES (?, ?, ?)",
+                    db.execute("INSERT OR REPLACE INTO filters (blob, nonce, sealed) VALUES (?, ?, ?)",
                                (entry["blob"], nonce, sealed))
             if value == b"O":
                 overflow += 1
@@ -361,6 +521,10 @@ class SecureHistoryBlindIndex:
         with self._connect() as db:
             for _source, version, entry, _latest, _versions in self._current():
                 total += 1
+                complete = self._completion(db, entry)
+                if complete is not None:
+                    ready += 1
+                    continue
                 selected = self._lookup_filter(db, entry, version)
                 if selected is None:
                     continue
@@ -373,20 +537,22 @@ class SecureHistoryBlindIndex:
                 "unsearchable": overflow, "complete": missing == 0 and overflow == 0}
 
     def retry_plan(self) -> dict[str, int]:
-        """Estimate a bounded v1-overflow upgrade without exposing source paths."""
+        """Estimate legacy overflow upgrades without exposing source paths."""
         snapshots = source_bytes = projected_index_bytes = 0
         with self._connect() as db:
             for _source, version, entry, _latest, _versions in self._current():
-                desired = self._large_filter_bytes(entry)
-                if desired == self.filter_bytes:
+                if self._completion(db, entry) is not None:
                     continue
-                if db.execute("SELECT 1 FROM large_filters WHERE blob=?", (entry["blob"],)).fetchone():
+                large = db.execute("SELECT filter_bytes, nonce, sealed FROM large_filters WHERE blob=?",
+                                   (entry["blob"],)).fetchone()
+                if large is not None and self._open_large_filter(entry, version, large) != b"O":
                     continue
                 row = db.execute("SELECT nonce, sealed FROM filters WHERE blob=?", (entry["blob"],)).fetchone()
-                if row is not None and self._open_filter(entry, version, row) == b"O":
+                if ((large is not None and self._open_large_filter(entry, version, large) == b"O")
+                        or (row is not None and self._open_filter(entry, version, row) == b"O")):
                     snapshots += 1
                     source_bytes += entry["size"]
-                    projected_index_bytes += desired + 32
+                    projected_index_bytes += entry["chunks"] * (self.filter_bytes + 64)
         return {"retryable_snapshots": snapshots, "source_bytes": source_bytes,
                 "projected_index_bytes": projected_index_bytes,
                 "free_disk_bytes": shutil.disk_usage(self.archive.root).free}
@@ -404,15 +570,51 @@ class SecureHistoryBlindIndex:
         with self._connect() as db:
             for source, version, entry, latest, versions in self._current():
                 total += 1
-                selected = self._lookup_filter(db, entry, version)
+                segmented = False
+                completion = self._completion(db, entry)
+                if completion is not None:
+                    found = {term: False for term in terms}
+                    row_count = 0
+                    cursor = db.execute(
+                        "SELECT ordinal, filter_bytes, nonce, sealed "
+                        "FROM chunk_filters WHERE blob=? ORDER BY ordinal",
+                                        (entry["blob"],))
+                    for expected_ordinal, row in enumerate(cursor):
+                        row_count += 1
+                        ordinal, filter_bytes, nonce, sealed = row
+                        if ordinal != expected_ordinal or filter_bytes != completion[3]:
+                            raise VaultIntegrityError("History chunk index is incomplete")
+                        try:
+                            value = self._large_cipher.decrypt(nonce, sealed,
+                                self._chunk_aad(entry, version, ordinal, filter_bytes))
+                        except (InvalidTag, ValueError) as exc:
+                            raise VaultIntegrityError("History chunk filter integrity failed") from exc
+                        if (len(value) != filter_bytes + 5 or value[:1] != b"L"
+                                or struct.unpack(">I", value[1:5])[0] != filter_bytes):
+                            raise VaultIntegrityError("History chunk filter format is invalid")
+                        bits = value[5:]
+                        for term in terms:
+                            if not found[term] and all(bits[p >> 3] & (1 << (p & 7))
+                                                       for p in self._positions(term, filter_bytes)):
+                                found[term] = True
+                    if row_count != entry["chunks"]:
+                        raise VaultIntegrityError("History chunk index is incomplete")
+                    ready += 1
+                    if not all(found.values()):
+                        continue
+                    segmented = True
+                    selected = (b"R", completion[3])
+                else:
+                    selected = self._lookup_filter(db, entry, version)
                 if selected is None:
                     continue
                 bits, filter_bytes = selected
                 if bits == b"O":
                     overflow += 1
                     continue
-                ready += 1
-                if not all(all(bits[p >> 3] & (1 << (p & 7))
+                if not segmented:
+                    ready += 1
+                if not segmented and not all(all(bits[p >> 3] & (1 << (p & 7))
                                for p in self._positions(term, filter_bytes))
                            for term in terms):
                     continue

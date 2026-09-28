@@ -167,8 +167,8 @@ async def _one(provider: Provider, prompt: str, *, public: bool) -> dict:
         result = {
             "decisions": len(answer.get("decisions") or []),
             "open_items": len(answer.get("open_items") or []),
-            "summary": sanitize_agent_span(str(answer.get("summary", ""))[:1500]),
-            "uncertainty": sanitize_agent_span(str(answer.get("uncertainty", ""))[:500]),
+            "summary_chars": len(sanitize_agent_span(str(answer.get("summary", ""))[:1500])),
+            "uncertainty_chars": len(sanitize_agent_span(str(answer.get("uncertainty", ""))[:500])),
         }
     return {"model": meta.get("model"), "elapsed_seconds": round(time.monotonic() - started, 1),
             "prompt_tokens": meta.get("prompt_tokens"),
