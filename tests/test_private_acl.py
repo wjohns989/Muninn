@@ -9,6 +9,7 @@ import pytest
 
 from muninn.history.private_acl import (
     VaultPermissionError,
+    _protect_new_windows,
     create_private_directory,
     create_private_file,
     verify_private,
@@ -51,5 +52,11 @@ def test_nonowner_acl_is_rejected(tmp_path: Path) -> None:
         )
     else:
         root.chmod(0o755)
-    with pytest.raises(VaultPermissionError):
-        verify_private(root)
+    try:
+        with pytest.raises(VaultPermissionError):
+            verify_private(root)
+    finally:
+        if os.name == "nt":
+            _protect_new_windows(root)
+        else:
+            root.chmod(0o700)
