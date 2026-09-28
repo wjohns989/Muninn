@@ -40,10 +40,11 @@ def test_mcp_request_token_injection():
             assert kwargs["headers"]["Authorization"] == "Bearer proxy_token_456"
 
 @pytest.mark.asyncio
-async def test_server_dependency_parity():
+async def test_server_dependency_parity(monkeypatch):
     """Verify that server.py uses the centralized core validation logic."""
     from fastapi.security import HTTPAuthorizationCredentials
     import server
+    monkeypatch.setattr(server, "is_security_enabled", lambda: True)
     
     mock_creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="valid_token")
     

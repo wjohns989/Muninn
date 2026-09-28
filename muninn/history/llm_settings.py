@@ -1,10 +1,4 @@
-"""Where the OpenRouter key and model choice live, and how they are checked.
-
-The key is kept in Muninn's config directory (``openrouter.json``, owner-only
-permissions), never in a repository. Environment variables win over the file
-(``MUNINN_OPENROUTER_API_KEY`` or ``OPENROUTER_API_KEY``). The server reads the
-file on each run, so a key saved from the CLI works without a restart.
-"""
+"""Environment-only OpenRouter credentials and nonsecret model settings."""
 
 from __future__ import annotations
 
@@ -47,12 +41,17 @@ def settings_path() -> Path:
 def load() -> Dict[str, Any]:
     try:
         data = json.loads(settings_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        data.pop("api_key", None)
+        return data
     except (OSError, ValueError):
         return {}
 
 
 def _save(data: Dict[str, Any]) -> Path:
+    data = dict(data)
+    data.pop("api_key", None)
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -77,8 +76,7 @@ def api_key() -> Optional[str]:
     value = _windows_user_env("MUNINN_OPENROUTER_API_KEY")
     if value:
         return value
-    value = str(load().get("api_key") or "").strip()
-    return value or None
+    return None
 
 
 def _windows_user_env(name: str) -> Optional[str]:
@@ -108,7 +106,7 @@ def key_source() -> Optional[str]:
             return f"environment ({name})"
     if _windows_user_env("MUNINN_OPENROUTER_API_KEY"):
         return "user environment (MUNINN_OPENROUTER_API_KEY)"
-    return str(settings_path()) if load().get("api_key") else None
+    return None
 
 
 def models() -> List[str]:
@@ -125,8 +123,12 @@ def normalize_model(model: Optional[str]) -> str:
 
 
 def save_key(key: str, model: Optional[str] = None) -> Path:
+    """Make a key available only to this process; never persist credential material."""
+    key = key.strip()
+    if key:
+        os.environ["MUNINN_OPENROUTER_API_KEY"] = key
     data = load()
-    data.update({"api_key": key.strip(), "saved_at": time.time(), "declined": False})
+    data.update({"saved_at": time.time(), "declined": False})
     if model:
         data["model"] = normalize_model(model)
     return _save(data)
@@ -145,7 +147,6 @@ def decline() -> Path:
     """Remember that the user chose local Ollama, so the CLI stops asking."""
     data = load()
     data.update({"declined": True, "declined_at": time.time()})
-    data.pop("api_key", None)
     return _save(data)
 
 

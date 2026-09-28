@@ -19,10 +19,7 @@
     <div class="modal-overlay" id="auth-modal">
         <div class="modal-content">
             <h2>Welcome to Huginn</h2>
-            <p>To securely access the Muninn memory core, please initialize your session. You can find your secure
-                <code>MUNINN_AUTH_TOKEN</code> inside the <code>.muninn_token</code> file located in your project
-                directory.
-            </p>
+            <p>Enter your locally configured Muninn API or authentication token. It is kept only in this browser tab's memory.</p>
             <div class="modal-form">
                 <input type="password" id="modal-token-input" class="input-base"
                     placeholder="Paste your Auth Token here...">
@@ -344,16 +341,11 @@
         let API_BASE = window.location.protocol === 'file:' ? 'http://localhost:42069' : window.location.origin;
         let SECURITY_ENABLED = true;
 
-        // v3.18.3: Server-injected token takes priority to avoid stale localStorage issues
-        // The server will replace "{{MUNINN_TOKEN}}" with the actual token
-        let AUTH_TOKEN = "{{MUNINN_TOKEN}}";
-        if (AUTH_TOKEN.includes("{{") || !AUTH_TOKEN) {
-            AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
-        } else {
-            // New valid token from server - persist it
-            localStorage.setItem('muninn_token', AUTH_TOKEN);
-        }
-        console.log(`[AUTH] Active Token Hash: ${AUTH_TOKEN.substring(0, 8)}...`);
+        let AUTH_TOKEN = "";
+        let healthPoll = null;
+        let scanPoll = null;
+        // Retire credentials persisted by older dashboard releases.
+        try { localStorage.removeItem('muninn_token'); } catch (_) { /* storage may be disabled */ }
 
         // XSS prevention: escape HTML entities in user-influenced strings
         function esc(str) {
@@ -489,38 +481,49 @@
            ================================ */
 
         // Modal Logic
+        function startStatusPolling() {
+            if (healthPoll !== null) return;
+            updateScanBadge();
+            healthPoll = setInterval(checkHealth, 30000);
+            scanPoll = setInterval(updateScanBadge, 60000);
+        }
+
         function checkAuthOnLoad() {
-            console.log("[AUTH] checkAuthOnLoad triggered");
             if (!SECURITY_ENABLED) {
                 document.getElementById('auth-modal').classList.remove('active');
                 document.getElementById('auth-dot').className = 'status-dot online';
                 log("Authentication bypassed (development mode).");
                 checkHealth();
+                startStatusPolling();
                 return;
             }
-
-            if (AUTH_TOKEN && AUTH_TOKEN !== '""') {
-                console.log("[AUTH] Valid token found, dismissing modal");
-                document.getElementById('auth-modal').classList.remove('active');
-                const tokenInput = document.getElementById('server-token');
-                if (tokenInput) tokenInput.value = AUTH_TOKEN;
-                checkHealth();
-            } else {
-                console.log("[AUTH] No token found, showing modal");
-                document.getElementById('auth-modal').classList.add('active');
-            }
+            document.getElementById('auth-modal').classList.add('active');
         }
 
-        function initializeAuth() {
-            const token = document.getElementById('modal-token-input').value.trim();
-            if (token) {
-                AUTH_TOKEN = token;
-                localStorage.setItem('muninn_token', token);
-                document.getElementById('server-token').value = token;
-                document.getElementById('auth-modal').classList.remove('active');
-                log("Session authenticated.");
-                checkHealth();
+        async function acceptToken(token) {
+            if (!token) return false;
+            try {
+                const response = await fetch(`${API_BASE}/auth/check`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!response.ok) return false;
+            } catch (_) {
+                return false;
             }
+            AUTH_TOKEN = token;
+            document.getElementById('auth-modal').classList.remove('active');
+            document.getElementById('auth-dot').className = 'status-dot online';
+            checkHealth();
+            startStatusPolling();
+            return true;
+        }
+
+        async function initializeAuth() {
+            const token = document.getElementById('modal-token-input').value.trim();
+            if (await acceptToken(token)) {
+                document.getElementById('modal-token-input').value = '';
+                log("Session authenticated.");
+            } else showToast('Authentication failed. Check your local token.', 'error');
         }
 
         function showTab(tabId) {
@@ -941,9 +944,13 @@
             }
         }
 
-        function applyToken() {
-            AUTH_TOKEN = document.getElementById('server-token').value;
-            localStorage.setItem('muninn_token', AUTH_TOKEN);
+        async function applyToken() {
+            const candidate = document.getElementById('server-token').value.trim();
+            if (!(await acceptToken(candidate))) {
+                showToast('Authentication failed. Current session was not changed.', 'error');
+                return;
+            }
+            document.getElementById('server-token').value = '';
             log("Session authentication token updated.");
 
             // Clear prior error visuals
@@ -980,7 +987,7 @@
         }
 
         async function checkHealth() {
-            if (!AUTH_TOKEN) return;
+            if (!AUTH_TOKEN && SECURITY_ENABLED) return;
             const data = await api('/health');
             const healthDot = document.getElementById('health-dot');
             const authDot = document.getElementById('auth-dot');
@@ -996,7 +1003,7 @@
         }
 
         async function updateScanBadge() {
-            if (!AUTH_TOKEN) return;
+            if (!AUTH_TOKEN && SECURITY_ENABLED) return;
             const data = await api('/ingest/legacy/status');
             const badge = document.getElementById('ingest-badge');
             if (data && data.active_scans > 0) {
@@ -1073,14 +1080,8 @@
             initParticles();
             animate();
 
-            // Auto-login logic if token was pre-filled or found in storage
+            // A bearer is never injected into or persisted by this page.
             checkAuthOnLoad();
-
-            if (AUTH_TOKEN || !SECURITY_ENABLED) {
-                updateScanBadge();
-                setInterval(checkHealth, 30000);
-                setInterval(updateScanBadge, 60000);
-            }
         };
 
         // Handle window resize for canvas

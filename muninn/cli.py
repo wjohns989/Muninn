@@ -781,8 +781,8 @@ def _prompt_openrouter_key(*, first_run: bool) -> bool:
         ok, message = llm_settings.verify_key(key)
         print(("✓ " if ok else "✗ ") + message)
         if ok:
-            path = llm_settings.save_key(key)
-            print(f"Saved to {path} (readable only by you).")
+            llm_settings.save_key(key)
+            print("Available for this process only; set MUNINN_OPENROUTER_API_KEY in your environment for future runs.")
             return True
     return False
 

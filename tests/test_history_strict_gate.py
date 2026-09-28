@@ -1,5 +1,7 @@
 """Strict history mode must not touch the legacy plaintext import pipeline."""
 
+import asyncio
+import threading
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -85,13 +87,209 @@ async def test_strict_mode_does_not_schedule_background_capture_or_analysis(monk
     service.secure_archive = None
     service.secure_archive_root = tmp_path / "not-initialized"
     service.capture = AsyncMock()
-    service.capture_later("chat.jsonl", "codex")
+    with pytest.raises(RuntimeError, match="strict history mode"):
+        service.capture_later("chat.jsonl", "codex")
     service._launch_auto_analysis()
-    await service.start()
+    with pytest.raises(RuntimeError, match="strict history mode"):
+        await service.start()
     assert service._task is None
     assert not service._background
     assert service._auto_task is None
     service.capture.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_strict_hook_ack_is_durable_and_restart_replays_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    source = (tmp_path / ".codex" / "sessions" / "2026" /
+              "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
+    source.parent.mkdir(parents=True)
+    source.write_text("PRIVATE-DURABLE-CAPTURE", encoding="utf-8")
+    memory = Mock()
+
+    before_crash = HistoryService(memory, tmp_path / "unused", home=tmp_path)
+    assert before_crash.capture_later(str(source), "codex", force=True) == "queued"
+    assert before_crash._capture_journal.status()["pending"] == 1
+    assert before_crash.secure_archive.status()["snapshots"] == 0
+
+    after_restart = HistoryService(memory, tmp_path / "unused", home=tmp_path)
+    assert await after_restart._process_capture_job_once() is True
+    assert after_restart.secure_archive.read_file(source) == b"PRIVATE-DURABLE-CAPTURE"
+    assert after_restart._capture_journal.status()["archived"] == 1
+
+
+@pytest.mark.asyncio
+async def test_strict_scan_queues_only_new_or_changed_sources(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    monkeypatch.delenv("MUNINN_HISTORY_HOMES", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    archive = SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    existing = (tmp_path / ".codex" / "sessions" / "2026" /
+                "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
+    existing.parent.mkdir(parents=True)
+    existing.write_text("already archived", encoding="utf-8")
+    archive.archive_file(existing, "codex")
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+
+    first = await service.scan_capture_sources()
+    assert first["queued"] == 0
+    assert first["unchanged"] >= 1
+
+    new_source = existing.with_name(
+        "rollout-2026-09-28T01-02-04-22222222-2222-4222-8222-222222222222.jsonl"
+    )
+    new_source.write_text("new missed hook", encoding="utf-8")
+    second = await service.scan_capture_sources()
+    assert second["queued"] == 1
+    assert await service._process_capture_job_once() is True
+    assert archive.read_file(new_source) == b"new missed hook"
+
+
+@pytest.mark.asyncio
+async def test_missing_allowed_hook_locator_is_a_retry_not_a_false_archive(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    vanished = (tmp_path / ".codex" / "sessions" / "2026" /
+                "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
+    vanished.parent.mkdir(parents=True)
+
+    assert service.capture_later(str(vanished), "codex", force=True) == "queued"
+    assert await service._process_capture_job_once() is True
+    assert service._capture_journal.status()["retry"] == 1
+    assert service.secure_archive.status()["snapshots"] == 0
+
+
+@pytest.mark.asyncio
+async def test_source_growth_after_archive_commit_requeues_new_version(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    source = (tmp_path / ".codex" / "sessions" / "2026" /
+              "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
+    source.parent.mkdir(parents=True)
+    source.write_text("before", encoding="utf-8")
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service.capture_later(str(source), "codex", force=True)
+    archive = service.secure_archive
+    original = archive.archive_file
+    appended = False
+
+    def append_after_commit(path, provider, **kwargs):
+        nonlocal appended
+        outcome = original(path, provider, **kwargs)
+        if not appended:
+            source.write_text("before after", encoding="utf-8")
+            appended = True
+        return outcome
+
+    monkeypatch.setattr(archive, "archive_file", append_after_commit)
+    assert await service._process_capture_job_once() is True
+    assert service.last_secure_capture["state"] == "superseded"
+    assert service._capture_journal.status()["pending"] == 1
+    assert await service._process_capture_job_once() is True
+    assert service.last_secure_capture["state"] == "archived"
+    assert service._capture_journal.status()["archived"] == 1
+    assert archive.read_file(source) == b"before after"
+    assert archive.status()["snapshots"] == 2
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_inflight_archive_write_before_returning(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    monkeypatch.setenv("MUNINN_HISTORY_INDEX_AUTO", "0")
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    source = (tmp_path / ".codex" / "sessions" / "2026" /
+              "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
+    source.parent.mkdir(parents=True)
+    source.write_text("wait for the committed snapshot", encoding="utf-8")
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service.capture_later(str(source), "codex", force=True)
+    archive = service.secure_archive
+    original = archive.archive_file
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_copy(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(archive, "archive_file", blocked_copy)
+    await service.start()
+    assert await asyncio.to_thread(entered.wait, 5)
+    stopping = asyncio.create_task(service.stop())
+    await asyncio.sleep(0.05)
+    assert not stopping.done()
+    release.set()
+    await asyncio.wait_for(stopping, 5)
+    assert archive.read_file(source) == b"wait for the committed snapshot"
+
+
+@pytest.mark.asyncio
+async def test_rolling_scan_finds_same_size_same_mtime_rewrite(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    monkeypatch.setattr("muninn.history.service.STRICT_VERIFY_BUCKETS", 1)
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    archive = SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    source = (tmp_path / ".codex" / "sessions" / "2026" /
+              "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"first version")
+    archive.archive_file(source, "codex")
+    old = source.stat()
+    source.write_bytes(b"other version")
+    __import__("os").utime(source, ns=(old.st_atime_ns, old.st_mtime_ns))
+    assert source.stat().st_size == old.st_size
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+
+    assert (await service.scan_capture_sources())["queued"] == 1
+    assert await service._process_capture_job_once() is True
+    assert archive.read_file(source) == b"other version"
+    assert archive.status()["snapshots"] == 2
+
+
+@pytest.mark.asyncio
+async def test_link_swap_after_validation_cannot_archive_outside_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    source = (tmp_path / ".codex" / "sessions" / "2026" /
+              "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"allowed")
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(b"OUTSIDE-PRIVATE-CANARY")
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service.capture_later(str(source), "codex", force=True)
+    archive = service.secure_archive
+    original = archive.archive_file
+
+    def swap_before_open(path, provider, **kwargs):
+        source.rename(source.with_suffix(".parked"))
+        try:
+            source.symlink_to(outside)
+        except OSError:
+            pytest.skip("Symlink creation is not available on this Windows account")
+        return original(path, provider, **kwargs)
+
+    monkeypatch.setattr(archive, "archive_file", swap_before_open)
+    assert await service._process_capture_job_once() is True
+    assert service._capture_journal.status()["retry"] == 1
+    assert archive.status()["snapshots"] == 0
 
 
 @pytest.mark.asyncio
@@ -108,7 +306,7 @@ async def test_strict_hook_capture_uses_encrypted_archive_without_normal_memory(
     source.write_bytes(b"PRIVATE-CANARY-TRANSCRIPT")
     result = await service.capture(str(source), "codex")
     assert result["captured"] is True
-    assert await service.capture(str(source), "codex") == {"skipped": "debounced"}
+    assert (await service.capture(str(source), "codex"))["archive"]["status"] == "unchanged"
     assert service.secure_archive.read_file(source) == b"PRIVATE-CANARY-TRANSCRIPT"
     assert not (tmp_path / "legacy-vault").exists()
     memory.add.assert_not_called()

@@ -19,8 +19,16 @@ from muninn.history.insights import (
     store_understanding,
     validate_reply,
 )
+
+
 from muninn.history.vault import HistoryVault
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
+
+
+@pytest.fixture(autouse=True)
+def _clear_openrouter_process_key(monkeypatch):
+    monkeypatch.delenv("MUNINN_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_history_import import T0, FakeMemory, home, relay  # noqa: E402,F401  (fixtures)
@@ -49,14 +57,29 @@ def isolated_settings(tmp_path, monkeypatch):
 def test_key_is_saved_privately_and_env_wins(monkeypatch):
     assert llm_settings.api_key() is None and llm_settings.should_prompt()
     path = llm_settings.save_key("sk-or-saved", model="deepseek/deepseek-v4.1-flash")
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
-    assert llm_settings.api_key() == "sk-or-saved" and llm_settings.key_source() == str(path)
+    assert "api_key" not in json.loads(path.read_text(encoding="utf-8"))
+    assert llm_settings.api_key() == "sk-or-saved" and "MUNINN_OPENROUTER_API_KEY" in llm_settings.key_source()
     assert llm_settings.models()[0] == "deepseek/deepseek-v4.1-flash"
+    monkeypatch.delenv("MUNINN_OPENROUTER_API_KEY")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
     assert llm_settings.api_key() == "sk-or-env" and "OPENROUTER_API_KEY" in llm_settings.key_source()
     monkeypatch.delenv("OPENROUTER_API_KEY")
     llm_settings.decline()
     assert llm_settings.api_key() is None and not llm_settings.should_prompt()
+
+
+def test_openrouter_key_is_environment_only_and_config_never_returns_it(monkeypatch):
+    monkeypatch.delenv("MUNINN_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(llm_settings, "_windows_user_env", lambda name: None)
+
+    llm_settings.save_key("sk-or-never-persist", model="deepseek/deepseek-v4.1-flash")
+
+    assert llm_settings.api_key() == "sk-or-never-persist"
+    assert "MUNINN_OPENROUTER_API_KEY" in llm_settings.key_source()
+    saved = json.loads(llm_settings.settings_path().read_text(encoding="utf-8"))
+    assert "api_key" not in saved
+    assert saved["model"] == "deepseek/deepseek-v4.1-flash"
 
 
 def test_user_scoped_environment_key_is_visible_to_existing_process(monkeypatch):
@@ -70,10 +93,10 @@ def test_user_scoped_environment_key_is_visible_to_existing_process(monkeypatch)
     assert llm_settings.key_source() == "environment (MUNINN_OPENROUTER_API_KEY)"
 
 
-def test_saved_key_remains_last_fallback_when_user_environment_missing():
+def test_saved_key_is_not_a_config_fallback():
     llm_settings.save_key("sk-or-saved")
     assert llm_settings.api_key() == "sk-or-saved"
-    assert llm_settings.key_source() == str(llm_settings.settings_path())
+    assert "api_key" not in llm_settings.load()
 
 
 def test_default_models_are_luna_pro_then_zdr_fallbacks():
@@ -90,7 +113,6 @@ def test_batch_variants_are_used_as_their_direct_model(monkeypatch):
     chosen = Provider.from_env(model="openai/gpt-6-luna:batch")
     assert chosen.model == "openai/gpt-6-luna" and len(chosen.models) == 3   # OpenRouter's limit
     assert len(chosen.request_body([])["models"]) <= 3
-    assert oct(llm_settings.settings_path().parent.stat().st_mode & 0o777) == "0o700"
 
 
 def test_first_run_prompt_saves_a_verified_key(monkeypatch, capsys):

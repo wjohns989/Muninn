@@ -91,8 +91,16 @@ pip install -e .
 Set the auth token (shared between server and MCP wrapper):
 
 ```bash
-# Windows (persists across sessions)
-setx MUNINN_AUTH_TOKEN "your-token-here"
+# Windows PowerShell: prompt without putting the token in shell history
+$secret = Read-Host 'Muninn auth token' -AsSecureString
+$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try {
+    $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+    [Environment]::SetEnvironmentVariable('MUNINN_AUTH_TOKEN', $value, 'User')
+} finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+    Remove-Variable value, secret, ptr -ErrorAction SilentlyContinue
+}
 
 # Linux/macOS
 export MUNINN_AUTH_TOKEN="your-token-here"
@@ -372,11 +380,11 @@ Key environment variables:
 | `MUNINN_HISTORY_SECURITY` | `strict` | Vault-first protection is the default. `legacy` explicitly enables the older plaintext vault and file-ingestion paths; do not use it with secret-bearing material |
 | `MUNINN_HISTORY_ARCHIVE_DIR` | `<data_dir>/history_secure_archive` | Owner-only encrypted history archive location; set this to a private directory with enough space, on any drive |
 | `MUNINN_HISTORY_INDEX_AUTO` | off for direct server starts; on in Windows shared launcher | Build a resumable CPU-only encrypted transcript index in bounded batches; no model or GPU use |
-| `MUNINN_HISTORY_SYNC_MINUTES` | `30` | Legacy-mode plaintext sync interval only; strict encrypted backfill is manual until its recovery and indexing checks pass |
+| `MUNINN_HISTORY_SYNC_MINUTES` | `30` | Legacy sync cadence or strict-mode CPU-only discovery cadence for missed/changed chat transcripts; historical exports still need explicit encrypted sync |
 | `MUNINN_HISTORY_AUTO_IMPORT` | off in strict mode | Legacy-mode automatic import switch; ignored by strict mode |
 | `MUNINN_OPENROUTER_API_KEY` | - | Preferred environment key for optional ZDR OpenRouter use; a Windows user-scoped value is picked up by the running service without putting the key in repo files |
 | `MUNINN_INSIGHTS_PROVIDER` | auto | `openrouter` or `ollama` for thread analysis (auto: OpenRouter when a key is set) |
-| `MUNINN_INSIGHTS_MODEL` | `openai/gpt-6-luna-pro` | Primary model for thread analysis; falls back to DeepSeek V4 Flash, then Gemini 3.5 Flash-Lite (all zero data retention), including when a model refuses. A `:batch` suffix is dropped. `python -m muninn.cli openrouter set` saves a key and model |
+| `MUNINN_INSIGHTS_MODEL` | `openai/gpt-6-luna-pro` | Primary model for thread analysis; falls back to DeepSeek V4 Flash, then Gemini 3.5 Flash-Lite (all zero data retention), including when a model refuses. A `:batch` suffix is dropped. `python -m muninn.cli openrouter set` keeps a prompted key in that process only and saves only nonsecret model settings; use an environment variable for persistent credentials |
 | `MUNINN_INSIGHTS_WINDOW_TOKENS` | `200000` | Conversation per analysis call; larger threads are split and merged |
 | `MUNINN_INSIGHTS_AUTO` | off | Legacy-mode analysis after automatic import; does not enable strict encrypted-history enrichment |
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
@@ -447,9 +455,14 @@ python -m muninn.history.secure_archive backup --root '<your-private-data-dir>\h
 
 `sync` is a manual, resumable, encrypted copy-only operation. It does not import
 memories or analyze chats; live Codex `state_*.sqlite` files are reported as
-skipped until an encrypted online-SQLite snapshot is available. Claude Code and
-Codex hooks can capture new transcripts into an initialized archive under the
-same Windows user; the separate CPU-only worker indexes encrypted snapshots
+skipped until an encrypted online-SQLite snapshot is available. Claude Code,
+Codex and Gemini CLI hooks commit a private capture-journal row before acknowledging
+a transcript event. A CPU-only worker archives it and replays pending work after
+restart; a separate bounded scanner checks for missed/new chat transcripts on
+the configured cadence. The journal contains encrypted source locators and is
+included in authenticated portable archive backups. Queue acknowledgement is
+not a claim that the source has already been copied; a source removed before
+copy remains a visible retry. The separate CPU-only worker indexes encrypted snapshots
 when `MUNINN_HISTORY_INDEX_AUTO=1`. Claude Code, Codex and Gemini CLI have
 optional local lifecycle hooks installed with `python -m muninn.cli hooks install
 --apply`; Claude Desktop's non-Code client uses MCP and scheduled sync instead.
@@ -607,7 +620,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 - **Storage**: SQLite (metadata) + Qdrant (vectors) + KuzuDB (memory chains graph)
 - **No cloud dependency**: All data local by default
 - **Credential-vault work in progress**: the separate encrypted store uses a locally prompted passphrase and owner-only filesystem access, but is not yet wired into history import. Existing transcript copies can contain plaintext secrets; restrict access to the Muninn data directory and its backups.
-- **Auth**: when `MUNINN_AUTH_TOKEN` or `MUNINN_API_KEY` is set, every API and MCP call needs it as a Bearer token; without one, only local callers are expected
+- **Auth**: protected API, MCP, and dashboard operations require a Bearer token whenever security is enabled. Set `MUNINN_AUTH_TOKEN` or `MUNINN_API_KEY` before starting a normal service; the dashboard never injects or stores it in browser localStorage. An unconfigured fallback token is not logged. Explicit `MUNINN_NO_AUTH=1` is development-only.
 - **Browser origins**: requests from web pages other than `localhost` are rejected (blocks cross-site access and DNS rebinding); extend with `MUNINN_ALLOWED_ORIGINS`
 - **Namespace isolation**: `user_id` + `namespace` + `project` boundaries enforced at every retrieval layer
 

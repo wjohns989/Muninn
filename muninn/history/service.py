@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from muninn.history.blind_index import SecureHistoryBlindIndex
+from muninn.history.capture_journal import CaptureJournal
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.importer import import_history, read_thread
 from muninn.history.locations import app_data_dirs, export_candidates, history_homes, history_sources
@@ -32,7 +33,10 @@ logger = logging.getLogger("Muninn.history")
 AUTO_IMPORT_META = "history_auto_import"
 # Stop fires after every reply; import a live thread at most this often from it.
 CAPTURE_DEBOUNCE_SECONDS = 120.0
-STRICT_CAPTURE_DEBOUNCE_SECONDS = 600.0
+# Each completed discovery cycle hashes one HMAC-sharded slice of unchanged
+# sources. This detects same-size/same-mtime rewrites without rereading the
+# full corpus on every cycle (default complete pass: 64 scan cadences).
+STRICT_VERIFY_BUCKETS = 64
 _CLAUDE_SESSION_NAME = re.compile(
     r"^(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|agent-[0-9a-f-]+)\.jsonl$", re.I)
 _CODEX_ROLLOUT_NAME = re.compile(
@@ -63,6 +67,7 @@ class HistoryService:
                                         or (Path(vault_root).parent / "history_secure_archive"))
         self.secure_archive: Optional[SecureHistoryArchive] = None
         self.secure_archive_error: Optional[str] = None
+        self._capture_journal: Optional[CaptureJournal] = None
         if strict_history_mode():
             self._open_secure_archive()
         self.interval = (interval_minutes or _minutes()) * 60.0
@@ -80,6 +85,11 @@ class HistoryService:
         self._auto_task: Optional[asyncio.Task] = None
         self._secure_index_task: Optional[asyncio.Task] = None
         self._secure_index_wakeup = asyncio.Event()
+        self._secure_capture_task: Optional[asyncio.Task] = None
+        self._secure_capture_wakeup = asyncio.Event()
+        self._secure_scan_task: Optional[asyncio.Task] = None
+        self.last_capture_scan: Optional[Dict[str, Any]] = None
+        self.last_secure_capture: Optional[Dict[str, Any]] = None
         self.last_secure_index: Optional[Dict[str, Any]] = None
         self._analysis_lock = asyncio.Lock()
         self.last_auto_route: Optional[Dict[str, Any]] = None
@@ -105,10 +115,15 @@ class HistoryService:
             raise RuntimeError("strict history mode requires an initialized, unlocked encrypted archive")
         return self.secure_archive
 
-    def _validate_capture_source(self, path: str, provider: str) -> Path:
+    def _require_capture_journal(self) -> CaptureJournal:
+        if getattr(self, "_capture_journal", None) is None:
+            self._capture_journal = CaptureJournal(self._require_secure_archive())
+        return self._capture_journal
+
+    def _validate_capture_source(self, path: str, provider: str, *, allow_missing: bool = False) -> Path:
         if provider not in ("codex", "claude_code", "gemini_cli"):
             raise ValueError("Strict hook capture only accepts configured chat providers")
-        source_path = Path(path).resolve(strict=True)
+        source_path = Path(path).resolve(strict=not allow_missing)
         if provider == "gemini_cli":
             for home in history_homes(self.home):
                 try:
@@ -333,13 +348,10 @@ class HistoryService:
         if strict_history_mode():
             archive = self._require_secure_archive()
             source_path = self._validate_capture_source(path, provider)
-            key = str(source_path)
             async with self._vault_lock:
-                now = time.time()
-                if not force and now - self._captured.get(key, 0.0) < STRICT_CAPTURE_DEBOUNCE_SECONDS:
-                    return {"skipped": "debounced"}
-                outcome = await asyncio.to_thread(archive.archive_file, source_path, provider)
-                self._captured[key] = time.time()
+                outcome = await asyncio.to_thread(
+                    archive.archive_file, source_path, provider, expected_source=source_path,
+                )
             if outcome["status"] == "captured":
                 self._secure_index_wakeup.set()
             return {"captured": outcome["status"] == "captured", "archive": outcome,
@@ -361,17 +373,106 @@ class HistoryService:
         return {"captured": True, "vault": outcome, "turn_memories": report["turn_memories"],
                 "compaction_memories": report["compaction_memories"]}
 
-    def capture_later(self, path: str, provider: str, *, force: bool = False) -> None:
-        """Hooks must answer fast (Codex allows 1 s at session end): capture in the background."""
+    def capture_later(self, path: str, provider: str, *, force: bool = False) -> str | None:
+        """Commit strict capture intent before acknowledging the hook."""
         if strict_history_mode():
-            self._open_secure_archive()
-            if self.secure_archive is None:
-                logger.warning("Strict history mode: encrypted capture is unavailable until archive initialization")
-                return
+            journal = self._require_capture_journal()
+            source = self._validate_capture_source(path, provider, allow_missing=True)
+            result = journal.enqueue(source, provider, force=force)
+            self._secure_capture_wakeup.set()
+            return result
         task = asyncio.create_task(self._guarded(self.capture(path, provider, force=force),
                                                 operation="capture"))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
+        return None
+
+    async def _process_capture_job_once(self) -> bool:
+        journal = self._require_capture_journal()
+        job = await asyncio.to_thread(journal.claim_due)
+        if job is None:
+            return False
+        try:
+            source = self._validate_capture_source(str(job.path), job.provider)
+            result = await self.capture(str(source), job.provider, force=True)
+            if result.get("archive", {}).get("status") not in {"captured", "unchanged"}:
+                await asyncio.to_thread(journal.fail, job, "archive")
+                self.last_secure_capture = {"state": "retry", "error_code": "archive", "at": time.time()}
+                return True
+            committed = await asyncio.to_thread(journal.finish, job, archived=True)
+            self.last_secure_capture = {"state": "archived" if committed else "superseded",
+                                        "at": time.time()}
+        except FileNotFoundError:
+            await asyncio.to_thread(journal.fail, job, "missing")
+            self.last_secure_capture = {"state": "retry", "error_code": "missing", "at": time.time()}
+        except PermissionError:
+            await asyncio.to_thread(journal.fail, job, "permission")
+            self.last_secure_capture = {"state": "retry", "error_code": "permission", "at": time.time()}
+        except (RuntimeError, OSError, ValueError) as exc:
+            code = "changed" if isinstance(exc, RuntimeError) and "changed during" in str(exc) else "archive"
+            await asyncio.to_thread(journal.fail, job, code)
+            self.last_secure_capture = {"state": "retry", "error_code": code, "at": time.time()}
+        return True
+
+    async def scan_capture_sources(self) -> Dict[str, int]:
+        """Find missed/changed chat transcripts without reading their contents."""
+        archive = self._require_secure_archive()
+        journal = self._require_capture_journal()
+
+        def scan() -> Dict[str, int]:
+            signatures = archive.latest_source_signatures()
+            generation = journal.begin_scan()
+            batch: list[tuple[str, str]] = []
+            for home in history_homes(self.home):
+                for source in history_sources(home):
+                    if source.provider not in {"codex", "claude_code", "gemini_cli"}:
+                        continue
+                    if not source.exists:
+                        root_key = journal.source_key(source.home.resolve(strict=False), source.provider)
+                        if not journal.scan_seen(root_key, generation):
+                            batch.append((root_key, "missing"))
+                        if len(batch) >= 250:
+                            journal.record_scan_batch(generation, batch)
+                            batch.clear()
+                        continue
+                    for item in HistoryVault._source_files(source):
+                        key = journal.source_key(item["path"].resolve(strict=False), item["provider"])
+                        if journal.scan_seen(key, generation):
+                            continue
+                        if item["kind"] != "transcript":
+                            outcome = "excluded"
+                        else:
+                            try:
+                                path = self._validate_capture_source(str(item["path"]), item["provider"])
+                                stat = path.stat()
+                                if signatures.get(str(path)) == (stat.st_size, stat.st_mtime_ns):
+                                    if int(key[:8], 16) % STRICT_VERIFY_BUCKETS == generation % STRICT_VERIFY_BUCKETS:
+                                        outcome = journal.enqueue(path, item["provider"], force=True,
+                                                                  immediate=True)
+                                        if outcome != "queued":
+                                            outcome = "unchanged"
+                                    else:
+                                        outcome = "unchanged"
+                                else:
+                                    outcome = journal.enqueue(path, item["provider"], immediate=True)
+                                    if outcome != "queued":
+                                        outcome = "unchanged"
+                            except FileNotFoundError:
+                                outcome = "missing"
+                            except (OSError, RuntimeError, ValueError):
+                                outcome = "errors"
+                        batch.append((key, outcome))
+                        if len(batch) == 250:
+                            journal.record_scan_batch(generation, batch)
+                            batch.clear()
+            journal.record_scan_batch(generation, batch)
+            return journal.finish_scan(generation)
+
+        report = await asyncio.to_thread(scan)
+        self.last_capture_scan = {**report, "at": time.time()}
+        if report["queued"]:
+            self._secure_capture_wakeup.set()
+        return report
 
     async def thread(self, thread_key: str, offset: int = 0, limit: int = 50) -> Dict[str, Any]:
         require_legacy_history_disabled()
@@ -435,6 +536,10 @@ class HistoryService:
             "auto_analyze": _flag("MUNINN_INSIGHTS_AUTO"),
             "last_auto_route": self.last_auto_route,
             "last_secure_index": self.last_secure_index,
+            "capture_queue": (self._capture_journal.status() if strict and self._capture_journal is not None
+                              else None),
+            "last_capture_scan": self.last_capture_scan,
+            "last_secure_capture": self.last_secure_capture,
             "import_progress": self.progress,
             "warnings": ([] if strict else self.retention_warnings()),
         }
@@ -443,6 +548,11 @@ class HistoryService:
 
     async def start(self) -> None:
         if strict_history_mode():
+            self._require_capture_journal()
+            if self._secure_capture_task is None:
+                self._secure_capture_task = asyncio.create_task(self._secure_capture_loop())
+            if self._secure_scan_task is None:
+                self._secure_scan_task = asyncio.create_task(self._secure_scan_loop())
             if _flag("MUNINN_HISTORY_INDEX_AUTO") and self._secure_index_task is None:
                 self._secure_index_task = asyncio.create_task(self._secure_index_loop())
             return
@@ -451,12 +561,17 @@ class HistoryService:
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        for task in (self._task, self._job, self._auto_task, self._secure_index_task,
-                     *self._background):
-            if task and not task.done():
-                task.cancel()
+        tasks = [task for task in (self._task, self._job, self._auto_task, self._secure_index_task,
+                                  self._secure_capture_task, self._secure_scan_task,
+                                  *self._background) if task and not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._task = None
         self._secure_index_task = None
+        self._secure_capture_task = None
+        self._secure_scan_task = None
         if self.vault is not None:
             self.vault.close()
 
@@ -484,6 +599,46 @@ class HistoryService:
                 self._secure_index_wakeup.clear()
             except asyncio.TimeoutError:
                 pass
+
+    async def _secure_capture_loop(self) -> None:
+        """Replay committed hook requests without retaining a model in memory."""
+        while True:
+            try:
+                in_flight = asyncio.create_task(self._process_capture_job_once())
+                try:
+                    processed = await asyncio.shield(in_flight)
+                except asyncio.CancelledError:
+                    # asyncio.to_thread cannot cancel an active archive write.
+                    # Wait for it before shutdown reports completion; replay of
+                    # any still-claimed row remains idempotent on next startup.
+                    await asyncio.gather(in_flight, return_exceptions=True)
+                    raise
+                if processed:
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Encrypted history capture worker failed (%s)", type(exc).__name__)
+            try:
+                await asyncio.wait_for(self._secure_capture_wakeup.wait(), timeout=2.0)
+                self._secure_capture_wakeup.clear()
+            except asyncio.TimeoutError:
+                pass
+
+    async def _secure_scan_loop(self) -> None:
+        while True:
+            try:
+                in_flight = asyncio.create_task(self.scan_capture_sources())
+                try:
+                    await asyncio.shield(in_flight)
+                except asyncio.CancelledError:
+                    await asyncio.gather(in_flight, return_exceptions=True)
+                    raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Encrypted history discovery failed (%s)", type(exc).__name__)
+            await asyncio.sleep(self.interval)
 
     def _auto_since(self) -> Optional[float]:
         """First activation excludes existing historical threads from auto-analysis.

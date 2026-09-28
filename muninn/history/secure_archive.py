@@ -238,10 +238,11 @@ class SecureHistoryArchive:
         handle.write(struct.pack(">I", len(sealed)))
         handle.write(sealed)
 
-    def archive_file(self, source: Path, provider: str, kind: str = "transcript") -> dict[str, Any]:
+    def archive_file(self, source: Path, provider: str, kind: str = "transcript", *,
+                     expected_source: Path | None = None) -> dict[str, Any]:
         with self._write_lock():
             manifest = self._load_manifest()
-            result = self._archive_one(manifest, source, provider, kind)
+            result = self._archive_one(manifest, source, provider, kind, expected_source=expected_source)
             if result["status"] == "captured":
                 manifest["generation"] += 1
                 self._save_manifest(manifest)
@@ -257,7 +258,7 @@ class SecureHistoryArchive:
             pending = 0
             for source, provider, kind in items:
                 try:
-                    result = self._archive_one(manifest, source, provider, kind)
+                    result = self._archive_one(manifest, source, provider, kind, expected_source=Path(source))
                     report[result["status"]] += 1
                     if result["status"] == "captured":
                         pending += 1
@@ -276,20 +277,35 @@ class SecureHistoryArchive:
         return report
 
     def _archive_one(self, manifest: dict[str, Any], source: Path,
-                     provider: str, kind: str) -> dict[str, Any]:
+                     provider: str, kind: str, *, expected_source: Path | None = None) -> dict[str, Any]:
         source = Path(source).resolve(strict=True)
+        if expected_source is not None and source != Path(expected_source):
+            raise ValueError("History source identity changed after authorization")
         if provider not in {"claude_code", "claude_desktop", "codex", "gemini_cli", "export", "cursor", "opencode"}:
             raise ValueError("Unsupported history provider")
         if kind not in {"transcript", "prompt_history", "desktop_session", "export", "state_db"}:
             raise ValueError("Unsupported history kind")
         prior = manifest["files"].get(str(source), [])
         before = source.stat()
+
+        def assert_open_identity(handle: BinaryIO) -> None:
+            if expected_source is None:
+                return
+            opened = os.fstat(handle.fileno())
+            if (source.resolve(strict=True) != Path(expected_source)
+                    or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+                raise ValueError("History source identity changed after authorization")
+
         if prior and prior[-1]["size"] == before.st_size and prior[-1]["mtime_ns"] == before.st_mtime_ns:
             unchanged_digest = hashlib.sha256()
             with source.open("rb") as current:
+                assert_open_identity(current)
                 for block in iter(lambda: current.read(_CHUNK), b""):
                     unchanged_digest.update(block)
             after_check = source.stat()
+            if (expected_source is not None and (source.resolve(strict=True) != Path(expected_source)
+                    or (after_check.st_dev, after_check.st_ino) != (before.st_dev, before.st_ino))):
+                raise ValueError("History source identity changed after authorization")
             if ((before.st_size, before.st_mtime_ns) == (after_check.st_size, after_check.st_mtime_ns)
                     and unchanged_digest.hexdigest() == prior[-1]["sha256"]):
                 return {"status": "unchanged", "versions": len(prior)}
@@ -302,6 +318,7 @@ class SecureHistoryArchive:
         count = 0
         size = 0
         with source.open("rb") as src, staging.open("wb") as dst:
+            assert_open_identity(src)
             dst.write(_MAGIC + nonce_prefix)
             while True:
                 chunk = src.read(_CHUNK)
@@ -318,6 +335,9 @@ class SecureHistoryArchive:
             dst.flush()
             os.fsync(dst.fileno())
         after = source.stat()
+        if (expected_source is not None and (source.resolve(strict=True) != Path(expected_source)
+                or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino))):
+            raise ValueError("History source identity changed after authorization")
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or size != before.st_size:
             raise RuntimeError("History source changed during encrypted capture; retry later")
         os.replace(staging, blob)
@@ -411,6 +431,17 @@ class SecureHistoryArchive:
                 "snapshots": sum(len(items) for items in manifest["files"].values()),
                 "generation": manifest["generation"]}
 
+    def latest_source_signatures(self) -> dict[str, tuple[int, int]]:
+        """Authenticated in-process size/mtime projection for cheap source discovery.
+
+        Paths are private manifest material and must not be logged or returned
+        through a status/API response. A signature match is not a content proof;
+        the archive writer hashes again before declaring a capture unchanged.
+        """
+        manifest = self._load_manifest()
+        return {path: (entries[-1]["size"], entries[-1]["mtime_ns"])
+                for path, entries in manifest["files"].items() if entries}
+
     def rebind_windows_user(self) -> None:
         """After portable restore, attach a new CurrentUser DPAPI wrapper."""
         if os.name != "nt" or not self._unlocked_with_passphrase:
@@ -427,7 +458,7 @@ class SecureHistoryArchive:
             verify_private(self._header_path)
 
     @classmethod
-    def _copy_archive_files(cls, source_root: Path, destination: Path) -> None:
+    def _copy_archive_files(cls, source_root: Path, destination: Path, *, copy_journal: bool = True) -> None:
         """Copy ciphertext only into a new owner-only root; never mutate source."""
         source_root = Path(source_root)
         destination = Path(destination)
@@ -457,6 +488,9 @@ class SecureHistoryArchive:
             copy_sealed(source, destination / source.name)
         for source in (source_root / "blobs").glob("*.enc"):
             copy_sealed(source, destination / "blobs" / source.name)
+        journal = source_root / "capture-jobs.db"
+        if copy_journal and (journal.exists() or _is_link(journal)):
+            copy_sealed(journal, destination / journal.name)
 
     @classmethod
     def restore_from_backup(cls, backup_root: Path, destination: Path,
@@ -465,6 +499,10 @@ class SecureHistoryArchive:
         cls._copy_archive_files(backup_root, destination)
         restored = cls(destination, passphrase)
         restored.verify_all()
+        if (destination / "capture-jobs.db").exists():
+            from muninn.history.capture_journal import CaptureJournal
+
+            CaptureJournal(restored, recover=False).verify_all()
         return restored
 
     def backup_to(self, destination: Path) -> dict[str, int]:
@@ -473,11 +511,16 @@ class SecureHistoryArchive:
             raise VaultIntegrityError("Local unattended backup requires Windows user protection")
         with self._write_lock():
             self._load_manifest()
-            self._copy_archive_files(self.root, destination)
+            self._copy_archive_files(self.root, destination, copy_journal=False)
+            from muninn.history.capture_journal import CaptureJournal
+
+            CaptureJournal(self, recover=False).backup_to(destination / "capture-jobs.db")
             backup = SecureHistoryArchive(destination)
             if backup.vault_id != self.vault_id:
                 raise VaultIntegrityError("History backup identity mismatch")
-            return backup.verify_all()
+            report = backup.verify_all()
+            CaptureJournal(backup, recover=False).verify_all()
+            return report
 
     def metadata_catalog(self, *, provider: str | None = None, offset: int = 0,
                          limit: int = 100) -> list[SafeHistoryMetadata]:

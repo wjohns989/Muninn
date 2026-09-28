@@ -98,6 +98,18 @@ def test_batch_commits_and_resume_without_duplicate_versions(tmp_path):
     assert archive.status()["snapshots"] == 5
 
 
+def test_archive_rejects_source_identity_changed_after_authorization(tmp_path):
+    authorized = tmp_path / "allowed.jsonl"
+    authorized.write_bytes(b"allowed content")
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(b"OUTSIDE-CANARY")
+    archive = SecureHistoryArchive.create(tmp_path / "secure", PASSPHRASE)
+
+    with pytest.raises(ValueError, match="source identity changed"):
+        archive.archive_file(outside, "codex", expected_source=authorized.resolve())
+    assert archive.status()["snapshots"] == 0
+
+
 def test_portable_restore_rewraps_only_on_explicit_request(tmp_path):
     source = tmp_path / "chat.jsonl"
     source.write_bytes(b"backup payload")

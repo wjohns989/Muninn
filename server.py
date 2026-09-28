@@ -51,7 +51,7 @@ from muninn.core.memory import MuninnMemory
 from muninn.core import handoffs
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.core.feature_flags import FeatureDisabledError
-from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled, verify_main_token
+from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, is_security_enabled, verify_main_token
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
     MAX_CHUNK_OVERLAP_CHARS,
@@ -585,29 +585,20 @@ def _load_dashboard_html() -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_root():
-    """Serve the browser UI for memory operations."""
+    """Serve the browser UI without disclosing an API bearer to anonymous readers."""
     content = _load_dashboard_html()
-    
-    # Automate Auth Token handling for the local dashboard (v3.18.2)
-    # We inject the current token so the user doesn't have to enter it manually.
-    try:
-        active_token = get_token()
-        no_auth = not is_security_enabled()
-        
-        # Inject active token using robust placeholder
-        content = content.replace("{{MUNINN_TOKEN}}", active_token)
-        
-        # Inject security status for absolute bypass in UI
-        if no_auth:
-            content = content.replace(
-                'let SECURITY_ENABLED = true;',
-                'let SECURITY_ENABLED = false;'
-            )
-            
-    except Exception as e:
-        logger.warning("Failed to inject auth token into dashboard: %s", e)
-        
+    if not is_security_enabled():
+        content = content.replace(
+            'let SECURITY_ENABLED = true;',
+            'let SECURITY_ENABLED = false;'
+        )
     return HTMLResponse(content=content)
+
+
+@app.get("/auth/check", dependencies=[Depends(verify_token)])
+async def dashboard_auth_check():
+    """Check a manually supplied dashboard bearer without returning it."""
+    return {"authenticated": True}
 
 @app.get("/dashboard.css")
 async def dashboard_css():
@@ -1868,7 +1859,13 @@ async def agent_hook_endpoint(agent: str, request: Request):
         payload = {}
     from muninn.history.hooks import handle_hook
 
-    return await handle_hook(agent, payload if isinstance(payload, dict) else {}, memory, _history)
+    try:
+        return await handle_hook(agent, payload if isinstance(payload, dict) else {}, memory, _history)
+    except Exception as exc:
+        # Hook failures must not include a private source path or exception
+        # message in the HTTP response or routine server logs.
+        logger.error("Agent hook was not durably accepted (%s)", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Muninn hook was not durably accepted") from None
 
 
 # --- Agent handoffs and session briefing ------------------------------------
