@@ -274,7 +274,14 @@ class SQLiteMetadataStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
         self._json1_available = False
-        self._initialize()
+        # A fresh database and schema migrations must have exactly one writer.
+        # The same advisory lock already serializes ordinary cross-process adds.
+        with get_store_lock(self.db_path.parent, timeout=60.0).acquire(shared=False):
+            try:
+                self._initialize()
+            except BaseException:
+                self.close()
+                raise
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:

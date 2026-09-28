@@ -51,7 +51,7 @@ class StoreLock:
             logger.error(f"Failed to acquire lock on {self.lock_file_path} after {self.timeout}s: {e}")
             raise RuntimeError(f"Database lock contention: {e}")
 
-def get_store_lock(data_path: Path) -> StoreLock:
+def get_store_lock(data_path: Path, *, timeout: float = 10.0) -> StoreLock:
     """Helper to get a standard lock for a given data directory."""
     lock_file = data_path / ".muninn.lock"
-    return StoreLock(lock_file)
+    return StoreLock(lock_file, timeout=timeout)

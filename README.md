@@ -380,7 +380,7 @@ Key environment variables:
 | `MUNINN_INSIGHTS_WINDOW_TOKENS` | `200000` | Conversation per analysis call; larger threads are split and merged |
 | `MUNINN_INSIGHTS_AUTO` | off | Legacy-mode analysis after automatic import; does not enable strict encrypted-history enrichment |
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
-| `MUNINN_DATA_DIR` | platform data directory | All Muninn stores; choose a private directory with enough space for your own history, not a repository checkout |
+| `MUNINN_DATA_DIR` | platform data directory | All Muninn stores; choose a private local directory with enough space for your history and reliable advisory file locking, not a repository checkout or network share |
 | `MUNINN_PYTHON_PATH` | `python` on `PATH` | Windows shared launcher interpreter; set a user-scoped path to the Python environment with Muninn's dependencies, or pass `-PythonPath` to the launcher. No interpreter path is hard-coded in the repo |
 | `MUNINN_OLLAMA_URL` | `http://localhost:11434` | Your Ollama endpoint; no particular model directory or drive letter is assumed |
 | `MUNINN_OLLAMA_MODEL` | `llama3.2:3b` | Model for explicitly requested Ollama analysis |
