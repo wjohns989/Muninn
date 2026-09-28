@@ -621,6 +621,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 | `docs/plans/2026-09-25-post-codex-hardening-plan.md` | Current plan and status |
 | `docs/archive/` | Historical handoffs and remediation reports (including `HANDOFF.md`) |
 | `docs/ARCHITECTURE.md` | System architecture deep-dive |
+| `docs/architecture/local-operating-model-audit.md` | Current local lifecycle, timing contract, contradictions, and release gates (audit, not completion claim) |
 | `docs/MUNINN_COMPREHENSIVE_ROADMAP.md` | Full feature roadmap (v3.1→v3.3+) |
 | `docs/AGENT_CONTINUATION_RUNBOOK.md` | How to resume development across sessions |
 | `docs/PYTHON_SDK.md` | Python SDK reference |

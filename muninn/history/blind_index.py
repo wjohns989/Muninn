@@ -38,7 +38,7 @@ _TOKENIZER = 1
 _HASHES = 4
 _TERM = re.compile(r"\w+", re.UNICODE)
 _TEXT_KINDS = {"transcript", "prompt_history", "desktop_session", "export"}
-_STRUCTURED_PARSE_LIMIT = 8 * 1024 * 1024
+_STRUCTURED_LINE_LIMIT = 256 * 1024
 _STAGING_NAME = re.compile(r"muninn-chunks-[A-Za-z0-9_-]+\.db(?:-journal)?\Z")
 
 
@@ -703,39 +703,107 @@ class SecureHistoryBlindIndex:
                 "version": version, "truncated": len(snippet) > max_chars}
 
     def _structured_span(self, entry: dict, term: str, *, max_chars: int) -> str | None:
-        """Parse a verified, bounded chat snapshot before sanitizing message text.
+        """Stream JSONL chat messages before sanitizing message text.
 
         JSONL metadata may contain a credential on the same physical line as a
         useful message. Sanitizing that raw line first would hide the message.
         The parser discards metadata and tool payloads before release.
         """
         if (entry.get("kind") != "transcript"
-                or entry.get("provider") not in {"codex", "claude_code", "gemini_cli"}
-                or not 0 < entry.get("size", 0) <= _STRUCTURED_PARSE_LIMIT):
+                or entry.get("provider") not in {"codex", "claude_code", "gemini_cli"}):
             return None
-        from muninn.history.parsers import parse_claude_code, parse_codex, parse_gemini
+        provider = entry["provider"]
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        line = ""
+        skipping_long_line = False
+        candidate: str | None = None
 
-        verified = self.archive._verify_entry(entry, collect=True)
-        assert verified is not None
+        def message_parts(row: object) -> list[tuple[str, str]]:
+            if not isinstance(row, dict):
+                return []
+            if provider == "codex":
+                payload = row.get("payload")
+                if not isinstance(payload, dict):
+                    return []
+                if row.get("type") == "event_msg":
+                    role = {"user_message": "User", "agent_message": "Assistant"}.get(payload.get("type"))
+                    value = payload.get("message")
+                elif row.get("type") == "response_item" and payload.get("type") == "message":
+                    role = {"user": "User", "assistant": "Assistant"}.get(payload.get("role"))
+                    content = payload.get("content")
+                    value = (content if isinstance(content, str) else "\n".join(
+                        part.get("text", "") for part in content
+                        if isinstance(part, dict) and part.get("type") in
+                        {"input_text", "output_text", "text"} and isinstance(part.get("text"), str)
+                    )) if isinstance(content, (str, list)) else None
+                else:
+                    return []
+                return [(role, value)] if role and isinstance(value, str) else []
+            role_value = row.get("type") or row.get("role")
+            role = {"user": "User", "human": "User", "assistant": "Assistant",
+                    "model": "Assistant", "gemini": "Assistant"}.get(role_value)
+            message = row.get("message") if isinstance(row.get("message"), dict) else row
+            value = message.get("content") if isinstance(message, dict) else None
+            if isinstance(value, str):
+                return [(role, value)] if role else []
+            if isinstance(value, list):
+                text = "\n".join(part.get("text", "") for part in value
+                                  if isinstance(part, dict) and isinstance(part.get("text"), str)
+                                  and (provider != "claude_code" or part.get("type") == "text"))
+                return [(role, text)] if role and text else []
+            parts = message.get("parts") if isinstance(message, dict) else None
+            if isinstance(parts, list):
+                text = "\n".join(part if isinstance(part, str) else part.get("text", "")
+                                  for part in parts if isinstance(part, (str, dict)))
+                return [(role, text)] if role and text else []
+            return []
+
+        def consume(raw: str) -> None:
+            nonlocal line, candidate, skipping_long_line
+            if candidate is not None:
+                return
+            segments = raw.split("\n")
+            for number, segment in enumerate(segments):
+                if not skipping_long_line and len(line) + len(segment) <= _STRUCTURED_LINE_LIMIT:
+                    line += segment
+                else:
+                    line = ""
+                    skipping_long_line = True
+                if number == len(segments) - 1:
+                    break
+                if skipping_long_line:
+                    skipping_long_line = False
+                    line = ""
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    line = ""
+                    continue
+                line = ""
+                for role, message in message_parts(row):
+                    position = message.casefold().find(term)
+                    if position >= 0 and candidate is None:
+                        candidate = f"{role}: " + message[max(0, position - 1000):position + 7000]
+                        return
+
+        def accept(chunk: bytes) -> None:
+            try:
+                consume(decoder.decode(chunk))
+            except UnicodeDecodeError as exc:
+                raise VaultIntegrityError("History text is not valid UTF-8") from exc
+
+        self.archive._verify_entry(entry, collect=False, on_chunk=accept)
         try:
-            transcript = verified.decode("utf-8", "strict")
+            consume(decoder.decode(b"", final=True))
         except UnicodeDecodeError as exc:
             raise VaultIntegrityError("History text is not valid UTF-8") from exc
-        parser = {"codex": parse_codex, "claude_code": parse_claude_code,
-                  "gemini_cli": parse_gemini}[entry["provider"]]
-        session = parser(transcript)
-        if session is None:
+        if line and not skipping_long_line:
+            consume("\n")
+        if candidate is None:
             return None
-        for turn in session.turns:
-            for role, message in (("User", turn.user), ("Assistant", turn.assistant)):
-                position = message.casefold().find(term)
-                if position < 0:
-                    continue
-                snippet = f"{role}: " + message[max(0, position - 1000):position + 7000]
-                redacted = sanitize_agent_span(snippet[:12000], max_chars=max_chars)
-                if redacted.strip() and redacted.strip() != "[REDACTED_SENSITIVE_LINE]":
-                    return redacted
-        return None
+        redacted = sanitize_agent_span(candidate[:12000], max_chars=max_chars)
+        return redacted if redacted.strip() and redacted.strip() != "[REDACTED_SENSITIVE_LINE]" else None
 
 
 def main() -> int:
