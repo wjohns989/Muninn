@@ -501,7 +501,7 @@ class MuninnMemory:
             record.provenance == Provenance.INGESTED
             and meta.get("import_source") == "agent_history"
             and meta.get("kind") in {
-                "conversation_turn", "compaction_summary", "thread_summary",
+                "conversation_turn", "compaction_summary", "thread_summary", "recovered_prompt",
             }
         )
 

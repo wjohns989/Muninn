@@ -596,13 +596,23 @@ async def import_history(
                            f"(transcript no longer on disk)\nUser: {redact(entry.text)}",
                 "created_at": entry.at,
                 "metadata": {"import_source": IMPORT_SOURCE, "kind": "recovered_prompt", "provider": entry.provider,
-                             "agent": agent, "project": project or "global",
+                             "agent": agent, "project": project or "global", "history_prompt_digest": digest,
                              **({"directory": entry.cwd} if entry.cwd else {}),
                              **({"session_id": entry.session_id} if entry.session_id else {})},
             }
-            await _add(memory, item, "project")
+            existing_prompts = await asyncio.to_thread(store.get_history_prompt_memories, digest)
+            if len(existing_prompts) > 1:
+                raise RuntimeError("duplicate recovered prompt identity; import stopped")
+            if existing_prompts:
+                await _verify_part(memory, existing_prompts[0], item, "project")
+            else:
+                memory_id = await _add(memory, item, "project")
+                if not memory_id:
+                    raise RuntimeError("recovered prompt was not persisted; import stopped")
+                record = await asyncio.to_thread(store.get, memory_id)
+                await _verify_part(memory, record, item, "project")
+                report["recovered_prompts"] += 1
             await _write(memory, store.mark_history_prompts, [digest])
-            report["recovered_prompts"] += 1
 
         for entry in prompts:
             if unit_lock is not None:

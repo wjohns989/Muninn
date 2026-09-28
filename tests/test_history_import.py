@@ -747,6 +747,29 @@ def test_partial_turn_stale_search_content_fails_closed(env, store_kind):
     assert env.store.get_history_thread(thread.key) is None
 
 
+def test_recovered_prompt_write_before_marker_is_idempotent(env, monkeypatch):
+    env.vault.sync()
+    original = env.store.mark_history_prompts
+    interrupted = False
+
+    def interrupt_once(digests):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise RuntimeError("interrupted checkpoint")
+        return original(digests)
+
+    monkeypatch.setattr(env.store, "mark_history_prompts", interrupt_once)
+    with pytest.raises(RuntimeError, match="interrupted checkpoint"):
+        run(import_history(env.memory, env.vault, apply=True))
+    before = [r for r in env.store.get_all(limit=500) if (r.metadata or {}).get("kind") == "recovered_prompt"]
+    assert len(before) == 1
+
+    run(import_history(env.memory, env.vault, apply=True))
+    after = [r for r in env.store.get_all(limit=500) if (r.metadata or {}).get("kind") == "recovered_prompt"]
+    assert len(after) == 1 and after[0].id == before[0].id
+
+
 def test_project_timeline_interleaves_apps_in_time_order(relay):
     from muninn.core import handoffs
     from muninn.history.importer import read_project_timeline

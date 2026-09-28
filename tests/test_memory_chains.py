@@ -154,6 +154,17 @@ def test_raw_imported_history_skips_graph_but_keeps_search_indexes():
     assert memory._bm25.add.call_count == 2
     memory._graph.add_memory_node.assert_called_once()
 
+    prompt = asyncio.run(memory.add(
+        "A recovered prompt",
+        metadata={"import_source": "agent_history", "kind": "recovered_prompt",
+                  "history_prompt_digest": "a" * 64, "project": "test"},
+        provenance=Provenance.INGESTED,
+    ))
+    assert prompt["event"] == "ADD"
+    assert memory._vectors.upsert.call_count == 3
+    assert memory._bm25.add.call_count == 3
+    memory._graph.add_memory_node.assert_called_once()
+
 
 def test_metadata_only_update_preserves_content_without_rebuilding_chains():
     memory = MuninnMemory()
