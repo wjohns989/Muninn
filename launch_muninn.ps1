@@ -17,7 +17,8 @@
 param(
     [ValidateSet("server", "tray", "both")]
     [string]$Mode = "server",
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [string]$PythonPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,7 +26,25 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # --- Python Discovery ---
 function Find-Python {
-    # 1. Check if python is on PATH
+    $requested = $PythonPath
+    if (-not $requested) { $requested = [Environment]::GetEnvironmentVariable("MUNINN_PYTHON_PATH", "Process") }
+    if (-not $requested) { $requested = [Environment]::GetEnvironmentVariable("MUNINN_PYTHON_PATH", "User") }
+    if ($requested) {
+        if (-not (Test-Path -LiteralPath $requested -PathType Leaf)) {
+            throw "MUNINN_PYTHON_PATH does not name an existing executable."
+        }
+        $resolved = (Resolve-Path -LiteralPath $requested).Path
+        if ([IO.Path]::GetFileName($resolved) -notmatch '^python(?:3(?:\.\d+)?)?\.exe$') {
+            throw "MUNINN_PYTHON_PATH must name a Python executable."
+        }
+        $version = & $resolved --version 2>&1
+        if ($LASTEXITCODE -ne 0 -or $version -notmatch "Python 3\.(1[0-9]|[2-9][0-9])") {
+            throw "MUNINN_PYTHON_PATH must be Python 3.10 or newer."
+        }
+        return $resolved
+    }
+
+    # Check if python is on PATH
     $pythonPath = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonPath) {
         $version = & $pythonPath.Source --version 2>&1
@@ -94,6 +113,23 @@ function Start-Ollama {
 }
 
 # --- Main ---
+$effectiveToken = [Environment]::GetEnvironmentVariable("MUNINN_AUTH_TOKEN", "Process")
+if (-not $effectiveToken) { $effectiveToken = [Environment]::GetEnvironmentVariable("MUNINN_SERVER_AUTH_TOKEN", "Process") }
+if (-not $effectiveToken) { $effectiveToken = [Environment]::GetEnvironmentVariable("MUNINN_AUTH_TOKEN", "User") }
+if (-not $effectiveToken) { $effectiveToken = [Environment]::GetEnvironmentVariable("MUNINN_SERVER_AUTH_TOKEN", "User") }
+if (-not $effectiveToken) { throw "MUNINN_AUTH_TOKEN or MUNINN_SERVER_AUTH_TOKEN is required for a secure launch." }
+if ($effectiveToken.Length -lt 32) {
+    throw "MUNINN_AUTH_TOKEN must contain at least 32 characters."
+}
+$env:MUNINN_AUTH_TOKEN = $effectiveToken
+$noAuth = [Environment]::GetEnvironmentVariable("MUNINN_NO_AUTH", "Process")
+if (-not $noAuth) { $noAuth = [Environment]::GetEnvironmentVariable("MUNINN_NO_AUTH", "User") }
+if ($noAuth -eq "1") {
+    throw "MUNINN_NO_AUTH=1 disables authentication; refusing to launch."
+}
+$env:MUNINN_NO_AUTH = "0"
+$env:MUNINN_DEV_MODE = "false"
+
 Write-Host ""
 Write-Host "  ███╗   ███╗██╗   ██╗███╗   ██╗██╗███╗   ██╗███╗   ██╗" -ForegroundColor Magenta
 Write-Host "  ████╗ ████║██║   ██║████╗  ██║██║████╗  ██║████╗  ██║" -ForegroundColor Magenta

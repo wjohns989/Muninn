@@ -51,6 +51,10 @@ dependencies = [
     "kuzu==0.11.3",
     # v3.1.0: Cross-platform path resolution
     "platformdirs>=4.0.0",
+    # Strict history and credential vault modules are imported by server.py.
+    "cryptography>=46.0.0",
+    # Strict history and private ACL enforcement require this on Windows.
+    "pywin32>=311; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -86,10 +90,8 @@ ingestion = [
     # Codex compresses older and archived rollouts with Zstandard.
     "zstandard>=0.23.0",
 ]
-credential-vault = [
-    "cryptography>=46.0.0",
-    "pywin32>=311; sys_platform == 'win32'",
-]
+# Compatibility extra: the encryption and ACL dependencies are now core.
+credential-vault = []
 sdk = [
     "requests>=2.31.0",
     "httpx>=0.24.0",

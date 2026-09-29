@@ -42,6 +42,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
 from contextlib import asynccontextmanager
 import secrets
+import ipaddress
 import portalocker
 
 from muninn.core.env_loader import load_project_env
@@ -2500,6 +2501,21 @@ def _existing_server_healthy(host: str, port: int) -> bool:
         return False
 
 
+def _assert_startup_auth(host: str, allow_no_auth: bool = False) -> None:
+    """Refuse an accidental unauthenticated service startup."""
+    if is_security_enabled():
+        return
+    try:
+        loopback = host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    if not allow_no_auth or not loopback:
+        raise RuntimeError(
+            "Authentication is disabled by MUNINN_NO_AUTH or MUNINN_DEV_MODE. "
+            "Unset that setting, or explicitly use --allow-no-auth on a loopback host for development."
+        )
+
+
 def main():
     config = MuninnConfig.from_env()
 
@@ -2507,7 +2523,10 @@ def main():
     parser.add_argument("--host", default=config.server.host, help="Host to bind to")
     parser.add_argument("--port", type=int, default=config.server.port, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable hot reload")
+    parser.add_argument("--allow-no-auth", action="store_true", help="Allow unauthenticated loopback development only")
     args = parser.parse_args()
+
+    _assert_startup_auth(args.host, args.allow_no_auth)
 
     logger.info("Starting Muninn Memory Server on %s:%d", args.host, args.port)
 

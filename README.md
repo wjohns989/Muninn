@@ -403,7 +403,7 @@ Key environment variables:
 | `MUNINN_INSIGHTS_AUTO` | off | Legacy-mode analysis after automatic import; does not enable strict encrypted-history enrichment |
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
 | `MUNINN_DATA_DIR` | platform data directory | All Muninn stores; choose a private local directory with enough space for your history and reliable advisory file locking, not a repository checkout or network share |
-| `MUNINN_PYTHON_PATH` | `python` on `PATH` | Windows shared launcher interpreter; set a user-scoped path to the Python environment with Muninn's dependencies, or pass `-PythonPath` to the launcher. No interpreter path is hard-coded in the repo |
+| `MUNINN_PYTHON_PATH` | `python` on `PATH` | Windows shared launcher interpreter; set a user-scoped path to a trusted Python executable with Muninn's dependencies, or pass `-PythonPath` to the launcher. This setting authorizes execution of that file; do not point it at an untrusted checkout or download. No interpreter path is hard-coded in the repo |
 | `MUNINN_OLLAMA_URL` | `http://localhost:11434` | Your Ollama endpoint; no particular model directory or drive letter is assumed |
 | `MUNINN_OLLAMA_MODEL` | `llama3.2:3b` | Model for explicitly requested Ollama analysis |
 | `MUNINN_AUTO_LOCAL_MODEL_HINTS` | local measured defaults | Comma-separated installed model tags in preferred order for strict on-demand analysis; unlisted installed chat-capable models remain fallback candidates. Legacy analysis also accepts model-name fragments |
@@ -702,7 +702,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 - **Storage**: SQLite (metadata) + Qdrant (vectors) + KuzuDB (memory chains graph)
 - **No cloud dependency**: All data local by default
 - **Credential vault**: the separate encrypted store uses a locally prompted passphrase and owner-only filesystem access. An explicit `credentials scan` can discover unverified candidates from selected project text files and encrypted history snapshots; it is not an automatic background scan and does not make unscanned sources secret-free. Existing plaintext transcripts and older copies can contain secrets; restrict access to them and their backups.
-- **Auth**: protected API, MCP, and dashboard operations require a Bearer token whenever security is enabled. Set `MUNINN_AUTH_TOKEN` or `MUNINN_API_KEY` before starting a normal service; the dashboard never injects or stores it in browser localStorage. An unconfigured fallback token is not logged. Explicit `MUNINN_NO_AUTH=1` is development-only.
+- **Auth**: protected API, MCP, and dashboard operations require a Bearer token whenever security is enabled. Set `MUNINN_AUTH_TOKEN` or `MUNINN_API_KEY` before starting a normal service; the dashboard never injects or stores it in browser localStorage. An unconfigured fallback token is not logged. `server.py` refuses an effective `MUNINN_NO_AUTH=1` or tokenless `MUNINN_DEV_MODE=true` startup unless `--allow-no-auth` is explicitly passed with a loopback bind. The Windows `launch_muninn.ps1` requires a token and never launches in no-auth mode.
 - **Browser origins**: requests from web pages other than `localhost` are rejected (blocks cross-site access and DNS rebinding); extend with `MUNINN_ALLOWED_ORIGINS`
 - **Namespace isolation**: `user_id` + `namespace` + `project` boundaries enforced at every retrieval layer
 
