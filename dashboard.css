@@ -544,6 +544,8 @@ header {
     font-size: 1rem;
     line-height: 1.7;
     color: var(--slate-300);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 /* --- Animation --- */

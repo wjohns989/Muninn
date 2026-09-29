@@ -70,6 +70,63 @@ def test_dashboard_inline_javascript_parses():
     assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
 
 
+def test_standard_search_renders_untrusted_memory_as_literal_text():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    root = Path(__file__).resolve().parents[1]
+    page = root.joinpath("dashboard.html").read_text(encoding="utf-8")
+    source = "async function handleSearch()" + page.split("async function handleSearch()", 1)[1].split(
+        "async function handleIngest()", 1,
+    )[0]
+    css = root.joinpath("dashboard.css").read_text(encoding="utf-8")
+    assert "content.innerHTML = r.content" not in source
+    assert "white-space: pre-wrap;" in css
+    assert "overflow-wrap: anywhere;" in css
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const elements = new Map();
+const unsafeAssignments = [];
+function element() {
+    const node = {children: [], style: {}, textContent: '', value: '', checked: false,
+        appendChild(child) { this.children.push(child); }};
+    Object.defineProperty(node, 'innerHTML', {
+        get() { return this.html || ''; },
+        set(value) {
+            if (String(value).includes('<img')) unsafeAssignments.push(value);
+            this.html = value;
+            if (value === '') this.children = [];
+        }
+    });
+    return node;
+}
+const document = {
+    getElementById(id) {
+        if (!elements.has(id)) elements.set(id, element());
+        return elements.get(id);
+    },
+    createElement: element,
+    createTextNode(text) { return {textContent: text}; }
+};
+const context = vm.createContext({document, pulseNav() {}, log() {}});
+vm.runInContext(__SOURCE__, context);
+const attack = '<img src=x onerror="window.steal()">\n' + 'A'.repeat(200);
+document.getElementById('search-input').value = 'test';
+context.api = async () => ({data: [{id: 'memory-1', score: 1, memory_type: 'episodic',
+    created_at: 1, content: attack}]});
+
+vm.runInContext('handleSearch()', context).then(() => {
+    const item = document.getElementById('search-results').children[0];
+    assert.equal(item.children[1].textContent, attack);
+    assert.deepEqual(unsafeAssignments, []);
+}).catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
+
+
 def test_history_ui_discards_stale_search_and_fetch_responses():
     node = shutil.which("node")
     if node is None:

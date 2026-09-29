@@ -947,7 +947,7 @@
 
                 const content = document.createElement('div');
                 content.className = 'result-content';
-                content.innerHTML = r.content;
+                content.textContent = typeof r.content === 'string' ? r.content : '';
                 item.appendChild(content);
 
                 // --- Result Actions (Feedback) ---
