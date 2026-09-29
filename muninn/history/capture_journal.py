@@ -327,21 +327,26 @@ class CaptureJournal:
             )
         return True
 
-    def fail(self, job: CaptureJob, code: str) -> None:
+    def fail(self, job: CaptureJob, code: str) -> str | None:
         if code not in _ERROR_CODES:
             code = "unknown"
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT revision, attempts FROM jobs WHERE source_key=?", (job.key,)).fetchone()
             if row is None or row["revision"] != job.revision:
-                return
+                return None
             attempts = row["attempts"] + 1
-            delay = min(600, 2 ** min(attempts, 9))
+            # Hooks may report a locator before its transcript exists. Do not
+            # wake forever for an absent source. A later file
+            # changes its fingerprint and enqueue() reactivates this row.
+            state = "unavailable" if code == "missing" and attempts >= 8 else "retry"
+            delay = 0 if state == "unavailable" else min(600, 2 ** min(attempts, 9))
             db.execute(
-                "UPDATE jobs SET state='retry', attempts=?, due_at=?, last_error_code=?, "
+                "UPDATE jobs SET state=?, attempts=?, due_at=?, last_error_code=?, "
                 "updated_at=? WHERE source_key=? AND revision=?",
-                (attempts, time.time() + delay, code, time.time(), job.key, job.revision),
+                (state, attempts, time.time() + delay, code, time.time(), job.key, job.revision),
             )
+            return state
 
     def status(self) -> dict[str, int]:
         with self._connect() as db:

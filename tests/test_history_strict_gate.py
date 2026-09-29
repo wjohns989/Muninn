@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sqlite3
 import threading
 from unittest.mock import AsyncMock, Mock
 
@@ -192,6 +193,93 @@ async def test_missing_allowed_hook_locator_is_a_retry_not_a_false_archive(monke
     assert await service._process_capture_job_once() is True
     assert service._capture_journal.status()["retry"] == 1
     assert service.secure_archive.status()["snapshots"] == 0
+
+    journal = service._capture_journal
+    for _ in range(6):
+        with journal._connect() as db:
+            db.execute("UPDATE jobs SET due_at=0 WHERE state='retry'")
+        job = journal.claim_due()
+        assert job is not None
+        assert journal.fail(job, "missing") == "retry"
+    with journal._connect() as db:
+        db.execute("UPDATE jobs SET due_at=0 WHERE state='retry'")
+    assert await service._process_capture_job_once() is True
+    assert service.last_secure_capture["state"] == "unavailable"
+    assert journal.status() == {"unavailable": 1}
+
+
+def test_missing_capture_eventually_reports_unavailable_and_recovers_when_source_appears(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
+    source = (tmp_path / ".claude" / "projects" / "-repo" /
+              "11111111-1111-4111-8111-111111111111.jsonl")
+    source.parent.mkdir(parents=True)
+    journal = service._require_capture_journal()
+    assert journal.enqueue(source, "claude_code", immediate=True) == "queued"
+
+    for _ in range(7):
+        with journal._connect() as db:
+            db.execute("UPDATE jobs SET due_at=0 WHERE state='retry'")
+        job = journal.claim_due()
+        assert job is not None
+        assert journal.fail(job, "missing") == "retry"
+    assert journal.status() == {"retry": 1}
+    assert journal.enqueue(source, "claude_code") == "coalesced"
+
+    with journal._connect() as db:
+        attempts = db.execute("SELECT attempts FROM jobs").fetchone()[0]
+        db.execute("UPDATE jobs SET due_at=0 WHERE state='retry'")
+    assert attempts == 7
+    job = journal.claim_due()
+    assert job is not None
+    assert journal.fail(job, "missing") == "unavailable"
+
+    assert journal.status() == {"unavailable": 1}
+    assert journal.claim_due() is None
+    assert service.secure_archive.status()["snapshots"] == 0
+    backup = root / "capture-jobs-backup.db"
+    journal.backup_to(backup)
+    with sqlite3.connect(backup) as db:
+        assert db.execute("SELECT state, attempts, last_error_code FROM jobs").fetchone() == (
+            "unavailable", 8, "missing")
+    if os.name == "nt":
+        backup_root = tmp_path / "encrypted-backup"
+        service.secure_archive.backup_to(backup_root)
+        restored = SecureHistoryArchive.restore_from_backup(
+            backup_root, tmp_path / "restored", "recovery passphrase kept off chat")
+        with sqlite3.connect(restored.root / "capture-jobs.db") as db:
+            assert db.execute("SELECT state, attempts, last_error_code FROM jobs").fetchone() == (
+                "unavailable", 8, "missing")
+
+    source.write_text("later available", encoding="utf-8")
+    assert journal.enqueue(source, "claude_code", immediate=True) == "queued"
+    assert journal.status() == {"pending": 1}
+    with journal._connect() as db:
+        assert db.execute("SELECT attempts FROM jobs").fetchone()[0] == 0
+
+
+def test_missing_capture_stale_failure_cannot_terminalize_reenqueued_source(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
+    source = (tmp_path / ".claude" / "projects" / "-repo" /
+              "22222222-2222-4222-8222-222222222222.jsonl")
+    source.parent.mkdir(parents=True)
+    journal = service._require_capture_journal()
+    assert journal.enqueue(source, "claude_code", immediate=True) == "queued"
+    stale = journal.claim_due()
+    assert stale is not None
+    source.write_text("now present", encoding="utf-8")
+    assert journal.enqueue(source, "claude_code", immediate=True) == "queued"
+    assert journal.fail(stale, "missing") is None
+    assert journal.status() == {"pending": 1}
 
 
 @pytest.mark.asyncio

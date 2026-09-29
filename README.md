@@ -482,8 +482,10 @@ a transcript event. A CPU-only worker archives it and replays pending work after
 restart; a separate bounded scanner checks for missed/new chat transcripts on
 the configured cadence. The journal contains encrypted source locators and is
 included in authenticated portable archive backups. Queue acknowledgement is
-not a claim that the source has already been copied; a source removed before
-copy remains a visible retry. The separate CPU-only worker indexes encrypted snapshots
+not a claim that the source has already been copied. A missing source is retried
+eight times, then remains visible as `unavailable` rather than consuming work
+forever; if the file appears later, a hook or scan requeues it. The separate
+CPU-only worker indexes encrypted snapshots
 when `MUNINN_HISTORY_INDEX_AUTO=1`. Claude Code, Codex and Gemini CLI have
 optional local lifecycle hooks installed with `python -m muninn.cli hooks install
 --apply`; Claude Desktop's non-Code client uses MCP and scheduled sync instead.

@@ -423,8 +423,8 @@ class HistoryService:
             self.last_secure_capture = {"state": "archived" if committed else "superseded",
                                         "at": time.time()}
         except FileNotFoundError:
-            await asyncio.to_thread(journal.fail, job, "missing")
-            self.last_secure_capture = {"state": "retry", "error_code": "missing", "at": time.time()}
+            state = await asyncio.to_thread(journal.fail, job, "missing")
+            self.last_secure_capture = {"state": state or "superseded", "error_code": "missing", "at": time.time()}
         except PermissionError:
             await asyncio.to_thread(journal.fail, job, "permission")
             self.last_secure_capture = {"state": "retry", "error_code": "permission", "at": time.time()}
