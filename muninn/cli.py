@@ -904,6 +904,36 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     elif args.action == "restore":
         CredentialStore.restore(args.source, root, passphrase=passphrase)
         print(f"Validated encrypted vault restored at {root}.")
+    elif args.action == "scan":
+        from muninn.history.credential_discovery import scan_archive, scan_project_env
+        from muninn.history.secure_archive import SecureHistoryArchive
+
+        store = CredentialStore(root)
+        if args.backup_before:
+            backup_count = store.backup(args.backup_before, passphrase=passphrase)
+            print(json.dumps({"stage": "validated_pre_scan_backup", "records": backup_count},
+                             sort_keys=True), flush=True)
+        with store.scan_session(passphrase) as session:
+            reports = [scan_project_env(project, session, passphrase="")
+                       for project in (args.project_root or [])]
+            project_totals = {key: sum(int(report[key]) for report in reports) for key in (
+                "files", "succeeded", "errors", "ambiguous", "candidates", "inserted", "updated", "stale",
+            )}
+            project_totals["complete"] = all(report["complete"] for report in reports)
+            archive_report = None
+            if args.archive_root:
+                def progress(status):
+                    print(json.dumps({"stage": "archive_scan", **status}, sort_keys=True), flush=True)
+
+                archive_report = scan_archive(
+                    SecureHistoryArchive(args.archive_root), session, passphrase="",
+                    offset=args.archive_offset, max_snapshots=args.max_snapshots,
+                    expected_generation=args.archive_generation, progress=progress,
+                )
+        complete = project_totals["complete"] and (archive_report is None or archive_report["complete"])
+        print(json.dumps({"project": project_totals, "archive": archive_report, "complete": complete},
+                         sort_keys=True))
+        return 0 if complete else 2
     return 0
 
 
@@ -1142,14 +1172,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     credentials = subparsers.add_parser(
         "credentials",
-        help="Manage the separate encrypted credential vault (not yet wired to history import).",
+        help="Manage the separate encrypted credential vault and scan approved local project files.",
     )
-    credentials.add_argument("action", choices=["init", "search", "reveal", "backup", "restore"])
+    credentials.add_argument("action", choices=["init", "search", "reveal", "backup", "restore", "scan"])
     credentials.add_argument("query", nargs="?", help="Metadata-only query for 'search'.")
     credentials.add_argument("--root", type=Path, help="Vault location (default: MUNINN_DATA_DIR/credential_vault).")
     credentials.add_argument("--record-id", help="Record id for explicit 'reveal'.")
     credentials.add_argument("--destination", type=Path, help="New directory for 'backup'.")
     credentials.add_argument("--source", type=Path, help="Existing encrypted backup directory for 'restore'.")
+    credentials.add_argument("--project-root", type=Path, action="append",
+                             help="Approved project root for 'scan' (repeatable); scans real .env files only.")
+    credentials.add_argument("--archive-root", type=Path,
+                             help="Encrypted archive to scan as historical credential observations.")
+    credentials.add_argument("--archive-offset", type=int, default=0,
+                             help="First snapshot index in a fixed archive generation (default 0).")
+    credentials.add_argument("--archive-generation", type=int,
+                             help="Required with nonzero --archive-offset to prevent shifted snapshot ranges.")
+    credentials.add_argument("--max-snapshots", type=int,
+                             help="Bound this archive scan; an unfinished range reports complete=false.")
+    credentials.add_argument("--backup-before", type=Path,
+                             help="For 'scan', make a new authenticated encrypted vault backup before any findings are written.")
 
     hooks = subparsers.add_parser(
         "hooks",
@@ -1212,6 +1254,8 @@ def main() -> int:
             parser.error("credentials backup requires --destination")
         if args.action == "restore" and not args.source:
             parser.error("credentials restore requires --source")
+        if args.action == "scan" and not (args.project_root or args.archive_root):
+            parser.error("credentials scan requires --project-root or --archive-root")
         return cmd_credentials(args)
     if args.command == "hooks":
         return cmd_hooks(args)

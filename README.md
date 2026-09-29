@@ -551,11 +551,31 @@ legacy mode for vault-first use. Details of the older workflow remain in
 The optional `muninn-mcp[credential-vault]` extra provides a separate local
 encrypted credential store and `python -m muninn.cli credentials --help` for
 interactive setup, metadata search, explicit reveal, and portable backup/restore.
+An explicitly selected `credentials scan` prompts for the recovery passphrase
+locally, reads approved project `.env`/`.env.*` files and/or encrypted history
+snapshots, and stores conservative assignment-style credential candidates only
+inside the vault. It streams inputs, rolls a source back on mutation, decoding,
+or archive-integrity failure, and reports incomplete/error/ambiguous counts
+without printing values. Rescans are idempotent; changed project-file values
+replace their prior encrypted value, while historical transcript observations
+are labeled as historical rather than asserted current. Example, with your own
+private paths (no `D:` drive is required):
+
+```powershell
+python -m muninn.cli credentials scan --root '<your-private-data-dir>\credential_vault' --project-root '<your-project-root>' --archive-root '<your-private-data-dir>\history_secure_archive' --backup-before '<new-private-pre-scan-backup-dir>'
+python -m muninn.cli credentials search API_KEY --root '<your-private-data-dir>\credential_vault'
+python -m muninn.cli credentials backup --root '<your-private-data-dir>\credential_vault' --destination '<new-private-backup-dir>'
+```
+
+Only the named project roots and archive are scanned. Generated/example `.env`
+files, linked paths, unsupported assignments, and non-UTF-8 sources are not
+silently treated as recovered credentials; check the scan report and the source
+before assuming a key is absent. The passphrase is not stored for background
+scanning, so newly changed project files require another explicit local scan.
 Records may include a validated project-relative `.env` hint; the agent-facing
 `search_credential_metadata` tool requires `MUNINN_CREDENTIAL_AGENT_SEARCH=1`
-and returns metadata only. It does not yet scan or isolate credentials from
-transcript/project-file content, so an empty vault search is not evidence that
-a credential is absent from those sources.
+and returns metadata only. A vault search still cannot prove absence of a key
+in an unscanned, ambiguous, or unsupported source.
 The separate `/credentials/search` and `/credentials/reveal/{id}` API routes
 are disabled unless a dedicated `MUNINN_CREDENTIAL_API_TOKEN` is configured;
 reveal also requires the vault passphrase in a bounded JSON body and accepts

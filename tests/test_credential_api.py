@@ -96,6 +96,11 @@ async def test_opt_in_agent_metadata_search_never_reveals_values(tmp_path, monke
     store = CredentialStore.create(tmp_path / "credential_vault", _PASSPHRASE)
     store.add(passphrase=_PASSPHRASE, value=_VALUE, service="openrouter", project="example",
               source_hash=source_fingerprint("private-source"), source_hint="config/.env.local")
+    store.scan_source(
+        passphrase=_PASSPHRASE, source_hash=source_fingerprint("historical-chat"),
+        project="codex", origin="transcript",
+        findings=[("SERVICE_API_KEY", _VALUE, "")],
+    )
     headers = {"Authorization": f"Bearer {main_token}"}
     async with _client("127.0.0.1") as client:
         disabled = await client.post("/credentials/agent-search", json={"query": "openrouter"}, headers=headers)
@@ -112,6 +117,10 @@ async def test_opt_in_agent_metadata_search_never_reveals_values(tmp_path, monke
         assert set(found.json()["data"][0]) == {"id", "service", "project", "source_hash", "source_hint"}
         assert _VALUE not in found.text
         assert found.headers["cache-control"] == "no-store"
+        historical = await client.post("/credentials/agent-search", json={"query": "SERVICE_API_KEY"}, headers=headers)
+        assert historical.status_code == 200
+        assert historical.json()["data"][0]["origin"] == "transcript"
+        assert _VALUE not in historical.text
     async with _client("192.168.1.2") as remote:
         assert (await remote.post("/credentials/agent-search", json={"query": "openrouter"},
                                   headers=headers)).status_code == 404

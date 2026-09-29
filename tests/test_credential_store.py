@@ -94,9 +94,70 @@ def test_exact_legacy_schema_migrates_without_changing_record_aad(tmp_path: Path
                    "FROM credentials")
         db.execute("DROP TABLE credentials")
         db.execute("ALTER TABLE old_credentials RENAME TO credentials")
+        db.execute("PRAGMA user_version=0")
     migrated = CredentialStore(store.root)
     assert migrated.search("example")[0]["source_hint"] == ""
     assert migrated.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
+    assert migrated.backup(tmp_path / "legacy-backup", passphrase=_PASSPHRASE) == 1
+
+
+def test_unknown_legacy_schema_version_fails_closed(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    with store._connect() as db:
+        db.execute("CREATE TABLE old_credentials (id TEXT PRIMARY KEY, service TEXT NOT NULL, "
+                   "project TEXT NOT NULL, source_hash TEXT NOT NULL, envelope TEXT NOT NULL)")
+        db.execute("DROP TABLE credentials")
+        db.execute("ALTER TABLE old_credentials RENAME TO credentials")
+        db.execute("PRAGMA user_version=99")
+    with pytest.raises(VaultIntegrityError, match="schema version"):
+        CredentialStore(store.root)
+
+
+def test_empty_scan_validates_source_and_stales_active_rows(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    with pytest.raises(VaultIntegrityError):
+        store.scan_source(passphrase=_PASSPHRASE, source_hash="bad", project="test-project", origin="project", findings=[])
+    source = source_fingerprint("project/.env")
+    store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[("service", "value", ".env")])
+    assert store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[]) == {"created": 0, "rotated": 0, "staled": 1}
+    assert store.search("service") == []
+    assert store.search("service", active_only=False)[0]["active"] == 0
+
+
+def test_scan_session_reuses_unlock_and_invalidates_after_exit(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    with store.scan_session(_PASSPHRASE) as session:
+        for number in range(3):
+            result = session.scan_source(
+                passphrase=_PASSPHRASE,
+                source_hash=source_fingerprint(f"archive/{number}"),
+                project="test-project", origin="transcript",
+                findings=[("service", f"value-{number}", "")],
+            )
+            assert result["created"] == 1
+    with pytest.raises(VaultIntegrityError, match="closed"):
+        session.scan_source(passphrase=_PASSPHRASE, source_hash=source_fingerprint("after"),
+                            project="test-project", origin="transcript", findings=[])
+
+
+@pytest.mark.parametrize("tamper", ["header", "sentinel"])
+def test_scan_session_rechecks_vault_each_source_and_rolls_back(tmp_path: Path, tamper: str) -> None:
+    store = _new(tmp_path)
+    original_header = store.header_path.read_text(encoding="utf-8")
+    with store.scan_session(_PASSPHRASE) as session:
+        session.scan_source(passphrase=_PASSPHRASE, source_hash=source_fingerprint("first"),
+                            project="test-project", origin="transcript",
+                            findings=[("first", "value", "")])
+        if tamper == "header":
+            store.header_path.write_text(original_header.replace(store.header.vault_id, "0" * 32), encoding="utf-8")
+        else:
+            with store._connect() as db:
+                db.execute("DELETE FROM sentinel")
+        with pytest.raises(VaultIntegrityError):
+            session.scan_source(passphrase=_PASSPHRASE, source_hash=source_fingerprint("second"),
+                                project="test-project", origin="transcript",
+                                findings=[("second", "value", "")])
+    assert store.search("second") == []
 
 
 def test_header_and_sentinel_tamper_fail_closed(tmp_path: Path) -> None:
@@ -260,3 +321,73 @@ def test_inherited_directory_cannot_be_opened_as_vault(tmp_path: Path) -> None:
     root.mkdir()
     with pytest.raises(VaultPermissionError):
         CredentialStore.create(root, _PASSPHRASE)
+
+
+def test_project_scan_is_idempotent_rotates_and_stales(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    source = source_fingerprint("project/.env")
+    findings = [("openrouter", "one", ".env"), ("github", "two", "config/.env.local")]
+    first = store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=findings)
+    assert first["created"] == 2
+    second = store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=findings)
+    assert second == {"created": 0, "rotated": 0, "staled": 0}
+    store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[findings[0]])
+    assert len(store.search("test-project")) == 1
+    with store._connect(readonly=True) as db:
+        assert db.execute("SELECT COUNT(*) FROM credentials WHERE active=0").fetchone()[0] == 1
+    assert store.search("github") == []
+    rows = store.search("github", active_only=False)
+    assert rows and rows[0]["active"] == 0 and rows[0]["origin"] == "project"
+    record_id = rows[0]["id"]
+    assert store.reveal(record_id, passphrase=_PASSPHRASE) == "two"
+    backup = tmp_path / "stale-backup"
+    assert store.backup(backup, passphrase=_PASSPHRASE) == 2
+    assert CredentialStore(backup).reveal(record_id, passphrase=_PASSPHRASE) == "two"
+
+
+def test_transcript_scan_retains_distinct_values_and_tamper_fails(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    source = source_fingerprint("transcript/1")
+    for value in ("old", "new"):
+        store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="transcript", findings=[("service", value, "")])
+    with store._connect(readonly=True) as db:
+        rows = db.execute("SELECT id FROM credentials WHERE origin='transcript'").fetchall()
+        assert len(rows) == 2
+    with store._connect() as db:
+        db.execute("UPDATE credentials SET active=0 WHERE id=?", (rows[0][0],))
+    with pytest.raises(VaultIntegrityError):
+        store.reveal(rows[0][0], passphrase=_PASSPHRASE)
+
+
+def test_scan_generator_failure_rolls_back_everything(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    source = source_fingerprint("project/.env")
+
+    def failing():
+        yield ("first", "secret-1", ".env")
+        raise RuntimeError("late archive verification failure")
+
+    with pytest.raises(RuntimeError, match="late archive"):
+        store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=failing())
+    assert store.search("first") == []
+
+
+def test_concurrent_scans_are_idempotent(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    source = source_fingerprint("project/.env")
+    errors = []
+
+    def run():
+        try:
+            store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[("service", "value", ".env")])
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    with store._connect(readonly=True) as db:
+        assert db.execute("SELECT COUNT(*) FROM credentials").fetchone()[0] == 1

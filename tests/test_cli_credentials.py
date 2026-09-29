@@ -24,7 +24,9 @@ class _TTY(io.StringIO):
 
 def _args(action: str, root: Path, **overrides) -> argparse.Namespace:
     values = {"action": action, "root": root, "query": None, "record_id": None,
-              "destination": None, "source": None}
+              "destination": None, "source": None, "project_root": None,
+              "archive_root": None, "archive_offset": 0, "archive_generation": None,
+              "max_snapshots": None, "backup_before": None}
     values.update(overrides)
     return argparse.Namespace(**values)
 
@@ -67,3 +69,23 @@ def test_credential_parser_has_no_passphrase_argv_option() -> None:
     assert args.action == "reveal"
     with pytest.raises(SystemExit):
         parser.parse_args(["credentials", "init", "--passphrase", "do-not-put-secrets-in-argv"])
+
+
+def test_credential_cli_scans_selected_project_without_printing_value(tmp_path: Path, monkeypatch) -> None:
+    output = _TTY()
+    monkeypatch.setattr(sys, "stdin", _TTY())
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: _PASSPHRASE)
+    root = tmp_path / "vault"
+    CredentialStore.create(root, _PASSPHRASE)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("SERVICE_API_KEY=aaaabbbbcccc11112222\n")
+    backup = tmp_path / "before-scan"
+    assert cmd_credentials(_args("scan", root, project_root=[project], backup_before=backup)) == 0
+    assert CredentialStore(backup).search("SERVICE_API_KEY") == []
+    report = json.loads(output.getvalue().splitlines()[-1])
+    assert report["complete"] is True
+    assert report["project"]["inserted"] == 1
+    assert "aaaabbbbcccc11112222" not in output.getvalue()
+    assert CredentialStore(root).search("SERVICE_API_KEY")[0]["source_hint"] == ".env"

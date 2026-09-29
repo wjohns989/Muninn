@@ -1581,8 +1581,11 @@ async def credential_agent_search_endpoint(req: CredentialAgentSearchRequest):
     _credential_agent_search_times.append(now)
     try:
         matches = await asyncio.to_thread(_credential_store_for_api().search, req.query, limit=req.limit)
-        safe = [{key: item[key] for key in ("id", "service", "project", "source_hash", "source_hint")}
-                for item in matches]
+        safe = [
+            {**{key: item[key] for key in ("id", "service", "project", "source_hash", "source_hint")},
+             **({"origin": item["origin"]} if item.get("origin") in {"project", "transcript"} else {})}
+            for item in matches
+        ]
     except Exception:
         raise HTTPException(status_code=404, detail="Unavailable") from None
     return JSONResponse({"success": True, "data": safe}, headers=NO_STORE)
