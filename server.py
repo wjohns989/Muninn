@@ -620,6 +620,8 @@ async def health_check():
 
     try:
         health = await memory.health()
+        from muninn.history.vault import strict_history_mode
+        health["history_security_mode"] = "strict" if strict_history_mode() else "legacy"
         from muninn.mcp.http import http_transport_status
         from muninn.mcp.sse import sse_transport_status
         health["mcp_transports"] = {

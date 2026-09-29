@@ -136,16 +136,15 @@
                 <canvas id="brain-pulse"></canvas>
 
                 <div class="help-box">
-                    <b>🧠 Muninn Semantic Engine</b>
-                    Welcome to the dashboard. The neural visualizer above reflects real-time Temporal Knowledge Graph
-                    (TKG) consolidation. Memories ingested here are intelligently evaluated, stored, and
-                    shadow-versioned using biological consolidation principles.
+                    <b>🧠 Muninn Local Service</b>
+                    The visualization above is decorative, not live telemetry. The counts below describe ordinary
+                    memory and graph storage; encrypted transcript coverage and queued model work are separate.
                 </div>
 
                 <div class="stat-grid">
                     <div class="stat-card">
                         <div class="stat-header">
-                            <span class="stat-label">Memory Nodes</span>
+                            <span class="stat-label">Ordinary Memories</span>
                             <svg class="rune-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
                                 stroke="var(--neon-purple)" stroke-width="2">
                                 <path d="M12 2v20M5 7l7 5 7-5M5 17l7-5 7 5" />
@@ -155,7 +154,7 @@
                     </div>
                     <div class="stat-card">
                         <div class="stat-header">
-                            <span class="stat-label">Active Entities</span>
+                            <span class="stat-label">Graph Nodes</span>
                             <svg class="rune-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
                                 stroke="var(--neon-blue)" stroke-width="2">
                                 <path d="M12 2L2 22h20L12 2zM12 8l4 8H8l4-8z" />
@@ -173,7 +172,7 @@
                                 <circle cx="12" cy="12" r="1.5" fill="var(--emerald-400)" />
                             </svg>
                         </div>
-                        <div class="stat-value" id="stat-profile">Balanced</div>
+                        <div class="stat-value" id="stat-profile">Not reported</div>
                     </div>
                 </div>
 
@@ -188,10 +187,9 @@
             <!-- TAB: INGEST -->
             <div id="tab-ingest" class="tab-content">
                 <div class="help-box">
-                    <b>📥 Zero-Trust Ingestion</b>
-                    Information added here initiates as "Episodic Context." Subprocess isolation guarantees secure
-                    parsing, while our TKG infrastructure evaluates contradictions against existing semantic fact nodes
-                    automatically.
+                    <b>📥 Ordinary Memory Ingestion</b>
+                    Text entered here is stored in ordinary searchable memory. Do not enter credentials. Encrypted
+                    transcript capture and credential discovery use separate workflows.
                 </div>
 
                 <div class="card">
@@ -233,7 +231,13 @@
                         & Ingest</button>
                 </div>
 
-                <div class="card" id="legacy-section">
+                <div class="card" id="strict-history-note" style="display:none">
+                    <h3>Encrypted history is active</h3>
+                    <p class="card-description">Legacy plaintext transcript import is unavailable in strict mode.
+                        Encrypted history capture and search continue separately from ordinary memory.</p>
+                </div>
+
+                <div class="card" id="legacy-section" style="display:none">
                     <h3>Legacy Assistant Discovery</h3>
                     <p class="card-description">Scan local
                         environments (Claude, VS Code, Cursor) for fragmented chat context to integrate into the central
@@ -342,6 +346,7 @@
         let SECURITY_ENABLED = true;
 
         let AUTH_TOKEN = "";
+        let HISTORY_SECURITY_MODE = "unknown";
         let healthPoll = null;
         let scanPoll = null;
         // Retire credentials persisted by older dashboard releases.
@@ -539,7 +544,7 @@
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
 
             // Auto-load legacy catalog if switching to ingest
-            if (tabId === 'ingest') {
+            if (tabId === 'ingest' && HISTORY_SECURITY_MODE === 'legacy') {
                 discoverLegacySources(true);
             }
         }
@@ -787,6 +792,7 @@
         }
 
         async function discoverLegacySources(useCache = true) {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             const btn = useCache ? document.getElementById('catalog-btn') : document.getElementById('scan-btn');
             const resDiv = document.getElementById('legacy-results');
             const originalText = btn.textContent;
@@ -878,6 +884,7 @@
         }
 
         async function importAllLegacy() {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             const btn = document.getElementById('import-all-btn');
             if (!confirm(`This will discover and import ALL legacy sources into Muninn\'s memory. This may take several minutes. Proceed?`)) return;
 
@@ -921,6 +928,7 @@
         }
 
         async function importLegacy(sourceId) {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             log(`Initiating parse for target ID: ${sourceId}`);
             const data = await api('/ingest/legacy/import', 'POST', { selected_source_ids: [sourceId] });
             const added = data.data ? data.data.added_memories : 0;
@@ -998,12 +1006,18 @@
             } else {
                 healthDot.className = 'status-dot online';
                 authDot.className = 'status-dot online';
+                HISTORY_SECURITY_MODE = data.history_security_mode || 'unknown';
+                document.getElementById('legacy-section').style.display =
+                    HISTORY_SECURITY_MODE === 'legacy' ? '' : 'none';
+                document.getElementById('strict-history-note').style.display =
+                    HISTORY_SECURITY_MODE === 'strict' ? '' : 'none';
                 updateStats(data);
             }
         }
 
         async function updateScanBadge() {
             if (!AUTH_TOKEN && SECURITY_ENABLED) return;
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             const data = await api('/ingest/legacy/status');
             const badge = document.getElementById('ingest-badge');
             if (data && data.active_scans > 0) {
@@ -1022,8 +1036,8 @@
             if (!data) return;
             document.getElementById('stat-total').innerText = data.memory_count || 0;
             document.getElementById('stat-entities').innerText = data.graph_nodes || 0;
-            // Get profile from health or just use the UI defaults
-            const profileDisplay = (data.active_profile || 'Balanced').charAt(0).toUpperCase() + (data.active_profile || 'Balanced').slice(1);
+            const reportedProfile = data.active_profile || 'Not reported';
+            const profileDisplay = reportedProfile.charAt(0).toUpperCase() + reportedProfile.slice(1);
             document.getElementById('stat-profile').innerText = profileDisplay;
         }
 

@@ -19,6 +19,27 @@ def test_anonymous_dashboard_never_contains_active_bearer(monkeypatch):
     assert "{{MUNINN_TOKEN}}" not in response.text
 
 
+def test_legacy_import_controls_start_hidden_until_health_confirms_legacy():
+    response = TestClient(server.app).get("/")
+
+    assert response.status_code == 200
+    assert 'id="legacy-section" style="display:none"' in response.text
+    assert "HISTORY_SECURITY_MODE === 'legacy'" in response.text
+
+
+def test_health_reports_effective_history_security_mode(monkeypatch):
+    class HealthyMemory:
+        async def health(self):
+            return {"status": "ok"}
+
+    monkeypatch.setattr(server, "memory", HealthyMemory())
+    client = TestClient(server.app)
+    monkeypatch.delenv("MUNINN_HISTORY_SECURITY", raising=False)
+    assert client.get("/health").json()["history_security_mode"] == "strict"
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
+    assert client.get("/health").json()["history_security_mode"] == "legacy"
+
+
 def test_dashboard_token_check_rejects_wrong_bearer_without_disclosing_right_one(monkeypatch):
     sentinel = "dashboard-test-valid-bearer"
     monkeypatch.setattr(server, "is_security_enabled", lambda: True)
