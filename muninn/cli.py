@@ -1156,8 +1156,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Add Muninn session hooks to Claude Code, Codex, and Gemini CLI.",
         description=(
             "Session start: the agent receives the project briefing (goal, open handoffs, earlier\n"
-            "threads from every app). Before compaction and at session end: the transcript is copied\n"
-            "to the vault and imported, so nothing compaction drops is lost. Dry run unless --apply;\n"
+            "threads from every app). Before compaction and at session end: a strict-mode hook\n"
+            "durably queues transcript capture; archival and indexing finish asynchronously.\n"
+            "A successful hook receipt does not guarantee that source bytes were copied.\n"
+            "Dry run unless --apply;\n"
             "settings files are backed up; only Muninn's own entries are changed."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1173,10 +1175,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set up the OpenRouter key used to analyze imported conversations.",
         description=(
             "status  show which key and models are used (the key is masked)\n"
-            "set     save a key (prompted, hidden, verified with OpenRouter) and optionally --model\n"
-            "clear   remove the saved key; analysis falls back to local Ollama\n"
-            "Every request requires zero data retention. The key is stored in Muninn's config\n"
-            "directory with owner-only permissions; OPENROUTER_API_KEY in the environment wins."
+            "set     prompt for a key, verify it, use it in this process, and optionally save a model\n"
+            "clear   remove saved nonsecret model settings; analysis falls back to local Ollama\n"
+            "Every request requires zero data retention. Set MUNINN_OPENROUTER_API_KEY in the\n"
+            "process or Windows user environment for persistent use; no key is saved to config."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

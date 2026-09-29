@@ -629,21 +629,44 @@ class SecureHistoryBlindIndex:
                 found: set[str] = set()
                 decoder = codecs.getincrementaldecoder("utf-8")("strict")
                 carry = ""
+                carry_is_start = True
+                overlap = max(map(len, terms)) + 2
+
+                def check_window(text: str, *, at_start: bool, final: bool) -> None:
+                    # A right boundary at a chunk end is not yet known. The
+                    # overlap carries the entire possible term into the next
+                    # chunk; no whole-file token list is ever constructed.
+                    for term in terms:
+                        if term in found:
+                            continue
+                        offset = 0
+                        while (position := text.find(term, offset)) >= 0:
+                            end = position + len(term)
+                            left = (at_start if position == 0 else
+                                    _TERM.fullmatch(text[position - 1]) is None)
+                            right = (final if end == len(text) else
+                                     _TERM.fullmatch(text[end]) is None)
+                            if left and right:
+                                found.add(term)
+                                break
+                            offset = position + 1
 
                 def accept(chunk: bytes) -> None:
-                    nonlocal carry
+                    nonlocal carry, carry_is_start
                     try:
-                        text = carry + decoder.decode(chunk)
+                        text = carry + decoder.decode(chunk).casefold()
                     except UnicodeDecodeError as exc:
                         raise VaultIntegrityError("History search text is not valid UTF-8") from exc
-                    found.update(term for term in _terms(text) if term in terms)
-                    carry = text[-128:]
+                    check_window(text, at_start=carry_is_start, final=False)
+                    carry_is_start = carry_is_start and len(text) <= overlap
+                    carry = text[-overlap:]
 
                 self.archive._verify_entry(entry, collect=False, on_chunk=accept)
                 try:
-                    decoder.decode(b"", final=True)
+                    tail = decoder.decode(b"", final=True)
                 except UnicodeDecodeError as exc:
                     raise VaultIntegrityError("History search text is not valid UTF-8") from exc
+                check_window(carry + tail.casefold(), at_start=carry_is_start, final=True)
                 if not all(term in found for term in terms):
                     continue
                 seen_refs.add(ref)

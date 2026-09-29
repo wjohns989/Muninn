@@ -211,6 +211,71 @@ def test_token_crossing_encrypted_chunk_boundary_is_found(tmp_path: Path, monkey
     assert len(index.search("extraordinarytoken")["matches"]) == 1
 
 
+def test_candidate_check_does_not_tokenize_every_word_in_large_snapshot(tmp_path: Path,
+                                                                         monkeypatch) -> None:
+    source = tmp_path / "large-chat.jsonl"
+    source.write_text("ordinary filler " * 100000 + " distincttarget ", encoding="utf-8")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", PASSPHRASE)
+    archive.archive_file(source, "codex")
+    index = SecureHistoryBlindIndex(archive)
+    assert index.build()["complete"] is True
+    from muninn.history import blind_index
+
+    original = blind_index._terms
+
+    def bounded_terms(value: str) -> list[str]:
+        assert len(value) < 1000, "search tokenized transcript content"
+        return original(value)
+
+    monkeypatch.setattr(blind_index, "_terms", bounded_terms)
+    assert len(index.search("distincttarget")["matches"]) == 1
+
+
+def test_candidate_check_rejects_substring_after_forced_filter_hit(tmp_path: Path,
+                                                                   monkeypatch) -> None:
+    source = tmp_path / "chat.jsonl"
+    source.write_text("foobar", encoding="utf-8")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", PASSPHRASE)
+    archive.archive_file(source, "codex")
+    index = SecureHistoryBlindIndex(archive)
+    assert index.build()["complete"] is True
+    positions = index._positions("foobar")
+    monkeypatch.setattr(index, "_positions", lambda _term, _bytes=None: positions)
+    assert index.search("foo")["matches"] == []
+
+
+@pytest.mark.parametrize("content, query", [
+    ("prefix " + "a" * 64 + " suffix", "a" * 64),
+    ("first STRAẞE last", "strasse"),
+])
+def test_candidate_check_handles_max_term_and_casefold_across_chunks(
+    tmp_path: Path, monkeypatch, content: str, query: str,
+) -> None:
+    monkeypatch.setattr("muninn.history.secure_archive._CHUNK", 16)
+    source = tmp_path / "chat.jsonl"
+    source.write_text(content, encoding="utf-8")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", PASSPHRASE)
+    archive.archive_file(source, "codex")
+    index = SecureHistoryBlindIndex(archive)
+    assert index.build()["complete"] is True
+    assert len(index.search(query)["matches"]) == 1
+
+
+def test_candidate_check_rejects_repeated_embedded_terms_across_chunks(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setattr("muninn.history.secure_archive._CHUNK", 16)
+    source = tmp_path / "chat.jsonl"
+    source.write_text("prefoopost " * 100, encoding="utf-8")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", PASSPHRASE)
+    archive.archive_file(source, "codex")
+    index = SecureHistoryBlindIndex(archive)
+    assert index.build()["complete"] is True
+    positions = index._positions("prefoopost")
+    monkeypatch.setattr(index, "_positions", lambda _term, _bytes=None: positions)
+    assert index.search("foo")["matches"] == []
+
+
 def test_invalid_utf8_and_unbounded_candidate_budget_fail_closed(tmp_path: Path) -> None:
     source = tmp_path / "invalid.jsonl"
     source.write_bytes(b"topic \xff binary-like transcript")
