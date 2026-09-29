@@ -612,7 +612,9 @@ transcript observations are labeled historical, not asserted current. Each
 inaccessible directory increments `walk_errors` and `errors` without stopping
 accessible siblings or the independent archive scan; the final report remains
 `complete=false` and the command exits with code 2 until every coverage gap is
-resolved. Source hints retain valid long and Unicode relative paths rather
+resolved. Project reports likewise classify `root`, `walk`, `path`, `metadata`,
+`utf8`, `io`, `source_changed`, and `other`; `walk_errors` remains a compatible
+count of root and walk gaps and must not be added to `errors` again. Source hints retain valid long and Unicode relative paths rather
 than rejecting them at an arbitrary short display limit. Each
 fully verified archive snapshot commits an authenticated scan receipt in the
 same vault transaction as its findings, including snapshots with no findings.

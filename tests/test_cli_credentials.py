@@ -125,5 +125,8 @@ def test_walk_error_does_not_prevent_archive_phase(tmp_path: Path, monkeypatch) 
     assert report["complete"] is False
     assert report["project"]["walk_errors"] == 2
     assert report["project"]["errors"] == 2
+    assert report["project"]["error_categories"]["walk"] == 1
+    assert report["project"]["error_categories"]["root"] == 1
+    assert sum(report["project"]["error_categories"].values()) == 2
     assert report["archive"]["succeeded"] == 1
     assert "private inaccessible child" not in output.getvalue()

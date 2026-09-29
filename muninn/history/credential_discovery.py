@@ -75,6 +75,14 @@ class CredentialScanMetadataError(ValueError):
     """An archive entry cannot be represented as safe credential metadata."""
 
 
+class CredentialScanPathError(ValueError):
+    """A selected project source is not a safe in-root regular file."""
+
+
+class CredentialScanSourceChangedError(RuntimeError):
+    """A selected source changed before its scan could commit."""
+
+
 def _acceptable_value(value: str) -> bool:
     return not (_PLACEHOLDER.search(value) or len(set(value)) < 4)
 
@@ -186,6 +194,9 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
     report: dict[str, int | bool] = {
         "files": 0, "succeeded": 0, "errors": 0, "walk_errors": 0, "ambiguous": 0,
         "candidates": 0, "inserted": 0, "updated": 0, "stale": 0, "complete": False,
+        "error_categories": {name: 0 for name in (
+            "root", "walk", "path", "metadata", "utf8", "io", "source_changed", "other"
+        )},
     }
     try:
         root = Path(root).absolute()
@@ -196,8 +207,11 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
         # A missing/inaccessible selected root is a coverage gap, not a reason
         # to abort other selected roots or the independent archive phase.
         report["walk_errors"] = report["errors"] = 1
+        report["error_categories"]["root"] = 1
         if progress is not None:
-            progress({key: report[key] for key in ("files", "succeeded", "errors", "walk_errors", "ambiguous")})
+            progress({key: report[key] for key in (
+                "files", "succeeded", "errors", "walk_errors", "ambiguous", "error_categories"
+            )})
         return report
     project_names: dict[Path, str] = {root: root.name}
 
@@ -220,17 +234,24 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
         # Count the coverage gap without exposing its path or exception text.
         report["walk_errors"] += 1
         report["errors"] += 1
+        report["error_categories"]["walk"] += 1
 
     for path in _env_files(root, all_project_text=all_project_text, onerror=walk_error):
         report["files"] += 1
         try:
             if _is_link_or_junction(path):
-                raise ValueError("Credential source link is unsupported")
+                raise CredentialScanPathError("Credential source link is unsupported")
             resolved = path.resolve(strict=True)
             if not resolved.is_relative_to(root) or not resolved.is_file():
-                raise ValueError("Credential source left approved root")
-            hint = path.relative_to(root).as_posix()
-            _validated_source_hint(hint)
+                raise CredentialScanPathError("Credential source left approved root")
+            try:
+                hint = path.relative_to(root).as_posix()
+                _validated_source_hint(hint)
+            except (ValueError, VaultIntegrityError):
+                raise CredentialScanPathError("Invalid credential source path") from None
+            project = project_name(path.parent)
+            if not _valid_project_label(project):
+                raise CredentialScanMetadataError("Invalid credential project label")
             stats = ExtractionStats()
 
             def findings() -> Iterator[tuple[str, str, str]]:
@@ -238,7 +259,7 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
                 with path.open("rb") as handle:
                     opened = os.fstat(handle.fileno())
                     if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-                        raise RuntimeError("Credential source identity changed")
+                        raise CredentialScanSourceChangedError("Credential source identity changed")
                     def chunks() -> Iterator[bytes]:
                         while block := handle.read(_CHUNK):
                             yield block
@@ -251,11 +272,11 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
                         != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
                         or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
                         != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)):
-                    raise RuntimeError("Credential source changed during scan")
+                    raise CredentialScanSourceChangedError("Credential source changed during scan")
 
             counts = store.scan_source(
                 passphrase=passphrase, source_hash=source_fingerprint(str(resolved)),
-                project=project_name(path.parent), origin="project", findings=findings(),
+                project=project, origin="project", findings=findings(),
             )
             report["succeeded"] += 1
             report["ambiguous"] += stats.ambiguous
@@ -263,15 +284,26 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
             report["inserted"] += counts["created"]
             report["updated"] += counts["rotated"]
             report["stale"] += counts["staled"]
-        except (OSError, UnicodeError, ValueError, RuntimeError):
+        except (OSError, UnicodeError, ValueError, RuntimeError, TypeError, KeyError) as exc:
             # Do not put a path, value, decoder excerpt, or exception text in
             # agent-visible status or logs. Other files may still be scanned.
             report["errors"] += 1
+            category = ("path" if isinstance(exc, CredentialScanPathError)
+                        else "metadata" if isinstance(exc, CredentialScanMetadataError)
+                        else "source_changed" if isinstance(exc, CredentialScanSourceChangedError)
+                        else "utf8" if isinstance(exc, UnicodeError)
+                        else "io" if isinstance(exc, OSError)
+                        else "other")
+            report["error_categories"][category] += 1
         if progress is not None and report["files"] % 100 == 0:
-            progress({key: report[key] for key in ("files", "succeeded", "errors", "walk_errors", "ambiguous")})
+            progress({key: report[key] for key in (
+                "files", "succeeded", "errors", "walk_errors", "ambiguous", "error_categories"
+            )})
     report["complete"] = report["errors"] == 0
     if progress is not None:
-        progress({key: report[key] for key in ("files", "succeeded", "errors", "walk_errors", "ambiguous")})
+        progress({key: report[key] for key in (
+            "files", "succeeded", "errors", "walk_errors", "ambiguous", "error_categories"
+        )})
     return report
 
 

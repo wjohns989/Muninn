@@ -37,7 +37,7 @@ _RECEIPT_SCHEMA = (
 )
 _SENTINEL_ID = "__vault_sentinel__"
 _SENTINEL_VALUE = "muninn-credential-vault-v1"
-_SAFE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}\Z")
+_SAFE_LABEL = re.compile(r"[A-Za-z0-9_][A-Za-z0-9 _.-]{0,63}\Z")
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 _OLD_COLUMNS = ["id", "service", "project", "source_hash", "envelope"]
 _LEGACY_COLUMNS = [*_OLD_COLUMNS, "source_hint"]

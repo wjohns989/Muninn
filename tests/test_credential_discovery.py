@@ -64,6 +64,8 @@ def test_project_scan_excludes_templates_and_reports_bad_source(tmp_path):
     assert report["files"] == 2
     assert report["succeeded"] == 1
     assert report["errors"] == 1
+    assert report["error_categories"]["utf8"] == 1
+    assert sum(report["error_categories"].values()) == report["errors"]
     assert report["complete"] is False
     assert len(store.values) == 1
     assert store.values[0][0] == "SERVICE_API_KEY"
@@ -120,6 +122,8 @@ def test_walk_error_is_counted_and_accessible_siblings_continue(tmp_path, monkey
     assert report["succeeded"] == 2
     assert report["walk_errors"] == 1
     assert report["errors"] == 1
+    assert report["error_categories"]["walk"] == 1
+    assert sum(report["error_categories"].values()) == report["errors"]
     assert report["complete"] is False
     assert len(store.values) == 2
     assert "private inaccessible" not in str(report) + str(progress)
@@ -151,6 +155,8 @@ def test_missing_project_root_returns_incomplete_report(tmp_path):
                                 passphrase="test-only", progress=progress.append)
     assert report["files"] == 0
     assert report["errors"] == report["walk_errors"] == 1
+    assert report["error_categories"]["root"] == 1
+    assert sum(report["error_categories"].values()) == report["errors"]
     assert report["complete"] is False
     assert "missing" not in str(report) + str(progress)
 
@@ -216,8 +222,63 @@ def test_symlinked_env_is_rejected_without_following(tmp_path):
     store = RecordingStore()
     report = scan_project_env(root, store, passphrase="test-only")
     assert report["errors"] == 1
+    assert report["error_categories"]["path"] == 1
     assert report["complete"] is False
     assert store.values == []
+
+
+@pytest.mark.parametrize("failure, category", [
+    (discovery.CredentialScanSourceChangedError("private source"), "source_changed"),
+    (OSError("private path"), "io"),
+    (RuntimeError("private internal detail"), "other"),
+    (TypeError("private data shape"), "other"),
+    (KeyError("private missing field"), "other"),
+])
+def test_project_scan_error_categories_hide_exception_text(tmp_path, failure, category):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".env").write_text("SERVICE_API_KEY=aaaabbbbcccc11112222\n")
+
+    class FailingStore:
+        def scan_source(self, **_kwargs):
+            raise failure
+
+    report = scan_project_env(root, FailingStore(), passphrase="synthetic vault passphrase")
+    assert report["error_categories"][category] == 1
+    assert sum(report["error_categories"].values()) == report["errors"] == 1
+    assert "private" not in str(report)
+
+
+def test_project_invalid_label_is_metadata_category(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".env").write_text("SERVICE_API_KEY=aaaabbbbcccc11112222\n")
+    monkeypatch.setattr(discovery, "_valid_project_label", lambda _name: False)
+
+    report = scan_project_env(root, RecordingStore(), passphrase="synthetic vault passphrase")
+    assert report["error_categories"]["metadata"] == 1
+    assert sum(report["error_categories"].values()) == report["errors"] == 1
+
+
+def test_project_type_error_continues_to_accessible_sibling(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".env").write_text("FIRST_API_KEY=aaaabbbbcccc11112222\n")
+    (root / "settings.json").write_text('SECOND_API_KEY="bbbbcccc111122223333"\n')
+
+    class OneBadStore(RecordingStore):
+        def scan_source(self, *, findings, **kwargs):
+            if kwargs["source_hash"] == discovery.source_fingerprint(str((root / ".env").resolve())):
+                raise TypeError("private data shape")
+            return super().scan_source(findings=findings, **kwargs)
+
+    store = OneBadStore()
+    report = scan_project_files(root, store, passphrase="synthetic vault passphrase")
+    assert report["files"] == 2
+    assert report["succeeded"] == 1
+    assert report["error_categories"]["other"] == 1
+    assert sum(report["error_categories"].values()) == report["errors"] == 1
+    assert "private data shape" not in str(report)
 
 
 def test_transcript_assignment_scans_across_chunks_without_claiming_current_use():
@@ -274,6 +335,20 @@ def test_real_vault_archive_scan_is_idempotent_and_metadata_only(tmp_path):
     with pytest.raises(ValueError, match="generation changed"):
         scan_archive(archive, store, passphrase="synthetic vault passphrase",
                      offset=1, expected_generation=first["generation"] + 1)
+
+
+def test_leading_underscore_secret_name_can_commit_to_vault(tmp_path):
+    archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive passphrase")
+    source = tmp_path / "chat.jsonl"
+    source.write_text("_API_KEY=aaaabbbbcccc11112222\n")
+    archive.archive_file(source, "codex")
+    store = CredentialStore.create(tmp_path / "vault", "synthetic vault passphrase")
+
+    report = scan_archive(archive, store, passphrase="synthetic vault passphrase")
+
+    assert report["complete"] is True
+    assert report["inserted"] == 1
+    assert store.search("_API_KEY")[0]["service"] == "_API_KEY"
 
 
 def test_archive_utf8_failure_reports_only_category_and_rolls_back(tmp_path):
