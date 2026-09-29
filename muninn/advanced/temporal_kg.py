@@ -52,29 +52,54 @@ class TemporalKnowledgeGraph:
         Record a fact that is true only for a specific time window.
         If valid_end is None, it is currently true (open-ended).
         """
+        return self.add_temporal_facts_batch([{
+            "subject": subject,
+            "predicate": predicate,
+            "obj": obj,
+            "valid_start": valid_start,
+            "source_memory": source_memory,
+            "valid_end": valid_end
+        }])
+
+    def add_temporal_facts_batch(self, facts: List[Dict[str, Any]]) -> bool:
+        """Batch record facts that are true for specific time windows."""
+        if not facts:
+            return True
+
+        # Pre-create all entities first to ensure they exist
+        entities_to_add = []
+        for f in facts:
+            entities_to_add.append({"name": f["subject"], "entity_type": "unknown"})
+            entities_to_add.append({"name": f["obj"], "entity_type": "unknown"})
+        self.graph.add_entities_batch(entities_to_add)
+
         conn = self.graph._get_conn()
-        # Ensure entities exist
-        self.graph.add_entity(subject, "unknown")
-        self.graph.add_entity(obj, "unknown")
         
-        end = valid_end if valid_end is not None else float("inf")
-        
+        facts_params = []
+        for f in facts:
+            valid_end = f.get("valid_end")
+            end = valid_end if valid_end is not None else float("inf")
+            facts_params.append({
+                "subj": f["subject"],
+                "obj": f["obj"],
+                "pred": f["predicate"],
+                "start": float(f["valid_start"]),
+                "valid_until": float(end),
+                "source_mem": f["source_memory"],
+            })
+
         try:
             conn.execute(
-                "MATCH (a:Entity {name: $subj}), (b:Entity {name: $obj}) "
-                "CREATE (a)-[:VALID_DURING {predicate: $pred, start_time: $start, end_time: $valid_until, source_memory: $source_mem}]->(b)",
-                {
-                    "subj": subject,
-                    "obj": obj,
-                    "pred": predicate,
-                    "start": float(valid_start),
-                    "valid_until": float(end),
-                    "source_mem": source_memory,
-                }
+                """
+                UNWIND $facts AS f
+                MATCH (a:Entity {name: f.subj}), (b:Entity {name: f.obj})
+                CREATE (a)-[:VALID_DURING {predicate: f.pred, start_time: f.start, end_time: f.valid_until, source_memory: f.source_mem}]->(b)
+                """,
+                {"facts": facts_params}
             )
             return True
         except Exception as e:
-            logger.warning(f"Failed to add temporal fact: {e}")
+            logger.warning(f"Failed to batch add temporal facts: {e}")
             return False
 
     def shadow_edge(
@@ -88,23 +113,41 @@ class TemporalKnowledgeGraph:
         Closes the validity window of an active temporal fact, creating a "Shadow Edge".
         This preserves the fact in history but bypasses it for current-day retrieval.
         """
+        return self.shadow_edges_batch([{
+            "subject": subject,
+            "predicate": predicate,
+            "obj": obj,
+            "superseded_at": superseded_at
+        }])
+
+    def shadow_edges_batch(self, edges: List[Dict[str, Any]]) -> bool:
+        """Closes the validity window of multiple active temporal facts."""
+        if not edges:
+            return True
+
         conn = self.graph._get_conn()
+        shadow_params = []
+        for e in edges:
+            shadow_params.append({
+                "subj": e["subject"],
+                "pred": e["predicate"],
+                "obj": e["obj"],
+                "ts": float(e["superseded_at"]),
+            })
+
         try:
-            # Match the active edge (where end_time is in the future or inf) and bound it to now.
             conn.execute(
-                "MATCH (a:Entity {name: $subj})-[r:VALID_DURING {predicate: $pred}]->(b:Entity {name: $obj}) "
-                "WHERE r.end_time >= $ts "
-                "SET r.end_time = $ts",
-                {
-                    "subj": subject,
-                    "pred": predicate,
-                    "obj": obj,
-                    "ts": float(superseded_at),
-                }
+                """
+                UNWIND $shadows AS s
+                MATCH (a:Entity {name: s.subj})-[r:VALID_DURING {predicate: s.pred}]->(b:Entity {name: s.obj})
+                WHERE r.end_time >= s.ts
+                SET r.end_time = s.ts
+                """,
+                {"shadows": shadow_params}
             )
             return True
         except Exception as e:
-            logger.warning(f"Failed to shadow temporal edge: {e}")
+            logger.warning(f"Failed to batch shadow temporal edges: {e}")
             return False
 
     def shadow_memory_edges(
@@ -115,20 +158,34 @@ class TemporalKnowledgeGraph:
         """
         Closes the validity window of all active temporal facts sourced from a specific memory.
         """
+        return self.shadow_memory_edges_batch([{"memory_id": memory_id, "superseded_at": superseded_at}])
+
+    def shadow_memory_edges_batch(self, memories: List[Dict[str, Any]]) -> bool:
+        """Closes the validity window of temporal facts sourced from specific memories."""
+        if not memories:
+            return True
+
         conn = self.graph._get_conn()
+        shadow_params = []
+        for m in memories:
+            shadow_params.append({
+                "mem_id": m["memory_id"],
+                "ts": float(m["superseded_at"]),
+            })
+
         try:
             conn.execute(
-                "MATCH (:Entity)-[r:VALID_DURING {source_memory: $mem_id}]->(:Entity) "
-                "WHERE r.end_time >= $ts "
-                "SET r.end_time = $ts",
-                {
-                    "mem_id": memory_id,
-                    "ts": float(superseded_at),
-                }
+                """
+                UNWIND $shadows AS s
+                MATCH (:Entity)-[r:VALID_DURING {source_memory: s.mem_id}]->(:Entity)
+                WHERE r.end_time >= s.ts
+                SET r.end_time = s.ts
+                """,
+                {"shadows": shadow_params}
             )
             return True
         except Exception as e:
-            logger.warning(f"Failed to shadow memory edges: {e}")
+            logger.warning(f"Failed to batch shadow memory edges: {e}")
             return False
 
     def query_valid_at(self, timestamp: float, limit: int = 50) -> List[Dict[str, Any]]:
