@@ -35,6 +35,43 @@ def test_model_output_is_bounded_and_secret_scrubbed():
     assert "Keep local transcript capture" in cleaned["decisions"][0]
 
 
+def test_model_cannot_echo_unlabeled_secret_from_its_input():
+    marker = "CANARY-SECRET-91919"
+    content = json.dumps({
+        "summary": f"Use {marker} for the service.",
+        "decisions": [], "open_items": [], "uncertainty": "Not verified.",
+    })
+    assert marker not in str(analysis._clean_result(content, source_span=f"API_KEY={marker}"))
+
+
+def test_model_echo_scrub_covers_every_field_and_multiple_values():
+    first = "CANARY-SECRET-91919"
+    second = "CANARY-SECRET-91919-EXTRA"
+    content = json.dumps({
+        "summary": second,
+        "decisions": [first], "open_items": [second], "uncertainty": first,
+    })
+    cleaned = analysis._clean_result(content, source_span=f"API_KEY={first}\nTOKEN={second}")
+    assert first not in str(cleaned) and second not in str(cleaned)
+    assert "[REDACTED_SOURCE_VALUE]" in str(cleaned)
+
+
+def test_model_echo_scrub_errors_do_not_repeat_source():
+    marker = "CANARY-SECRET-91919"
+    with pytest.raises(ValueError) as failure:
+        analysis._clean_result("not json", source_span=f"API_KEY={marker}")
+    assert marker not in str(failure.value)
+
+
+@pytest.mark.parametrize("label", ["TOKEN", "private key"])
+def test_model_echo_scrub_covers_standalone_credential_labels(label):
+    marker = "CANARY-SECRET-91919"
+    content = json.dumps({
+        "summary": marker, "decisions": [], "open_items": [], "uncertainty": "Unknown.",
+    })
+    assert marker not in str(analysis._clean_result(content, source_span=f"{label}={marker}"))
+
+
 @pytest.mark.asyncio
 async def test_local_route_uses_capability_and_unloads_model(monkeypatch):
     seen = {}

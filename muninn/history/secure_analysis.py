@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from dataclasses import replace
 from urllib.parse import urlparse
 
@@ -37,6 +38,10 @@ _SCHEMA = {
 }
 _DEFAULT_PREFERRED = ("qwen2.5:7b", "qwen2.5-coder:14b")
 _MODEL_TIMEOUT = 180.0
+_SOURCE_CREDENTIAL = re.compile(
+    r"(?i)\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|bearer|password|passwd|"
+    r"secret|client[_-]?secret|private[\s_-]?key)\b\s*[:= ]\s*['\"]?([^\s'\";,]{6,512})"
+)
 
 
 def _loopback_ollama_url() -> str:
@@ -93,9 +98,11 @@ def _prompt(span: str) -> list[dict[str, str]]:
     ]
 
 
-def _clean_result(content: str) -> dict[str, object]:
+def _clean_result(content: str, *, source_span: str = "") -> dict[str, object]:
     if not content or len(content) > 50_000:
         raise ValueError("Model analysis output is invalid")
+    if not isinstance(source_span, str) or len(source_span) > 3000:
+        raise ValueError("Model analysis input is invalid")
     parsed = json.loads(content)
     if not isinstance(parsed, dict) or set(parsed) != set(_SCHEMA["required"]):
         raise ValueError("Model analysis output is invalid")
@@ -107,8 +114,16 @@ def _clean_result(content: str) -> dict[str, object]:
         ):
             raise ValueError("Model analysis output is invalid")
 
+    source_values = {match.group(1) for match in _SOURCE_CREDENTIAL.finditer(source_span)}
+    if len(source_values) > 128:
+        raise ValueError("Model analysis input is invalid")
+    ordered_values = sorted(source_values, key=len, reverse=True)
+
     def scrub(text: str, limit: int) -> str:
-        return sanitize_agent_span(text[: min(len(text), 12000)], max_chars=limit)
+        text = text[: min(len(text), 12000)]
+        for value in ordered_values:
+            text = text.replace(value, "[REDACTED_SOURCE_VALUE]")
+        return sanitize_agent_span(text, max_chars=limit)
 
     return {
         "summary": scrub(parsed["summary"], 1200),
@@ -154,7 +169,7 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
                     response = await client.post(f"{base}/api/chat", json=body)
                     response.raise_for_status()
                 content = (response.json().get("message") or {}).get("content") or ""
-                result = _clean_result(content)
+                result = _clean_result(content, source_span=span)
                 return {"status": "ok", "provider": "ollama", "model": model, "analysis": result}
     # A failed local request does not flow here and must never trigger remote egress.
     if not _remote_eligible(span, allow_remote=allow_remote):
@@ -178,4 +193,4 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
     data = response.json()
     content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     return {"status": "ok", "provider": "openrouter", "model": data.get("model"),
-            "analysis": _clean_result(content)}
+            "analysis": _clean_result(content, source_span=span)}
