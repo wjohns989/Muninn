@@ -60,7 +60,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 - **NL Temporal Query Expansion**: Natural-language time phrases ("last week", "before the refactor") parsed into structured time ranges
 - **Goal Compass**: Retrieval signal for project objectives and constraint drift
 - **NLI Conflict Detection**: Transformer-based contradiction detection (`cross-encoder/nli-deberta-v3-small`) for memory integrity
-- **Bulk Legacy Import**: One-click ingestion of all discovered legacy sources (batched, error-isolated) via dashboard or API
+- **Bulk Legacy Import (legacy mode only)**: One-click ingestion of discovered legacy sources via dashboard or API; strict vault-first mode does not import raw transcripts into ordinary memory
 
 ### Operational Controls
 
@@ -74,7 +74,7 @@ Muninn provides deterministic, explainable memory retrieval with robust transpor
 
 - **Handoff Bundles**: Export/import memory checkpoints with checksum verification and idempotent replay
 - **Legacy Migration**: Explicit opt-in for the older plaintext importer; vault-first encrypted capture is the safe default
-- **Bulk Import**: `POST /ingest/legacy/import-all` ingests all discovered sources in batches of 50 with per-batch error isolation
+- **Bulk Import (legacy mode only)**: `POST /ingest/legacy/import-all` ingests discovered sources in batches of 50 with per-batch error isolation when explicitly enabled
 - **Hive Mind Federation**: Push-based low-latency memory synchronization across assistant runtimes
 - **MCP 2025-11 Compliant**: Full protocol negotiation, lifecycle gating, schema annotations
 
@@ -666,7 +666,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 - **Default data dir**: `~/.local/share/AntigravityLabs/muninn/` (Linux/macOS) · `%LOCALAPPDATA%\AntigravityLabs\muninn\` (Windows)
 - **Storage**: SQLite (metadata) + Qdrant (vectors) + KuzuDB (memory chains graph)
 - **No cloud dependency**: All data local by default
-- **Credential-vault work in progress**: the separate encrypted store uses a locally prompted passphrase and owner-only filesystem access, but is not yet wired into history import. Existing transcript copies can contain plaintext secrets; restrict access to the Muninn data directory and its backups.
+- **Credential vault**: the separate encrypted store uses a locally prompted passphrase and owner-only filesystem access. An explicit `credentials scan` can discover conservative candidates from selected project `.env` files and encrypted history snapshots; it is not an automatic background scan and does not make unscanned sources secret-free. Existing plaintext transcripts and older copies can contain secrets; restrict access to them and their backups.
 - **Auth**: protected API, MCP, and dashboard operations require a Bearer token whenever security is enabled. Set `MUNINN_AUTH_TOKEN` or `MUNINN_API_KEY` before starting a normal service; the dashboard never injects or stores it in browser localStorage. An unconfigured fallback token is not logged. Explicit `MUNINN_NO_AUTH=1` is development-only.
 - **Browser origins**: requests from web pages other than `localhost` are rejected (blocks cross-site access and DNS rebinding); extend with `MUNINN_ALLOWED_ORIGINS`
 - **Namespace isolation**: `user_id` + `namespace` + `project` boundaries enforced at every retrieval layer
