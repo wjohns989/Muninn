@@ -42,7 +42,9 @@ class CaptureJob:
 class CaptureJournal:
     def __init__(self, archive: SecureHistoryArchive, *, recover: bool = True):
         self.archive = archive
-        self.path = archive.root / "capture-jobs.db"
+        # SQLite URI connections require an absolute path even when the archive
+        # CLI was given a relative --root.
+        self.path = (archive.root / "capture-jobs.db").absolute()
         verify_private(archive.root)
         if not self.path.exists():
             create_private_file(self.path)

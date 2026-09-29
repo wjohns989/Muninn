@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from muninn.history.credential_crypto import VaultIntegrityError
@@ -140,3 +142,14 @@ def test_unattended_backup_is_new_verified_ciphertext_copy(tmp_path):
     )
     with pytest.raises(ValueError, match="Invalid history archive restore locations"):
         original.backup_to(backup_root)
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="unattended backup uses Windows DPAPI")
+def test_unattended_backup_accepts_relative_archive_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    original = SecureHistoryArchive.create(Path("original"), PASSPHRASE)
+
+    report = original.backup_to(Path("backup"))
+
+    assert report["snapshots_verified"] == 0
+    assert (tmp_path / "backup" / "capture-jobs.db").is_file()
