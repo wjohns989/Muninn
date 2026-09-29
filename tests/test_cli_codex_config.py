@@ -151,3 +151,21 @@ def test_rotate_token_preserves_existing_custom_http_url(
     assert 'url = "https://memory.example.test/custom/mcp"' in updated
     assert "http://127.0.0.1:42069/mcp" not in updated
     assert "rotated-token" not in updated
+
+
+def test_rotate_token_preserves_custom_codex_bearer_reference(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[mcp_servers.muninn]\nurl = "http://127.0.0.1:42069/mcp"\n'
+        'bearer_token_env_var = "CUSTOM_MUNINN_TOKEN"\n',
+        encoding="utf-8",
+    )
+    before = config_path.read_bytes()
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config_path)
+    monkeypatch.setattr(cli, "_MCP_CONFIG_PATHS", [])
+    args = cli.build_parser().parse_args(
+        ["rotate-token", "--token-file", str(tmp_path / "new.token")]
+    )
+    with patch("muninn.cli.secrets.token_urlsafe", return_value="rotated-token"):
+        assert cli.cmd_rotate_token(args) == 0
+    assert config_path.read_bytes() == before

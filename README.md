@@ -520,6 +520,14 @@ all sensitive text is gone; the dashboard has no raw transcript or credential
 reveal control. **Ordinary Search** remains a different corpus. This is a narrow
 operator slice, not the full control-center overhaul described in
 `docs/plans/2026-09-28-local-control-center-overhaul.md`.
+For authenticated CLI commands, token precedence is explicit `--token-file`,
+`MUNINN_TOKEN_FILE`, process `MUNINN_AUTH_TOKEN`, Windows user environment,
+then the default `.muninn_token`. An explicit missing/empty token file does not
+fall back. `python -m muninn.cli doctor` verifies `/auth/check` with positive
+and negative controls; `doctor --repair` never writes host configs unless that
+check passes. HTTP MCP profiles with dynamic bearer references are reported as
+unverified, not token drift, and generic repair/rotation does not inject stdio
+environment fields into HTTP profiles.
 Add `--archive-query <search-term>` to test a bounded, redacted excerpt of your
 own encrypted history locally. OpenRouter validation requires an environment key,
 provider-enforced daily cap, and ZDR route; `--openrouter` uses checked-in source

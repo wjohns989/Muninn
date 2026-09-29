@@ -5,6 +5,28 @@ real Windows installation and the intended portable product. It separates live
 observations, code behavior, proposed service-level targets, and unknowns. It
 does not authorize a historical cloud sweep, a credential scan, or a release.
 
+## 2026-09-29 execution delta
+
+The tables below are the 2026-09-28 baseline, not a current gap list. Since
+that audit, the local strict service has authenticated and verified a
+point-in-time encrypted archive of 3,991 snapshots (17,858,846,340 plaintext
+bytes) and an encrypted backup at generation 174. A live durable search job
+reported 3,991 indexed snapshots; bounded local Ollama and approved ZDR
+OpenRouter interpretation both returned successful, parsed results on a real
+archive hit, and an automatically queued analysis job also succeeded. `ollama
+ps` subsequently showed no resident model. The new dashboard Encrypted History
+tab exposes bounded search/fetch but not the full control center.
+
+Gemini CLI has now executed real SessionStart and SessionEnd hooks successfully
+after a Windows PowerShell quoting and finite-timeout repair. That proves host
+hook execution, not capture of a Gemini chat with transcript text. Installed
+Codex and Claude hook configurations likewise still need host-origin event and
+archive-version proof. The credential discovery scan and post-scan vault backup
+need the user's hidden local passphrase; the vault's known initial backup had
+zero records. No historical remote spending increase has been authorized or
+performed. Later audit rows remain useful failure scenarios, but their “current
+behavior” cells must not be read as the post-remediation state.
+
 ## Outcome and invariants
 
 Muninn should capture agent history without making chat hooks slow, preserve it

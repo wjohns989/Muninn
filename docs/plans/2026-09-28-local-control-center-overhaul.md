@@ -1,10 +1,11 @@
 # Local control center overhaul (implementation plan)
 
-Status: planned, not implemented. The encrypted capture/search and model routes
-must be proven on the local installation before this becomes the primary work.
-The existing `dashboard.html` at port 42069 has Overview, Ingestion, Search, and
-System tabs, but mainly operates the older ordinary-memory API. It does not
-display strict-history coverage, durable jobs, vault discovery, or ZDR controls.
+Status: partially implemented. The local installation has proven bounded secure
+search and both local/Ollama and ZDR/OpenRouter analysis routes. The dashboard
+at port 42069 now has a separate Encrypted History tab with durable search-job
+status, index coverage, and on-click bounded excerpts. It still lacks vault
+discovery, resource/model state, and ZDR consent/spending controls; the full
+overhaul remains lower priority than the working local capture/recovery path.
 It also presents legacy import and automatic TKG language that is misleading in
 strict vault-first mode. The root page no longer embeds an API bearer; retain
 that property throughout the overhaul.
