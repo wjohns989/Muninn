@@ -408,10 +408,10 @@ Key environment variables:
 | `MUNINN_OLLAMA_MODEL` | `llama3.2:3b` | Model for explicitly requested Ollama analysis |
 | `MUNINN_AUTO_LOCAL_MODEL_HINTS` | local measured defaults | Comma-separated installed model tags in preferred order for strict on-demand analysis; unlisted installed chat-capable models remain fallback candidates. Legacy analysis also accepts model-name fragments |
 | `MUNINN_OLLAMA_KEEP_ALIVE` | `0` | Release an Ollama model after an analysis request instead of leaving it resident in VRAM |
-| `MUNINN_STRICT_REMOTE_ANALYSIS` | off | Set to `1` in the local user environment to make private ZDR OpenRouter available when no local model fits. Explicit `analyze_secure_history` calls also need `allow_remote=true`; automatic jobs use this local opt-in and recheck it before dispatch |
-| `MUNINN_OPENROUTER_MAX_DAILY_USD` | `10` | Local daily ceiling; larger values are clamped to $10 unless the explicit local budget override is set |
-| `MUNINN_OPENROUTER_MAX_MONTHLY_USD` | `100` | Local monthly ceiling; larger values are clamped to $100 unless the explicit local budget override is set |
-| `MUNINN_OPENROUTER_BUDGET_OVERRIDE` | off | Set to `1` only to explicitly permit locally configured ceilings above $10/day or $100/month; a finite provider key cap is still mandatory |
+| `MUNINN_STRICT_REMOTE_ANALYSIS` | off | Legacy standalone setting; the strict server fails remote use closed until consent is explicitly saved in the localhost Encrypted History tab. Explicit `analyze_secure_history` calls also need `allow_remote=true` |
+| `MUNINN_OPENROUTER_MAX_DAILY_USD` | `10` | Legacy daily admission threshold until a policy is saved; values above $10 require explicit override |
+| `MUNINN_OPENROUTER_MAX_MONTHLY_USD` | `100` | Legacy monthly admission threshold until a policy is saved; values above $100 require explicit override |
+| `MUNINN_OPENROUTER_BUDGET_OVERRIDE` | off | Legacy explicit override for app thresholds; the provider key's own finite cap is still mandatory and independent |
 | `MUNINN_CREDENTIAL_API_TOKEN` | unset (API disabled) | Dedicated 32+-character bearer token for loopback-only credential metadata search and explicit passphrase reveal; keep it in your local user environment, not a checked-in file |
 | `MUNINN_CREDENTIAL_AGENT_SEARCH` | off | Set `1` to let authenticated loopback MCP/API clients search allowlisted vault metadata; secret-value reveal remains unavailable to agents |
 | `MUNINN_MCP_TOOLSET` | `full` | Tool profile for stdio clients: `full`, `core`, `readonly` or `chatgpt` (HTTP clients use `?toolset=`) |
@@ -538,14 +538,25 @@ than proof that arbitrary secrets are absent. All Ollama requests use
 data directories are discovered or provided by the operator, not tied to a
 particular drive or download directory.
 OpenRouter API keys have one provider-enforced reset period (daily or monthly).
-Muninn checks that finite key limit against the matching local ceiling and checks
-provider-reported usage for the other period before each request. This secondary
-check is not a hard provider-side cap for an individual in-flight request; use
-OpenRouter account/workspace guardrails if both periods must be hard-enforced.
-Changing Muninn's local ceiling does not raise the API key's own limit. On
-Windows, set `MUNINN_STRICT_REMOTE_ANALYSIS=1` in the User environment to keep
-the route enabled across launches; set it to `0` to rescind it. A future local
-settings UI can control the same policy without requiring a shell.
+Muninn checks that finite key limit against the matching local admission
+threshold and checks provider-reported usage for the other period before each
+request. Application thresholds are **not hard spending caps**: an individual
+request or overlapping requests can cross one. Use OpenRouter key and account
+guardrails for hard limits. Changing Muninn's local threshold does not raise the
+API key's own limit.
+
+Open the localhost dashboard's Encrypted History tab with the main local token
+to save or revoke ZDR fallback and adjust daily/monthly thresholds without
+restarting the service. Until that first save, strict-server remote use remains
+off even if an older environment opt-in is present. Values above $10/day or $100/month require checking the
+explicit override. The saved, audited policy lives under your configured
+`MUNINN_DATA_DIR`, contains no API key or transcript, and overrides older user
+environment settings. A damaged or missing managed policy fails remote use
+closed; queued work retains its consent generation so revocation followed by
+re-enabling does not grant old jobs remote permission. Requests already admitted
+before revocation may finish. To use a larger one-time historical-import budget,
+explicitly raise the local threshold and separately adjust the provider key
+limit, then lower both again afterward.
 A restored archive can be
 opened with the recovery passphrase on another machine and rebound to that
 Windows user with `python -m muninn.history.secure_archive rebind --root

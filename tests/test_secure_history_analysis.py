@@ -1,5 +1,6 @@
 """Strict on-demand analysis never accepts caller-supplied transcript text."""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 
@@ -222,3 +223,146 @@ async def test_explicit_remote_route_requires_both_opt_ins_and_zdr(monkeypatch):
         await analysis.analyze_secure_hit(History(), "cap", allow_remote=True,
                                           prefer_remote=True, before_remote=veto_remote)
     assert seen["post_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_revocation_during_queue_marker_prevents_remote_post(tmp_path, monkeypatch):
+    from muninn.history.remote_policy import write_policy
+
+    def fallback():
+        return False, 1.0, 20.0, False
+    enabled = write_policy(tmp_path, enabled=True, daily_usd=1, monthly_usd=20,
+                           override_ceiling=False, fallback=fallback)
+
+    class History:
+        data_dir = tmp_path
+
+        def _secure_model_window(self, _capability):
+            return "A project decision was made. " * 10
+
+    async def revoke_during_marker():
+        write_policy(tmp_path, enabled=False, daily_usd=1, monthly_usd=20,
+                     override_ceiling=False, fallback=fallback)
+        return True
+
+    not_sent = []
+
+    async def mark_not_sent():
+        not_sent.append(True)
+        return True
+
+    monkeypatch.setattr(analysis, "guarded_openrouter_available", lambda **_kwargs: True)
+    monkeypatch.setattr(analysis.Provider, "from_env",
+                        lambda *_args: analysis.Provider("openrouter", "https://openrouter.ai/api/v1",
+                                                         ["test-zdr-model"], "fixture-key"))
+    class NoPostClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            pytest.fail("revoked work must not post to OpenRouter")
+
+    monkeypatch.setattr(httpx, "AsyncClient", NoPostClient)
+    result = await analysis.analyze_secure_hit(
+        History(), "cap", allow_remote=True, prefer_remote=True,
+        expected_remote_generation=enabled.generation, before_remote=revoke_during_marker,
+        remote_not_sent=mark_not_sent,
+    )
+    assert result["status"] == "deferred"
+    assert result["reason"] == "remote_consent_revoked"
+    assert not_sent == [True]
+
+    # Re-enabling increments the generation; that old intent remains local-only.
+    write_policy(tmp_path, enabled=True, daily_usd=1, monthly_usd=20,
+                 override_ceiling=False, fallback=fallback)
+    result = await analysis.analyze_secure_hit(
+        History(), "cap", allow_remote=True, prefer_remote=True,
+        expected_remote_generation=enabled.generation,
+    )
+    assert result["status"] == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_on_demand_generation_is_bound_before_transcript_await(tmp_path, monkeypatch):
+    from muninn.history.remote_policy import write_policy
+
+    def fallback():
+        return False, 1.0, 20.0, False
+
+    write_policy(tmp_path, enabled=True, daily_usd=1, monthly_usd=20,
+                 override_ceiling=False, fallback=fallback)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_to_thread = asyncio.to_thread
+
+    class History:
+        data_dir = tmp_path
+
+        def _secure_model_window(self, _capability):
+            return "A project decision was made. " * 10
+
+    async def delayed_to_thread(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "_secure_model_window":
+            entered.set()
+            await release.wait()
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(analysis.asyncio, "to_thread", delayed_to_thread)
+    monkeypatch.setattr(analysis, "guarded_openrouter_available",
+                        lambda **_kwargs: pytest.fail("old request cannot acquire new consent"))
+    pending = asyncio.create_task(analysis.analyze_secure_hit(
+        History(), "cap", allow_remote=True, prefer_remote=True,
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    write_policy(tmp_path, enabled=False, daily_usd=1, monthly_usd=20,
+                 override_ceiling=False, fallback=fallback)
+    write_policy(tmp_path, enabled=True, daily_usd=1, monthly_usd=20,
+                 override_ceiling=False, fallback=fallback)
+    release.set()
+    result = await asyncio.wait_for(pending, timeout=2)
+    assert result["status"] == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_durable_marker_clears_proven_unsent_state(tmp_path, monkeypatch):
+    from muninn.history.remote_policy import write_policy
+
+    def fallback():
+        return False, 1.0, 20.0, False
+
+    write_policy(tmp_path, enabled=True, daily_usd=1, monthly_usd=20,
+                 override_ceiling=False, fallback=fallback)
+    state = {"cancelled": False, "not_sent": False}
+
+    class History:
+        data_dir = tmp_path
+
+        def _secure_model_window(self, _capability):
+            return "A project decision was made. " * 10
+
+    async def mark_dispatched():
+        state["cancelled"] = True
+        return True
+
+    async def mark_not_sent():
+        state["not_sent"] = True
+        return True
+
+    monkeypatch.setattr(analysis, "guarded_openrouter_available", lambda **_kwargs: True)
+    monkeypatch.setattr(analysis.Provider, "from_env",
+                        lambda *_args: analysis.Provider("openrouter", "https://openrouter.ai/api/v1",
+                                                         ["test-zdr-model"], "fixture-key"))
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda **_kwargs: pytest.fail("cancelled work must not construct remote client"))
+    with pytest.raises(RuntimeError, match="cancelled"):
+        await analysis.analyze_secure_hit(
+            History(), "cap", allow_remote=True, prefer_remote=True,
+            should_cancel=lambda: state["cancelled"], before_remote=mark_dispatched,
+            remote_not_sent=mark_not_sent,
+        )
+    assert state["not_sent"]

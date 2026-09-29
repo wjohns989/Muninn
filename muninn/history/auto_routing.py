@@ -10,6 +10,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import urlsplit
 
@@ -150,8 +151,30 @@ def _local_setting(name: str) -> str:
         return ""
 
 
-def openrouter_budget_ceiling() -> tuple[float, float]:
+def _legacy_remote_policy() -> tuple[bool, float, float, bool]:
+    daily, monthly = openrouter_budget_ceiling()
+    return (_local_setting("MUNINN_STRICT_REMOTE_ANALYSIS").lower() in {"1", "true"},
+            daily, monthly, _local_setting("MUNINN_OPENROUTER_BUDGET_OVERRIDE") == "1")
+
+
+def remote_policy_snapshot(root: Path | None):
+    """One fail-closed policy view for strict on-demand and background routes."""
+    from muninn.history.remote_policy import PolicyError, RemotePolicy, read_policy
+
+    if root is None:
+        enabled, daily, monthly, override = _legacy_remote_policy()
+        return RemotePolicy(enabled, daily, monthly, override, 0, "legacy_environment")
+    try:
+        return read_policy(root, _legacy_remote_policy)
+    except PolicyError:
+        return RemotePolicy(False, 0.0, 0.0, False, -1, "unavailable")
+
+
+def openrouter_budget_ceiling(policy_root: Path | None = None) -> tuple[float, float]:
     """User-local policy, capped at $10/day and $100/month absent override."""
+    if policy_root is not None:
+        policy = remote_policy_snapshot(policy_root)
+        return (policy.daily_usd, policy.monthly_usd) if policy.enabled else (0.0, 0.0)
     try:
         daily = float(_local_setting("MUNINN_OPENROUTER_MAX_DAILY_USD") or "10")
         monthly = float(_local_setting("MUNINN_OPENROUTER_MAX_MONTHLY_USD") or "100")
@@ -165,7 +188,8 @@ def openrouter_budget_ceiling() -> tuple[float, float]:
 
 
 def guarded_openrouter_available(daily_cap_usd: float | None = None,
-                                 monthly_cap_usd: float | None = None) -> bool:
+                                 monthly_cap_usd: float | None = None,
+                                 *, policy_root: Path | None = None) -> bool:
     """Require a finite provider-enforced key cap and both period ceilings.
 
     Application-side estimates cannot enforce a hard dollar cap if a response
@@ -176,7 +200,7 @@ def guarded_openrouter_available(daily_cap_usd: float | None = None,
     from muninn.history import llm_settings
 
     key = llm_settings.api_key()
-    configured_daily, configured_monthly = openrouter_budget_ceiling()
+    configured_daily, configured_monthly = openrouter_budget_ceiling(policy_root)
     daily_cap = min(configured_daily, daily_cap_usd) if daily_cap_usd is not None else configured_daily
     monthly_cap = min(configured_monthly, monthly_cap_usd) if monthly_cap_usd is not None else configured_monthly
     if not key or daily_cap <= 0 or monthly_cap <= 0:

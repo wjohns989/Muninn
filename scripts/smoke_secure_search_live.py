@@ -104,6 +104,8 @@ def main() -> int:
             "elapsed_ms": round((time.monotonic() - started) * 1000),
             "total": result["total"], "match_count": len(result["matches"]),
             "complete": result["complete"],
+            "ready": result["ready"], "missing": result["missing"],
+            "overflow": result["overflow"], "truncated": result["truncated"],
         }
         if args.wait_auto:
             analysis_id = status.get("analysis_job_id")

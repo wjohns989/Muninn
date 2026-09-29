@@ -66,6 +66,7 @@ class HistoryService:
                  interval_minutes: Optional[float] = None,
                  secure_archive_root: Optional[Path] = None):
         self.memory = memory
+        self.data_dir = Path(vault_root).parent.absolute()
         self.home = home
         self.vault = None if strict_history_mode() else HistoryVault(vault_root, home=home, allow_plaintext=True)
         self.secure_archive_root = Path(secure_archive_root or os.environ.get("MUNINN_HISTORY_ARCHIVE_DIR")
@@ -533,10 +534,12 @@ class HistoryService:
     def cancel_secure_analysis_job(self, job_id: str) -> bool:
         if not strict_history_mode():
             raise RuntimeError("Secure history analysis requires strict history mode")
-        cancelled = self._require_capture_journal().cancel_analysis(job_id)
-        if cancelled and self._secure_analysis_active and self._secure_analysis_active[0] == job_id:
+        # Keep an active worker's lease until it can prove whether HTTP began.
+        # Revoking the lease here would turn a known-unsent marker into unknown.
+        if self._secure_analysis_active and self._secure_analysis_active[0] == job_id:
             self._secure_analysis_active[1].set()
-        return cancelled
+            return True
+        return self._require_capture_journal().cancel_analysis(job_id)
 
     def secure_fetch_span(self, capability: str, *, max_chars: int = 3000) -> Dict[str, Any]:
         """Return a bounded sanitized span after full snapshot authentication."""
@@ -678,10 +681,13 @@ class HistoryService:
                     # Search evidence remains useful when an expiring hit grant
                     # cannot be converted into an immutable inference target.
                     analysis_target = None
+            from muninn.history.auto_routing import remote_policy_snapshot
+            enqueue_policy = remote_policy_snapshot(self.data_dir)
             finished = await asyncio.to_thread(
                 journal.finish_search, job.job_id, job.lease_token, result,
                 analysis_target=analysis_target,
                 analysis_reason=("target_unavailable" if _flag("MUNINN_SECURE_AUTO_ANALYSIS") else "disabled"),
+                remote_policy_generation=(enqueue_policy.generation if enqueue_policy.enabled else -1),
             )
             if finished and analysis_target is not None:
                 self._secure_analysis_wakeup.set()
@@ -749,6 +755,8 @@ class HistoryService:
             index = SecureHistoryBlindIndex(self._require_secure_archive())
             capability = await asyncio.to_thread(index._analysis_capability, job.target)
             if cancelled.is_set():
+                await asyncio.to_thread(journal.fail_analysis, job.job_id,
+                                        job.lease_token, "cancelled")
                 return True
 
             async def before_remote() -> bool:
@@ -760,17 +768,23 @@ class HistoryService:
                     journal.mark_remote_dispatched, job.job_id, job.lease_token,
                 )
 
-            from muninn.history.auto_routing import _local_setting
+            async def remote_not_sent() -> bool:
+                return await asyncio.to_thread(
+                    journal.mark_remote_not_sent, job.job_id, job.lease_token,
+                )
+
+            from muninn.history.auto_routing import remote_policy_snapshot
             from muninn.history.secure_analysis import analyze_secure_hit
 
-            remote_enabled = _local_setting("MUNINN_STRICT_REMOTE_ANALYSIS").lower() in {"1", "true"}
+            remote_policy = remote_policy_snapshot(self.data_dir)
+            remote_enabled = (remote_policy.enabled
+                              and remote_policy.generation == job.remote_policy_generation)
 
             outcome = await analyze_secure_hit(
                 self, capability, allow_remote=remote_enabled, should_cancel=cancelled.is_set,
-                before_remote=before_remote,
+                before_remote=before_remote, remote_not_sent=remote_not_sent,
+                expected_remote_generation=remote_policy.generation,
             )
-            if cancelled.is_set():
-                return True
             if outcome["status"] == "ok":
                 await asyncio.to_thread(journal.finish_analysis, job.job_id,
                                         job.lease_token, outcome)
@@ -793,7 +807,7 @@ class HistoryService:
                                     job.lease_token, "snapshot_unavailable")
         except (OSError, RuntimeError, sqlite3.OperationalError, httpx.HTTPError):
             await asyncio.to_thread(journal.fail_analysis, job.job_id,
-                                    job.lease_token, "model_unavailable")
+                                    job.lease_token, "cancelled" if cancelled.is_set() else "model_unavailable")
         finally:
             cancelled.set()
             heartbeat.cancel()

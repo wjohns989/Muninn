@@ -23,6 +23,7 @@ from muninn.history.auto_routing import (
     guarded_openrouter_available,
     probe_gpu,
     probe_ollama,
+    remote_policy_snapshot,
 )
 from muninn.history.insights import Provider
 from muninn.history.safe_span import sanitize_agent_span
@@ -134,10 +135,17 @@ def _clean_result(content: str, *, source_span: str = "") -> dict[str, object]:
     }
 
 
-def _remote_eligible(span: str, *, allow_remote: bool) -> bool:
+def _remote_eligible(span: str, *, allow_remote: bool, policy_root=None,
+                     expected_generation: int | None = None) -> bool:
+    if policy_root is None:
+        enabled, generation = _local_setting("MUNINN_STRICT_REMOTE_ANALYSIS").lower() in {"1", "true"}, 0
+    else:
+        policy = remote_policy_snapshot(policy_root)
+        enabled, generation = policy.enabled, policy.generation
     return (
         allow_remote
-        and _local_setting("MUNINN_STRICT_REMOTE_ANALYSIS").lower() in {"1", "true"}
+        and enabled
+        and (expected_generation is None or generation == expected_generation)
         and 1 <= len(span) <= 3000
     )
 
@@ -145,7 +153,9 @@ def _remote_eligible(span: str, *, allow_remote: bool) -> bool:
 async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = False,
                              prefer_remote: bool = False,
                              should_cancel: Callable[[], bool] | None = None,
-                             before_remote: Callable[[], Awaitable[bool]] | None = None) -> dict:
+                             before_remote: Callable[[], Awaitable[bool]] | None = None,
+                             remote_not_sent: Callable[[], Awaitable[bool]] | None = None,
+                             expected_remote_generation: int | None = None) -> dict:
     """Authenticate capability internally; caller never supplies transcript text."""
     if prefer_remote and not allow_remote:
         raise ValueError("A remote preference requires an explicit remote allowance")
@@ -154,6 +164,9 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
             raise RuntimeError("Secure analysis cancelled")
 
     ensure_active()
+    policy_root = getattr(history, "data_dir", None)
+    if expected_remote_generation is None:
+        expected_remote_generation = remote_policy_snapshot(policy_root).generation
     # The model is an explicitly authorized interpreter. Public fetch remains
     # redacted; this authenticated raw window never enters an HTTP/MCP result.
     span = await asyncio.to_thread(history._secure_model_window, capability)
@@ -183,9 +196,13 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
                 result = _clean_result(content, source_span=span)
                 return {"status": "ok", "provider": "ollama", "model": model, "analysis": result}
     # A failed local request does not flow here and must never trigger remote egress.
-    if not _remote_eligible(span, allow_remote=allow_remote):
+    if not _remote_eligible(span, allow_remote=allow_remote, policy_root=policy_root,
+                            expected_generation=expected_remote_generation):
         return {"status": "deferred", "provider": None, "model": None, "reason": reason}
-    if not await asyncio.to_thread(guarded_openrouter_available):
+    budget_available = (await asyncio.to_thread(guarded_openrouter_available)
+                        if policy_root is None else await asyncio.to_thread(
+                            guarded_openrouter_available, policy_root=policy_root))
+    if not budget_available:
         return {"status": "deferred", "provider": None, "model": None,
                 "reason": "daily_zdr_cap_unverified"}
     provider = Provider.from_env("openrouter")
@@ -196,18 +213,35 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
     body["response_format"] = {"type": "json_schema", "json_schema": {
         "name": "secure_excerpt_analysis", "strict": True, "schema": _SCHEMA}}
     ensure_active()
-    if not _remote_eligible(span, allow_remote=allow_remote):
+    if not _remote_eligible(span, allow_remote=allow_remote, policy_root=policy_root,
+                            expected_generation=expected_remote_generation):
         return {"status": "deferred", "provider": None, "model": None,
                 "reason": "remote_consent_revoked"}
     if before_remote is not None and not await before_remote():
         raise RuntimeError("Secure analysis lease unavailable")
-    ensure_active()
-    async with httpx.AsyncClient(timeout=_MODEL_TIMEOUT, trust_env=False) as client:
-        response = await client.post(
-            f"{llm_settings.OPENROUTER_API}/chat/completions", json=body,
-            headers={"Authorization": f"Bearer {provider.api_key}"},
-        )
-        response.raise_for_status()
+    post_started = False
+    try:
+        ensure_active()
+        async with httpx.AsyncClient(timeout=_MODEL_TIMEOUT, trust_env=False) as client:
+            ensure_active()
+            # Client setup and the durable queue marker can both await. The
+            # last synchronous policy read immediately precedes HTTP admission.
+            if not _remote_eligible(span, allow_remote=allow_remote, policy_root=policy_root,
+                                    expected_generation=expected_remote_generation):
+                return {"status": "deferred", "provider": None, "model": None,
+                        "reason": "remote_consent_revoked"}
+            post_started = True
+            response = await client.post(
+                f"{llm_settings.OPENROUTER_API}/chat/completions", json=body,
+                headers={"Authorization": f"Bearer {provider.api_key}"},
+            )
+            response.raise_for_status()
+    finally:
+        # Before post_started, every exit is proven unsent. After that point an
+        # interruption may have reached the provider, so retain unknown status.
+        if before_remote is not None and not post_started and remote_not_sent is not None:
+            if not await remote_not_sent():
+                raise RuntimeError("Secure analysis lease unavailable")
     data = response.json()
     content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     return {"status": "ok", "provider": "openrouter", "model": data.get("model") or provider.models[0],

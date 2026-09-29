@@ -336,11 +336,11 @@ async def verify_main_local_token(request: Request):
     require_loopback_peer(request)
     expected = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
     if not is_security_enabled() or not expected or len(expected) < 32:
-        raise HTTPException(status_code=404, detail="Unavailable")
+        raise HTTPException(status_code=404, detail="Unavailable", headers=NO_STORE)
     supplied = request.headers.get("authorization", "")
     scheme, _, token = supplied.partition(" ")
     if scheme.lower() != "bearer" or not verify_main_token(token):
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Authentication required", headers=NO_STORE)
 
 
 def _server_instance_lock_timeout_seconds() -> float:
@@ -1845,6 +1845,69 @@ async def secure_history_analyze_endpoint(req: SecureHistoryAnalyzeRequest):
         return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
     finally:
         _secure_history_analyze_slots.release()
+
+
+class RemotePolicyUpdateRequest(BaseModel):
+    enabled: bool
+    daily_usd: float
+    monthly_usd: float
+    override_ceiling: bool = False
+
+
+def _remote_policy_root() -> Path:
+    return _require_history().data_dir
+
+
+def _remote_policy_data(policy) -> dict:
+    return {
+        "enabled": policy.enabled,
+        "daily_usd": policy.daily_usd,
+        "monthly_usd": policy.monthly_usd,
+        "override_ceiling": policy.override_ceiling,
+        "generation": policy.generation,
+        "source": policy.source,
+        "budget_kind": "admission_threshold_not_hard_cap",
+    }
+
+
+@app.get("/history/secure/remote-policy", dependencies=[Depends(verify_main_local_token)])
+async def secure_remote_policy_endpoint():
+    from muninn.history.auto_routing import _legacy_remote_policy
+    from muninn.history.remote_policy import PolicyError, read_policy
+
+    try:
+        policy = await asyncio.to_thread(read_policy, _remote_policy_root(), _legacy_remote_policy)
+    except PolicyError:
+        raise HTTPException(status_code=503, detail="Managed remote policy unavailable",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": _remote_policy_data(policy)}, headers=NO_STORE)
+
+
+@app.post("/history/secure/remote-policy", dependencies=[Depends(verify_main_local_token)])
+async def update_secure_remote_policy_endpoint(req: RemotePolicyUpdateRequest, request: Request):
+    from muninn.history.auto_routing import _legacy_remote_policy
+    from muninn.history.remote_policy import PolicyError, write_policy
+
+    # The global CORS middleware may be configured with extra origins or '*'.
+    # A browser must still originate from this exact loopback dashboard origin.
+    origin = request.headers.get("origin")
+    own_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if origin is not None and (origin != own_origin or request.url.hostname not in
+                               {"localhost", "127.0.0.1", "::1"}):
+        raise HTTPException(status_code=403, detail="Same-origin dashboard required",
+                            headers=NO_STORE)
+    try:
+        policy = await asyncio.to_thread(
+            write_policy, _remote_policy_root(), enabled=req.enabled,
+            daily_usd=req.daily_usd, monthly_usd=req.monthly_usd,
+            override_ceiling=req.override_ceiling, fallback=_legacy_remote_policy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from None
+    except PolicyError:
+        raise HTTPException(status_code=503, detail="Managed remote policy unavailable",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": _remote_policy_data(policy)}, headers=NO_STORE)
 
 
 @app.post("/history/sync", dependencies=[Depends(verify_token)])

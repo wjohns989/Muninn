@@ -54,7 +54,7 @@ _ANALYSIS_RETRY_CODES = {
 }
 _ANALYSIS_TERMINAL_CODES = {
     "invalid_target", "queue_full", "vault_integrity", "snapshot_unavailable",
-    "insufficient_context", "outcome_unknown", "unknown",
+    "insufficient_context", "outcome_unknown", "unknown", "cancelled",
 }
 
 
@@ -101,6 +101,7 @@ class AnalysisJob:
     provider: str | None = None
     model: str | None = None
     target: dict[str, Any] | None = None
+    remote_policy_generation: int = -1
 
     def __repr__(self) -> str:
         return (
@@ -155,13 +156,18 @@ class CaptureJournal:
                 "sealed_target BLOB NOT NULL, sealed_result BLOB, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, "
                 "lease_token TEXT, lease_until REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL, "
                 "due_at REAL NOT NULL DEFAULT 0, result_expires_at REAL, error_code TEXT NOT NULL DEFAULT '', "
-                "provider TEXT, model TEXT, remote_dispatched INTEGER NOT NULL DEFAULT 0)"
+                "provider TEXT, model TEXT, remote_dispatched INTEGER NOT NULL DEFAULT 0, "
+                "remote_policy_generation INTEGER NOT NULL DEFAULT -1)"
             )
             db.execute(
                 "CREATE INDEX IF NOT EXISTS history_analysis_due ON history_analysis_jobs(state,due_at,created_at)"
             )
             try:
                 db.execute("ALTER TABLE history_analysis_jobs ADD COLUMN remote_dispatched INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                db.execute("ALTER TABLE history_analysis_jobs ADD COLUMN remote_policy_generation INTEGER NOT NULL DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
             for column, definition in (("analysis_job_id", "TEXT"), ("analysis_state", "TEXT")):
@@ -613,8 +619,11 @@ class CaptureJournal:
 
     def finish_search(
         self, job_id: str, lease_token: str, result: dict[str, Any], *,
-        analysis_target: dict[str, Any] | None = None, analysis_reason: str = "target_unavailable"
+        analysis_target: dict[str, Any] | None = None, analysis_reason: str = "target_unavailable",
+        remote_policy_generation: int = -1,
     ) -> bool:
+        if type(remote_policy_generation) is not int or remote_policy_generation < -1:
+            raise ValueError("Invalid remote policy generation")
         result = self._allow_result(result)
         sealed = self._seal_search(result, job_id, "result")
         now = time.time()
@@ -651,7 +660,7 @@ class CaptureJournal:
                 elif active < 32:
                     analysis_id = os.urandom(16).hex()
                     db.execute(
-                        "INSERT INTO history_analysis_jobs(job_id,vault_id,dedup_key,sealed_target,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                        "INSERT INTO history_analysis_jobs(job_id,vault_id,dedup_key,sealed_target,state,created_at,updated_at,remote_policy_generation) VALUES(?,?,?,?,?,?,?,?)",
                         (
                             analysis_id,
                             row["vault_id"],
@@ -660,6 +669,7 @@ class CaptureJournal:
                             "pending",
                             now,
                             now,
+                            remote_policy_generation,
                         ),
                     )
                     analysis_state = "queued"
@@ -705,6 +715,7 @@ class CaptureJournal:
             row["provider"],
             row["model"],
             target,
+            row["remote_policy_generation"],
         )
 
     def claim_analysis(self) -> AnalysisJob | None:
@@ -745,6 +756,17 @@ class CaptureJournal:
             )
             return cur.rowcount == 1
 
+    def mark_remote_not_sent(self, job_id: str, lease_token: str) -> bool:
+        """Clear a pre-HTTP marker only when the fenced caller proved no POST began."""
+        with self._connect() as db:
+            cur = db.execute(
+                "UPDATE history_analysis_jobs SET remote_dispatched=0,updated_at=? "
+                "WHERE job_id=? AND state='running' AND remote_dispatched=1 "
+                "AND lease_token=? AND lease_until>?",
+                (time.time(), job_id, lease_token, time.time()),
+            )
+            return cur.rowcount == 1
+
     def finish_analysis(self, job_id: str, lease_token: str, result: dict[str, Any]) -> bool:
         result = self._allow_analysis_result(result)
         now = time.time()
@@ -774,6 +796,7 @@ class CaptureJournal:
                 return False
             state = (
                 "outcome_unknown" if row["remote_dispatched"]
+                else "cancelled" if code == "cancelled"
                 else "retry" if retry and code in _ANALYSIS_RETRY_CODES
                 else "failed"
             )

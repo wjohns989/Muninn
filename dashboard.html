@@ -298,6 +298,23 @@
 
             <!-- TAB: ENCRYPTED HISTORY -->
             <div id="tab-history" class="tab-content">
+                <div class="card" id="remote-policy-card">
+                    <h3>Private OpenRouter fallback</h3>
+                    <p class="card-description">Local models remain preferred. When enabled, ZDR OpenRouter may interpret a pertinent
+                        encrypted excerpt if local GPU capacity is unavailable. These dollar values are admission thresholds,
+                        not hard spending caps; a separately provider-enforced key limit is still required.
+                        Changing consent affects new dispatches; a request already admitted may finish.</p>
+                    <label><input type="checkbox" id="remote-policy-enabled"> Allow ZDR OpenRouter fallback on this machine</label>
+                    <div class="discovery-grid">
+                        <div><label for="remote-daily-usd">Daily admission threshold (USD)</label>
+                            <input id="remote-daily-usd" class="input-base" type="number" min="0.01" step="0.01" value="1"></div>
+                        <div><label for="remote-monthly-usd">Monthly admission threshold (USD)</label>
+                            <input id="remote-monthly-usd" class="input-base" type="number" min="0.01" step="0.01" value="20"></div>
+                    </div>
+                    <label><input type="checkbox" id="remote-policy-override"> Explicitly override the default $10/day and $100/month app ceilings</label>
+                    <div class="m-t-8"><button type="button" id="remote-policy-save" class="btn-primary">Save local policy</button></div>
+                    <p id="remote-policy-status" role="status" aria-live="polite">Enter the main local token to inspect policy.</p>
+                </div>
                 <div class="help-box">
                     <b>Encrypted History Search</b>
                     This searches locally archived transcripts, separate from ordinary memories.
@@ -372,6 +389,9 @@
         let HISTORY_SECURITY_MODE = "unknown";
         let historySearchSequence = 0;
         let historySearchJobId = null;
+        let remotePolicyLoadedEnabled = false;
+        let remotePolicyLoadSequence = 0;
+        let remotePolicySavePending = false;
         let healthPoll = null;
         let scanPoll = null;
         // Retire credentials persisted by older dashboard releases.
@@ -573,6 +593,7 @@
             if (tabId === 'ingest' && HISTORY_SECURITY_MODE === 'legacy') {
                 discoverLegacySources(true);
             }
+            if (tabId === 'history' && AUTH_TOKEN) loadRemotePolicy();
         }
 
         // Original log function (now `originalLog`)
@@ -624,6 +645,7 @@
                 }
             });
             document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
+            document.getElementById('remote-policy-save').addEventListener('click', saveRemotePolicy);
             document.getElementById('history-query').addEventListener('keydown', event => {
                 if (event.key === 'Enter') handleEncryptedHistorySearch();
             });
@@ -650,6 +672,63 @@
 
         function historyMessage(message) {
             document.getElementById('history-search-status').textContent = message;
+        }
+
+        async function loadRemotePolicy() {
+            if (remotePolicySavePending) return;
+            const sequence = ++remotePolicyLoadSequence;
+            const status = document.getElementById('remote-policy-status');
+            status.textContent = 'Loading local remote policy...';
+            const response = await api('/history/secure/remote-policy');
+            if (sequence !== remotePolicyLoadSequence) return;
+            if (response.error || !response.data) {
+                status.textContent = `Policy unavailable: ${response.error || 'unexpected response'}`;
+                return;
+            }
+            const policy = response.data;
+            remotePolicyLoadedEnabled = policy.enabled === true;
+            document.getElementById('remote-policy-enabled').checked = remotePolicyLoadedEnabled;
+            document.getElementById('remote-daily-usd').value = policy.daily_usd;
+            document.getElementById('remote-monthly-usd').value = policy.monthly_usd;
+            document.getElementById('remote-policy-override').checked = policy.override_ceiling === true;
+            status.textContent = `${policy.enabled ? 'Enabled' : 'Disabled'} · ${policy.source} policy · generation ${policy.generation}. ` +
+                'The OpenRouter key must have its own finite provider-enforced cap.';
+        }
+
+        async function saveRemotePolicy() {
+            if (remotePolicySavePending) return;
+            ++remotePolicyLoadSequence;
+            const button = document.getElementById('remote-policy-save');
+            const status = document.getElementById('remote-policy-status');
+            const enabled = document.getElementById('remote-policy-enabled').checked;
+            const daily_usd = Number(document.getElementById('remote-daily-usd').value);
+            const monthly_usd = Number(document.getElementById('remote-monthly-usd').value);
+            const override_ceiling = document.getElementById('remote-policy-override').checked;
+            if (!Number.isFinite(daily_usd) || daily_usd <= 0 ||
+                !Number.isFinite(monthly_usd) || monthly_usd <= 0) {
+                status.textContent = 'Enter positive finite daily and monthly thresholds.';
+                return;
+            }
+            if (enabled && !remotePolicyLoadedEnabled && !window.confirm(
+                'Allow ZDR OpenRouter to receive bounded raw transcript excerpts when local capacity is unavailable? ' +
+                'The provider-enforced key limit remains a separate requirement.')) return;
+            remotePolicySavePending = true;
+            button.disabled = true;
+            status.textContent = 'Saving audited local policy...';
+            try {
+                const response = await api('/history/secure/remote-policy', 'POST',
+                    { enabled, daily_usd, monthly_usd, override_ceiling });
+                if (response.error) {
+                    status.textContent = `Policy was not saved: ${response.error}`;
+                } else {
+                    remotePolicyLoadedEnabled = response.data.enabled === true;
+                    status.textContent = `Saved · ${remotePolicyLoadedEnabled ? 'enabled' : 'disabled'} · generation ${response.data.generation}. ` +
+                        'Already-admitted remote requests may finish.';
+                }
+            } finally {
+                button.disabled = false;
+                remotePolicySavePending = false;
+            }
         }
 
         function renderHistoryMatches(result, sequence) {

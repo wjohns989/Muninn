@@ -43,6 +43,9 @@ def test_dashboard_exposes_distinct_bounded_history_search_without_remote_assets
     assert "fonts.googleapis.com" not in page
     assert "/history/secure/search/jobs" in page
     assert "/history/secure/fetch" in page
+    assert 'id="remote-policy-enabled"' in page
+    assert 'id="remote-policy-override"' in page
+    assert "/history/secure/remote-policy" in page
     assert "/history/secure/raw" not in page
     assert "/credentials/reveal" not in page
     assert "cache: 'no-store'" in page
@@ -161,6 +164,64 @@ const document = {
     query.value = 'timing';
     await vm.runInContext('handleEncryptedHistorySearch()', context);
     assert.equal(status.textContent, 'Newer search is active');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
+
+
+def test_remote_policy_ui_discards_loads_during_or_before_save():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    source = "async function loadRemotePolicy()" + page.split("async function loadRemotePolicy()", 1)[1].split(
+        "function renderHistoryMatches(", 1,
+    )[0]
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const elements = new Map();
+const document = {getElementById(id) {
+    if (!elements.has(id)) elements.set(id, {textContent: '', value: '', checked: false, disabled: false});
+    return elements.get(id);
+}};
+const context = vm.createContext({document, window: {confirm() { return true; }}});
+vm.runInContext('let remotePolicyLoadedEnabled = true; let remotePolicyLoadSequence = 0; ' +
+    'let remotePolicySavePending = false; ' + __SOURCE__, context);
+document.getElementById('remote-policy-enabled').checked = false;
+document.getElementById('remote-daily-usd').value = '1';
+document.getElementById('remote-monthly-usd').value = '20';
+
+(async () => {
+    let releasePost;
+    let gets = 0;
+    context.api = (path, method) => {
+        if (method === 'POST') return new Promise(resolve => { releasePost = resolve; });
+        gets++;
+        return Promise.resolve({data: {enabled: true, daily_usd: 1, monthly_usd: 20,
+            override_ceiling: false, generation: 1, source: 'managed'}});
+    };
+    const save = vm.runInContext('saveRemotePolicy()', context);
+    await vm.runInContext('loadRemotePolicy()', context);
+    assert.equal(gets, 0);
+    releasePost({data: {enabled: false, generation: 2}});
+    await save;
+    assert.equal(vm.runInContext('remotePolicyLoadedEnabled', context), false);
+
+    let releaseGet;
+    context.api = (path, method) => {
+        if (method === 'POST') return Promise.resolve({data: {enabled: false, generation: 3}});
+        return new Promise(resolve => { releaseGet = resolve; });
+    };
+    const staleLoad = vm.runInContext('loadRemotePolicy()', context);
+    await vm.runInContext('saveRemotePolicy()', context);
+    releaseGet({data: {enabled: true, daily_usd: 1, monthly_usd: 20,
+        override_ceiling: false, generation: 1, source: 'managed'}});
+    await staleLoad;
+    assert.equal(vm.runInContext('remotePolicyLoadedEnabled', context), false);
+    assert.equal(document.getElementById('remote-policy-enabled').checked, false);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """.replace("__SOURCE__", json.dumps(source))
     checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
