@@ -6,14 +6,12 @@ multi-hop relationships, and cross-project knowledge.
 """
 
 import logging
-import asyncio
 import time
-from typing import List, Optional, Dict, Any, Tuple
-from collections import defaultdict
+from typing import List, Optional
 
-from muninn.core.types import SearchResult, MemoryRecord
-from muninn.retrieval.hybrid import HybridRetriever
 from muninn.core.feature_flags import get_flags
+from muninn.core.types import SearchResult
+from muninn.retrieval.hybrid import HybridRetriever
 
 logger = logging.getLogger("Muninn.Scout")
 
@@ -40,7 +38,7 @@ class MuninnScout:
         """
         t0 = time.time()
         flags = get_flags()
-        
+
         # 1. Initial Hybrid Search (Broad)
         initial_results = await self.retriever.search(
             query=query,
@@ -51,7 +49,7 @@ class MuninnScout:
             explain=True,
             rerank=True
         )
-        
+
         # Track effective scope for the final rerank pass.  If the fallback
         # fires we must propagate the widened (None) scope into the final
         # search, otherwise discovered candidates from the fallback are
@@ -78,7 +76,7 @@ class MuninnScout:
         # Find all entities mentioned in initial results
         seed_ids = [r.memory.id for r in initial_results]
         discovery_ids = set(seed_ids)
-        
+
         related_entities = set()
         for r in initial_results:
             meta = r.memory.metadata or {}
@@ -102,7 +100,7 @@ class MuninnScout:
         # Follow PRECEDES/CAUSES edges from initial seeds
         if flags.is_enabled("memory_chains") and seed_ids:
             chain_results = self.retriever.graph.find_chain_related_memories(
-                seed_ids, 
+                seed_ids,
                 limit=limit
             )
             for mid, _score in chain_results:
@@ -113,10 +111,6 @@ class MuninnScout:
         all_ids = list(discovery_ids)
         if not all_ids:
             return initial_results
-
-        # Fetch full records from metadata
-        records = self.retriever.metadata.get_by_ids(all_ids)
-        record_map = {r.id: r for r in records}
 
         # Final scoring (Hybrid + Discovery Bonus)
         # We re-score the union using the retriever's logic
@@ -134,5 +128,5 @@ class MuninnScout:
         # (This would ideally use an LLM, but we'll build the trace here)
         elapsed = time.time() - t0
         logger.info("Scout: Hunt completed in %.3fs. Found %d candidates.", elapsed, len(all_ids))
-        
+
         return final_results
