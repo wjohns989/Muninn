@@ -169,6 +169,10 @@ def test_codex_plan_uses_the_stdlib_client_and_honours_codex_home(tmp_path, monk
 
 
 def test_gemini_plan_preserves_unrelated_hooks_and_uses_millisecond_timeouts(tmp_path):
+    assert hook_install.GEMINI_EVENTS_MS == {
+        "SessionStart": 30000, "PreCompress": 30000,
+        "AfterAgent": 10000, "SessionEnd": 30000,
+    }
     settings = tmp_path / ".gemini" / "settings.json"
     settings.parent.mkdir()
     original = {"model": {"name": "keep"}, "hooks": {
@@ -184,7 +188,12 @@ def test_gemini_plan_preserves_unrelated_hooks_and_uses_millisecond_timeouts(tmp
         handler = plan.after["hooks"][event][-1]["hooks"][0]
         assert handler["name"] == "muninn-local-memory"
         assert handler["timeout"] == timeout
-        assert handler["command"].endswith('hook_client.py" gemini-cli "http://127.0.0.1:42069"')
+        if os.name == "nt":
+            assert handler["command"].startswith("& 'C:/Python/python.exe' ")
+            assert handler["command"].endswith("hook_client.py' gemini-cli 'http://127.0.0.1:42069'")
+        else:
+            assert handler["command"].startswith('"C:/Python/python.exe" ')
+            assert handler["command"].endswith('hook_client.py" gemini-cli "http://127.0.0.1:42069"')
     backup = hook_install.apply_plan(plan)
     assert backup and json.loads(backup.read_text()) == original
     assert not hook_install.gemini_plan("http://127.0.0.1:42069", home=tmp_path,
@@ -192,6 +201,40 @@ def test_gemini_plan_preserves_unrelated_hooks_and_uses_millisecond_timeouts(tmp
     hook_install.apply_plan(hook_install.gemini_plan("http://127.0.0.1:42069",
                                                        install=False, home=tmp_path))
     assert json.loads(settings.read_text()) == original
+
+
+def test_gemini_command_quotes_windows_and_unix_independently():
+    python = "C:/Program Files/O'Brien & Co/python.exe"
+    client = Path("C:/User Files/O'Brien & Co/hook_client.py")
+    url = "http://127.0.0.1:42069/a&b's"
+    windows = hook_install._gemini_command(python, client, url, windows=True)
+    unix = hook_install._gemini_command(python, client, url, windows=False)
+    assert windows.startswith("& '")
+    assert "O''Brien" in windows and "b''s" in windows
+    assert unix.startswith(f'"{python}" ')
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell hook execution proof")
+def test_gemini_windows_hook_command_runs_from_powershell(tmp_path):
+    folder = tmp_path / "O'Brien & Co"
+    folder.mkdir()
+    client = folder / "probe client.py"
+    client.write_text(
+        "import sys\nprint('|'.join(sys.argv[1:]))\nsys.exit(7 if '--fail' in sys.argv else 0)\n",
+        encoding="utf-8",
+    )
+    url = "http://127.0.0.1:42069/a&b's"
+    for fail in (False, True):
+        suffix = "--fail" if fail else url
+        command = hook_install._gemini_command(sys.executable, client, suffix, windows=True)
+        # Gemini CLI's Windows hook runner appends this exact exit-code guard.
+        command += "; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, timeout=60, check=False,
+        )
+        assert result.returncode == (7 if fail else 0), result.stderr.decode(errors="replace")
+        assert result.stdout.decode().strip() == f"gemini-cli|{suffix}"
 
 
 # --- the command-hook client -----------------------------------------------------------

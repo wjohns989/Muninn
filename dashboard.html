@@ -5,9 +5,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Muninn Hub | Cyber-Norse Interface</title>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700;900&family=Rajdhani:wght@400;500;600;700&display=swap"
-        rel="stylesheet">
     <link rel="stylesheet" href="/dashboard.css">
 </head>
 
@@ -86,7 +83,16 @@
                     <circle cx="11" cy="11" r="8"></circle>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 </svg>
-                <span class="nav-text">Search</span>
+                <span class="nav-text">Ordinary Search</span>
+                <div class="tab-beam"></div>
+            </li>
+            <li class="nav-item" data-tab="history" tabindex="0" role="button" aria-label="Encrypted History">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="4" y="3" width="16" height="18" rx="2"></rect>
+                    <path d="M8 8h8M8 12h8M8 16h5"></path>
+                </svg>
+                <span class="nav-text">Encrypted History</span>
                 <div class="tab-beam"></div>
             </li>
             <li class="nav-item" onclick="showTab('system')">
@@ -290,6 +296,23 @@
                 </div>
             </div>
 
+            <!-- TAB: ENCRYPTED HISTORY -->
+            <div id="tab-history" class="tab-content">
+                <div class="help-box">
+                    <b>Encrypted History Search</b>
+                    This searches locally archived transcripts, separate from ordinary memories.
+                    Search enqueues a durable local encrypted-index job. Excerpts are bounded and sanitized with
+                    best-effort redaction; do not treat them as guaranteed free of sensitive information.
+                </div>
+                <div class="search-container">
+                    <input type="text" id="history-query" aria-label="Search encrypted history"
+                        placeholder="Search archived transcripts..." maxlength="240">
+                    <button type="button" id="history-search-button" class="btn-primary search-btn-absolute">Search History</button>
+                </div>
+                <p id="history-search-status" role="status" aria-live="polite">Enter a query to search encrypted history.</p>
+                <div id="history-results"></div>
+            </div>
+
             <!-- TAB: SYSTEM -->
             <div id="tab-system" class="tab-content">
                 <div class="card">
@@ -347,6 +370,8 @@
 
         let AUTH_TOKEN = "";
         let HISTORY_SECURITY_MODE = "unknown";
+        let historySearchSequence = 0;
+        let historySearchJobId = null;
         let healthPoll = null;
         let scanPoll = null;
         // Retire credentials persisted by older dashboard releases.
@@ -538,7 +563,8 @@
             const activeTab = document.getElementById('tab-' + tabId);
             if (activeTab) activeTab.classList.add('active');
 
-            const activeNav = document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
+            const activeNav = document.querySelector(`.nav-item[data-tab="${tabId}"]`) ||
+                document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
             if (activeNav) activeNav.classList.add('active');
 
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
@@ -562,6 +588,7 @@
         async function api(endpoint, method = 'GET', body = null) {
             const options = {
                 method,
+                cache: 'no-store',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${AUTH_TOKEN}`
@@ -588,6 +615,18 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            const historyNav = document.querySelector('.nav-item[data-tab="history"]');
+            historyNav.addEventListener('click', () => showTab('history'));
+            historyNav.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    showTab('history');
+                }
+            });
+            document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
+            document.getElementById('history-query').addEventListener('keydown', event => {
+                if (event.key === 'Enter') handleEncryptedHistorySearch();
+            });
             const huntToggle = document.getElementById('hunt-mode');
             if (huntToggle) {
                 huntToggle.addEventListener('change', () => {
@@ -602,10 +641,125 @@
         });
 
         function pulseNav(tabId, enable) {
-            const nav = document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
+            const nav = document.querySelector(`.nav-item[data-tab="${tabId}"]`) ||
+                document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
             if (!nav) return;
             if (enable) nav.classList.add('pulse-active');
             else nav.classList.remove('pulse-active');
+        }
+
+        function historyMessage(message) {
+            document.getElementById('history-search-status').textContent = message;
+        }
+
+        function renderHistoryMatches(result, sequence) {
+            const container = document.getElementById('history-results');
+            container.replaceChildren();
+            const matches = Array.isArray(result.matches) ? result.matches : [];
+            const coverage = `${result.ready ?? '?'} of ${result.total ?? '?'} current snapshots indexed; ` +
+                `${result.missing ?? '?'} missing, ${result.overflow ?? '?'} overflow.`;
+            historyMessage(`${matches.length} matching sources. ${coverage} ` +
+                (result.complete === true ? 'Search complete.' : 'Partial search; some matches may be absent.'));
+            if (!matches.length) return;
+            for (const match of matches) {
+                const card = document.createElement('div');
+                card.className = 'result-item';
+                const heading = document.createElement('strong');
+                heading.textContent = `${match.provider || 'unknown'} · ${match.kind || 'source'} · ` +
+                    `${match.captured_day_utc || 'date unknown'}`;
+                card.appendChild(heading);
+                const provenance = document.createElement('p');
+                provenance.textContent = `Source ref ${match.ref || 'unknown'} · ` +
+                    `${match.size_bucket_kib ?? '?'} KiB bucket · ${match.versions ?? '?'} version(s)`;
+                card.appendChild(provenance);
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'btn-secondary';
+                button.textContent = 'Load sanitized excerpt';
+                const excerpt = document.createElement('pre');
+                excerpt.style.whiteSpace = 'pre-wrap';
+                excerpt.style.overflowWrap = 'anywhere';
+                const capability = match.fetch_capability;
+                button.addEventListener('click', async () => {
+                    if (sequence !== historySearchSequence) return;
+                    if (!capability) {
+                        excerpt.textContent = 'Excerpt capability unavailable; search again.';
+                        return;
+                    }
+                    button.disabled = true;
+                    excerpt.textContent = 'Authenticating and fetching bounded excerpt...';
+                    const fetched = await api('/history/secure/fetch', 'POST',
+                        { capability, max_chars: 3000 });
+                    if (sequence !== historySearchSequence) return;
+                    if (fetched.error) {
+                        excerpt.textContent = `Fetch unavailable: ${fetched.error}`;
+                        button.disabled = false;
+                        return;
+                    }
+                    const span = fetched.data || {};
+                    excerpt.textContent = `Sanitized excerpt — best-effort redaction${span.truncated ? ' (truncated)' : ''}:\n\n` +
+                        (typeof span.redacted_text === 'string' ? span.redacted_text : 'No text returned.');
+                });
+                card.appendChild(button);
+                card.appendChild(excerpt);
+                container.appendChild(card);
+            }
+        }
+
+        async function handleEncryptedHistorySearch() {
+            const query = document.getElementById('history-query').value.trim();
+            if (!query) {
+                historyMessage('Enter a query first.');
+                return;
+            }
+            if (HISTORY_SECURITY_MODE !== 'strict') {
+                historyMessage('Encrypted history search is available only when strict history mode is active.');
+                return;
+            }
+            const sequence = ++historySearchSequence;
+            const previous = historySearchJobId;
+            historySearchJobId = null;
+            document.getElementById('history-results').replaceChildren();
+            historyMessage('Enqueuing local encrypted-index search...');
+            if (previous) await api(`/history/secure/search/jobs/${previous}`, 'DELETE');
+            if (sequence !== historySearchSequence) return;
+            const queued = await api('/history/secure/search/jobs', 'POST', { query, limit: 10 });
+            if (sequence !== historySearchSequence) {
+                if (queued.data?.job_id) {
+                    await api(`/history/secure/search/jobs/${queued.data.job_id}`, 'DELETE');
+                }
+                return;
+            }
+            if (queued.error || !queued.data?.job_id) {
+                historyMessage(`Search was not queued: ${queued.error || 'unexpected response'}`);
+                return;
+            }
+            const jobId = queued.data.job_id;
+            historySearchJobId = jobId;
+            for (let attempt = 0; attempt < 60; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (sequence !== historySearchSequence) return;
+                const polled = await api(`/history/secure/search/jobs/${jobId}`);
+                if (sequence !== historySearchSequence) return;
+                if (polled.error) {
+                    historyMessage(`Search status unavailable: ${polled.error}`);
+                    return;
+                }
+                const state = polled.data?.state || 'unknown';
+                if (state === 'succeeded') {
+                    historySearchJobId = null;
+                    renderHistoryMatches(polled.data.result || {}, sequence);
+                    return;
+                }
+                if (!['pending', 'running', 'retry'].includes(state)) {
+                    historySearchJobId = null;
+                    historyMessage(`Search ${state}; code ${polled.data?.error_code || 'not reported'}.`);
+                    return;
+                }
+                historyMessage(`Local search ${state}...`);
+            }
+            if (sequence !== historySearchSequence) return;
+            historyMessage('UI polling timed out after two minutes. The durable search job may still be running; search again later.');
         }
 
         async function handleSearch() {

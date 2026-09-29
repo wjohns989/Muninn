@@ -1,5 +1,12 @@
 """The anonymous dashboard must not hand local clients the API bearer."""
 
+import json
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 import server
@@ -25,6 +32,140 @@ def test_legacy_import_controls_start_hidden_until_health_confirms_legacy():
     assert response.status_code == 200
     assert 'id="legacy-section" style="display:none"' in response.text
     assert "HISTORY_SECURITY_MODE === 'legacy'" in response.text
+
+
+def test_dashboard_exposes_distinct_bounded_history_search_without_remote_assets():
+    page = TestClient(server.app).get("/").text
+    assert 'id="tab-history"' in page
+    assert 'id="history-query"' in page
+    assert "best-effort redaction" in page
+    assert "Ordinary Search" in page
+    assert "fonts.googleapis.com" not in page
+    assert "/history/secure/search/jobs" in page
+    assert "/history/secure/fetch" in page
+    assert "/history/secure/raw" not in page
+    assert "/credentials/reveal" not in page
+    assert "cache: 'no-store'" in page
+    history_logic = page.split("function historyMessage(message)", 1)[1].split("async function handleSearch()", 1)[0]
+    assert "excerpt.textContent" in history_logic
+    assert "innerHTML" not in history_logic
+    assert "copyToClipboard" not in history_logic
+    assert "sequence !== historySearchSequence" in history_logic
+    assert "if (queued.data?.job_id)" in history_logic
+    assert "Sanitized excerpt — best-effort redaction" in history_logic
+
+
+def test_dashboard_inline_javascript_parses():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    scripts = re.findall(r"<script>(.*?)</script>", page, re.DOTALL)
+    assert len(scripts) == 1
+    checked = subprocess.run([node, "--check", "-"], input=scripts[0].encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
+
+
+def test_history_ui_discards_stale_search_and_fetch_responses():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    source = page.split("function historyMessage(message)", 1)[1].split(
+        "async function handleSearch()", 1,
+    )[0]
+    source = "let HISTORY_SECURITY_MODE = 'strict'; let historySearchSequence = 0; " + (
+        "let historySearchJobId = null; function historyMessage(message)" + source
+    )
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const elements = new Map();
+function element() {
+    return {
+        children: [], textContent: '', value: '', listeners: {}, style: {},
+        appendChild(child) { this.children.push(child); },
+        replaceChildren(...children) { this.children = children; },
+        addEventListener(name, handler) { this.listeners[name] = handler; }
+    };
+}
+const document = {
+    getElementById(id) {
+        if (!elements.has(id)) elements.set(id, element());
+        return elements.get(id);
+    },
+    createElement: element,
+    addEventListener() {}
+};
+    const context = vm.createContext({document, setTimeout(callback) { callback(); }});
+    vm.runInContext(__SOURCE__, context);
+
+(async () => {
+    let releaseOld;
+    const oldResponse = new Promise(resolve => { releaseOld = resolve; });
+    const calls = [];
+    context.api = async (path, method, body) => {
+        calls.push({path, method, body});
+        if (path === '/history/secure/search/jobs' && body.query === 'old') return oldResponse;
+        if (path === '/history/secure/search/jobs') return {data: {job_id: 'new-job'}};
+        if (path === '/history/secure/search/jobs/new-job')
+            return {data: {state: 'succeeded', result: {
+                matches: [], ready: 1, total: 1, missing: 0, overflow: 0, complete: true
+            }}};
+        return {data: {}};
+    };
+    const query = document.getElementById('history-query');
+    query.value = 'old';
+    const first = vm.runInContext('handleEncryptedHistorySearch()', context);
+    query.value = 'new';
+    await vm.runInContext('handleEncryptedHistorySearch()', context);
+    releaseOld({data: {job_id: 'old-job'}});
+    await first;
+    assert(calls.some(call => call.path === '/history/secure/search/jobs/old-job' && call.method === 'DELETE'));
+    assert.match(document.getElementById('history-search-status').textContent, /Search complete/);
+
+    let releaseFetch;
+    context.api = async () => new Promise(resolve => { releaseFetch = resolve; });
+    vm.runInContext(
+        "renderHistoryMatches({matches: [{fetch_capability: 'opaque'}], " +
+        "ready: 1, total: 1, missing: 0, overflow: 0, complete: true}, historySearchSequence)",
+        context
+    );
+    const card = document.getElementById('history-results').children[0];
+    const pendingFetch = card.children[2].listeners.click();
+    vm.runInContext('historySearchSequence += 1', context);
+    releaseFetch({data: {redacted_text: 'late sensitive response'}});
+    await pendingFetch;
+    assert.doesNotMatch(card.children[3].textContent, /late sensitive response/);
+
+    // Exercise the terminal timeout path after a new search invalidates the old sequence.
+    const status = document.getElementById('history-search-status');
+    let statusText = '';
+    let polls = 0;
+    Object.defineProperty(status, 'textContent', {
+        get() { return statusText; },
+        set(value) {
+            statusText = value;
+            if (value === 'Local search running...' && ++polls === 60) {
+                vm.runInContext('historySearchSequence += 1', context);
+                statusText = 'Newer search is active';
+            }
+        }
+    });
+    context.api = async (path, method) => {
+        if (path === '/history/secure/search/jobs' && method === 'POST')
+            return {data: {job_id: 'timing-job'}};
+        return {data: {state: 'running'}};
+    };
+    query.value = 'timing';
+    await vm.runInContext('handleEncryptedHistorySearch()', context);
+    assert.equal(status.textContent, 'Newer search is active');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
 
 
 def test_health_reports_effective_history_security_mode(monkeypatch):

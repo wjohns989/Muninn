@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import sys
 import time
@@ -28,8 +29,11 @@ CLAUDE_EVENTS = {
     "SessionEnd": (None, 2),
 }
 CODEX_EVENTS = {"SessionStart": 10, "PreCompact": 30, "Stop": 5, "SessionEnd": 1}
-GEMINI_EVENTS_MS = {"SessionStart": 10000, "PreCompress": 30000,
-                    "AfterAgent": 5000, "SessionEnd": 2000}
+# Gemini's Windows PowerShell hook startup can outlast its former 10s/2s
+# deadlines under local startup contention, even though the bridge itself is
+# usually quick. Keep finite host deadlines; the bridge has shorter HTTP caps.
+GEMINI_EVENTS_MS = {"SessionStart": 30000, "PreCompress": 30000,
+                    "AfterAgent": 10000, "SessionEnd": 30000}
 
 
 @dataclass
@@ -115,11 +119,23 @@ def codex_plan(install: bool = True, home: Optional[Path] = None, python: Option
     return HookPlan("codex", path, before, _with_groups(before, groups, install))
 
 
+def _gemini_command(python: str, client: Path, server_url: str, *, windows: bool) -> str:
+    if not windows:
+        return f'"{python}" "{client}" gemini-cli "{server_url}"'
+
+    def quoted(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    # Gemini CLI's Windows hook runner uses PowerShell (or pwsh) even when
+    # ComSpec is cmd.exe. The call operator makes a quoted executable runnable.
+    return f"& {quoted(python)} {quoted(str(client))} gemini-cli {quoted(server_url)}"
+
+
 def gemini_plan(server_url: str, install: bool = True, home: Optional[Path] = None,
                 python: Optional[str] = None) -> HookPlan:
     path = gemini_source(home or Path.home()).home / "settings.json"
     client = Path(__file__).resolve().parent.parent / "hook_client.py"
-    command = f'"{python or sys.executable}" "{client}" gemini-cli "{server_url}"'
+    command = _gemini_command(python or sys.executable, client, server_url, windows=os.name == "nt")
     groups = {event: {"hooks": [{"name": "muninn-local-memory", "type": "command",
                                  "command": command, "timeout": timeout}]}
               for event, timeout in GEMINI_EVENTS_MS.items()}

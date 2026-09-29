@@ -512,6 +512,14 @@ running local service without printing transcript or model text, run
 `python -m scripts.smoke_secure_history_routes --query <nonsecret-term>
 --provider ollama` (or `--provider openrouter` only after configuring its
 ZDR key, consent, and finite provider-enforced cap).
+At `http://127.0.0.1:42069`, the dashboard now has a separate **Encrypted
+History** tab. After local bearer authentication, it queues a durable search,
+reports indexed/total coverage and partial results, and loads a bounded excerpt
+only when selected. Excerpts receive best-effort redaction, not a guarantee that
+all sensitive text is gone; the dashboard has no raw transcript or credential
+reveal control. **Ordinary Search** remains a different corpus. This is a narrow
+operator slice, not the full control-center overhaul described in
+`docs/plans/2026-09-28-local-control-center-overhaul.md`.
 Add `--archive-query <search-term>` to test a bounded, redacted excerpt of your
 own encrypted history locally. OpenRouter validation requires an environment key,
 provider-enforced daily cap, and ZDR route; `--openrouter` uses checked-in source
