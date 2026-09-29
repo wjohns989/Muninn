@@ -338,6 +338,19 @@ def test_invalid_utf8_and_unbounded_candidate_budget_fail_closed(tmp_path: Path)
         index.search("topic", max_candidates=1001)
 
 
+def test_coverage_is_bound_to_the_manifest_generation(tmp_path: Path) -> None:
+    archive, source = _archive(tmp_path)
+    index = SecureHistoryBlindIndex(archive)
+    first = index.build()
+    assert first["archive_generation"] == archive.status()["generation"]
+    source.write_text("a later transcript version", encoding="utf-8")
+    archive.archive_file(source, "codex")
+    later = index.coverage()
+    assert later["archive_generation"] == archive.status()["generation"]
+    assert later["archive_generation"] != first["archive_generation"]
+    assert later["complete"] is False
+
+
 def test_repeated_tokens_are_positioned_once_per_snapshot(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "repeated.jsonl"
     source.write_text("repeatword " * 10000, encoding="utf-8")

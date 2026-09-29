@@ -548,6 +548,11 @@ header {
     overflow-wrap: anywhere;
 }
 
+.history-hook-receipts {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 /* --- Animation --- */
 @keyframes slideUp {
     to {

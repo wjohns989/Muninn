@@ -258,8 +258,9 @@ class SecureHistoryBlindIndex:
                 return self._capability(entry, version, max(target["terms"], key=len))
         raise ValueError("Analysis snapshot is no longer available")
 
-    def _current(self) -> list[tuple[str, int, dict, dict, int]]:
-        manifest = self.archive._load_manifest()
+    def _current(self, manifest: dict | None = None) -> list[tuple[str, int, dict, dict, int]]:
+        if manifest is None:
+            manifest = self.archive._load_manifest()
         current = []
         for source, entries in manifest["files"].items():
             for version, entry in enumerate(entries):
@@ -554,9 +555,10 @@ class SecureHistoryBlindIndex:
         return {"indexed": indexed, "overflow": overflow, "skipped": skipped, **coverage}
 
     def coverage(self) -> dict[str, int | bool]:
+        manifest = self.archive._load_manifest()
         total = ready = overflow = 0
         with self._connect() as db:
-            for _source, version, entry, _latest, _versions in self._current():
+            for _source, version, entry, _latest, _versions in self._current(manifest):
                 total += 1
                 complete = self._completion(db, entry)
                 if complete is not None:
@@ -570,7 +572,8 @@ class SecureHistoryBlindIndex:
                 else:
                     ready += 1
         missing = total - ready - overflow
-        return {"total": total, "ready": ready, "missing": missing,
+        return {"archive_generation": manifest["generation"],
+                "total": total, "ready": ready, "missing": missing,
                 "unsearchable": overflow, "complete": missing == 0 and overflow == 0}
 
     def retry_plan(self) -> dict[str, int]:

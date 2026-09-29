@@ -298,6 +298,13 @@
 
             <!-- TAB: ENCRYPTED HISTORY -->
             <div id="tab-history" class="tab-content">
+                <div class="card">
+                    <h3>Encrypted capture status</h3>
+                    <p class="card-description">Archive and index counts come from the authenticated local service.
+                        Hook counts are accepted endpoint invocations, not proof of unique host events or completed archival.</p>
+                    <p id="history-coverage-status" role="status" aria-live="polite">Enter the main local token to inspect coverage.</p>
+                    <p id="history-hook-receipts" class="history-hook-receipts">Hook receipts not loaded.</p>
+                </div>
                 <div class="card" id="remote-policy-card">
                     <h3>Private OpenRouter fallback</h3>
                     <p class="card-description">Local models remain preferred. When enabled, ZDR OpenRouter may interpret a pertinent
@@ -371,9 +378,11 @@
                 </div>
 
                 <div class="card">
-                    <h3>System Mainteance</h3>
+                    <h3>System Maintenance</h3>
+                    <p class="card-description">TKG consolidation concerns ordinary memories only. It does not scan,
+                        index, or interpret encrypted history, and server policy may leave it in dry-run mode.</p>
                     <div class="maintenance-grid">
-                        <button onclick="forceConsolidation()" class="btn-secondary">Trigger TKG Consolidation</button>
+                        <button onclick="forceConsolidation()" class="btn-secondary">Request ordinary-memory TKG consolidation</button>
                         <button onclick="checkHealth()" class="btn-secondary">Ping Diagnostics</button>
                     </div>
                 </div>
@@ -389,6 +398,7 @@
         let HISTORY_SECURITY_MODE = "unknown";
         let historySearchSequence = 0;
         let historySearchJobId = null;
+        let historyStatusSequence = 0;
         let remotePolicyLoadedEnabled = false;
         let remotePolicyLoadSequence = 0;
         let remotePolicySavePending = false;
@@ -564,6 +574,10 @@
             document.getElementById('auth-modal').classList.remove('active');
             document.getElementById('auth-dot').className = 'status-dot online';
             checkHealth();
+            if (document.getElementById('tab-history').classList.contains('active')) {
+                loadHistoryStatus();
+                loadRemotePolicy();
+            }
             startStatusPolling();
             return true;
         }
@@ -593,7 +607,10 @@
             if (tabId === 'ingest' && HISTORY_SECURITY_MODE === 'legacy') {
                 discoverLegacySources(true);
             }
-            if (tabId === 'history' && AUTH_TOKEN) loadRemotePolicy();
+            if (tabId === 'history' && (AUTH_TOKEN || !SECURITY_ENABLED)) {
+                loadHistoryStatus();
+                loadRemotePolicy();
+            }
         }
 
         // Original log function (now `originalLog`)
@@ -672,6 +689,57 @@
 
         function historyMessage(message) {
             document.getElementById('history-search-status').textContent = message;
+        }
+
+        async function loadHistoryStatus() {
+            const sequence = ++historyStatusSequence;
+            const token = AUTH_TOKEN;
+            const coverage = document.getElementById('history-coverage-status');
+            const hooks = document.getElementById('history-hook-receipts');
+            coverage.textContent = 'Loading encrypted archive and index coverage...';
+            hooks.textContent = 'Loading hook receipts...';
+            const response = await api('/history/status');
+            if (sequence !== historyStatusSequence || token !== AUTH_TOKEN) return;
+            if (response.error || !response.data) {
+                coverage.textContent = `Coverage unavailable: ${response.error || 'unexpected response'}`;
+                hooks.textContent = 'Hook receipts unavailable; no delivery conclusion can be drawn.';
+                return;
+            }
+            const data = response.data;
+            const archive = data.vault?.archive || {};
+            const index = data.last_secure_index || {};
+            const count = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            const matchingGeneration = data.vault?.ready === true &&
+                Number.isSafeInteger(archive.generation) &&
+                index.archive_generation === archive.generation;
+            const caughtUp = matchingGeneration && Number.isSafeInteger(archive.snapshots) &&
+                Number.isSafeInteger(index.ready) && Number.isSafeInteger(index.total) ?
+                (index.complete === true && index.ready === archive.snapshots &&
+                    index.total === archive.snapshots ? 'yes' : 'no') : 'unknown';
+            coverage.textContent = `Archive generation ${count(archive.generation)} · ` +
+                `${count(archive.snapshots)} encrypted snapshot versions across ${count(archive.sources)} sources. ` +
+                `Index generation ${count(index.archive_generation)}: ` +
+                `${count(index.ready)}/${count(index.total)} ready, ${count(index.missing)} missing; ` +
+                `current archive fully indexed: ${caughtUp}.`;
+            if (data.hook_receipts_error) {
+                hooks.textContent = 'Hook receipt ledger unavailable; no delivery conclusion can be drawn.';
+                return;
+            }
+            const receipts = Array.isArray(data.hook_receipts) ? data.hook_receipts : null;
+            if (!receipts) {
+                hooks.textContent = 'Hook receipt ledger not reported; delivery is unknown.';
+                return;
+            }
+            const clients = ['claude_code', 'codex', 'gemini_cli'];
+            const lines = clients.map(client => {
+                const observed = receipts.filter(receipt => receipt.provider === client);
+                if (!observed.length) return `${client}: no accepted receipt recorded`;
+                return `${client}: ` + observed.map(receipt =>
+                    `${receipt.event}: ${count(receipt.accepted_invocations)} accepted ` +
+                    `(${receipt.last_outcome || 'outcome unknown'})`).join('; ');
+            });
+            hooks.textContent = lines.join('\n') +
+                '\nCounts are accepted endpoint invocations, not unique host events or archival proof.';
         }
 
         async function loadRemotePolicy() {

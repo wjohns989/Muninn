@@ -127,6 +127,68 @@ vm.runInContext('handleSearch()', context).then(() => {
     assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
 
 
+def test_history_status_ui_shows_exact_coverage_and_receipts_as_text():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    assert 'id="history-coverage-status"' in page
+    assert 'id="history-hook-receipts"' in page
+    source = "async function loadHistoryStatus()" + page.split("async function loadHistoryStatus()", 1)[1].split(
+        "async function loadRemotePolicy()", 1,
+    )[0]
+    assert "innerHTML" not in source
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const elements = new Map();
+const document = {getElementById(id) {
+    if (!elements.has(id)) {
+        const element = {textContent: ''};
+        Object.defineProperty(element, 'innerHTML', {set() { throw Error('HTML sink'); }});
+        elements.set(id, element);
+    }
+    return elements.get(id);
+}};
+const context = vm.createContext({document});
+vm.runInContext("let historyStatusSequence = 0; let AUTH_TOKEN = 'local'; " + __SOURCE__, context);
+let state = {vault: {ready: true, archive: {generation: 222, snapshots: 4039, sources: 3953}},
+    last_secure_index: {archive_generation: 221, ready: 4038, total: 4039, missing: 1, complete: false},
+    hook_receipts: [{provider: 'gemini_cli', event: '<img src=x onerror=steal()>',
+        accepted_invocations: 2, last_outcome: 'capture_intent', last_accepted_at: 1790675130}],
+    hook_receipts_error: null};
+context.api = async path => {
+    assert.equal(path, '/history/status');
+    return {data: state};
+};
+vm.runInContext('loadHistoryStatus()', context).then(async () => {
+    const coverage = document.getElementById('history-coverage-status').textContent;
+    const receipts = document.getElementById('history-hook-receipts').textContent;
+    assert.match(coverage, /generation 222/);
+    assert.match(coverage, /4038\/4039/);
+    assert.match(coverage, /1 missing/);
+    assert.match(coverage, /current archive fully indexed: unknown/);
+    assert.match(receipts, /gemini_cli/);
+    assert.match(receipts, /<img src=x onerror=steal\(\)>/);
+    assert.match(receipts, /claude_code.*no accepted receipt recorded/s);
+    assert.match(receipts, /accepted endpoint invocations, not unique host events/);
+    state = {...state, vault: {...state.vault, ready: false},
+        last_secure_index: {...state.last_secure_index, archive_generation: 222,
+            ready: 4039, total: 4039, missing: 0, complete: true}};
+    await vm.runInContext('loadHistoryStatus()', context);
+    assert.match(document.getElementById('history-coverage-status').textContent,
+        /current archive fully indexed: unknown/);
+    state = {...state, vault: {...state.vault, ready: true}};
+    await vm.runInContext('loadHistoryStatus()', context);
+    assert.match(document.getElementById('history-coverage-status').textContent,
+        /current archive fully indexed: yes/);
+}).catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
+
+
 def test_history_ui_discards_stale_search_and_fetch_responses():
     node = shutil.which("node")
     if node is None:
