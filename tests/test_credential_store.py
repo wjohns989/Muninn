@@ -1,9 +1,10 @@
-"""Synthetic-only persistence and portable recovery for the inactive vault."""
+"""Synthetic-only persistence and portable recovery for the credential vault."""
 
 from __future__ import annotations
 
 import multiprocessing
 import shutil
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -75,13 +76,53 @@ def test_project_relative_env_hint_is_searchable_and_authenticated(tmp_path: Pat
 
 @pytest.mark.parametrize("hint", [
     "C:/Users/name/.env", "../.env", "config//.env", "config\\.env",
-    "/.env", "config/./.env", "config/../.env", "config/passwords.txt",
+    "/.env", "config/./.env", "config/../.env",
 ])
 def test_credential_source_hint_rejects_unsafe_locations(tmp_path: Path, hint: str) -> None:
     store = _new(tmp_path)
     with pytest.raises(VaultIntegrityError):
         store.add(passphrase=_PASSPHRASE, value=_VALUE, service="example", project="project",
                   source_hash=source_fingerprint("source"), source_hint=hint)
+
+
+def test_pre_receipt_v2_vault_migrates_without_changing_records(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    record_id = _add(store)
+    with store._connect() as db:
+        db.execute("DROP TABLE scan_receipts")
+
+    migrated = CredentialStore(store.root)
+
+    assert migrated.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
+    with migrated._connect(readonly=True) as db:
+        assert db.execute("SELECT count(*) FROM scan_receipts").fetchone()[0] == 0
+
+
+def test_malformed_receipt_schema_fails_closed(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    with store._connect() as db:
+        db.execute("DROP TABLE scan_receipts")
+        db.execute("CREATE TABLE scan_receipts (receipt_id TEXT)")
+
+    with pytest.raises(VaultIntegrityError, match="receipt schema"):
+        CredentialStore(store.root)
+
+
+def test_pre_receipt_backup_restores_with_empty_receipt_table(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    record_id = _add(store)
+    backup = tmp_path / "backup"
+    assert store.backup(backup, passphrase=_PASSPHRASE) == 1
+    with CredentialStore(backup)._connect() as db:
+        db.execute("DROP TABLE scan_receipts")
+
+    restored = CredentialStore.restore(backup, tmp_path / "restored", passphrase=_PASSPHRASE)
+
+    assert restored.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
+    with restored._connect(readonly=True) as db:
+        assert db.execute("SELECT count(*) FROM scan_receipts").fetchone()[0] == 0
+    with sqlite3.connect(backup / "records.db") as db:
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='scan_receipts'").fetchone() is None
 
 
 def test_exact_legacy_schema_migrates_without_changing_record_aad(tmp_path: Path) -> None:

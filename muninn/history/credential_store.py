@@ -1,4 +1,4 @@
-"""Inactive, portable credential store; not connected to ingestion or APIs.
+"""Portable, locally unlocked credential store with discovery receipts.
 
 Only minimized metadata is searchable. Values never enter the normal Muninn
 database, vector/graph indexes, or model prompts through this module.
@@ -28,6 +28,12 @@ from muninn.history.credential_crypto import (
 )
 from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
 
+_RECEIPT_VERSION = 1
+_RECEIPT_SCHEMA = (
+    "CREATE TABLE scan_receipts (receipt_id TEXT PRIMARY KEY NOT NULL, "
+    "scanner_version INTEGER NOT NULL CHECK(scanner_version=1), "
+    "scanned_at REAL NOT NULL)"
+)
 _SENTINEL_ID = "__vault_sentinel__"
 _SENTINEL_VALUE = "muninn-credential-vault-v1"
 _SAFE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}\Z")
@@ -40,16 +46,13 @@ _ORIGINS = {"manual", "project", "transcript"}
 
 
 def _validated_source_hint(value: str) -> str:
-    """Keep agent-facing locations project-relative and limited to .env files."""
+    """Keep agent-facing file locations project-relative and traversal-free."""
     if value == "":
         return value
     if not isinstance(value, str) or len(value) > 160 or "\\" in value or ":" in value:
         raise VaultIntegrityError("Invalid credential source hint")
     parts = value.split("/")
     if any(not _HINT_PART.fullmatch(part) or part in (".", "..") for part in parts):
-        raise VaultIntegrityError("Invalid credential source hint")
-    basename = parts[-1]
-    if basename != ".env" and not basename.startswith(".env."):
         raise VaultIntegrityError("Invalid credential source hint")
     return value
 
@@ -89,12 +92,13 @@ class _ScanSession:
         self._key = b""
 
     def scan_source(self, *, passphrase: str = "", source_hash: str, project: str,
-                    origin: str, findings) -> dict[str, int]:
+                    origin: str, findings, receipt_identity: str | None = None) -> dict[str, int]:
         del passphrase
         if not self._valid:
             raise VaultIntegrityError("Credential scan session is closed")
         return self._store._scan_source(key=self._key, source_hash=source_hash,
-                                        project=project, origin=origin, findings=findings)
+                                        project=project, origin=origin, findings=findings,
+                                        receipt_identity=receipt_identity)
 
 
 class CredentialStore:
@@ -151,6 +155,7 @@ class CredentialStore:
         db.execute("PRAGMA user_version=2")
         db.execute("CREATE TABLE reveal_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                    "record_id TEXT NOT NULL, at REAL NOT NULL)")
+        db.execute(_RECEIPT_SCHEMA)
 
     @contextmanager
     def _connect(self, *, readonly: bool = False):
@@ -236,6 +241,17 @@ class CredentialStore:
                                ("credential_discovery_identity",)).fetchone()
             if index is None or "UNIQUE" not in index[0].upper() or "WHERE discovery_key <> ''" not in index[0]:
                 raise VaultIntegrityError("Incomplete credential discovery index")
+            receipt = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='scan_receipts'").fetchone()
+        if receipt is None:
+            # Old v2 vaults and portable backups receive the compatible table atomically.
+            with self._process_lock(), self._connect() as db:
+                current = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='scan_receipts'").fetchone()
+                if current is None:
+                    db.execute(_RECEIPT_SCHEMA)
+                    current = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='scan_receipts'").fetchone()
+                receipt = current
+        if receipt is None or receipt[0] != _RECEIPT_SCHEMA:
+            raise VaultIntegrityError("Invalid credential scan receipt schema")
         if self.db_path.with_name("records.db-wal").exists():
             raise VaultIntegrityError("Credential vault WAL must be recovered before opening")
 
@@ -308,26 +324,38 @@ class CredentialStore:
                 (int(active_only), pattern, pattern, pattern, limit),
             ).fetchall()
         return [({k: row[k] for k in ("id", "service", "project", "source_hash", "source_hint")}
-                  if row["origin"] == "manual" else dict(row))
+                  if row["origin"] == "manual" else {**dict(row), "candidate_status": "unverified"})
                 for row in rows if _validated_source_hint(row["source_hint"]) is not None]
 
     def scan_source(self, *, passphrase: str, source_hash: str, project: str,
-                    origin: str, findings) -> dict[str, int]:
+                    origin: str, findings, receipt_identity: str | None = None) -> dict[str, int]:
         with self.scan_session(passphrase) as session:
             return session.scan_source(passphrase=passphrase, source_hash=source_hash,
-                                       project=project, origin=origin, findings=findings)
+                                       project=project, origin=origin, findings=findings,
+                                       receipt_identity=receipt_identity)
 
     def _scan_source(self, *, key: bytes, source_hash: str, project: str,
-                     origin: str, findings) -> dict[str, int]:
+                     origin: str, findings, receipt_identity: str | None = None) -> dict[str, int]:
         if origin not in {"project", "transcript"}:
             raise ValueError("Invalid discovery origin")
         if not isinstance(project, str) or not _SAFE_LABEL.fullmatch(project):
             raise VaultIntegrityError("Invalid credential metadata")
+        if receipt_identity is not None and (origin != "transcript" or
+                                             not isinstance(receipt_identity, str) or
+                                             not 1 <= len(receipt_identity) <= 512):
+            raise VaultIntegrityError("Invalid credential scan receipt")
+        receipt_id = (hmac.new(key, b"credential-scan-snapshot-v1\0" +
+                               receipt_identity.encode("utf-8"), hashlib.sha256).hexdigest()
+                      if receipt_identity is not None else None)
         seen: set[str] = set()
         _metadata("scan", project, source_hash)
         counts = {"created": 0, "rotated": 0, "staled": 0}
         with self._lock, self._process_lock(), self._connect() as db:
             self._verify_key(db, key)
+            if receipt_id is not None and db.execute(
+                    "SELECT 1 FROM scan_receipts WHERE receipt_id=? AND scanner_version=?",
+                    (receipt_id, _RECEIPT_VERSION)).fetchone() is not None:
+                return {"created": 0, "rotated": 0, "staled": 0, "skipped": 1}
             for service, value, source_hint in findings:
                 identity = service + "\0" + project + "\0" + source_hash
                 if origin == "transcript":
@@ -365,6 +393,9 @@ class CredentialStore:
                     continue
                 meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=bool(row["active"]), discovery_key=row["discovery_key"])
                 decrypt_record(key, self.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
+            if receipt_id is not None:
+                db.execute("INSERT INTO scan_receipts (receipt_id,scanner_version,scanned_at) VALUES (?,?,?)",
+                           (receipt_id, _RECEIPT_VERSION, time.time()))
         return counts
 
     def reveal(self, record_id: str, *, passphrase: str) -> str:

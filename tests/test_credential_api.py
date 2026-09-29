@@ -56,6 +56,9 @@ async def test_metadata_and_reveal_are_separate_audited_and_not_logged(tmp_path,
     store = CredentialStore.create(tmp_path / "credential_vault", _PASSPHRASE)
     record_id = store.add(passphrase=_PASSPHRASE, value=_VALUE, service="example", project="test",
                           source_hash=source_fingerprint("source"))
+    store.scan_source(passphrase=_PASSPHRASE, source_hash=source_fingerprint("project-config"),
+                      project="test", origin="project",
+                      findings=[("SERVICE_API_KEY", _VALUE, "config.yaml")])
     headers = {"Authorization": f"Bearer {_TOKEN}"}
     with caplog.at_level(logging.INFO):
         for peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
@@ -65,6 +68,12 @@ async def test_metadata_and_reveal_are_separate_audited_and_not_logged(tmp_path,
                 assert searched.json()["data"][0]["id"] == record_id
                 assert _VALUE not in searched.text
                 assert searched.headers["cache-control"] == "no-store"
+                candidate = await client.get("/credentials/search", params={"query": "SERVICE_API_KEY"},
+                                             headers=headers)
+                assert candidate.status_code == 200
+                assert candidate.json()["data"][0]["candidate_status"] == "unverified"
+                assert candidate.json()["data"][0]["source_hint"] == "config.yaml"
+                assert _VALUE not in candidate.text
         async with _client("127.0.0.1") as client:
             bad = await client.post(f"/credentials/reveal/{record_id}", headers=headers,
                                     json={"passphrase": "wrong passphrase"})
@@ -120,6 +129,7 @@ async def test_opt_in_agent_metadata_search_never_reveals_values(tmp_path, monke
         historical = await client.post("/credentials/agent-search", json={"query": "SERVICE_API_KEY"}, headers=headers)
         assert historical.status_code == 200
         assert historical.json()["data"][0]["origin"] == "transcript"
+        assert historical.json()["data"][0]["candidate_status"] == "unverified"
         assert _VALUE not in historical.text
     async with _client("192.168.1.2") as remote:
         assert (await remote.post("/credentials/agent-search", json={"query": "openrouter"},

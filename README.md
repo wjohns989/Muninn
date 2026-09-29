@@ -552,13 +552,17 @@ The optional `muninn-mcp[credential-vault]` extra provides a separate local
 encrypted credential store and `python -m muninn.cli credentials --help` for
 interactive setup, metadata search, explicit reveal, and portable backup/restore.
 An explicitly selected `credentials scan` prompts for the recovery passphrase
-locally, reads approved project `.env`/`.env.*` files and/or encrypted history
-snapshots, and stores conservative assignment-style credential candidates only
-inside the vault. It streams inputs, rolls a source back on mutation, decoding,
-or archive-integrity failure, and reports incomplete/error/ambiguous counts
-without printing values. Rescans are idempotent; changed project-file values
-replace their prior encrypted value, while historical transcript observations
-are labeled as historical rather than asserted current. Example, with your own
+locally, reads supported text files under approved project roots (`.env`,
+configuration, source, and documentation formats) and/or encrypted history
+snapshots, and stores assignment-shaped credential candidates only inside the
+vault. It streams inputs, rolls a source back on mutation, decoding, or
+archive-integrity failure, and reports incomplete/error/ambiguous counts
+without printing values. Project-file values rotate in place; historical
+transcript observations are labeled historical, not asserted current. Each
+fully verified archive snapshot commits an authenticated scan receipt in the
+same vault transaction as its findings, including snapshots with no findings.
+After the live archive grows, rerun from offset zero; receipts skip already
+processed snapshots instead of decrypting the whole history again. Example, with your own
 private paths (no `D:` drive is required):
 
 ```powershell
@@ -570,9 +574,13 @@ python -m muninn.cli credentials backup --root '<your-private-data-dir>\credenti
 Only the named project roots and archive are scanned. Generated/example `.env`
 files, linked paths, unsupported assignments, and non-UTF-8 sources are not
 silently treated as recovered credentials; check the scan report and the source
-before assuming a key is absent. The passphrase is not stored for background
+before assuming a key is absent. Documentation examples and commented-out code
+may be detected: every discovered record is marked `candidate_status=unverified`,
+not proof that the key is live or valid. The passphrase is not stored for background
 scanning, so newly changed project files require another explicit local scan.
-Records may include a validated project-relative `.env` hint; the agent-facing
+Nested Git repositories under a selected collection root use the repository
+folder as their project label; the file hint remains relative to the selected
+root. Records may include a validated selected-root-relative file hint; the agent-facing
 `search_credential_metadata` tool requires `MUNINN_CREDENTIAL_AGENT_SEARCH=1`
 and returns metadata only. A vault search still cannot prove absence of a key
 in an unscanned, ambiguous, or unsupported source.
@@ -666,7 +674,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 - **Default data dir**: `~/.local/share/AntigravityLabs/muninn/` (Linux/macOS) · `%LOCALAPPDATA%\AntigravityLabs\muninn\` (Windows)
 - **Storage**: SQLite (metadata) + Qdrant (vectors) + KuzuDB (memory chains graph)
 - **No cloud dependency**: All data local by default
-- **Credential vault**: the separate encrypted store uses a locally prompted passphrase and owner-only filesystem access. An explicit `credentials scan` can discover conservative candidates from selected project `.env` files and encrypted history snapshots; it is not an automatic background scan and does not make unscanned sources secret-free. Existing plaintext transcripts and older copies can contain secrets; restrict access to them and their backups.
+- **Credential vault**: the separate encrypted store uses a locally prompted passphrase and owner-only filesystem access. An explicit `credentials scan` can discover unverified candidates from selected project text files and encrypted history snapshots; it is not an automatic background scan and does not make unscanned sources secret-free. Existing plaintext transcripts and older copies can contain secrets; restrict access to them and their backups.
 - **Auth**: protected API, MCP, and dashboard operations require a Bearer token whenever security is enabled. Set `MUNINN_AUTH_TOKEN` or `MUNINN_API_KEY` before starting a normal service; the dashboard never injects or stores it in browser localStorage. An unconfigured fallback token is not logged. Explicit `MUNINN_NO_AUTH=1` is development-only.
 - **Browser origins**: requests from web pages other than `localhost` are rejected (blocks cross-site access and DNS rebinding); extend with `MUNINN_ALLOWED_ORIGINS`
 - **Namespace isolation**: `user_id` + `namespace` + `project` boundaries enforced at every retrieval layer
@@ -682,6 +690,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 | `docs/archive/` | Historical handoffs and remediation reports (including `HANDOFF.md`) |
 | `docs/ARCHITECTURE.md` | System architecture deep-dive |
 | `docs/architecture/local-operating-model-audit.md` | Current local lifecycle, timing contract, contradictions, and release gates (audit, not completion claim) |
+| `docs/plans/2026-09-28-local-control-center-overhaul.md` | Dependency-ordered plan for the localhost UI and security controls (not yet implemented) |
 | `docs/MUNINN_COMPREHENSIVE_ROADMAP.md` | Full feature roadmap (v3.1→v3.3+) |
 | `docs/AGENT_CONTINUATION_RUNBOOK.md` | How to resume development across sessions |
 | `docs/PYTHON_SDK.md` | Python SDK reference |

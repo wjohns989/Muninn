@@ -905,7 +905,7 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         CredentialStore.restore(args.source, root, passphrase=passphrase)
         print(f"Validated encrypted vault restored at {root}.")
     elif args.action == "scan":
-        from muninn.history.credential_discovery import scan_archive, scan_project_env
+        from muninn.history.credential_discovery import scan_archive, scan_project_files
         from muninn.history.secure_archive import SecureHistoryArchive
 
         store = CredentialStore(root)
@@ -914,8 +914,15 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             print(json.dumps({"stage": "validated_pre_scan_backup", "records": backup_count},
                              sort_keys=True), flush=True)
         with store.scan_session(passphrase) as session:
-            reports = [scan_project_env(project, session, passphrase="")
-                       for project in (args.project_root or [])]
+            reports = []
+            for project_index, project in enumerate(args.project_root or [], start=1):
+                def project_progress(status):
+                    print(json.dumps({"stage": "project_scan", "project_index": project_index,
+                                      **status}, sort_keys=True), flush=True)
+
+                reports.append(scan_project_files(
+                    project, session, passphrase="", progress=project_progress,
+                ))
             project_totals = {key: sum(int(report[key]) for report in reports) for key in (
                 "files", "succeeded", "errors", "ambiguous", "candidates", "inserted", "updated", "stale",
             )}
@@ -1181,13 +1188,13 @@ def build_parser() -> argparse.ArgumentParser:
     credentials.add_argument("--destination", type=Path, help="New directory for 'backup'.")
     credentials.add_argument("--source", type=Path, help="Existing encrypted backup directory for 'restore'.")
     credentials.add_argument("--project-root", type=Path, action="append",
-                             help="Approved project root for 'scan' (repeatable); scans real .env files only.")
+                             help="Approved project root for 'scan' (repeatable); streams supported text files including .env, config, source, and docs.")
     credentials.add_argument("--archive-root", type=Path,
                              help="Encrypted archive to scan as historical credential observations.")
     credentials.add_argument("--archive-offset", type=int, default=0,
-                             help="First snapshot index in a fixed archive generation (default 0).")
+                             help="Legacy fixed-generation range start. After manifest growth, restart at 0; authenticated receipts skip already-scanned snapshots.")
     credentials.add_argument("--archive-generation", type=int,
-                             help="Required with nonzero --archive-offset to prevent shifted snapshot ranges.")
+                             help="Required with nonzero --archive-offset; never reuse an offset after manifest growth.")
     credentials.add_argument("--max-snapshots", type=int,
                              help="Bound this archive scan; an unfinished range reports complete=false.")
     credentials.add_argument("--backup-before", type=Path,

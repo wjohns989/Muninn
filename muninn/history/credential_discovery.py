@@ -8,6 +8,7 @@ project root and an unlocked portable vault; a failed source is rolled back by
 from __future__ import annotations
 
 import codecs
+import json
 import os
 import queue
 import re
@@ -27,7 +28,11 @@ _INLINE_ASSIGN = re.compile(
     r"(?<![A-Za-z0-9_])(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})"
     r"[ \t]{0,16}(?:=|\\?\"[ \t]{0,16}:)[ \t]{0,16}\\?\"?"
 )
-_VALUE = re.compile(r'(?P<value>[A-Za-z0-9_./+=:@-]{8,512})(?=$|[ \t\r\n#"\\])')
+_VALUE = re.compile(r'(?P<value>[A-Za-z0-9_./+=:@-]{8,512})(?=$|[ \t\r\n#"\'\\,;}\]])')
+_PROJECT_ASSIGN = re.compile(
+    r"(?<![A-Za-z0-9_])[\"']?(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})[\"']?"
+    r"[ \t]{0,16}(?:=|:)[ \t]{0,16}[\"']?"
+)
 _SECRET_NAME = re.compile(
     r"(?i)(?:^|_)(?:API_KEY|ACCESS_KEY|SECRET_KEY|PRIVATE_KEY|ACCESS_TOKEN|AUTH_TOKEN|"
     r"REFRESH_TOKEN|TOKEN|SECRET|PASSWORD|PASSWD)$"
@@ -38,6 +43,13 @@ _EXCLUDED_DIRS = {
     ".git", ".worktrees", ".muninn_runtime", ".venv", "venv", "node_modules",
     "__pycache__", ".tox", "dist", "build",
 }
+_PROJECT_TEXT_SUFFIXES = {
+    ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".json", ".jsonc",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".properties",
+    ".ps1", ".sh", ".bash", ".zsh", ".md", ".txt", ".rst", ".sql",
+    ".xml", ".http", ".ipynb",
+}
+_PROJECT_TEXT_NAMES = {"dockerfile", "makefile", "config", "settings"}
 _OVERLAP = 1024
 _CHUNK = 64 * 1024
 
@@ -107,6 +119,12 @@ def iter_env_findings(chunks: Iterable[bytes], source_hint: str,
     return _iter_findings(chunks, source_hint, stats, _ASSIGN)
 
 
+def iter_project_findings(chunks: Iterable[bytes], source_hint: str,
+                          stats: ExtractionStats) -> Iterator[tuple[str, str, str]]:
+    """Find assignment-shaped credentials in supported project text files."""
+    return _iter_findings(chunks, source_hint, stats, _PROJECT_ASSIGN)
+
+
 def iter_transcript_findings(chunks: Iterable[bytes],
                              stats: ExtractionStats) -> Iterator[tuple[str, str, str]]:
     """Historical observations only; never claim that a captured key is current."""
@@ -117,7 +135,7 @@ def _is_link_or_junction(path: Path) -> bool:
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
 
 
-def _env_files(root: Path) -> Iterator[Path]:
+def _env_files(root: Path, *, all_project_text: bool = False) -> Iterator[Path]:
     def fail(error: OSError) -> None:
         raise error
 
@@ -129,21 +147,55 @@ def _env_files(root: Path) -> Iterator[Path]:
         )
         for name in sorted(files):
             lowered = name.lower()
-            if (lowered == ".env" or lowered.startswith(".env.")) and lowered not in _EXCLUDED_ENV:
+            is_env = (lowered == ".env" or lowered.startswith(".env.")) and lowered not in _EXCLUDED_ENV
+            is_text = (Path(lowered).suffix in _PROJECT_TEXT_SUFFIXES
+                       or lowered in _PROJECT_TEXT_NAMES)
+            if is_env or (all_project_text and is_text):
                 yield folder / name
 
 
 def scan_project_env(root: Path, store: CredentialStore, *, passphrase: str) -> dict[str, int | bool]:
     """Scan only explicitly selected project .env sources, with no values in the report."""
+    return _scan_project(root, store, passphrase=passphrase, all_project_text=False)
+
+
+def scan_project_files(root: Path, store: CredentialStore, *, passphrase: str,
+                       progress: Callable[[dict[str, int | bool]], None] | None = None
+                       ) -> dict[str, int | bool]:
+    """Stream supported project text formats, never following linked directories."""
+    return _scan_project(root, store, passphrase=passphrase, all_project_text=True,
+                         progress=progress)
+
+
+def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
+                  all_project_text: bool,
+                  progress: Callable[[dict[str, int | bool]], None] | None = None
+                  ) -> dict[str, int | bool]:
     root = Path(root).absolute()
     if _is_link_or_junction(root) or not root.is_dir():
         raise ValueError("Credential scan root must be a real directory")
     root = root.resolve(strict=True)
+    project_names: dict[Path, str] = {root: root.name}
+
+    def project_name(folder: Path) -> str:
+        trail = []
+        while folder not in project_names:
+            trail.append(folder)
+            marker = folder / ".git"
+            if not _is_link_or_junction(marker) and (marker.is_dir() or marker.is_file()):
+                project_names[folder] = folder.name
+                break
+            folder = folder.parent
+        name = project_names[folder]
+        for part in trail:
+            project_names[part] = name
+        return name
+
     report: dict[str, int | bool] = {
         "files": 0, "succeeded": 0, "errors": 0, "ambiguous": 0,
         "candidates": 0, "inserted": 0, "updated": 0, "stale": 0, "complete": False,
     }
-    for path in _env_files(root):
+    for path in _env_files(root, all_project_text=all_project_text):
         report["files"] += 1
         try:
             if _is_link_or_junction(path):
@@ -165,7 +217,8 @@ def scan_project_env(root: Path, store: CredentialStore, *, passphrase: str) -> 
                     def chunks() -> Iterator[bytes]:
                         while block := handle.read(_CHUNK):
                             yield block
-                    yield from iter_env_findings(chunks(), hint, stats)
+                    scanner = iter_env_findings if path.name.lower().startswith(".env") else iter_project_findings
+                    yield from scanner(chunks(), hint, stats)
                     after = os.fstat(handle.fileno())
                 current = path.stat(follow_symlinks=False)
                 if (_is_link_or_junction(path) or path.resolve(strict=True) != resolved
@@ -177,7 +230,7 @@ def scan_project_env(root: Path, store: CredentialStore, *, passphrase: str) -> 
 
             counts = store.scan_source(
                 passphrase=passphrase, source_hash=source_fingerprint(str(resolved)),
-                project=root.name, origin="project", findings=findings(),
+                project=project_name(path.parent), origin="project", findings=findings(),
             )
             report["succeeded"] += 1
             report["ambiguous"] += stats.ambiguous
@@ -189,7 +242,11 @@ def scan_project_env(root: Path, store: CredentialStore, *, passphrase: str) -> 
             # Do not put a path, value, decoder excerpt, or exception text in
             # agent-visible status or logs. Other files may still be scanned.
             report["errors"] += 1
+        if progress is not None and report["files"] % 100 == 0:
+            progress({key: report[key] for key in ("files", "succeeded", "errors", "ambiguous")})
     report["complete"] = report["errors"] == 0
+    if progress is not None:
+        progress({key: report[key] for key in ("files", "succeeded", "errors", "ambiguous")})
     return report
 
 
@@ -270,7 +327,7 @@ def scan_archive(archive: SecureHistoryArchive, store: CredentialStore, *,
     end = total if max_snapshots is None else min(total, offset + max_snapshots)
     report: dict[str, int | bool] = {
         "generation": manifest["generation"], "snapshots_total": total,
-        "attempted": 0, "succeeded": 0, "errors": 0, "ambiguous": 0,
+        "attempted": 0, "succeeded": 0, "skipped": 0, "errors": 0, "ambiguous": 0,
         "candidates": 0, "inserted": 0, "updated": 0,
         "next_offset": end, "complete": False, "changed_during_scan": False,
     }
@@ -285,8 +342,14 @@ def scan_archive(archive: SecureHistoryArchive, store: CredentialStore, *,
                 passphrase=passphrase, source_hash=identity,
                 project=entry["provider"], origin="transcript",
                 findings=iter_transcript_findings(_verified_archive_chunks(archive, entry), stats),
+                receipt_identity=json.dumps([
+                    archive.vault_id, entry["blob"], entry["sha256"], entry["provider"],
+                ], separators=(",", ":")),
             )
-            report["succeeded"] += 1
+            if counts.get("skipped", 0):
+                report["skipped"] += 1
+            else:
+                report["succeeded"] += 1
             report["ambiguous"] += stats.ambiguous
             report["candidates"] += stats.accepted
             report["inserted"] += counts["created"]
@@ -294,7 +357,7 @@ def scan_archive(archive: SecureHistoryArchive, store: CredentialStore, *,
         except (OSError, ValueError, RuntimeError, UnicodeError, TypeError, KeyError):
             report["errors"] += 1
         if progress is not None and (report["attempted"] % 100 == 0 or report["attempted"] == end - offset):
-            progress({key: report[key] for key in ("generation", "snapshots_total", "attempted", "errors")})
+            progress({key: report[key] for key in ("generation", "snapshots_total", "attempted", "skipped", "errors")})
     end_generation = archive._load_manifest()["generation"]
     report["generation_at_end"] = end_generation
     report["changed_during_scan"] = end_generation != manifest["generation"]

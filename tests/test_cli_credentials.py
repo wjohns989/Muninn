@@ -81,11 +81,14 @@ def test_credential_cli_scans_selected_project_without_printing_value(tmp_path: 
     project = tmp_path / "project"
     project.mkdir()
     (project / ".env").write_text("SERVICE_API_KEY=aaaabbbbcccc11112222\n")
+    (project / "config.yaml").write_text("SERVICE_AUTH_TOKEN: yamlVALUE12345678\n")
     backup = tmp_path / "before-scan"
-    assert cmd_credentials(_args("scan", root, project_root=[project], backup_before=backup)) == 0
+    result_code = cmd_credentials(_args("scan", root, project_root=[project], backup_before=backup))
+    assert result_code == 0, output.getvalue().splitlines()[-1]
     assert CredentialStore(backup).search("SERVICE_API_KEY") == []
     report = json.loads(output.getvalue().splitlines()[-1])
     assert report["complete"] is True
-    assert report["project"]["inserted"] == 1
+    assert report["project"]["inserted"] == 2
     assert "aaaabbbbcccc11112222" not in output.getvalue()
     assert CredentialStore(root).search("SERVICE_API_KEY")[0]["source_hint"] == ".env"
+    assert CredentialStore(root).search("SERVICE_AUTH_TOKEN")[0]["source_hint"] == "config.yaml"
