@@ -99,6 +99,7 @@ async def test_opt_in_agent_metadata_search_never_reveals_values(tmp_path, monke
     monkeypatch.setenv("MUNINN_AUTH_TOKEN", main_token)
     monkeypatch.setenv("MUNINN_API_KEY", "different-api-key-bbbbbbbbbbbbbbbbbbbbbbbb")
     monkeypatch.setenv("MUNINN_NO_AUTH", "0")
+    monkeypatch.setenv("MUNINN_CREDENTIAL_AGENT_SEARCH", "0")
     monkeypatch.setattr(server, "memory", SimpleNamespace(config=SimpleNamespace(data_dir=str(tmp_path))))
     monkeypatch.setattr(server, "is_security_enabled", lambda: True)
     monkeypatch.setattr(server, "_credential_agent_search_times", deque())

@@ -1080,7 +1080,8 @@ def cmd_credentials(args: argparse.Namespace) -> int:
                     project, session, passphrase="", progress=project_progress,
                 ))
             project_totals = {key: sum(int(report[key]) for report in reports) for key in (
-                "files", "succeeded", "errors", "ambiguous", "candidates", "inserted", "updated", "stale",
+                "files", "succeeded", "errors", "walk_errors", "ambiguous",
+                "candidates", "inserted", "updated", "stale",
             )}
             project_totals["complete"] = all(report["complete"] for report in reports)
             archive_report = None

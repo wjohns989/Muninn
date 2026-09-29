@@ -603,6 +603,11 @@ vault. It streams inputs, rolls a source back on mutation, decoding, or
 archive-integrity failure, and reports incomplete/error/ambiguous counts
 without printing values. Project-file values rotate in place; historical
 transcript observations are labeled historical, not asserted current. Each
+inaccessible directory increments `walk_errors` and `errors` without stopping
+accessible siblings or the independent archive scan; the final report remains
+`complete=false` and the command exits with code 2 until every coverage gap is
+resolved. Source hints retain valid long and Unicode relative paths rather
+than rejecting them at an arbitrary short display limit. Each
 fully verified archive snapshot commits an authenticated scan receipt in the
 same vault transaction as its findings, including snapshots with no findings.
 After the live archive grows, rerun from offset zero; receipts skip already

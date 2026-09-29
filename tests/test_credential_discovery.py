@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import muninn.history.credential_discovery as discovery
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.credential_discovery import (
     ExtractionStats,
@@ -96,6 +97,64 @@ def test_project_file_scan_covers_common_text_formats_without_values_in_report(t
         assert value not in str(report)
 
 
+def test_walk_error_is_counted_and_accessible_siblings_continue(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "first.py").write_text('FIRST_API_KEY = "firstVALUE12345678"\n')
+    child = root / "accessible"
+    child.mkdir()
+    (child / "second.py").write_text('SECOND_API_KEY = "secondVALUE12345678"\n')
+
+    def walk(_root, *, followlinks, onerror):
+        assert followlinks is False
+        yield str(root), ["accessible"], ["first.py"]
+        onerror(OSError("private inaccessible path or credential text"))
+        yield str(child), [], ["second.py"]
+
+    monkeypatch.setattr(discovery.os, "walk", walk)
+    progress = []
+    store = RecordingStore()
+    report = scan_project_files(root, store, passphrase="test-only", progress=progress.append)
+
+    assert report["files"] == 2
+    assert report["succeeded"] == 2
+    assert report["walk_errors"] == 1
+    assert report["errors"] == 1
+    assert report["complete"] is False
+    assert len(store.values) == 2
+    assert "private inaccessible" not in str(report) + str(progress)
+
+
+def test_root_walk_error_returns_incomplete_report(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+
+    def walk(_root, *, followlinks, onerror):
+        onerror(OSError("private root path"))
+        return iter(())
+
+    monkeypatch.setattr(discovery.os, "walk", walk)
+    progress = []
+    report = scan_project_files(root, RecordingStore(), passphrase="test-only",
+                                progress=progress.append)
+
+    assert report["files"] == 0
+    assert report["walk_errors"] == 1
+    assert report["errors"] == 1
+    assert report["complete"] is False
+    assert "private root path" not in str(report) + str(progress)
+
+
+def test_missing_project_root_returns_incomplete_report(tmp_path):
+    progress = []
+    report = scan_project_files(tmp_path / "missing", RecordingStore(),
+                                passphrase="test-only", progress=progress.append)
+    assert report["files"] == 0
+    assert report["errors"] == report["walk_errors"] == 1
+    assert report["complete"] is False
+    assert "missing" not in str(report) + str(progress)
+
+
 def test_documentation_examples_remain_unverified_candidates(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
@@ -126,6 +185,22 @@ def test_collection_root_labels_each_nested_git_project(tmp_path):
     assert report["files"] == 2
     assert store.projects == ["alpha", "beta"]
     assert {hint for _, _, hint in store.values} == {"alpha/.env", "beta/.env"}
+
+
+def test_project_scan_keeps_long_unicode_location_and_label(tmp_path):
+    root = tmp_path / "projects"
+    project_name = "project with spaces α " + "x" * 70
+    project = root / project_name
+    (project / ".git").mkdir(parents=True)
+    (project / ".env").write_text("SERVICE_API_KEY=aaaabbbbcccc11112222\n")
+    store = CredentialStore.create(tmp_path / "vault", "synthetic vault passphrase")
+
+    report = scan_project_files(root, store, passphrase="synthetic vault passphrase")
+
+    assert report["complete"] is True
+    matches = store.search("SERVICE_API_KEY")
+    assert matches[0]["project"] == project_name
+    assert matches[0]["source_hint"] == f"{project_name}/.env"
 
 
 def test_symlinked_env_is_rejected_without_following(tmp_path):

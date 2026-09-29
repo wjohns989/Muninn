@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,21 +39,38 @@ _SENTINEL_ID = "__vault_sentinel__"
 _SENTINEL_VALUE = "muninn-credential-vault-v1"
 _SAFE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}\Z")
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
-_HINT_PART = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
 _OLD_COLUMNS = ["id", "service", "project", "source_hash", "envelope"]
 _LEGACY_COLUMNS = [*_OLD_COLUMNS, "source_hint"]
 _NEW_COLUMNS = [*_LEGACY_COLUMNS, "origin", "active", "discovery_key"]
 _ORIGINS = {"manual", "project", "transcript"}
 
 
+def _utf16_units(value: str) -> int:
+    return sum(2 if ord(char) > 0xFFFF else 1 for char in value)
+
+
+def _safe_display_text(value: str) -> bool:
+    # Control, format (including bidi overrides), and surrogate characters can
+    # spoof an agent-visible location even though the field is not executable.
+    return all(unicodedata.category(char) not in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+               for char in value)
+
+
+def _valid_project_label(value: str) -> bool:
+    return (isinstance(value, str) and value not in {"", ".", ".."}
+            and _utf16_units(value) <= 255 and "/" not in value and "\\" not in value
+            and _safe_display_text(value))
+
+
 def _validated_source_hint(value: str) -> str:
     """Keep agent-facing file locations project-relative and traversal-free."""
     if value == "":
         return value
-    if not isinstance(value, str) or len(value) > 160 or "\\" in value or ":" in value:
+    if (not isinstance(value, str) or _utf16_units(value) > 32767
+            or "\\" in value or ":" in value or not _safe_display_text(value)):
         raise VaultIntegrityError("Invalid credential source hint")
     parts = value.split("/")
-    if any(not _HINT_PART.fullmatch(part) or part in (".", "..") for part in parts):
+    if any(part in ("", ".", "..") or _utf16_units(part) > 255 for part in parts):
         raise VaultIntegrityError("Invalid credential source hint")
     return value
 
@@ -62,7 +80,7 @@ def _metadata(service: str, project: str, source_hash: str,
               discovery_key: str = "") -> dict[str, str | int]:
     if not isinstance(service, str) or not _SAFE_LABEL.fullmatch(service):
         raise VaultIntegrityError("Invalid credential metadata")
-    if not isinstance(project, str) or not _SAFE_LABEL.fullmatch(project):
+    if not _valid_project_label(project):
         raise VaultIntegrityError("Invalid credential metadata")
     if not isinstance(source_hash, str) or not _SHA256.fullmatch(source_hash):
         raise VaultIntegrityError("Invalid credential metadata")
@@ -338,7 +356,7 @@ class CredentialStore:
                      origin: str, findings, receipt_identity: str | None = None) -> dict[str, int]:
         if origin not in {"project", "transcript"}:
             raise ValueError("Invalid discovery origin")
-        if not isinstance(project, str) or not _SAFE_LABEL.fullmatch(project):
+        if not _valid_project_label(project):
             raise VaultIntegrityError("Invalid credential metadata")
         if receipt_identity is not None and (origin != "transcript" or
                                              not isinstance(receipt_identity, str) or

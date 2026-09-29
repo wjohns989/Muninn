@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
-from muninn.history.credential_store import CredentialStore, source_fingerprint
+from muninn.history.credential_store import (
+    CredentialStore,
+    _validated_source_hint,
+    source_fingerprint,
+)
 from muninn.history.secure_archive import SecureHistoryArchive
 
 _ASSIGN = re.compile(
@@ -135,11 +139,9 @@ def _is_link_or_junction(path: Path) -> bool:
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
 
 
-def _env_files(root: Path, *, all_project_text: bool = False) -> Iterator[Path]:
-    def fail(error: OSError) -> None:
-        raise error
-
-    for directory, children, files in os.walk(root, followlinks=False, onerror=fail):
+def _env_files(root: Path, *, all_project_text: bool,
+               onerror: Callable[[OSError], None]) -> Iterator[Path]:
+    for directory, children, files in os.walk(root, followlinks=False, onerror=onerror):
         folder = Path(directory)
         children[:] = sorted(
             name for name in children
@@ -171,10 +173,22 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
                   all_project_text: bool,
                   progress: Callable[[dict[str, int | bool]], None] | None = None
                   ) -> dict[str, int | bool]:
-    root = Path(root).absolute()
-    if _is_link_or_junction(root) or not root.is_dir():
-        raise ValueError("Credential scan root must be a real directory")
-    root = root.resolve(strict=True)
+    report: dict[str, int | bool] = {
+        "files": 0, "succeeded": 0, "errors": 0, "walk_errors": 0, "ambiguous": 0,
+        "candidates": 0, "inserted": 0, "updated": 0, "stale": 0, "complete": False,
+    }
+    try:
+        root = Path(root).absolute()
+        if _is_link_or_junction(root) or not root.is_dir():
+            raise ValueError("Credential scan root must be a real directory")
+        root = root.resolve(strict=True)
+    except (OSError, ValueError, RuntimeError):
+        # A missing/inaccessible selected root is a coverage gap, not a reason
+        # to abort other selected roots or the independent archive phase.
+        report["walk_errors"] = report["errors"] = 1
+        if progress is not None:
+            progress({key: report[key] for key in ("files", "succeeded", "errors", "walk_errors", "ambiguous")})
+        return report
     project_names: dict[Path, str] = {root: root.name}
 
     def project_name(folder: Path) -> str:
@@ -191,11 +205,13 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
             project_names[part] = name
         return name
 
-    report: dict[str, int | bool] = {
-        "files": 0, "succeeded": 0, "errors": 0, "ambiguous": 0,
-        "candidates": 0, "inserted": 0, "updated": 0, "stale": 0, "complete": False,
-    }
-    for path in _env_files(root, all_project_text=all_project_text):
+    def walk_error(_error: OSError) -> None:
+        # os.walk skips an inaccessible directory after calling this callback.
+        # Count the coverage gap without exposing its path or exception text.
+        report["walk_errors"] += 1
+        report["errors"] += 1
+
+    for path in _env_files(root, all_project_text=all_project_text, onerror=walk_error):
         report["files"] += 1
         try:
             if _is_link_or_junction(path):
@@ -204,8 +220,7 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
             if not resolved.is_relative_to(root) or not resolved.is_file():
                 raise ValueError("Credential source left approved root")
             hint = path.relative_to(root).as_posix()
-            if len(hint) > 160 or any(len(part) > 64 for part in hint.split("/")):
-                raise ValueError("Credential source hint is unsupported")
+            _validated_source_hint(hint)
             stats = ExtractionStats()
 
             def findings() -> Iterator[tuple[str, str, str]]:
@@ -243,10 +258,10 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
             # agent-visible status or logs. Other files may still be scanned.
             report["errors"] += 1
         if progress is not None and report["files"] % 100 == 0:
-            progress({key: report[key] for key in ("files", "succeeded", "errors", "ambiguous")})
+            progress({key: report[key] for key in ("files", "succeeded", "errors", "walk_errors", "ambiguous")})
     report["complete"] = report["errors"] == 0
     if progress is not None:
-        progress({key: report[key] for key in ("files", "succeeded", "errors", "ambiguous")})
+        progress({key: report[key] for key in ("files", "succeeded", "errors", "walk_errors", "ambiguous")})
     return report
 
 

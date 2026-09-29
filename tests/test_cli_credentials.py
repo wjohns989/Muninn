@@ -10,8 +10,10 @@ from pathlib import Path
 
 import pytest
 
+import muninn.history.credential_discovery as discovery
 from muninn.cli import build_parser, cmd_credentials
 from muninn.history.credential_store import CredentialStore, source_fingerprint
+from muninn.history.secure_archive import SecureHistoryArchive
 
 _PASSPHRASE = "synthetic long local passphrase"
 _VALUE = "synthetic-cli-secret-12345"
@@ -92,3 +94,35 @@ def test_credential_cli_scans_selected_project_without_printing_value(tmp_path: 
     assert "aaaabbbbcccc11112222" not in output.getvalue()
     assert CredentialStore(root).search("SERVICE_API_KEY")[0]["source_hint"] == ".env"
     assert CredentialStore(root).search("SERVICE_AUTH_TOKEN")[0]["source_hint"] == "config.yaml"
+
+
+def test_walk_error_does_not_prevent_archive_phase(tmp_path: Path, monkeypatch) -> None:
+    output = _TTY()
+    monkeypatch.setattr(sys, "stdin", _TTY())
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: _PASSPHRASE)
+    root = tmp_path / "vault"
+    CredentialStore.create(root, _PASSPHRASE)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("SERVICE_API_KEY=aaaabbbbcccc11112222\n")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive passphrase")
+    source = tmp_path / "chat.jsonl"
+    source.write_text('{"content":"ARCHIVE_API_KEY=archiveVALUE12345678"}\n')
+    archive.archive_file(source, "codex")
+
+    def walk(_root, *, followlinks, onerror):
+        yield str(project), [], [".env"]
+        onerror(OSError("private inaccessible child"))
+
+    monkeypatch.setattr(discovery.os, "walk", walk)
+    code = cmd_credentials(_args("scan", root, project_root=[project, tmp_path / "missing"],
+                                 archive_root=archive.root))
+
+    report = json.loads(output.getvalue().splitlines()[-1])
+    assert code == 2
+    assert report["complete"] is False
+    assert report["project"]["walk_errors"] == 2
+    assert report["project"]["errors"] == 2
+    assert report["archive"]["succeeded"] == 1
+    assert "private inaccessible child" not in output.getvalue()

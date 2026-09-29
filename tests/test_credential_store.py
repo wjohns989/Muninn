@@ -85,6 +85,62 @@ def test_credential_source_hint_rejects_unsafe_locations(tmp_path: Path, hint: s
                   source_hash=source_fingerprint("source"), source_hint=hint)
 
 
+def test_long_unicode_source_hint_and_project_are_authenticated(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    project = "project " + "A" * 80 + " 😀"
+    hint = "folder with spaces/" + "x" * 100 + "/credentials 😀.env"
+    record_id = store.add(passphrase=_PASSPHRASE, value=_VALUE, service="example",
+                          project=project, source_hash=source_fingerprint("source"),
+                          source_hint=hint)
+    matches = store.search("credentials")
+    assert matches[0]["project"] == project
+    assert matches[0]["source_hint"] == hint
+    assert store.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
+    backup = tmp_path / "backup"
+    assert store.backup(backup, passphrase=_PASSPHRASE) == 1
+    backed_up = CredentialStore(backup)
+    assert backed_up.reveal(record_id, passphrase=_PASSPHRASE) == _VALUE
+    with backed_up._connect() as db:
+        db.execute("UPDATE credentials SET project=? WHERE id=?", (project + "x", record_id))
+    with pytest.raises(VaultIntegrityError):
+        backed_up.reveal(record_id, passphrase=_PASSPHRASE)
+    with store._connect() as db:
+        db.execute("UPDATE credentials SET source_hint=? WHERE id=?", (hint + "x", record_id))
+    with pytest.raises(VaultIntegrityError):
+        store.reveal(record_id, passphrase=_PASSPHRASE)
+
+
+@pytest.mark.parametrize("hint", [
+    "folder//.env", "folder/./.env", "folder/../.env", "/.env", "folder\\.env",
+    "C:/.env", "folder/new\nline.env", "folder/\u202e.env", "folder/\ud800.env",
+])
+def test_expanded_source_hint_still_rejects_unsafe_forms(tmp_path: Path, hint: str) -> None:
+    store = _new(tmp_path)
+    with pytest.raises(VaultIntegrityError):
+        store.add(passphrase=_PASSPHRASE, value=_VALUE, service="example", project="project",
+                  source_hash=source_fingerprint("source"), source_hint=hint)
+
+
+def test_source_hint_above_windows_extended_path_limit_is_rejected(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    hint = "/".join(["x" * 255] * 129)
+    with pytest.raises(VaultIntegrityError):
+        store.add(passphrase=_PASSPHRASE, value=_VALUE, service="example", project="project",
+                  source_hash=source_fingerprint("source"), source_hint=hint)
+
+
+def test_project_label_utf16_boundary_and_invalid_forms(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    valid_project = "😀" + "a" * 253
+    store.add(passphrase=_PASSPHRASE, value=_VALUE, service="example", project=valid_project,
+              source_hash=source_fingerprint("source"))
+    assert store.search("example")[0]["project"] == valid_project
+    for invalid in ("a" * 256, "bad/name", "bad\\name", "bad\nname", "bad\u202ename", "bad\ud800name"):
+        with pytest.raises(VaultIntegrityError):
+            store.add(passphrase=_PASSPHRASE, value=_VALUE, service="example", project=invalid,
+                      source_hash=source_fingerprint("source"))
+
+
 def test_pre_receipt_v2_vault_migrates_without_changing_records(tmp_path: Path) -> None:
     store = _new(tmp_path)
     record_id = _add(store)
