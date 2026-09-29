@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 license-files = ["LICENSE", "NOTICE"]
-py-modules = ["muninn_hook_client"]
+py-modules = ["muninn_hook_client", "muninn_mcp_bridge", "mcp_wrapper"]
 
 [tool.setuptools.packages.find]
 include = ["muninn*", "eval*", "assets*", "skills*", "models*"]

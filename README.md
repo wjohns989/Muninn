@@ -198,6 +198,11 @@ Generic Streamable HTTP client configuration:
 
 The legacy stdio wrapper remains available for clients without Streamable HTTP
 support, but it connects to the existing backend and is not a second store owner.
+On Windows, desktop clients with stale process environments can launch
+`<installed-python.exe> -E -P -m muninn_mcp_bridge` instead. That bridge reads
+the current User `MUNINN_AUTH_TOKEN` at MCP launch, pins the shared loopback
+endpoint and never starts a server or Ollama. Keep the bearer out of client
+config; see [Windows authenticated stdio](docs/CLIENTS.md#windows-authenticated-stdio-for-codex-claude-code-and-gemini-cli).
 
 The endpoint is dual-era: clients on MCP 2026-07-28 send stateless requests
 (protocol version, client info and capabilities in `params._meta`, mirrored in the

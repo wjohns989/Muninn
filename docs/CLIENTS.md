@@ -15,6 +15,12 @@ The stdio wrapper is a thin client of the same server; it never opens the
 store itself. Start the server first (`python server.py`, the tray app, or the
 service), then configure the clients below.
 
+On Windows, authenticated desktop clients whose process environment may be
+stale can use the installed `muninn_mcp_bridge` entry point described below.
+It reads `MUNINN_AUTH_TOKEN` from the current Windows **User** environment at
+each MCP launch, without copying it into client configuration. It requires the
+already-running shared loopback server and never starts the server or Ollama.
+
 Replace `/path/to/Muninn` with your checkout and `python` with the interpreter
 that has Muninn installed (for example `/path/to/Muninn/.venv/bin/python`).
 
@@ -426,6 +432,26 @@ selects Streamable HTTP:
   }
 }
 ```
+
+### Windows authenticated stdio for Codex, Claude Code and Gemini CLI
+
+Install Muninn into the selected Python interpreter, set `MUNINN_AUTH_TOKEN`
+in the Windows **User** environment, and start the shared authenticated server.
+Then register this command as the `muninn` stdio MCP server in each client:
+
+```text
+<absolute-path-to-installed-python.exe> -E -P -m muninn_mcp_bridge
+```
+
+Set only `MUNINN_MCP_TOOLSET=core` in the client's MCP environment; do not put
+the bearer token there. `-E -P` avoids inherited `PYTHON*` overrides and
+modules in the client's working directory while allowing dependencies installed
+in the selected interpreter's user site. The bridge ignores a stale process
+token, pins `127.0.0.1:42069`, and refuses a nonlocal server override. It
+fails closed if the Windows User token is missing or malformed. A fresh MCP
+launch is needed after token rotation; an already-running MCP process keeps
+its connection until restarted. For other operating systems, use a client
+configuration that passes the token securely to the ordinary wrapper.
 
 ## Cursor
 
