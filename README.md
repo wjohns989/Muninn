@@ -604,7 +604,10 @@ configuration, source, and documentation formats) and/or encrypted history
 snapshots, and stores assignment-shaped credential candidates only inside the
 vault. It streams inputs, rolls a source back on mutation, decoding, or
 archive-integrity failure, and reports incomplete/error/ambiguous counts
-without printing values. Project-file values rotate in place; historical
+without printing values. Archive reports also include path-free
+`error_categories` counts (`archive_integrity`, `utf8`, `io`, `metadata`,
+`vault`, `other`); these sum to `errors` and help diagnose incomplete scans
+without exposing source names or exception messages. Project-file values rotate in place; historical
 transcript observations are labeled historical, not asserted current. Each
 inaccessible directory increments `walk_errors` and `errors` without stopping
 accessible siblings or the independent archive scan; the final report remains

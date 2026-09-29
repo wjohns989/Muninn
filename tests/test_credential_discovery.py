@@ -247,6 +247,8 @@ def test_archive_late_integrity_failure_rolls_back_findings(tmp_path, monkeypatc
     assert report["attempted"] == 1
     assert report["succeeded"] == 0
     assert report["errors"] == 1
+    assert report["error_categories"]["archive_integrity"] == 1
+    assert sum(report["error_categories"].values()) == report["errors"]
     assert report["complete"] is False
     assert store.values == []
 
@@ -272,6 +274,66 @@ def test_real_vault_archive_scan_is_idempotent_and_metadata_only(tmp_path):
     with pytest.raises(ValueError, match="generation changed"):
         scan_archive(archive, store, passphrase="synthetic vault passphrase",
                      offset=1, expected_generation=first["generation"] + 1)
+
+
+def test_archive_utf8_failure_reports_only_category_and_rolls_back(tmp_path):
+    archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive passphrase")
+    source = tmp_path / "chat.jsonl"
+    source.write_bytes(b"SERVICE_API_KEY=aaaabbbbcccc11112222\n\xff")
+    archive.archive_file(source, "codex")
+    store = CredentialStore.create(tmp_path / "vault", "synthetic vault passphrase")
+
+    report = scan_archive(archive, store, passphrase="synthetic vault passphrase")
+
+    assert report["error_categories"]["utf8"] == 1
+    assert sum(report["error_categories"].values()) == report["errors"] == 1
+    assert report["complete"] is False
+    assert store.search("SERVICE_API_KEY") == []
+    assert "aaaabbbbcccc11112222" not in str(report)
+
+
+@pytest.mark.parametrize("failure, category", [
+    (OSError("private path"), "io"),
+    (VaultIntegrityError("private vault detail"), "vault"),
+    (TypeError("private internal detail"), "other"),
+])
+def test_archive_scan_error_categories_hide_exception_text(tmp_path, failure, category):
+    archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive passphrase")
+    source = tmp_path / "chat.jsonl"
+    source.write_text("No credential assignment here\n")
+    archive.archive_file(source, "codex")
+
+    class FailingStore:
+        def scan_source(self, **_kwargs):
+            raise failure
+
+    progress = []
+    report = scan_archive(archive, FailingStore(), passphrase="synthetic vault passphrase",
+                          progress=progress.append)
+    assert report["error_categories"][category] == 1
+    assert sum(report["error_categories"].values()) == report["errors"] == 1
+    assert progress[-1]["error_categories"][category] == 1
+    assert "private" not in str(report) + str(progress)
+
+
+def test_archive_invalid_provider_is_metadata_category(tmp_path, monkeypatch):
+    archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive passphrase")
+    source = tmp_path / "chat.jsonl"
+    source.write_text("No credential assignment here\n")
+    archive.archive_file(source, "codex")
+    original = archive._load_manifest
+
+    def bad_provider():
+        manifest = original()
+        files = {name: [{**entry, "provider": "bad/path"} for entry in entries]
+                 for name, entries in manifest["files"].items()}
+        return {**manifest, "files": files}
+
+    monkeypatch.setattr(archive, "_load_manifest", bad_provider)
+    report = scan_archive(archive, RecordingStore(), passphrase="synthetic vault passphrase")
+    assert report["error_categories"]["metadata"] == 1
+    assert sum(report["error_categories"].values()) == report["errors"] == 1
+    assert "bad/path" not in str(report)
 
 
 def test_real_vault_rolls_back_when_final_archive_verify_fails(tmp_path, monkeypatch):

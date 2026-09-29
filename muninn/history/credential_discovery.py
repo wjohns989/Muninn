@@ -19,9 +19,11 @@ from typing import Callable, Iterable, Iterator
 
 from muninn.history.credential_store import (
     CredentialStore,
+    _valid_project_label,
     _validated_source_hint,
     source_fingerprint,
 )
+from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.secure_archive import SecureHistoryArchive
 
 _ASSIGN = re.compile(
@@ -63,6 +65,14 @@ class ExtractionStats:
     examined: int = 0
     ambiguous: int = 0
     accepted: int = 0
+
+
+class ArchiveVerificationError(RuntimeError):
+    """An authenticated archive blob failed verification; no source details escape."""
+
+
+class CredentialScanMetadataError(ValueError):
+    """An archive entry cannot be represented as safe credential metadata."""
 
 
 def _acceptable_value(value: str) -> bool:
@@ -289,6 +299,8 @@ def _verified_archive_chunks(archive: SecureHistoryArchive,
     def produce() -> None:
         try:
             archive._verify_entry(entry, collect=False, on_chunk=submit)
+        except VaultIntegrityError:
+            errors.append(ArchiveVerificationError("Archive verification failed"))
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -345,21 +357,28 @@ def scan_archive(archive: SecureHistoryArchive, store: CredentialStore, *,
         "attempted": 0, "succeeded": 0, "skipped": 0, "errors": 0, "ambiguous": 0,
         "candidates": 0, "inserted": 0, "updated": 0,
         "next_offset": end, "complete": False, "changed_during_scan": False,
+        "error_categories": {name: 0 for name in (
+            "archive_integrity", "utf8", "io", "metadata", "vault", "other"
+        )},
     }
     for entry in entries[offset:end]:
         report["attempted"] += 1
         try:
             stats = ExtractionStats()
+            provider = entry["provider"]
+            receipt_identity = json.dumps([
+                archive.vault_id, entry["blob"], entry["sha256"], provider,
+            ], separators=(",", ":"))
+            if not _valid_project_label(provider) or len(receipt_identity) > 512:
+                raise CredentialScanMetadataError("Invalid credential scan metadata")
             identity = source_fingerprint(
                 f"{archive.vault_id}:{entry['blob']}:{entry['sha256']}"
             )
             counts = store.scan_source(
                 passphrase=passphrase, source_hash=identity,
-                project=entry["provider"], origin="transcript",
+                project=provider, origin="transcript",
                 findings=iter_transcript_findings(_verified_archive_chunks(archive, entry), stats),
-                receipt_identity=json.dumps([
-                    archive.vault_id, entry["blob"], entry["sha256"], entry["provider"],
-                ], separators=(",", ":")),
+                receipt_identity=receipt_identity,
             )
             if counts.get("skipped", 0):
                 report["skipped"] += 1
@@ -369,10 +388,19 @@ def scan_archive(archive: SecureHistoryArchive, store: CredentialStore, *,
             report["candidates"] += stats.accepted
             report["inserted"] += counts["created"]
             report["updated"] += counts["rotated"]
-        except (OSError, ValueError, RuntimeError, UnicodeError, TypeError, KeyError):
+        except (OSError, ValueError, RuntimeError, UnicodeError, TypeError, KeyError) as exc:
             report["errors"] += 1
+            category = ("archive_integrity" if isinstance(exc, ArchiveVerificationError)
+                        else "utf8" if isinstance(exc, UnicodeError)
+                        else "io" if isinstance(exc, OSError)
+                        else "vault" if isinstance(exc, VaultIntegrityError)
+                        else "metadata" if isinstance(exc, CredentialScanMetadataError)
+                        else "other")
+            report["error_categories"][category] += 1
         if progress is not None and (report["attempted"] % 100 == 0 or report["attempted"] == end - offset):
-            progress({key: report[key] for key in ("generation", "snapshots_total", "attempted", "skipped", "errors")})
+            progress({key: report[key] for key in (
+                "generation", "snapshots_total", "attempted", "skipped", "errors", "error_categories"
+            )})
     end_generation = archive._load_manifest()["generation"]
     report["generation_at_end"] = end_generation
     report["changed_during_scan"] = end_generation != manifest["generation"]
