@@ -163,9 +163,76 @@ def test_codex_plan_uses_the_stdlib_client_and_honours_codex_home(tmp_path, monk
     plan = hook_install.codex_plan(home=tmp_path, python="/usr/bin/python3")
     assert plan.path == tmp_path / "codex-moved" / "hooks.json"
     handler = plan.after["hooks"]["SessionEnd"][0]["hooks"][0]
-    assert handler["command"].startswith('"/usr/bin/python3" "')
-    assert handler["command"].endswith('hook_client.py" codex')
+    executable = "/usr/bin/python3" if sys.platform == "win32" else '"/usr/bin/python3"'
+    assert handler["command"] == f'{executable} -I -m muninn_hook_client codex'
     assert handler["timeout"] == 1 and set(plan.after["hooks"]) == {"SessionStart", "PreCompact", "Stop", "SessionEnd"}
+
+
+def test_codex_plan_replaces_legacy_quoted_path_without_touching_other_hooks(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    settings = tmp_path / "codex" / "hooks.json"
+    settings.parent.mkdir()
+    old = {'hooks': {'SessionStart': [
+        {'hooks': [{'type': 'command', 'command':
+                    '"C:\\Python\\python.exe" "C:\\Muninn\\muninn\\hook_client.py" codex'}]},
+        {'hooks': [{'type': 'command', 'command': 'other-tool session-start'}]},
+    ]}}
+    settings.write_text(json.dumps(old), encoding="utf-8")
+    plan = hook_install.codex_plan(home=tmp_path, python="C:/Python/python.exe")
+    handlers = [group['hooks'][0] for group in plan.after['hooks']['SessionStart']]
+    assert [handler['command'] for handler in handlers] == [
+        'other-tool session-start',
+        ('C:/Python/python.exe' if sys.platform == "win32" else '"C:/Python/python.exe"')
+        + ' -I -m muninn_hook_client codex',
+    ]
+    backup = hook_install.apply_plan(plan)
+    assert backup and json.loads(backup.read_text(encoding="utf-8")) == old
+    assert not hook_install.codex_plan(home=tmp_path, python="C:/Python/python.exe").changed
+    hook_install.apply_plan(hook_install.codex_plan(install=False, home=tmp_path))
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        'hooks': {'SessionStart': [old['hooks']['SessionStart'][1]]},
+    }
+
+
+@pytest.mark.parametrize("module", ["muninn.hook_client", "muninn_hook_client"])
+def test_codex_plan_preserves_unrelated_command_with_module_name_as_argument(tmp_path, monkeypatch, module):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    settings = tmp_path / "codex" / "hooks.json"
+    settings.parent.mkdir()
+    unrelated = {"type": "command", "command": f'"C:/Python/python.exe" other-tool x=-m {module} codex'}
+    settings.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [unrelated]}]}}), encoding="utf-8")
+    plan = hook_install.codex_plan(home=tmp_path, python="C:/Python/python.exe")
+    assert plan.after["hooks"]["Stop"][0]["hooks"] == [unrelated]
+    assert hook_install.codex_plan(install=False, home=tmp_path).after == plan.before
+
+
+def test_codex_fast_module_runs_from_unrelated_directory_without_package_import(tmp_path):
+    (tmp_path / "muninn_hook_client.py").write_text('raise RuntimeError("project module was loaded")')
+    completed = subprocess.run(
+        [sys.executable, "-I", "-X", "importtime", "-m", "muninn_hook_client", "codex"],
+        input="not-json", text=True, capture_output=True, cwd=tmp_path, timeout=5,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert "muninn.sdk" not in completed.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Codex's cmd.exe wrapper is Windows-only")
+def test_codex_fast_module_survives_cmd_wrapper(tmp_path):
+    command = f'{sys.executable} -I -m muninn_hook_client codex'
+    completed = subprocess.run(
+        f'cmd.exe /C "{command}"', input="not-json", text=True,
+        capture_output=True, cwd=tmp_path, timeout=5,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == ""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Codex's cmd.exe wrapper is Windows-only")
+def test_codex_rejects_space_in_windows_python_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    with pytest.raises(ValueError, match="no-space Python executable"):
+        hook_install.codex_plan(home=tmp_path, python="C:/Program Files/Python/python.exe")
 
 
 def test_gemini_plan_preserves_unrelated_hooks_and_uses_millisecond_timeouts(tmp_path):

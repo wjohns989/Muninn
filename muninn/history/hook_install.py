@@ -62,8 +62,11 @@ def _is_muninn(handler: Dict[str, Any]) -> bool:
         return True
     if str(handler.get("url", "")).endswith("/hooks/claude-code"):
         return True  # legacy HTTP hook installed by older Muninn versions
-    return re.search(r'[/\\]muninn[/\\]hook_client\.py"?\s+(?:codex|claude-code|gemini-cli)(?:\s|$)',
-                     str(handler.get("command", ""))) is not None
+    command = str(handler.get("command", ""))
+    return (re.search(r'[/\\]muninn[/\\]hook_client\.py"?\s+(?:codex|claude-code|gemini-cli)(?:\s|$)',
+                      command) is not None or
+            re.fullmatch(r'\s*(?:"[^"]+"|\S+)\s+(?:-I\s+)?-m\s+(?:muninn\.hook_client|muninn_hook_client)\s+codex\s*',
+                         command) is not None)
 
 
 def _without_muninn(hooks: Dict[str, Any]) -> Dict[str, Any]:
@@ -111,8 +114,16 @@ def claude_plan(server_url: str, install: bool = True, home: Optional[Path] = No
 
 def codex_plan(install: bool = True, home: Optional[Path] = None, python: Optional[str] = None) -> HookPlan:
     path = codex_source(home or Path.home()).home / "hooks.json"
-    client = Path(__file__).resolve().parent.parent / "hook_client.py"
-    command = f'"{python or sys.executable}" "{client}" codex'
+    executable = python or sys.executable
+    # Affected Windows Codex builds pass the whole string through cmd /C with
+    # an outer quote. Even a single quote around the executable then fails.
+    # Keep the command quote-free and reject paths cmd cannot parse safely.
+    if os.name == "nt":
+        if re.search(r'\s|[&|<>^%!"]', executable):
+            raise ValueError("Codex hooks on Windows require a no-space Python executable path")
+        command = f'{executable} -I -m muninn_hook_client codex'
+    else:
+        command = f'"{executable}" -I -m muninn_hook_client codex'
     groups = {event: {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
               for event, timeout in CODEX_EVENTS.items()}
     before = _read(path)

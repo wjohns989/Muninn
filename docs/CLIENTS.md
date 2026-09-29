@@ -172,9 +172,14 @@ python -m muninn.cli hooks uninstall --apply
   local `muninn/hook_client.py` bridge. Claude Code does not run HTTP handlers
   for `SessionStart`.
 - **Codex** (CLI, IDE extension, ChatGPT desktop app): command hooks in
-  `~/.codex/hooks.json` (or `$CODEX_HOME`) that run `muninn/hook_client.py`, a
-  standard-library script that starts in about 50 ms (Codex gives session-end
-  hooks one second) and never blocks Codex if the server is down.
+  `~/.codex/hooks.json` (or `$CODEX_HOME`) that run the installed
+  `muninn_hook_client` standard-library-only module with the selected Python interpreter in isolated
+  mode, so a project file cannot shadow it. On affected Windows Codex builds,
+  the Python executable must have a path without spaces because Codex's `cmd /C`
+  wrapper fails quoted executables; the installer rejects incompatible paths.
+  Install Muninn into that interpreter before installing hooks,
+  then review and trust the exact hook definitions in Codex. Codex gives
+  session-end hooks one second; the bridge never blocks Codex if the server is down.
 - **Gemini CLI**: command hooks in `~/.gemini/settings.json` for SessionStart,
   PreCompress, AfterAgent and SessionEnd. AfterAgent captures a real local
   transcript at a bounded cadence. Gemini's PreCompress and SessionEnd are
