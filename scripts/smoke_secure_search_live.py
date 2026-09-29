@@ -30,7 +30,8 @@ def _local_auth_token() -> str | None:
         return None
 
 
-def _request(base: str, token: str, path: str, *, body: dict | None = None) -> dict:
+def _request(base: str, token: str, path: str, *, body: dict | None = None,
+             timeout: int = 40) -> dict:
     payload = None if body is None else json.dumps(body).encode("utf-8")
     request = Request(
         base + path,
@@ -38,7 +39,7 @@ def _request(base: str, token: str, path: str, *, body: dict | None = None) -> d
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
         method="POST" if body is not None else "GET",
     )
-    with urlopen(request, timeout=40) as response:
+    with urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -47,6 +48,8 @@ def main() -> int:
     parser.add_argument("--query", default="Boxter")
     parser.add_argument("--base", default="http://127.0.0.1:42069")
     parser.add_argument("--deadline-seconds", type=int, default=180)
+    parser.add_argument("--analyze", choices=("local", "remote"),
+                        help="Optional explicit model-route probe; never prints analysis text")
     args = parser.parse_args()
     if not args.base.startswith("http://127.0.0.1:"):
         parser.error("Only the local loopback Muninn service is permitted")
@@ -79,12 +82,25 @@ def main() -> int:
             "complete": result["complete"],
         }
         if result["matches"]:
+            capability = result["matches"][0]["fetch_capability"]
             span = _request(
                 args.base, token, "/history/secure/fetch",
-                body={"capability": result["matches"][0]["fetch_capability"], "max_chars": 500},
+                body={"capability": capability, "max_chars": 500},
             )["data"]
             details["fetch_redaction"] = span["redaction"]
             details["fetch_chars"] = len(span["redacted_text"])
+            if args.analyze:
+                model_started = time.monotonic()
+                analyzed = _request(
+                    args.base, token, "/history/secure/analyze",
+                    body={"capability": capability, "allow_remote": args.analyze == "remote",
+                          "prefer_remote": args.analyze == "remote"},
+                    timeout=240,
+                )["data"]
+                details["analysis_status"] = analyzed["status"]
+                details["analysis_provider"] = analyzed.get("provider")
+                details["analysis_model"] = analyzed.get("model")
+                details["analysis_ms"] = round((time.monotonic() - model_started) * 1000)
         print(json.dumps(details, sort_keys=True))
         return 0
     except (HTTPError, URLError, ValueError, KeyError, TimeoutError) as exc:

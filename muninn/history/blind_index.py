@@ -714,6 +714,32 @@ class SecureHistoryBlindIndex:
         if structured is not None:
             return {"redacted_text": structured, "redaction": "strict-best-effort",
                     "version": version, "truncated": False}
+        snippet = self._fallback_candidate(entry, term)
+        redacted = sanitize_agent_span(snippet[:12000], max_chars=max_chars)
+        return {"redacted_text": redacted, "redaction": "strict-best-effort",
+                "version": version, "truncated": len(snippet) > max_chars}
+
+    def _model_window(self, capability: str) -> str:
+        """Private, authenticated 3k-character model input; never an API result.
+
+        A Unicode scalar occupies at most four UTF-8 bytes, so the encoded
+        window is at most 12 KiB. The complete archive entry is authenticated
+        before this method returns, even when the hit appears near its start.
+        """
+        entry, _, data = self._entry_for_capability(capability)
+        candidate = self._structured_candidate(entry, data["term"])
+        if candidate is None:
+            candidate = self._fallback_candidate(entry, data["term"])
+        window = candidate[:3000]
+        try:
+            if len(window.encode("utf-8")) > 12_000:
+                raise ValueError("Invalid model window")
+        except UnicodeError as exc:
+            raise VaultIntegrityError("History text is not valid UTF-8") from exc
+        return window
+
+    def _fallback_candidate(self, entry: dict, term: str) -> str:
+        """Keep only a bounded hit neighborhood while verifying every chunk."""
         decoder = codecs.getincrementaldecoder("utf-8")("strict")
         carry = ""
         snippet = ""
@@ -741,9 +767,7 @@ class SecureHistoryBlindIndex:
             raise VaultIntegrityError("History text is not valid UTF-8") from exc
         if not found:
             raise ValueError("History search hit is no longer available")
-        redacted = sanitize_agent_span(snippet[:12000], max_chars=max_chars)
-        return {"redacted_text": redacted, "redaction": "strict-best-effort",
-                "version": version, "truncated": len(snippet) > max_chars}
+        return snippet
 
     def _structured_span(self, entry: dict, term: str, *, max_chars: int) -> str | None:
         """Stream JSONL chat messages before sanitizing message text.
@@ -752,6 +776,14 @@ class SecureHistoryBlindIndex:
         useful message. Sanitizing that raw line first would hide the message.
         The parser discards metadata and tool payloads before release.
         """
+        candidate = self._structured_candidate(entry, term)
+        if candidate is None:
+            return None
+        redacted = sanitize_agent_span(candidate[:12000], max_chars=max_chars)
+        return redacted if redacted.strip() and redacted.strip() != "[REDACTED_SENSITIVE_LINE]" else None
+
+    def _structured_candidate(self, entry: dict, term: str) -> str | None:
+        """Extract bounded message text; callers separately choose the audience."""
         if (entry.get("kind") != "transcript"
                 or entry.get("provider") not in {"codex", "claude_code", "gemini_cli"}):
             return None
@@ -845,8 +877,7 @@ class SecureHistoryBlindIndex:
             consume("\n")
         if candidate is None:
             return None
-        redacted = sanitize_agent_span(candidate[:12000], max_chars=max_chars)
-        return redacted if redacted.strip() and redacted.strip() != "[REDACTED_SENSITIVE_LINE]" else None
+        return candidate
 
 
 def main() -> int:

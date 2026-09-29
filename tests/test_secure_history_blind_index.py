@@ -50,6 +50,36 @@ def test_blind_index_returns_only_safe_metadata_and_no_plaintext(tmp_path: Path)
     assert "[REDACTED_SENSITIVE_LINE]" in span["redacted_text"]
 
 
+def test_private_model_window_reads_original_but_public_fetch_stays_redacted(tmp_path: Path) -> None:
+    archive, _ = _archive(tmp_path)
+    index = SecureHistoryBlindIndex(archive)
+    index.build()
+    capability = index.search("lunar-widget")["matches"][0]["fetch_capability"]
+    original = index._model_window(capability)
+    assert "CANARY-SECRET-91919" in original
+    assert len(original) <= 3000 and len(original.encode("utf-8")) <= 12000
+    assert "CANARY-SECRET-91919" not in str(index.fetch_span(capability))
+
+
+def test_private_model_window_authenticates_late_chunks(tmp_path: Path, monkeypatch) -> None:
+    archive, _ = _archive(tmp_path)
+    index = SecureHistoryBlindIndex(archive)
+    index.build()
+    capability = index.search("lunar-widget")["matches"][0]["fetch_capability"]
+    original = archive._verify_entry
+
+    def tamper_after_hit(entry, *, collect, on_chunk=None):
+        def late(chunk):
+            if on_chunk:
+                on_chunk(chunk)
+            raise VaultIntegrityError("late tamper")
+        return original(entry, collect=collect, on_chunk=late)
+
+    monkeypatch.setattr(archive, "_verify_entry", tamper_after_hit)
+    with pytest.raises(VaultIntegrityError):
+        index._model_window(capability)
+
+
 def test_structured_fetch_keeps_message_when_jsonl_metadata_has_secret(tmp_path: Path) -> None:
     source = tmp_path / "codex-session.jsonl"
     source.write_text(json.dumps({

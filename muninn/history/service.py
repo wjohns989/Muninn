@@ -526,6 +526,12 @@ class HistoryService:
         archive = self._require_secure_archive()
         return SecureHistoryBlindIndex(archive).fetch_span(capability, max_chars=max_chars)
 
+    def _secure_model_window(self, capability: str) -> str:
+        """In-process inference only; never add this to HTTP or MCP dispatch."""
+        if not strict_history_mode():
+            raise RuntimeError("Secure history analysis requires strict history mode")
+        return SecureHistoryBlindIndex(self._require_secure_archive())._model_window(capability)
+
     def status(self) -> Dict[str, Any]:
         strict = strict_history_mode()
         if strict:

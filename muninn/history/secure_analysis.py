@@ -23,7 +23,7 @@ from muninn.history.auto_routing import (
     probe_ollama,
 )
 from muninn.history.insights import Provider
-from muninn.history.safe_span import _UNRESOLVED_SENSITIVE_VALUE, sanitize_agent_span
+from muninn.history.safe_span import sanitize_agent_span
 
 _SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -123,9 +123,6 @@ def _remote_eligible(span: str, *, allow_remote: bool) -> bool:
         allow_remote
         and _local_setting("MUNINN_STRICT_REMOTE_ANALYSIS").lower() in {"1", "true"}
         and 100 <= len(span) <= 3000
-        and "[REDACTED_SENSITIVE_LINE]" not in span
-        and "-----BEGIN " not in span
-        and not _UNRESOLVED_SENSITIVE_VALUE.search(span)
     )
 
 
@@ -134,8 +131,9 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
     """Authenticate capability internally; caller never supplies transcript text."""
     if prefer_remote and not allow_remote:
         raise ValueError("A remote preference requires an explicit remote allowance")
-    fetched = await asyncio.to_thread(history.secure_fetch_span, capability, max_chars=3000)
-    span = str(fetched["redacted_text"])
+    # The model is an explicitly authorized interpreter. Public fetch remains
+    # redacted; this authenticated raw window never enters an HTTP/MCP result.
+    span = await asyncio.to_thread(history._secure_model_window, capability)
     if len(span) < 100:
         return {"status": "insufficient_context", "provider": None, "model": None}
     reason = "remote_requested"

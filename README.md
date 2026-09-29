@@ -146,6 +146,10 @@ environment), reports enqueue/search timing and safe match counts, and verifies
 one redacted fetch when a match exists. It never prints the query, capability,
 or fetched span. Search jobs are available through
 `POST /history/secure/search/jobs` and authenticated poll/cancel endpoints.
+Optional `--analyze local` or `--analyze remote` exercises a model route without
+printing its analysis. The remote option sends the authenticated raw hit window
+to the configured ZDR OpenRouter route only when local consent and budget checks
+pass; use it only for material you intend to send to that provider.
 
 ---
 

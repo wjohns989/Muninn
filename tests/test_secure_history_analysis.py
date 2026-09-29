@@ -40,10 +40,12 @@ async def test_local_route_uses_capability_and_unloads_model(monkeypatch):
     seen = {}
 
     class History:
-        def secure_fetch_span(self, capability, *, max_chars):
+        def _secure_model_window(self, capability):
             seen["capability"] = capability
-            seen["max_chars"] = max_chars
-            return {"redacted_text": "A real project decision was made to keep SQLite. " * 5}
+            return "A real project decision was made to keep SQLite. " * 5 + "CANARY-SECRET-91919"
+
+        def secure_fetch_span(self, *_args, **_kwargs):
+            pytest.fail("ordinary redacted fetch must not supply model input")
 
     @asynccontextmanager
     async def slot():
@@ -80,17 +82,19 @@ async def test_local_route_uses_capability_and_unloads_model(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", Client)
     monkeypatch.setenv("MUNINN_OLLAMA_KEEP_ALIVE", "30m")
     result = await analysis.analyze_secure_hit(History(), "opaque-capability")
-    assert seen["capability"] == "opaque-capability" and seen["max_chars"] == 3000
+    assert seen["capability"] == "opaque-capability"
     assert seen["body"]["keep_alive"] == 0
     assert "untrusted_transcript" in seen["body"]["messages"][1]["content"]
+    assert "CANARY-SECRET-91919" in seen["body"]["messages"][1]["content"]
+    assert "CANARY-SECRET-91919" not in str(result)
     assert result["provider"] == "ollama" and result["analysis"]["summary"]
 
 
 @pytest.mark.asyncio
 async def test_no_remote_fallback_after_local_failure(monkeypatch):
     class History:
-        def secure_fetch_span(self, *_args, **_kwargs):
-            return {"redacted_text": "A project decision was made. " * 10}
+        def _secure_model_window(self, *_args):
+            return "A project decision was made. " * 10
 
     @asynccontextmanager
     async def slot():
@@ -123,8 +127,8 @@ async def test_explicit_remote_route_requires_both_opt_ins_and_zdr(monkeypatch):
     seen = {}
 
     class History:
-        def secure_fetch_span(self, capability, *, max_chars):
-            return {"redacted_text": "The project decided to keep SQLite for local caching. " * 6}
+        def _secure_model_window(self, capability):
+            return "The project decided to keep SQLite for local caching. " * 6 + "CANARY-SECRET-91919"
 
     class Response:
         def raise_for_status(self):
@@ -168,3 +172,5 @@ async def test_explicit_remote_route_requires_both_opt_ins_and_zdr(monkeypatch):
     assert seen["body"]["provider"] == {
         "zdr": True, "data_collection": "deny", "require_parameters": True,
     }
+    assert "CANARY-SECRET-91919" in seen["body"]["messages"][1]["content"]
+    assert "CANARY-SECRET-91919" not in str(result)
