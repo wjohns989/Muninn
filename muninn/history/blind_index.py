@@ -225,6 +225,39 @@ class SecureHistoryBlindIndex:
             raise ValueError("Invalid history fetch capability") from exc
         raise ValueError("History snapshot is no longer available")
 
+    def _analysis_target(self, capability: str, terms: list[str]) -> dict[str, object]:
+        """Bind a verified search hit to its immutable snapshot, not its expiring grant."""
+        entry, version, data = self._entry_for_capability(capability)
+        if (not isinstance(terms, list) or not 1 <= len(terms) <= 8
+                or terms != list(dict.fromkeys(terms))
+                or any(not isinstance(term, str) or _terms(term) != [term] for term in terms)
+                or data["term"] not in terms):
+            raise ValueError("Invalid analysis target")
+        return {"vault_id": self.archive.vault_id, "blob": entry["blob"],
+                "sha256": entry["sha256"], "version": version, "terms": terms}
+
+    def _analysis_capability(self, target: dict[str, object]) -> str:
+        """Renew only the exact authenticated manifest version for in-process work.
+
+        The minted grant is never returned to a client. `_model_window` then
+        authenticates the complete blob before passing any text to a model.
+        """
+        if (not isinstance(target, dict)
+                or set(target) != {"vault_id", "blob", "sha256", "version", "terms"}
+                or target["vault_id"] != self.archive.vault_id
+                or not isinstance(target["blob"], str)
+                or not isinstance(target["sha256"], str)
+                or not isinstance(target["version"], int) or isinstance(target["version"], bool)
+                or not isinstance(target["terms"], list) or not 1 <= len(target["terms"]) <= 8
+                or any(not isinstance(term, str) or _terms(term) != [term]
+                       for term in target["terms"])):
+            raise ValueError("Invalid analysis target")
+        for _source, version, entry, _latest, _versions in self._current():
+            if (entry["blob"] == target["blob"] and entry["sha256"] == target["sha256"]
+                    and version == target["version"]):
+                return self._capability(entry, version, max(target["terms"], key=len))
+        raise ValueError("Analysis snapshot is no longer available")
+
     def _current(self) -> list[tuple[str, int, dict, dict, int]]:
         manifest = self.archive._load_manifest()
         current = []

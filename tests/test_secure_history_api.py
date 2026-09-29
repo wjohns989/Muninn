@@ -68,6 +68,7 @@ def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
     assert "search_secure_history" in TOOLSETS["core"]
     assert "start_secure_history_search" in TOOLSETS["core"]
     assert "poll_secure_history_search" in TOOLSETS["core"]
+    assert "poll_secure_history_analysis" in TOOLSETS["core"]
     assert "fetch_secure_history" in TOOLSETS["core"]
     assert "analyze_secure_history" in TOOLSETS["core"]
     assert not any("reveal" in name for name in TOOLSETS["core"])
@@ -83,6 +84,11 @@ def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
      "SAFE_CAPABILITY_MARKER"),
     ("cancel_secure_history_search", {"job_id": "SAFE_JOB_MARKER"},
      {"state": "cancelled", "job_id": "SAFE_JOB_MARKER"}, "SAFE_JOB_MARKER"),
+    ("poll_secure_history_analysis", {"job_id": "SAFE_ANALYSIS_JOB_MARKER"},
+     {"state": "succeeded", "provisional": True,
+      "result": {"analysis": {"summary": "SAFE_ANALYSIS_MARKER"}}}, "SAFE_ANALYSIS_MARKER"),
+    ("cancel_secure_history_analysis", {"job_id": "SAFE_ANALYSIS_JOB_MARKER"},
+     {"state": "cancelled", "job_id": "SAFE_ANALYSIS_JOB_MARKER"}, "SAFE_ANALYSIS_JOB_MARKER"),
     ("fetch_secure_history", {"capability": "SAFE_CAPABILITY_MARKER"},
      {"redacted_text": "SAFE_TRANSCRIPT_MARKER"}, "SAFE_TRANSCRIPT_MARKER"),
     ("analyze_secure_history", {"capability": "SAFE_CAPABILITY_MARKER"},
@@ -145,7 +151,13 @@ async def test_secure_analysis_endpoint_is_local_and_auth_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mcp_private_tools_reject_generic_api_key(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tool_name", [
+    "search_credential_metadata", "search_secure_history", "start_secure_history_search",
+    "poll_secure_history_search", "cancel_secure_history_search",
+    "poll_secure_history_analysis", "cancel_secure_history_analysis",
+    "fetch_secure_history", "analyze_secure_history",
+])
+async def test_mcp_private_tools_reject_generic_api_key(tmp_path, monkeypatch, tool_name):
     monkeypatch.setenv("MUNINN_AUTH_TOKEN", "main-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     monkeypatch.setenv("MUNINN_API_KEY", "api-key-bbbbbbbbbbbbbbbbbbbbbbbbbbbb")
     monkeypatch.setenv("MUNINN_NO_AUTH", "0")
@@ -153,12 +165,14 @@ async def test_mcp_private_tools_reject_generic_api_key(tmp_path, monkeypatch):
         "Authorization": "Bearer api-key-bbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "Accept": "application/json", "Content-Type": "application/json",
         "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call",
-        "Mcp-Name": "search_credential_metadata",
+        "Mcp-Name": tool_name,
     }
     body = {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
-            "name": "search_credential_metadata", "arguments": {"query": "openrouter"},
+            "name": tool_name, "arguments": (
+                {"query": "openrouter"} if tool_name == "search_credential_metadata" else {"job_id": "a" * 32}
+            ),
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                 "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"},

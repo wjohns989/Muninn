@@ -318,7 +318,8 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         "description": (
             "Check a durable encrypted-history search job. Pending/retry states do not "
             "imply no match; completed results include metadata and short-lived fetch "
-            "capabilities. Poll at most once every two seconds."
+            "capabilities. When locally enabled, a pertinent hit also links a separate "
+            "automatic provisional analysis job. Poll at most once every two seconds."
         ),
         "inputSchema": {
             "type": "object",
@@ -332,6 +333,28 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {"job_id": {"type": "string", "description": "Opaque job id from start_secure_history_search."}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "poll_secure_history_analysis",
+        "description": (
+            "Check automatic interpretation linked from a completed secure history search. "
+            "Pending/deferred does not mean no evidence; succeeded analysis is provisional "
+            "and may not prove that a planned action occurred. Poll at most every two seconds."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "Opaque analysis_job_id from search polling."}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "cancel_secure_history_analysis",
+        "description": "Cancel a pending or running automatic history analysis; captured evidence is unaffected.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "Opaque analysis_job_id from search polling."}},
             "required": ["job_id"],
         },
     },
@@ -937,7 +960,8 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
     "get_project_context", "get_thread",
-    "search_memory", "search_secure_history", "poll_secure_history_search", "fetch_secure_history",
+    "search_memory", "search_secure_history", "poll_secure_history_search",
+    "poll_secure_history_analysis", "fetch_secure_history",
     "search_credential_metadata", "hunt_memory",
     "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
@@ -1035,6 +1059,7 @@ CORE_TOOLS = (
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
     "add_memory", "search_memory", "search_secure_history", "start_secure_history_search",
     "poll_secure_history_search", "cancel_secure_history_search", "fetch_secure_history",
+    "poll_secure_history_analysis", "cancel_secure_history_analysis",
     "analyze_secure_history",
     "search_credential_metadata",
     "hunt_memory", "update_memory", "delete_memory",
@@ -1047,6 +1072,12 @@ TOOLSETS: Dict[str, Tuple[str, ...]] = {
     "readonly": tuple(schema["name"] for schema in TOOLS_SCHEMAS if schema["name"] in READ_ONLY_TOOLS),
     "chatgpt": ("search", "fetch"),
 }
+PRIVATE_MAIN_TOKEN_TOOLS = frozenset({
+    "search_secure_history", "start_secure_history_search", "poll_secure_history_search",
+    "cancel_secure_history_search", "poll_secure_history_analysis",
+    "cancel_secure_history_analysis", "fetch_secure_history", "analyze_secure_history",
+    "search_credential_metadata",
+})
 DEFAULT_TOOLSET = "full"
 
 _ALL_SCHEMAS = {schema["name"]: schema for schema in TOOLS_SCHEMAS + CHATGPT_TOOLS_SCHEMAS}

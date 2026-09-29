@@ -473,6 +473,8 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "start_secure_history_search": _do_start_secure_history_search,
         "poll_secure_history_search": _do_poll_secure_history_search,
         "cancel_secure_history_search": _do_cancel_secure_history_search,
+        "poll_secure_history_analysis": _do_poll_secure_history_analysis,
+        "cancel_secure_history_analysis": _do_cancel_secure_history_analysis,
         "fetch_secure_history": _do_fetch_secure_history,
         "analyze_secure_history": _do_analyze_secure_history,
         "search_credential_metadata": _do_search_credential_metadata,
@@ -733,6 +735,24 @@ def _do_cancel_secure_history_search(args: Dict[str, Any], deadline: Optional[fl
     job_id = str(args.get("job_id") or "")
     response = make_request_with_retry(
         "DELETE", f"{SERVER_URL}/history/secure/search/jobs/{quote(job_id, safe='')}",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_poll_secure_history_analysis(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    job_id = str(args.get("job_id") or "")
+    response = make_request_with_retry(
+        "GET", f"{SERVER_URL}/history/secure/analysis/jobs/{quote(job_id, safe='')}",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_cancel_secure_history_analysis(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    job_id = str(args.get("job_id") or "")
+    response = make_request_with_retry(
+        "DELETE", f"{SERVER_URL}/history/secure/analysis/jobs/{quote(job_id, safe='')}",
         deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
     )
     return response.json()
@@ -1205,6 +1225,7 @@ EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
     "import_agent_history", "search_secure_history", "start_secure_history_search",
     "poll_secure_history_search", "cancel_secure_history_search", "fetch_secure_history",
+    "poll_secure_history_analysis", "cancel_secure_history_analysis",
     "analyze_secure_history",
     "search_credential_metadata",
 }

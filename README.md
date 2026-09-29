@@ -393,6 +393,7 @@ Key environment variables:
 | `MUNINN_HISTORY_SECURITY` | `strict` | Vault-first protection is the default. `legacy` explicitly enables the older plaintext vault and file-ingestion paths; do not use it with secret-bearing material |
 | `MUNINN_HISTORY_ARCHIVE_DIR` | `<data_dir>/history_secure_archive` | Owner-only encrypted history archive location; set this to a private directory with enough space, on any drive |
 | `MUNINN_HISTORY_INDEX_AUTO` | off for direct server starts; on in Windows shared launcher | Build a resumable CPU-only encrypted transcript index in bounded batches; no model or GPU use |
+| `MUNINN_SECURE_AUTO_ANALYSIS` | off for direct server starts; on in Windows shared launcher | After an authenticated search finds a pertinent encrypted snapshot, queue one durable, provisional interpretation job; capture and indexing remain CPU-only. Set `0` in the Windows User environment to disable |
 | `MUNINN_HISTORY_SYNC_MINUTES` | `30` | Legacy sync cadence or strict-mode CPU-only discovery cadence for missed/changed chat transcripts; historical exports still need explicit encrypted sync |
 | `MUNINN_HISTORY_AUTO_IMPORT` | off in strict mode | Legacy-mode automatic import switch; ignored by strict mode |
 | `MUNINN_OPENROUTER_API_KEY` | - | Preferred environment key for optional ZDR OpenRouter use; a Windows user-scoped value is picked up by the running service without putting the key in repo files |
@@ -407,7 +408,7 @@ Key environment variables:
 | `MUNINN_OLLAMA_MODEL` | `llama3.2:3b` | Model for explicitly requested Ollama analysis |
 | `MUNINN_AUTO_LOCAL_MODEL_HINTS` | local measured defaults | Comma-separated installed model tags in preferred order for strict on-demand analysis; unlisted installed chat-capable models remain fallback candidates. Legacy analysis also accepts model-name fragments |
 | `MUNINN_OLLAMA_KEEP_ALIVE` | `0` | Release an Ollama model after an analysis request instead of leaving it resident in VRAM |
-| `MUNINN_STRICT_REMOTE_ANALYSIS` | off | Set to `1` in the local user environment to make private ZDR OpenRouter available when no local model fits; each `analyze_secure_history` call must also set `allow_remote=true` |
+| `MUNINN_STRICT_REMOTE_ANALYSIS` | off | Set to `1` in the local user environment to make private ZDR OpenRouter available when no local model fits. Explicit `analyze_secure_history` calls also need `allow_remote=true`; automatic jobs use this local opt-in and recheck it before dispatch |
 | `MUNINN_OPENROUTER_MAX_DAILY_USD` | `10` | Local daily ceiling; larger values are clamped to $10 unless the explicit local budget override is set |
 | `MUNINN_OPENROUTER_MAX_MONTHLY_USD` | `100` | Local monthly ceiling; larger values are clamped to $100 unless the explicit local budget override is set |
 | `MUNINN_OPENROUTER_BUDGET_OVERRIDE` | off | Set to `1` only to explicitly permit locally configured ceilings above $10/day or $100/month; a finite provider key cap is still mandatory |
@@ -480,9 +481,18 @@ when `MUNINN_HISTORY_INDEX_AUTO=1`. Claude Code, Codex and Gemini CLI have
 optional local lifecycle hooks installed with `python -m muninn.cli hooks install
 --apply`; Claude Desktop's non-Code client uses MCP and scheduled sync instead.
 It does not hold an Ollama model in VRAM.
-Strict mode does **not yet** automatically analyze archive snapshots into durable
-insights. Its capture, encrypted search, agent transcript retrieval, and ordinary
-memory services work without resident models. An agent can call
+With `MUNINN_SECURE_AUTO_ANALYSIS=1`, a successful authenticated search with a
+matching archived transcript queues one durable analysis job for its newest
+verified hit. This is search-triggered interpretation, not a historical sweep,
+and its model output is provisional—not a verified memory or completion claim.
+Capture, encrypted search, transcript retrieval, and ordinary memory services
+work without resident models. A single background worker checks current GPU
+headroom and installed Ollama chat models when a job is due, releases a local
+model with `keep_alive=0`, and defers work when resources or the remote budget
+are unavailable. Search replies include an opaque `analysis_job_id`; agents can
+poll or cancel that job through authenticated API/MCP tools. Results are sealed
+in the local archive journal and expire after one day. No raw transcript span
+is returned by normal job polling. An agent can also call
 `analyze_secure_history` on a pertinent search hit: Muninn authenticates the
 expiring capability, selects a fitting installed Ollama completion model using
 live GPU telemetry, and returns bounded, sanitized analysis without persisting
@@ -491,6 +501,10 @@ use ZDR OpenRouter if no local model fits; `prefer_remote=true` explicitly
 selects that route for one hit when `allow_remote=true`. Local model failure never
 silently switches to remote. `MUNINN_INSIGHTS_AUTO` applies only
 to legacy history import and must not be treated as enabling strict-mode enrichment.
+The main local bearer token is an administrator capability shared by clients
+on the same trusted Windows account. Anyone who holds it can inspect or cancel
+another client's secure history job; Muninn does not provide per-client tenant
+isolation within that token. Do not distribute it to untrusted clients.
 To compare installed Ollama models on actual checked-in Muninn code without storing
 results, run `python scripts/verify_live_model_routes.py --models <installed-tag>`.
 To exercise authenticated search, bounded fetch, and actual analysis through the

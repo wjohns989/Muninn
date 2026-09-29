@@ -13,6 +13,7 @@ from sse_starlette.sse import EventSourceResponse
 from muninn.core.security import is_security_enabled, verify_main_token
 from muninn.core.security import verify_token as core_verify_token
 from muninn.history.credential_api import require_loopback_peer
+from muninn.mcp.definitions import PRIVATE_MAIN_TOKEN_TOOLS
 from muninn.mcp.handlers import (
     handle_call_tool as _handle_call_tool,
 )
@@ -499,10 +500,7 @@ async def messages_endpoint(request: Request, session_id: str):
 
     params = msg.get("params")
     if (msg.get("method") == "tools/call" and isinstance(params, dict)
-            and params.get("name") in {
-                "search_secure_history", "fetch_secure_history", "analyze_secure_history",
-                "search_credential_metadata",
-            }):
+            and params.get("name") in PRIVATE_MAIN_TOKEN_TOOLS):
         require_loopback_peer(request)
         supplied = request.headers.get("authorization", "")
         scheme, _, token = supplied.partition(" ")

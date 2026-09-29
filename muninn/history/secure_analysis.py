@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from urllib.parse import urlparse
 
@@ -142,13 +143,21 @@ def _remote_eligible(span: str, *, allow_remote: bool) -> bool:
 
 
 async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = False,
-                             prefer_remote: bool = False) -> dict:
+                             prefer_remote: bool = False,
+                             should_cancel: Callable[[], bool] | None = None,
+                             before_remote: Callable[[], Awaitable[bool]] | None = None) -> dict:
     """Authenticate capability internally; caller never supplies transcript text."""
     if prefer_remote and not allow_remote:
         raise ValueError("A remote preference requires an explicit remote allowance")
+    def ensure_active() -> None:
+        if should_cancel is not None and should_cancel():
+            raise RuntimeError("Secure analysis cancelled")
+
+    ensure_active()
     # The model is an explicitly authorized interpreter. Public fetch remains
     # redacted; this authenticated raw window never enters an HTTP/MCP result.
     span = await asyncio.to_thread(history._secure_model_window, capability)
+    ensure_active()
     if not span.strip():
         return {"status": "insufficient_context", "provider": None, "model": None}
     reason = "remote_requested"
@@ -158,6 +167,7 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
 
         async with async_ollama_slot():
             model, reason = await asyncio.to_thread(_select_local, base)
+            ensure_active()
             if model is not None:
                 provider = Provider("ollama", f"{base}/v1", [model])
                 body = provider.request_body(_prompt(span))
@@ -166,6 +176,7 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
                 # a different workload configured a nonzero global Ollama duration.
                 body["keep_alive"] = 0
                 async with httpx.AsyncClient(timeout=_MODEL_TIMEOUT, trust_env=False) as client:
+                    ensure_active()
                     response = await client.post(f"{base}/api/chat", json=body)
                     response.raise_for_status()
                 content = (response.json().get("message") or {}).get("content") or ""
@@ -184,6 +195,13 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
         raise RuntimeError("OpenRouter ZDR policy unavailable")
     body["response_format"] = {"type": "json_schema", "json_schema": {
         "name": "secure_excerpt_analysis", "strict": True, "schema": _SCHEMA}}
+    ensure_active()
+    if not _remote_eligible(span, allow_remote=allow_remote):
+        return {"status": "deferred", "provider": None, "model": None,
+                "reason": "remote_consent_revoked"}
+    if before_remote is not None and not await before_remote():
+        raise RuntimeError("Secure analysis lease unavailable")
+    ensure_active()
     async with httpx.AsyncClient(timeout=_MODEL_TIMEOUT, trust_env=False) as client:
         response = await client.post(
             f"{llm_settings.OPENROUTER_API}/chat/completions", json=body,
@@ -192,5 +210,5 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
         response.raise_for_status()
     data = response.json()
     content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-    return {"status": "ok", "provider": "openrouter", "model": data.get("model"),
+    return {"status": "ok", "provider": "openrouter", "model": data.get("model") or provider.models[0],
             "analysis": _clean_result(content, source_span=span)}

@@ -28,6 +28,17 @@ async def test_secure_search_jobs_require_main_local_auth_and_no_store(monkeypat
         def cancel_secure_search_job(self, job_id):
             return job_id == "a" * 32
 
+        def secure_analysis_job_status(self, job_id):
+            if job_id != "c" * 32:
+                return None
+            return {"job_id": job_id, "state": "succeeded", "provisional": True,
+                    "result": {"status": "ok", "provider": "ollama", "model": "test-model",
+                               "analysis": {"summary": "Safe context", "decisions": [],
+                                            "open_items": [], "uncertainty": "Unverified"}}}
+
+        def cancel_secure_analysis_job(self, job_id):
+            return job_id == "c" * 32
+
     monkeypatch.setattr(server, "_require_history", lambda: FakeHistory())
     base = "/history/secure/search/jobs"
     local = httpx.ASGITransport(app=server.app, client=("127.0.0.1", 1234))
@@ -49,6 +60,15 @@ async def test_secure_search_jobs_require_main_local_auth_and_no_store(monkeypat
         cancelled = await client.delete(base + "/" + "a" * 32, headers=headers)
         assert cancelled.status_code == 200
         assert cancelled.headers["cache-control"] == "no-store"
+        analysis_base = "/history/secure/analysis/jobs"
+        assert (await client.get(analysis_base + "/" + "c" * 32)).status_code == 401
+        analyzed = await client.get(analysis_base + "/" + "c" * 32, headers=headers)
+        assert analyzed.status_code == 200 and analyzed.headers["cache-control"] == "no-store"
+        assert analyzed.json()["data"]["provisional"] is True
+        assert (await client.get(analysis_base + "/" + "b" * 32,
+                                 headers=headers)).status_code == 404
+        assert (await client.delete(analysis_base + "/" + "c" * 32,
+                                    headers=headers)).status_code == 200
     remote = httpx.ASGITransport(app=server.app, client=("192.168.1.2", 1234))
     async with httpx.AsyncClient(transport=remote, base_url="http://localhost") as client:
         assert (await client.post(base, json={"query": "private query marker"},

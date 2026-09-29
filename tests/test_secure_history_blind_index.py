@@ -163,6 +163,25 @@ def test_fetch_capability_rejects_tampering_and_expiry(tmp_path: Path, monkeypat
         index.fetch_span(capability)
 
 
+def test_analysis_target_survives_capability_expiry_without_changing_snapshot(tmp_path: Path,
+                                                                              monkeypatch) -> None:
+    archive, _ = _archive(tmp_path)
+    index = SecureHistoryBlindIndex(archive)
+    index.build()
+    capability = index.search("lunar-widget")['matches'][0]['fetch_capability']
+    target = index._analysis_target(capability, ["lunar", "widget"])
+    import time
+    now = time.time()
+    monkeypatch.setattr("muninn.history.blind_index.time.time", lambda: now + 601)
+    with pytest.raises(ValueError):
+        index.fetch_span(capability)
+    renewed = index._analysis_capability(target)
+    assert "lunar-widget" in index._model_window(renewed)
+    assert renewed != capability
+    with pytest.raises(ValueError):
+        index._analysis_capability({**target, "sha256": "0" * 64})
+
+
 def test_new_generation_preserves_unchanged_blob_and_resumes(tmp_path: Path) -> None:
     archive, source = _archive(tmp_path)
     index = SecureHistoryBlindIndex(archive)

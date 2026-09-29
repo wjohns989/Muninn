@@ -20,7 +20,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+import httpx
+
 from muninn.history.blind_index import SearchCancelled, SecureHistoryBlindIndex
+from muninn.history.blind_index import _terms as _search_terms
 from muninn.history.capture_journal import CaptureJournal
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.importer import import_history, read_thread
@@ -92,6 +95,9 @@ class HistoryService:
         self._secure_search_task: Optional[asyncio.Task] = None
         self._secure_search_wakeup = asyncio.Event()
         self._secure_search_active: tuple[str, threading.Event] | None = None
+        self._secure_analysis_task: Optional[asyncio.Task] = None
+        self._secure_analysis_wakeup = asyncio.Event()
+        self._secure_analysis_active: tuple[str, threading.Event] | None = None
         self._secure_scan_task: Optional[asyncio.Task] = None
         self.last_capture_scan: Optional[Dict[str, Any]] = None
         self.last_secure_capture: Optional[Dict[str, Any]] = None
@@ -519,6 +525,19 @@ class HistoryService:
             self._secure_search_active[1].set()
         return cancelled
 
+    def secure_analysis_job_status(self, job_id: str) -> dict[str, Any] | None:
+        if not strict_history_mode():
+            raise RuntimeError("Secure history analysis requires strict history mode")
+        return self._require_capture_journal().get_analysis_job(job_id)
+
+    def cancel_secure_analysis_job(self, job_id: str) -> bool:
+        if not strict_history_mode():
+            raise RuntimeError("Secure history analysis requires strict history mode")
+        cancelled = self._require_capture_journal().cancel_analysis(job_id)
+        if cancelled and self._secure_analysis_active and self._secure_analysis_active[0] == job_id:
+            self._secure_analysis_active[1].set()
+        return cancelled
+
     def secure_fetch_span(self, capability: str, *, max_chars: int = 3000) -> Dict[str, Any]:
         """Return a bounded sanitized span after full snapshot authentication."""
         if not strict_history_mode():
@@ -587,6 +606,8 @@ class HistoryService:
                 self._secure_scan_task = asyncio.create_task(self._secure_scan_loop())
             if self._secure_search_task is None:
                 self._secure_search_task = asyncio.create_task(self._secure_search_loop())
+            if _flag("MUNINN_SECURE_AUTO_ANALYSIS") and self._secure_analysis_task is None:
+                self._secure_analysis_task = asyncio.create_task(self._secure_analysis_loop())
             if _flag("MUNINN_HISTORY_INDEX_AUTO") and self._secure_index_task is None:
                 self._secure_index_task = asyncio.create_task(self._secure_index_loop())
             return
@@ -598,9 +619,12 @@ class HistoryService:
         tasks = [task for task in (self._task, self._job, self._auto_task, self._secure_index_task,
                                   self._secure_capture_task, self._secure_scan_task,
                                   self._secure_search_task,
+                                  self._secure_analysis_task,
                                   *self._background) if task and not task.done()]
         if self._secure_search_active:
             self._secure_search_active[1].set()
+        if self._secure_analysis_active:
+            self._secure_analysis_active[1].set()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -610,6 +634,7 @@ class HistoryService:
         self._secure_capture_task = None
         self._secure_scan_task = None
         self._secure_search_task = None
+        self._secure_analysis_task = None
         if self.vault is not None:
             self.vault.close()
 
@@ -642,7 +667,24 @@ class HistoryService:
                         cancelled.set()
             if cancelled.is_set():
                 raise SearchCancelled()
-            await asyncio.to_thread(journal.finish_search, job.job_id, job.lease_token, result)
+            analysis_target = None
+            if _flag("MUNINN_SECURE_AUTO_ANALYSIS") and result["matches"]:
+                try:
+                    terms = list(dict.fromkeys(_search_terms(job.query)))
+                    analysis_target = await asyncio.to_thread(
+                        index._analysis_target, result["matches"][0]["fetch_capability"], terms,
+                    )
+                except ValueError:
+                    # Search evidence remains useful when an expiring hit grant
+                    # cannot be converted into an immutable inference target.
+                    analysis_target = None
+            finished = await asyncio.to_thread(
+                journal.finish_search, job.job_id, job.lease_token, result,
+                analysis_target=analysis_target,
+                analysis_reason=("target_unavailable" if _flag("MUNINN_SECURE_AUTO_ANALYSIS") else "disabled"),
+            )
+            if finished and analysis_target is not None:
+                self._secure_analysis_wakeup.set()
         except asyncio.CancelledError:
             cancelled.set()
             if search_task is not None:
@@ -680,6 +722,99 @@ class HistoryService:
                 try:
                     await asyncio.wait_for(self._secure_search_wakeup.wait(), timeout=2)
                     self._secure_search_wakeup.clear()
+                except asyncio.TimeoutError:
+                    pass
+
+    async def _secure_analysis_heartbeat(self, job_id: str, lease_token: str,
+                                         cancelled: threading.Event) -> None:
+        journal = self._require_capture_journal()
+        while not cancelled.is_set():
+            await asyncio.sleep(15)
+            if not await asyncio.to_thread(journal.heartbeat_analysis, job_id, lease_token):
+                cancelled.set()
+                return
+
+    async def _process_secure_analysis_once(self) -> bool:
+        """Interpret one pertinent immutable hit without occupying idle VRAM."""
+        journal = self._require_capture_journal()
+        job = await asyncio.to_thread(journal.claim_analysis)
+        if job is None:
+            return False
+        cancelled = threading.Event()
+        self._secure_analysis_active = (job.job_id, cancelled)
+        heartbeat = asyncio.create_task(
+            self._secure_analysis_heartbeat(job.job_id, job.lease_token, cancelled)
+        )
+        try:
+            index = SecureHistoryBlindIndex(self._require_secure_archive())
+            capability = await asyncio.to_thread(index._analysis_capability, job.target)
+            if cancelled.is_set():
+                return True
+
+            async def before_remote() -> bool:
+                if cancelled.is_set():
+                    return False
+                # This durable marker precedes the HTTP request. After it is
+                # set, an interrupted run is outcome_unknown, never auto-retry.
+                return await asyncio.to_thread(
+                    journal.mark_remote_dispatched, job.job_id, job.lease_token,
+                )
+
+            from muninn.history.auto_routing import _local_setting
+            from muninn.history.secure_analysis import analyze_secure_hit
+
+            remote_enabled = _local_setting("MUNINN_STRICT_REMOTE_ANALYSIS").lower() in {"1", "true"}
+
+            outcome = await analyze_secure_hit(
+                self, capability, allow_remote=remote_enabled, should_cancel=cancelled.is_set,
+                before_remote=before_remote,
+            )
+            if cancelled.is_set():
+                return True
+            if outcome["status"] == "ok":
+                await asyncio.to_thread(journal.finish_analysis, job.job_id,
+                                        job.lease_token, outcome)
+            elif outcome["status"] == "deferred":
+                await asyncio.to_thread(journal.defer_analysis, job.job_id,
+                                        job.lease_token, outcome.get("reason", "deferred"))
+            else:
+                await asyncio.to_thread(journal.fail_analysis, job.job_id,
+                                        job.lease_token, "insufficient_context")
+        except asyncio.CancelledError:
+            cancelled.set()
+            # Keep the lease until expiry; remote dispatch is then recovered as
+            # outcome_unknown and local work can retry without double charge.
+            raise
+        except VaultIntegrityError:
+            await asyncio.to_thread(journal.fail_analysis, job.job_id,
+                                    job.lease_token, "vault_integrity")
+        except ValueError:
+            await asyncio.to_thread(journal.fail_analysis, job.job_id,
+                                    job.lease_token, "snapshot_unavailable")
+        except (OSError, RuntimeError, sqlite3.OperationalError, httpx.HTTPError):
+            await asyncio.to_thread(journal.fail_analysis, job.job_id,
+                                    job.lease_token, "model_unavailable")
+        finally:
+            cancelled.set()
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+            self._secure_analysis_active = None
+        return True
+
+    async def _secure_analysis_loop(self) -> None:
+        """One optional background inference worker; capture/search stay CPU-only."""
+        while True:
+            try:
+                processed = await self._process_secure_analysis_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Secure analysis worker deferred: %s", type(exc).__name__)
+                processed = False
+            if not processed:
+                try:
+                    await asyncio.wait_for(self._secure_analysis_wakeup.wait(), timeout=5)
+                    self._secure_analysis_wakeup.clear()
                 except asyncio.TimeoutError:
                     pass
 

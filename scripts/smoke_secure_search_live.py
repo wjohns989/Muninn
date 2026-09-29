@@ -50,6 +50,8 @@ def main() -> int:
     parser.add_argument("--deadline-seconds", type=int, default=180)
     parser.add_argument("--analyze", choices=("local", "remote"),
                         help="Optional explicit model-route probe; never prints analysis text")
+    parser.add_argument("--wait-auto", action="store_true",
+                        help="Wait for the automatically queued analysis job, printing only route and timing")
     args = parser.parse_args()
     if not args.base.startswith("http://127.0.0.1:"):
         parser.error("Only the local loopback Muninn service is permitted")
@@ -81,6 +83,23 @@ def main() -> int:
             "total": result["total"], "match_count": len(result["matches"]),
             "complete": result["complete"],
         }
+        if args.wait_auto:
+            analysis_id = status.get("analysis_job_id")
+            details["analysis_queued"] = bool(analysis_id)
+            details["analysis_reason"] = status.get("analysis_reason")
+            if analysis_id:
+                model_started = time.monotonic()
+                auto_state = None
+                while time.monotonic() - started < args.deadline_seconds:
+                    time.sleep(2)
+                    auto_status = _request(args.base, token, "/history/secure/analysis/jobs/" + analysis_id)["data"]
+                    auto_state = auto_status["state"]
+                    if auto_state not in ("pending", "running", "retry"):
+                        break
+                details["auto_analysis_state"] = auto_state or "deadline"
+                details["auto_analysis_provider"] = auto_status.get("provider") if auto_state else None
+                details["auto_analysis_model"] = auto_status.get("model") if auto_state else None
+                details["auto_analysis_ms"] = round((time.monotonic() - model_started) * 1000)
         if result["matches"]:
             capability = result["matches"][0]["fetch_capability"]
             span = _request(

@@ -21,7 +21,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from muninn.core.security import is_security_enabled, verify_main_token
 from muninn.core.security import verify_token as core_verify_token
 from muninn.history.credential_api import require_loopback_peer
-from muninn.mcp.definitions import SUPPORTED_PROTOCOL_VERSIONS
+from muninn.mcp.definitions import PRIVATE_MAIN_TOKEN_TOOLS, SUPPORTED_PROTOCOL_VERSIONS
 from muninn.mcp.handlers import active_toolset, handle_get_prompt, handle_list_prompts
 from muninn.mcp.handlers import (
     handle_call_tool as _handle_call_tool,
@@ -620,10 +620,8 @@ async def _handle_post(request: Request) -> Response:
             _json_error("server-error", -32600, "Invalid or oversized JSON-RPC batch"),
         )
 
-    private_tools = {"search_secure_history", "fetch_secure_history",
-                     "analyze_secure_history", "search_credential_metadata"}
     if any(msg.get("method") == "tools/call" and isinstance(msg.get("params"), dict)
-           and msg["params"].get("name") in private_tools for msg in messages):
+           and msg["params"].get("name") in PRIVATE_MAIN_TOKEN_TOOLS for msg in messages):
         try:
             require_loopback_peer(request)
         except HTTPException:

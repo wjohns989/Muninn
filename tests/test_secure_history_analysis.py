@@ -192,6 +192,7 @@ async def test_explicit_remote_route_requires_both_opt_ins_and_zdr(monkeypatch):
             return None
 
         async def post(self, url, *, json, headers):
+            seen["post_count"] = seen.get("post_count", 0) + 1
             seen["url"] = url
             seen["body"] = json
             assert headers["Authorization"] == "Bearer fixture-key"
@@ -214,3 +215,10 @@ async def test_explicit_remote_route_requires_both_opt_ins_and_zdr(monkeypatch):
     }
     assert "CANARY-SECRET-91919" in seen["body"]["messages"][1]["content"]
     assert "CANARY-SECRET-91919" not in str(result)
+    async def veto_remote():
+        return False
+
+    with pytest.raises(RuntimeError, match="lease unavailable"):
+        await analysis.analyze_secure_hit(History(), "cap", allow_remote=True,
+                                          prefer_remote=True, before_remote=veto_remote)
+    assert seen["post_count"] == 1

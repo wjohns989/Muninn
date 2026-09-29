@@ -37,6 +37,25 @@ _SEARCH_SCHEMA = b"secure-history-search-v1"
 _SEARCH_PURPOSE = b"durable-async-search"
 _SEARCH_LEASE = 60.0
 _SEARCH_RESULT_TTL = 300.0
+_ANALYSIS_LEASE = 120.0
+_ANALYSIS_RESULT_TTL = 86400.0
+_ANALYSIS_ACTIVE = {"pending", "running", "retry"}
+_ANALYSIS_STATES = _ANALYSIS_ACTIVE | {
+    "succeeded",
+    "failed",
+    "cancelled",
+    "not_queued",
+    "not_applicable",
+    "outcome_unknown",
+}
+_ANALYSIS_RETRY_CODES = {
+    "locked", "worker_timeout", "local_unavailable", "model_unavailable", "deferred",
+    "remote_consent_revoked", "daily_zdr_cap_unverified", "gpu_busy",
+}
+_ANALYSIS_TERMINAL_CODES = {
+    "invalid_target", "queue_full", "vault_integrity", "snapshot_unavailable",
+    "insufficient_context", "outcome_unknown", "unknown",
+}
 
 
 @dataclass(frozen=True)
@@ -67,6 +86,28 @@ class SearchJob:
 
 class SearchJobError(ValueError):
     """A caller-visible validation or state error without sensitive detail."""
+
+
+@dataclass(frozen=True, repr=False)
+class AnalysisJob:
+    job_id: str
+    vault_id: str
+    state: str
+    attempt: int
+    lease_token: str | None
+    created_at: float
+    updated_at: float
+    result_expires_at: float | None
+    provider: str | None = None
+    model: str | None = None
+    target: dict[str, Any] | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"AnalysisJob(job_id={self.job_id!r}, vault_id={self.vault_id!r}, "
+            f"state={self.state!r}, attempt={self.attempt}, "
+            f"provider={self.provider!r}, model={self.model!r})"
+        )
 
 
 class CaptureJournal:
@@ -108,6 +149,26 @@ class CaptureJournal:
                 "lease_token TEXT, lease_until REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL, "
                 "result_expires_at REAL, due_at REAL NOT NULL DEFAULT 0, error_code TEXT NOT NULL DEFAULT '')"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS history_analysis_jobs ("
+                "job_id TEXT PRIMARY KEY, vault_id TEXT NOT NULL, dedup_key TEXT NOT NULL UNIQUE, "
+                "sealed_target BLOB NOT NULL, sealed_result BLOB, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, "
+                "lease_token TEXT, lease_until REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL, "
+                "due_at REAL NOT NULL DEFAULT 0, result_expires_at REAL, error_code TEXT NOT NULL DEFAULT '', "
+                "provider TEXT, model TEXT, remote_dispatched INTEGER NOT NULL DEFAULT 0)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS history_analysis_due ON history_analysis_jobs(state,due_at,created_at)"
+            )
+            try:
+                db.execute("ALTER TABLE history_analysis_jobs ADD COLUMN remote_dispatched INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            for column, definition in (("analysis_job_id", "TEXT"), ("analysis_state", "TEXT")):
+                try:
+                    db.execute(f"ALTER TABLE history_search_jobs ADD COLUMN {column} {definition}")
+                except sqlite3.OperationalError:
+                    pass
             try:
                 db.execute("ALTER TABLE history_search_jobs ADD COLUMN due_at REAL NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
@@ -117,6 +178,12 @@ class CaptureJournal:
                 db.execute(
                     "UPDATE history_search_jobs SET state=CASE WHEN attempt < 3 AND ?-created_at <= 3600 THEN 'retry' ELSE 'failed' END, lease_token=NULL, lease_until=NULL, updated_at=? WHERE state='running' AND lease_until IS NOT NULL AND lease_until<=?",
                     (now, now, now),
+                )
+                db.execute(
+                    "UPDATE history_analysis_jobs SET state=CASE WHEN remote_dispatched=1 THEN 'outcome_unknown' WHEN attempt < 3 THEN 'retry' ELSE 'failed' END, "
+                    "error_code=CASE WHEN remote_dispatched=1 THEN 'outcome_unknown' ELSE error_code END, lease_token=NULL, lease_until=NULL, due_at=0, updated_at=? "
+                    "WHERE state='running' AND lease_until IS NOT NULL AND lease_until<=?",
+                    (now, now),
                 )
             # An interrupted worker cannot hold a claim after service restart.
             # Read-only backup access must not steal an active worker's claim.
@@ -302,6 +369,21 @@ class CaptureJournal:
                 self._search_row(row)
                 if row["sealed_result"] is not None:
                     self._allow_result(self._open_search(row["sealed_result"], row["job_id"], "result"))
+            for row in db.execute("SELECT * FROM history_analysis_jobs"):
+                if row["vault_id"] != self.archive.vault_id or not re.fullmatch(r"[0-9a-f]{32}", row["job_id"]):
+                    raise VaultIntegrityError("Analysis journal identity is invalid")
+                target = self._open_search(row["sealed_target"], row["job_id"], "analysis-target")
+                if (
+                    self._analysis_target(
+                        target, target.get("terms", []) if isinstance(target, dict) else [], self.archive.vault_id
+                    )
+                    is None
+                ):
+                    raise VaultIntegrityError("Analysis target format is invalid")
+                if row["sealed_result"] is not None:
+                    self._allow_analysis_result(
+                        self._open_search(row["sealed_result"], row["job_id"], "analysis-result")
+                    )
             return count
 
     def _search_key(self, job_id: str) -> bytes:
@@ -349,7 +431,8 @@ class CaptureJournal:
         if not 1 <= len(query_bytes) <= 512:
             raise SearchJobError("Invalid search request")
         if terms is not None and (
-            not isinstance(terms, list) or not 1 <= len(terms) <= 8
+            not isinstance(terms, list)
+            or not 1 <= len(terms) <= 8
             or any(not isinstance(t, str) or not 1 <= len(t) <= 512 for t in terms)
         ):
             raise SearchJobError("Invalid search request")
@@ -446,11 +529,15 @@ class CaptureJournal:
             "truncated",
         }:
             raise SearchJobError("Invalid search result")
-        if not isinstance(result["matches"], list) or len(result["matches"]) > 100 or any(
-            not isinstance(m, dict)
-            or set(m)
-            != {"ref", "provider", "kind", "captured_day_utc", "size_bucket_kib", "versions", "fetch_capability"}
-            for m in result["matches"]
+        if (
+            not isinstance(result["matches"], list)
+            or len(result["matches"]) > 100
+            or any(
+                not isinstance(m, dict)
+                or set(m)
+                != {"ref", "provider", "kind", "captured_day_utc", "size_bucket_kib", "versions", "fetch_capability"}
+                for m in result["matches"]
+            )
         ):
             raise SearchJobError("Invalid search result")
         if any(type(result[k]) is not int or result[k] < 0 for k in ("total", "ready", "missing", "overflow")):
@@ -463,25 +550,275 @@ class CaptureJournal:
                     isinstance(match[k], str) and len(match[k]) <= 512
                     for k in ("ref", "provider", "kind", "captured_day_utc", "fetch_capability")
                 )
-                or type(match["size_bucket_kib"]) is not int or match["size_bucket_kib"] < 0
-                or type(match["versions"]) is not int or match["versions"] < 0
+                or type(match["size_bucket_kib"]) is not int
+                or match["size_bucket_kib"] < 0
+                or type(match["versions"]) is not int
+                or match["versions"] < 0
             ):
                 raise SearchJobError("Invalid search result")
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 100_000:
             raise SearchJobError("Invalid search result")
         return result
 
-    def finish_search(self, job_id: str, lease_token: str, result: dict[str, Any]) -> bool:
+    @staticmethod
+    def _analysis_target(target: Any, terms: list[str], vault_id: str) -> dict[str, Any] | None:
+        if not isinstance(target, dict) or set(target) != {"vault_id", "blob", "sha256", "version", "terms"}:
+            return None
+        if (
+            target["vault_id"] != vault_id
+            or not isinstance(target["blob"], str)
+            or not re.fullmatch(r"[0-9a-f]{32}", target["blob"])
+            or not isinstance(target["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", target["sha256"])
+            or type(target["version"]) is not int
+            or target["version"] < 0
+            or target["terms"] != terms
+            or not isinstance(target["terms"], list)
+            or not 1 <= len(terms) <= 8
+            or any(not isinstance(t, str) or not 3 <= len(t) <= 64 for t in terms)
+        ):
+            return None
+        return {
+            "vault_id": vault_id,
+            "blob": target["blob"],
+            "sha256": target["sha256"],
+            "version": target["version"],
+            "terms": list(terms),
+        }
+
+    @staticmethod
+    def _allow_analysis_result(result: Any) -> dict[str, Any]:
+        if not isinstance(result, dict) or set(result) != {"status", "provider", "model", "analysis"}:
+            raise SearchJobError("Invalid analysis result")
+        if result["status"] != "ok" or result["provider"] not in {"ollama", "openrouter"}:
+            raise SearchJobError("Invalid analysis result")
+        if not isinstance(result["model"], str) or not 1 <= len(result["model"]) <= 128:
+            raise SearchJobError("Invalid analysis result")
+        analysis = result["analysis"]
+        if not isinstance(analysis, dict) or set(analysis) != {"summary", "decisions", "open_items", "uncertainty"}:
+            raise SearchJobError("Invalid analysis result")
+        if (not isinstance(analysis["summary"], str) or len(analysis["summary"]) > 1200
+                or not isinstance(analysis["uncertainty"], str) or len(analysis["uncertainty"]) > 700):
+            raise SearchJobError("Invalid analysis result")
+        if any(
+            not isinstance(analysis[k], list)
+            or len(analysis[k]) > 12
+            or any(not isinstance(x, str) or len(x) > 350 for x in analysis[k])
+            for k in ("decisions", "open_items")
+        ):
+            raise SearchJobError("Invalid analysis result")
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 50_000:
+            raise SearchJobError("Invalid analysis result")
+        return result
+
+    def finish_search(
+        self, job_id: str, lease_token: str, result: dict[str, Any], *,
+        analysis_target: dict[str, Any] | None = None, analysis_reason: str = "target_unavailable"
+    ) -> bool:
         result = self._allow_result(result)
         sealed = self._seal_search(result, job_id, "result")
         now = time.time()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM history_search_jobs WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (job_id, lease_token, now),
+            ).fetchone()
+            if row is None:
+                return False
+            payload = self._open_search(row["sealed_query"], job_id, "query")
+            terms = payload["terms"]
+            target = self._analysis_target(analysis_target, terms, row["vault_id"])
+            matches = result["matches"]
+            analysis_state = "not_applicable" if not matches else "not_queued"
+            analysis_id = None
+            analysis_error = "" if not matches else (
+                analysis_reason if target is None and analysis_reason in {"disabled", "target_unavailable"}
+                else "invalid_target" if target is None else "queue_full"
+            )
+            if target is not None and matches:
+                raw = json.dumps(target, sort_keys=True, separators=(",", ":")).encode()
+                dedup = hmac.new(self._key, b"analysis-dedup-v1\0" + raw, hashlib.sha256).hexdigest()
+                existing = db.execute("SELECT job_id FROM history_analysis_jobs WHERE dedup_key=?", (dedup,)).fetchone()
+                active = db.execute(
+                    "SELECT COUNT(*) FROM history_analysis_jobs WHERE state IN ('pending','running','retry')"
+                ).fetchone()[0]
+                if existing:
+                    analysis_id = existing["job_id"]
+                    analysis_state = db.execute(
+                        "SELECT state FROM history_analysis_jobs WHERE job_id=?", (analysis_id,)
+                    ).fetchone()[0]
+                elif active < 32:
+                    analysis_id = os.urandom(16).hex()
+                    db.execute(
+                        "INSERT INTO history_analysis_jobs(job_id,vault_id,dedup_key,sealed_target,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                        (
+                            analysis_id,
+                            row["vault_id"],
+                            dedup,
+                            self._seal_search(target, analysis_id, "analysis-target"),
+                            "pending",
+                            now,
+                            now,
+                        ),
+                    )
+                    analysis_state = "queued"
+                else:
+                    analysis_error = "queue_full"
             cur = db.execute(
-                "UPDATE history_search_jobs SET state='succeeded',sealed_result=?,result_expires_at=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
-                (sealed, now + _SEARCH_RESULT_TTL, now, job_id, lease_token, now),
+                "UPDATE history_search_jobs SET state='succeeded',sealed_result=?,result_expires_at=?,analysis_job_id=?,analysis_state=?,error_code=CASE WHEN ?='' THEN error_code ELSE ? END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (
+                    sealed,
+                    now + _SEARCH_RESULT_TTL,
+                    analysis_id,
+                    analysis_state,
+                    analysis_error,
+                    analysis_error,
+                    now,
+                    job_id,
+                    lease_token,
+                    now,
+                ),
             )
             return cur.rowcount == 1
+
+    def _analysis_row(self, row: sqlite3.Row) -> AnalysisJob:
+        if row["vault_id"] != self.archive.vault_id or row["state"] not in _ANALYSIS_STATES:
+            raise VaultIntegrityError("Analysis journal identity is invalid")
+        target = self._open_search(row["sealed_target"], row["job_id"], "analysis-target")
+        if (
+            self._analysis_target(
+                target, target.get("terms", []) if isinstance(target, dict) else [], self.archive.vault_id
+            )
+            is None
+        ):
+            raise VaultIntegrityError("Analysis target format is invalid")
+        return AnalysisJob(
+            row["job_id"],
+            row["vault_id"],
+            row["state"],
+            row["attempt"],
+            row["lease_token"],
+            row["created_at"],
+            row["updated_at"],
+            row["result_expires_at"],
+            row["provider"],
+            row["model"],
+            target,
+        )
+
+    def claim_analysis(self) -> AnalysisJob | None:
+        now = time.time()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE history_analysis_jobs SET state=CASE WHEN remote_dispatched=1 THEN 'outcome_unknown' ELSE 'retry' END,error_code=CASE WHEN remote_dispatched=1 THEN 'outcome_unknown' ELSE error_code END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE state='running' AND lease_until<=?",
+                (now, now),
+            )
+            row = db.execute(
+                "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry') AND due_at<=? ORDER BY due_at,created_at LIMIT 1",
+                (now,),
+            ).fetchone()
+            if not row:
+                return None
+            token = os.urandom(16).hex()
+            db.execute(
+                "UPDATE history_analysis_jobs SET state='running',attempt=attempt+1,lease_token=?,lease_until=?,updated_at=? WHERE job_id=?",
+                (token, now + _ANALYSIS_LEASE, now, row["job_id"]),
+            )
+            row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (row["job_id"],)).fetchone()
+        return self._analysis_row(row)
+
+    def heartbeat_analysis(self, job_id: str, lease_token: str) -> bool:
+        with self._connect() as db:
+            cur = db.execute(
+                "UPDATE history_analysis_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (time.time() + _ANALYSIS_LEASE, time.time(), job_id, lease_token, time.time()),
+            )
+            return cur.rowcount == 1
+
+    def mark_remote_dispatched(self, job_id: str, lease_token: str) -> bool:
+        with self._connect() as db:
+            cur = db.execute(
+                "UPDATE history_analysis_jobs SET remote_dispatched=1,updated_at=? WHERE job_id=? AND state='running' AND remote_dispatched=0 AND lease_token=? AND lease_until>?",
+                (time.time(), job_id, lease_token, time.time()),
+            )
+            return cur.rowcount == 1
+
+    def finish_analysis(self, job_id: str, lease_token: str, result: dict[str, Any]) -> bool:
+        result = self._allow_analysis_result(result)
+        now = time.time()
+        with self._connect() as db:
+            sealed = self._seal_search(result, job_id, "analysis-result")
+            cur = db.execute(
+                "UPDATE history_analysis_jobs SET state='succeeded',sealed_result=?,result_expires_at=?,provider=?,model=?,error_code='',lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (sealed, now + _ANALYSIS_RESULT_TTL, result["provider"], result["model"], now, job_id, lease_token, now),
+            )
+            return cur.rowcount == 1
+
+    def defer_analysis(self, job_id: str, lease_token: str, error_code: str = "deferred") -> bool:
+        return self._finish_analysis_state(job_id, lease_token, error_code, True)
+
+    def fail_analysis(self, job_id: str, lease_token: str, error_code: str = "unknown") -> bool:
+        return self._finish_analysis_state(job_id, lease_token, error_code, False)
+
+    def _finish_analysis_state(self, job_id: str, token: str, code: str, retry: bool) -> bool:
+        now = time.time()
+        code = code if code in _ANALYSIS_RETRY_CODES | _ANALYSIS_TERMINAL_CODES else "unknown"
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT attempt,remote_dispatched FROM history_analysis_jobs WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (job_id, token, now),
+            ).fetchone()
+            if not row:
+                return False
+            state = (
+                "outcome_unknown" if row["remote_dispatched"]
+                else "retry" if retry and code in _ANALYSIS_RETRY_CODES
+                else "failed"
+            )
+            if state == "outcome_unknown":
+                code = "outcome_unknown"
+            cur = db.execute(
+                "UPDATE history_analysis_jobs SET state=?,error_code=?,due_at=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state='running' AND lease_token=?",
+                (
+                    state,
+                    code,
+                    now + min(600, 2 ** min(row["attempt"], 9)) if state == "retry" else 0,
+                    now,
+                    job_id,
+                    token,
+                ),
+            )
+            return cur.rowcount == 1
+
+    def cancel_analysis(self, job_id: str) -> bool:
+        with self._connect() as db:
+            cur = db.execute(
+                "UPDATE history_analysis_jobs SET state=CASE WHEN remote_dispatched=1 AND state='running' THEN 'outcome_unknown' ELSE 'cancelled' END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state IN ('pending','retry','running')",
+                (time.time(), job_id),
+            )
+            return cur.rowcount == 1
+
+    def get_analysis_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if not row or row["state"] == "cancelled":
+            return None
+        job = self._analysis_row(row)
+        result = None
+        if row["state"] == "succeeded" and row["result_expires_at"] and row["result_expires_at"] > time.time():
+            result = self._allow_analysis_result(self._open_search(row["sealed_result"], job_id, "analysis-result"))
+        return {
+            "job_id": job.job_id,
+            "state": job.state,
+            "result": result,
+            "provider": job.provider,
+            "model": job.model,
+            "provisional": True,
+            "error_code": row["error_code"] if row["error_code"] in _ANALYSIS_RETRY_CODES | _ANALYSIS_TERMINAL_CODES else None,
+            "due_at": row["due_at"] if row["state"] == "retry" else None,
+        }
 
     def fail_search(self, job_id: str, lease_token: str, error_code: str = "unknown") -> bool:
         now = time.time()
@@ -494,7 +831,11 @@ class CaptureJournal:
             ).fetchone()
             if row is None:
                 return False
-            state = "retry" if code in _SEARCH_RETRY_CODES and row["attempt"] < 3 and now - row["created_at"] <= 3600 else "failed"
+            state = (
+                "retry"
+                if code in _SEARCH_RETRY_CODES and row["attempt"] < 3 and now - row["created_at"] <= 3600
+                else "failed"
+            )
             due = now + min(600, 2 ** min(row["attempt"], 9)) if state == "retry" else 0
             cur = db.execute(
                 "UPDATE history_search_jobs SET state=?,error_code=?,lease_token=NULL,lease_until=NULL,due_at=?,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
@@ -519,17 +860,34 @@ class CaptureJournal:
         if row["state"] == "succeeded" and (
             row["result_expires_at"] is None or row["result_expires_at"] <= time.time()
         ):
-            return None
+            if row["analysis_job_id"] is None:
+                return None
+            return {
+                "job_id": job_id,
+                "state": row["state"],
+                "result": None,
+                "analysis_job_id": row["analysis_job_id"],
+                "analysis_state": row["analysis_state"],
+            }
         result = (
             self._open_search(row["sealed_result"], job_id, "result")
             if row["state"] == "succeeded" and row["sealed_result"]
             else None
         )
-        response = {"job_id": job_id, "state": row["state"], "result": result}
+        response = {
+            "job_id": job_id,
+            "state": row["state"],
+            "result": result,
+        }
+        if row["analysis_state"] is not None:
+            response["analysis_state"] = row["analysis_state"]
+        if row["analysis_job_id"] is not None:
+            response["analysis_job_id"] = row["analysis_job_id"]
+        elif row["analysis_state"] == "not_queued":
+            response["analysis_reason"] = row["error_code"]
         if row["state"] == "failed":
             response["error_code"] = (
-                row["error_code"] if row["error_code"] in _SEARCH_RETRY_CODES | _SEARCH_TERMINAL_CODES
-                else "unknown"
+                row["error_code"] if row["error_code"] in _SEARCH_RETRY_CODES | _SEARCH_TERMINAL_CODES else "unknown"
             )
         return response
 

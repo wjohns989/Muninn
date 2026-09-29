@@ -1756,6 +1756,33 @@ async def cancel_secure_history_search_job_endpoint(job_id: str):
                         headers=NO_STORE)
 
 
+@app.get("/history/secure/analysis/jobs/{job_id}", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_analysis_job_endpoint(job_id: str):
+    _check_search_job_poll(job_id)
+    try:
+        status = _require_history().secure_analysis_job_status(job_id)
+    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Encrypted history analysis unavailable",
+                            headers=NO_STORE) from None
+    if status is None:
+        raise HTTPException(status_code=404, detail="Analysis job unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
+
+
+@app.delete("/history/secure/analysis/jobs/{job_id}", dependencies=[Depends(verify_main_local_token)])
+async def cancel_secure_history_analysis_job_endpoint(job_id: str):
+    _check_search_job_poll(job_id)
+    try:
+        cancelled = _require_history().cancel_secure_analysis_job(job_id)
+    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Encrypted history analysis unavailable",
+                            headers=NO_STORE) from None
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Analysis job unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": {"job_id": job_id, "state": "cancelled"}},
+                        headers=NO_STORE)
+
+
 @app.post("/history/secure/fetch", dependencies=[Depends(verify_main_local_token)])
 async def secure_history_fetch_endpoint(req: SecureHistoryFetchRequest):
     """Authenticate a selected snapshot and release only a bounded redacted span."""
