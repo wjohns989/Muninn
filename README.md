@@ -724,7 +724,7 @@ The `sota-verdict` command emits a signed JSON artifact with `commit_sha`, SHA25
 | `docs/archive/` | Historical handoffs and remediation reports (including `HANDOFF.md`) |
 | `docs/ARCHITECTURE.md` | System architecture deep-dive |
 | `docs/architecture/local-operating-model-audit.md` | Current local lifecycle, timing contract, contradictions, and release gates (audit, not completion claim) |
-| `docs/plans/2026-09-28-local-control-center-overhaul.md` | Dependency-ordered plan for the localhost UI and security controls (not yet implemented) |
+| `docs/plans/2026-09-28-local-control-center-overhaul.md` | Dependency-ordered localhost UI/security overhaul plan; encrypted search and local ZDR policy controls are implemented, other screens remain planned |
 | `docs/MUNINN_COMPREHENSIVE_ROADMAP.md` | Full feature roadmap (v3.1→v3.3+) |
 | `docs/AGENT_CONTINUATION_RUNBOOK.md` | How to resume development across sessions |
 | `docs/PYTHON_SDK.md` | Python SDK reference |

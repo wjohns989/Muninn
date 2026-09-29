@@ -1,11 +1,14 @@
 # Local control center overhaul (implementation plan)
 
-Status: partially implemented. The local installation has proven bounded secure
-search and both local/Ollama and ZDR/OpenRouter analysis routes. The dashboard
-at port 42069 now has a separate Encrypted History tab with durable search-job
-status, index coverage, and on-click bounded excerpts. It still lacks vault
-discovery, resource/model state, and ZDR consent/spending controls; the full
-overhaul remains lower priority than the working local capture/recovery path.
+Status (2026-09-29): partially implemented. The local installation has proven
+bounded secure search and both local/Ollama and ZDR/OpenRouter analysis routes.
+The dashboard at port 42069 has an Encrypted History tab with durable search-job
+status, index coverage, on-click bounded excerpts, and persistent local ZDR
+consent plus adjustable daily/monthly admission thresholds. This is not yet a
+full spending or resource control center: provider-side key-cap status, actual
+spend, vault scan coverage, model residency, hook evidence, and backup receipts
+are not shown there. The full overhaul remains lower priority than the working
+local capture/recovery and credential-discovery path.
 It also presents legacy import and automatic TKG language that is misleading in
 strict vault-first mode. The root page no longer embeds an API bearer; retain
 that property throughout the overhaul.
@@ -78,6 +81,13 @@ and an explicit distinction between request accepted and work completed.
    script-injection, and restart/recovery checks against the exact installed
    candidate. Compare every displayed count to its backend generation; record
    any unsupported state as unknown, not zero or complete.
+
+Current delivery boundary: step 3's bounded search/fetch/job view and part of
+step 4's consent/admission UI are implemented. The rest of steps 1-6 are not
+accepted as complete; in particular, a source-only UI check is not a rendered
+browser or accessibility acceptance test. Runtime counts, provider spending,
+and backups must come from authoritative, generation-labeled backend receipts
+before the UI displays them as current.
 
 Implementation should reuse the existing FastAPI service and authenticated
 routes. New write APIs require independent review of privacy/authority and a
