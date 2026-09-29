@@ -110,6 +110,7 @@ def test_walk_error_does_not_prevent_archive_phase(tmp_path: Path, monkeypatch) 
     source = tmp_path / "chat.jsonl"
     source.write_text('{"content":"ARCHIVE_API_KEY=archiveVALUE12345678"}\n')
     archive.archive_file(source, "codex")
+    monkeypatch.setattr("muninn.history.secure_archive.SecureHistoryArchive", lambda _root: archive)
 
     def walk(_root, *, followlinks, onerror):
         yield str(project), [], [".env"]
