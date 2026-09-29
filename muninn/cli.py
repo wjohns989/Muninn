@@ -236,6 +236,10 @@ def _patch_codex_toml(
         return existing, updated
 
     muninn_body = lines[muninn_idx + 1 : muninn_end]
+    # The line-oriented writer understands bare TOML keys only. Quoted keys
+    # are valid TOML but appending a bare duplicate would invalidate the file.
+    if any(re.match(r"^\s*[\"']", line) for line in muninn_body):
+        return False
     is_streamable_http = any(re.match(r"^\s*url\s*=", line) for line in muninn_body)
 
     if is_streamable_http:
