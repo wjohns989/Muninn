@@ -297,6 +297,45 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "start_secure_history_search",
+        "description": (
+            "Start a durable CPU-only search across encrypted transcripts of any size. "
+            "Returns an opaque job id immediately; poll_secure_history_search for "
+            "authenticated metadata hits and expiring fetch capabilities. Use this "
+            "for broad or slow searches instead of waiting on the synchronous tool."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words to find in archived transcripts."},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "poll_secure_history_search",
+        "description": (
+            "Check a durable encrypted-history search job. Pending/retry states do not "
+            "imply no match; completed results include metadata and short-lived fetch "
+            "capabilities. Poll at most once every two seconds."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "Opaque job id from start_secure_history_search."}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "cancel_secure_history_search",
+        "description": "Cancel a pending or running private history search job; archived data is unaffected.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "Opaque job id from start_secure_history_search."}},
+            "required": ["job_id"],
+        },
+    },
+    {
         "name": "fetch_secure_history",
         "description": (
             "Fetch one authenticated, bounded, best-effort redacted transcript span using a "
@@ -898,7 +937,7 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
     "get_project_context", "get_thread",
-    "search_memory", "search_secure_history", "fetch_secure_history",
+    "search_memory", "search_secure_history", "poll_secure_history_search", "fetch_secure_history",
     "search_credential_metadata", "hunt_memory",
     "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
@@ -994,7 +1033,8 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 # at 40 across all servers, and every schema costs context on each request.
 CORE_TOOLS = (
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
-    "add_memory", "search_memory", "search_secure_history", "fetch_secure_history",
+    "add_memory", "search_memory", "search_secure_history", "start_secure_history_search",
+    "poll_secure_history_search", "cancel_secure_history_search", "fetch_secure_history",
     "analyze_secure_history",
     "search_credential_metadata",
     "hunt_memory", "update_memory", "delete_memory",

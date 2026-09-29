@@ -470,6 +470,9 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "add_image_memory": _do_add_image_memory,
         "search_memory": _do_search_memory,
         "search_secure_history": _do_search_secure_history,
+        "start_secure_history_search": _do_start_secure_history_search,
+        "poll_secure_history_search": _do_poll_secure_history_search,
+        "cancel_secure_history_search": _do_cancel_secure_history_search,
         "fetch_secure_history": _do_fetch_secure_history,
         "analyze_secure_history": _do_analyze_secure_history,
         "search_credential_metadata": _do_search_credential_metadata,
@@ -704,6 +707,33 @@ def _do_search_secure_history(args: Dict[str, Any], deadline: Optional[float]) -
     response = make_request_with_retry(
         "POST", f"{SERVER_URL}/history/secure/search", deadline_epoch=deadline,
         json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_start_secure_history_search(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/search/jobs", deadline_epoch=deadline,
+        json={"query": args.get("query"), "limit": args.get("limit", 20)},
+        timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_poll_secure_history_search(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    job_id = str(args.get("job_id") or "")
+    response = make_request_with_retry(
+        "GET", f"{SERVER_URL}/history/secure/search/jobs/{quote(job_id, safe='')}",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_cancel_secure_history_search(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    job_id = str(args.get("job_id") or "")
+    response = make_request_with_retry(
+        "DELETE", f"{SERVER_URL}/history/secure/search/jobs/{quote(job_id, safe='')}",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
     )
     return response.json()
 
@@ -1173,7 +1203,8 @@ STRUCTURED_TOOLS = {"search", "fetch"}
 # Nested briefings and handoffs are returned whole rather than preview-compacted.
 EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
-    "import_agent_history", "search_secure_history", "fetch_secure_history",
+    "import_agent_history", "search_secure_history", "start_secure_history_search",
+    "poll_secure_history_search", "cancel_secure_history_search", "fetch_secure_history",
     "analyze_secure_history",
     "search_credential_metadata",
 }

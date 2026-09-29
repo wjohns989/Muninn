@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Owner-only, encrypted-locator journal for strict-history hook capture.
 
 The journal stores no transcript text or plaintext source path. A successful
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import sqlite3
@@ -16,17 +18,25 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from muninn.history.blind_index import _terms as _search_terms
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.private_acl import create_private_file, verify_private
 from muninn.history.secure_archive import SecureHistoryArchive
 
 _SESSION_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
 _ERROR_CODES = {"missing", "changed", "permission", "disk", "archive", "locked", "unknown"}
+_SEARCH_RETRY_CODES = {"locked", "archive_unavailable", "worker_timeout"}
+_SEARCH_TERMINAL_CODES = {"vault_integrity", "invalid_query", "unknown"}
+_SEARCH_STATES = {"pending", "running", "retry", "succeeded", "failed", "cancelled"}
+_SEARCH_SCHEMA = b"secure-history-search-v1"
+_SEARCH_PURPOSE = b"durable-async-search"
+_SEARCH_LEASE = 60.0
+_SEARCH_RESULT_TTL = 300.0
 
 
 @dataclass(frozen=True)
@@ -37,6 +47,26 @@ class CaptureJob:
     revision: int
     observed_size: int
     observed_mtime_ns: int
+
+
+@dataclass(frozen=True, repr=False)
+class SearchJob:
+    job_id: str
+    vault_id: str
+    state: str
+    attempt: int
+    lease_token: str | None
+    sealed_query: bytes
+    sealed_result: bytes | None
+    created_at: float
+    updated_at: float
+    result_expires_at: float | None
+    query: str
+    limit: int
+
+
+class SearchJobError(ValueError):
+    """A caller-visible validation or state error without sensitive detail."""
 
 
 class CaptureJournal:
@@ -52,20 +82,42 @@ class CaptureJournal:
         self._key = hmac.new(archive._key, b"muninn-capture-journal-key-v1", hashlib.sha256).digest()
         self._aad = b"muninn-capture-locator-v1\0" + archive.vault_id.encode("ascii")
         with self._connect() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS jobs ("
-                       "source_key TEXT PRIMARY KEY, sealed_locator BLOB NOT NULL, "
-                       "provider TEXT NOT NULL, revision INTEGER NOT NULL, "
-                       "observed_size INTEGER NOT NULL, observed_mtime_ns INTEGER NOT NULL, "
-                       "state TEXT NOT NULL, due_at REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, "
-                       "last_error_code TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS scan_state ("
-                       "id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL, "
-                       "complete INTEGER NOT NULL, seen INTEGER NOT NULL, queued INTEGER NOT NULL, "
-                       "unchanged INTEGER NOT NULL, excluded INTEGER NOT NULL, "
-                       "missing INTEGER NOT NULL, errors INTEGER NOT NULL, finished_at REAL NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS scan_seen ("
-                       "source_key TEXT PRIMARY KEY, generation INTEGER NOT NULL)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS jobs ("
+                "source_key TEXT PRIMARY KEY, sealed_locator BLOB NOT NULL, "
+                "provider TEXT NOT NULL, revision INTEGER NOT NULL, "
+                "observed_size INTEGER NOT NULL, observed_mtime_ns INTEGER NOT NULL, "
+                "state TEXT NOT NULL, due_at REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, "
+                "last_error_code TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS scan_state ("
+                "id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL, "
+                "complete INTEGER NOT NULL, seen INTEGER NOT NULL, queued INTEGER NOT NULL, "
+                "unchanged INTEGER NOT NULL, excluded INTEGER NOT NULL, "
+                "missing INTEGER NOT NULL, errors INTEGER NOT NULL, finished_at REAL NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS scan_seen (source_key TEXT PRIMARY KEY, generation INTEGER NOT NULL)"
+            )
             db.execute("INSERT OR IGNORE INTO scan_state VALUES (1, 0, 1, 0, 0, 0, 0, 0, 0, 0)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS history_search_jobs ("
+                "job_id TEXT PRIMARY KEY, vault_id TEXT NOT NULL, sealed_query BLOB NOT NULL, "
+                "sealed_result BLOB, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, "
+                "lease_token TEXT, lease_until REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL, "
+                "result_expires_at REAL, due_at REAL NOT NULL DEFAULT 0, error_code TEXT NOT NULL DEFAULT '')"
+            )
+            try:
+                db.execute("ALTER TABLE history_search_jobs ADD COLUMN due_at REAL NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            if recover:
+                now = time.time()
+                db.execute(
+                    "UPDATE history_search_jobs SET state=CASE WHEN attempt < 3 AND ?-created_at <= 3600 THEN 'retry' ELSE 'failed' END, lease_token=NULL, lease_until=NULL, updated_at=? WHERE state='running' AND lease_until IS NOT NULL AND lease_until<=?",
+                    (now, now, now),
+                )
             # An interrupted worker cannot hold a claim after service restart.
             # Read-only backup access must not steal an active worker's claim.
             if recover:
@@ -105,9 +157,7 @@ class CaptureJournal:
 
     def _open(self, sealed: bytes, provider: str) -> Path:
         try:
-            raw = AESGCM(self._key).decrypt(
-                sealed[:12], sealed[12:], self._aad + b"\0" + provider.encode("ascii")
-            )
+            raw = AESGCM(self._key).decrypt(sealed[:12], sealed[12:], self._aad + b"\0" + provider.encode("ascii"))
             return Path(raw.decode("utf-8"))
         except (InvalidTag, ValueError, UnicodeError) as exc:
             raise VaultIntegrityError("Capture journal locator authentication failed") from exc
@@ -120,8 +170,7 @@ class CaptureJournal:
             return -1, -1
         return stat.st_size, stat.st_mtime_ns
 
-    def enqueue(self, path: Path, provider: str, *, force: bool = False,
-                immediate: bool = False) -> str:
+    def enqueue(self, path: Path, provider: str, *, force: bool = False, immediate: bool = False) -> str:
         """Commit a validated locator before the hook may be acknowledged."""
         path = Path(path).resolve(strict=False)
         key = self._source_key(path, provider)
@@ -131,37 +180,49 @@ class CaptureJournal:
         due = now if force or immediate else now + 2.0
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            prior = db.execute("SELECT revision, observed_size, observed_mtime_ns, state, due_at "
-                               "FROM jobs WHERE source_key=?", (key,)).fetchone()
-            if (prior and (size, mtime_ns) == (prior["observed_size"], prior["observed_mtime_ns"])
-                    and (not force or prior["state"] in {"pending", "capturing", "retry"})):
+            prior = db.execute(
+                "SELECT revision, observed_size, observed_mtime_ns, state, due_at FROM jobs WHERE source_key=?", (key,)
+            ).fetchone()
+            if (
+                prior
+                and (size, mtime_ns) == (prior["observed_size"], prior["observed_mtime_ns"])
+                and (not force or prior["state"] in {"pending", "capturing", "retry"})
+            ):
                 return "coalesced"
             if prior:
                 due = min(due, prior["due_at"]) if prior["state"] != "archived" else due
-                db.execute("UPDATE jobs SET sealed_locator=?, provider=?, revision=revision+1, "
-                           "observed_size=?, observed_mtime_ns=?, state='pending', due_at=?, "
-                           "attempts=0, last_error_code='', updated_at=? WHERE source_key=?",
-                           (sealed, provider, size, mtime_ns, due, now, key))
+                db.execute(
+                    "UPDATE jobs SET sealed_locator=?, provider=?, revision=revision+1, "
+                    "observed_size=?, observed_mtime_ns=?, state='pending', due_at=?, "
+                    "attempts=0, last_error_code='', updated_at=? WHERE source_key=?",
+                    (sealed, provider, size, mtime_ns, due, now, key),
+                )
             else:
-                db.execute("INSERT INTO jobs (source_key, sealed_locator, provider, revision, "
-                           "observed_size, observed_mtime_ns, state, due_at, updated_at) "
-                           "VALUES (?, ?, ?, 1, ?, ?, 'pending', ?, ?)",
-                           (key, sealed, provider, size, mtime_ns, due, now))
+                db.execute(
+                    "INSERT INTO jobs (source_key, sealed_locator, provider, revision, "
+                    "observed_size, observed_mtime_ns, state, due_at, updated_at) "
+                    "VALUES (?, ?, ?, 1, ?, ?, 'pending', ?, ?)",
+                    (key, sealed, provider, size, mtime_ns, due, now),
+                )
         return "queued"
 
     def claim_due(self) -> CaptureJob | None:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM jobs WHERE state IN ('pending', 'retry') AND due_at<=? "
-                             "ORDER BY due_at, updated_at LIMIT 1", (time.time(),)).fetchone()
+            row = db.execute(
+                "SELECT * FROM jobs WHERE state IN ('pending', 'retry') AND due_at<=? "
+                "ORDER BY due_at, updated_at LIMIT 1",
+                (time.time(),),
+            ).fetchone()
             if row is None:
                 return None
             locator = self._open(row["sealed_locator"], row["provider"])
-            db.execute("UPDATE jobs SET state='capturing', updated_at=? WHERE source_key=?",
-                       (time.time(), row["source_key"]))
-        return CaptureJob(row["source_key"], locator,
-                          row["provider"], row["revision"], row["observed_size"],
-                          row["observed_mtime_ns"])
+            db.execute(
+                "UPDATE jobs SET state='capturing', updated_at=? WHERE source_key=?", (time.time(), row["source_key"])
+            )
+        return CaptureJob(
+            row["source_key"], locator, row["provider"], row["revision"], row["observed_size"], row["observed_mtime_ns"]
+        )
 
     def finish(self, job: CaptureJob, *, archived: bool) -> bool:
         """Only the claimed revision may become archived after manifest commit."""
@@ -174,15 +235,17 @@ class CaptureJournal:
             row = db.execute("SELECT revision FROM jobs WHERE source_key=?", (job.key,)).fetchone()
             if row is None:
                 raise VaultIntegrityError("Capture journal job is missing")
-            if row["revision"] != job.revision or (size, mtime_ns) != (
-                job.observed_size, job.observed_mtime_ns
-            ):
-                db.execute("UPDATE jobs SET revision=revision+1, observed_size=?, observed_mtime_ns=?, "
-                           "state='pending', due_at=0, updated_at=? WHERE source_key=? AND revision=?",
-                           (size, mtime_ns, time.time(), job.key, job.revision))
+            if row["revision"] != job.revision or (size, mtime_ns) != (job.observed_size, job.observed_mtime_ns):
+                db.execute(
+                    "UPDATE jobs SET revision=revision+1, observed_size=?, observed_mtime_ns=?, "
+                    "state='pending', due_at=0, updated_at=? WHERE source_key=? AND revision=?",
+                    (size, mtime_ns, time.time(), job.key, job.revision),
+                )
                 return False
-            db.execute("UPDATE jobs SET state='archived', last_error_code='', updated_at=? "
-                       "WHERE source_key=? AND revision=?", (time.time(), job.key, job.revision))
+            db.execute(
+                "UPDATE jobs SET state='archived', last_error_code='', updated_at=? WHERE source_key=? AND revision=?",
+                (time.time(), job.key, job.revision),
+            )
         return True
 
     def fail(self, job: CaptureJob, code: str) -> None:
@@ -195,15 +258,18 @@ class CaptureJournal:
                 return
             attempts = row["attempts"] + 1
             delay = min(600, 2 ** min(attempts, 9))
-            db.execute("UPDATE jobs SET state='retry', attempts=?, due_at=?, last_error_code=?, "
-                       "updated_at=? WHERE source_key=? AND revision=?",
-                       (attempts, time.time() + delay, code, time.time(), job.key, job.revision))
+            db.execute(
+                "UPDATE jobs SET state='retry', attempts=?, due_at=?, last_error_code=?, "
+                "updated_at=? WHERE source_key=? AND revision=?",
+                (attempts, time.time() + delay, code, time.time(), job.key, job.revision),
+            )
 
     def status(self) -> dict[str, int]:
         with self._connect() as db:
-            return {row["state"]: row["count"] for row in db.execute(
-                "SELECT state, COUNT(*) AS count FROM jobs GROUP BY state"
-            )}
+            return {
+                row["state"]: row["count"]
+                for row in db.execute("SELECT state, COUNT(*) AS count FROM jobs GROUP BY state")
+            }
 
     def backup_to(self, destination: Path) -> None:
         """Snapshot committed encrypted locators with SQLite's online backup API."""
@@ -228,7 +294,244 @@ class CaptureJournal:
                 if row["source_key"] != self._source_key(path, row["provider"]):
                     raise VaultIntegrityError("Capture journal source identity mismatch")
                 count += 1
+            for row in db.execute("SELECT * FROM history_search_jobs"):
+                if row["vault_id"] != self.archive.vault_id or not re.fullmatch(r"[0-9a-f]{32}", row["job_id"]):
+                    raise VaultIntegrityError("Search journal identity is invalid")
+                if row["state"] not in _SEARCH_STATES:
+                    raise VaultIntegrityError("Search journal state is invalid")
+                self._search_row(row)
+                if row["sealed_result"] is not None:
+                    self._allow_result(self._open_search(row["sealed_result"], row["job_id"], "result"))
             return count
+
+    def _search_key(self, job_id: str) -> bytes:
+        return hmac.new(
+            self.archive._key, b"muninn-search-job-key-v1\0" + job_id.encode("ascii"), hashlib.sha256
+        ).digest()
+
+    def _search_aad(self, job_id: str, purpose: str) -> bytes:
+        return (
+            b"muninn-search\0"
+            + self.archive.vault_id.encode("ascii")
+            + b"\0"
+            + job_id.encode("ascii")
+            + b"\0"
+            + _SEARCH_PURPOSE
+            + b"\0"
+            + _SEARCH_SCHEMA
+            + b"\0"
+            + purpose.encode("ascii")
+        )
+
+    def _seal_search(self, value: Any, job_id: str, purpose: str) -> bytes:
+        nonce = os.urandom(12)
+        return nonce + AESGCM(self._search_key(job_id)).encrypt(
+            nonce,
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            self._search_aad(job_id, purpose),
+        )
+
+    def _open_search(self, sealed: bytes, job_id: str, purpose: str) -> Any:
+        try:
+            raw = AESGCM(self._search_key(job_id)).decrypt(sealed[:12], sealed[12:], self._search_aad(job_id, purpose))
+            return json.loads(raw.decode("utf-8"))
+        except (InvalidTag, ValueError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+            raise VaultIntegrityError("Search journal field authentication failed") from exc
+
+    @staticmethod
+    def _validate_search(query: str, terms: list[str] | None, limit: int) -> None:
+        if not isinstance(query, str):
+            raise SearchJobError("Invalid search request")
+        try:
+            query_bytes = query.encode("utf-8")
+        except UnicodeError as exc:
+            raise SearchJobError("Invalid search request") from exc
+        if not 1 <= len(query_bytes) <= 512:
+            raise SearchJobError("Invalid search request")
+        if terms is not None and (
+            not isinstance(terms, list) or not 1 <= len(terms) <= 8
+            or any(not isinstance(t, str) or not 1 <= len(t) <= 512 for t in terms)
+        ):
+            raise SearchJobError("Invalid search request")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise SearchJobError("Invalid search request")
+
+    def enqueue_search(self, query: str, limit: int = 20) -> str:
+        # Bound the input before tokenization, including malformed Unicode.
+        self._validate_search(query, None, limit)
+        try:
+            terms = list(dict.fromkeys(_search_terms(query)))
+        except Exception as exc:
+            raise SearchJobError("Invalid search request") from exc
+        self._validate_search(query, terms, limit)
+        now = time.time()
+        job_id = os.urandom(16).hex()
+        sealed = self._seal_search({"query": query, "terms": terms, "limit": limit}, job_id, "query")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            count = db.execute(
+                "SELECT COUNT(*) FROM history_search_jobs WHERE state IN ('pending','running','retry')"
+            ).fetchone()[0]
+            if count >= 32:
+                raise SearchJobError("Search queue is full")
+            db.execute(
+                "INSERT INTO history_search_jobs(job_id,vault_id,sealed_query,state,created_at,updated_at) VALUES(?,?,?,'pending',?,?)",
+                (job_id, self.archive.vault_id, sealed, now, now),
+            )
+        return job_id
+
+    def _search_row(self, row: sqlite3.Row) -> SearchJob:
+        payload = self._open_search(row["sealed_query"], row["job_id"], "query")
+        if not isinstance(payload, dict) or set(payload) != {"query", "terms", "limit"}:
+            raise VaultIntegrityError("Search journal query format is invalid")
+        try:
+            self._validate_search(payload["query"], payload["terms"], payload["limit"])
+        except SearchJobError as exc:
+            raise VaultIntegrityError("Search journal query format is invalid") from exc
+        return SearchJob(
+            row["job_id"],
+            row["vault_id"],
+            row["state"],
+            row["attempt"],
+            row["lease_token"],
+            row["sealed_query"],
+            row["sealed_result"],
+            row["created_at"],
+            row["updated_at"],
+            row["result_expires_at"],
+            payload["query"],
+            payload["limit"],
+        )
+
+    def claim_search(self) -> SearchJob | None:
+        now = time.time()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE history_search_jobs SET state=CASE WHEN attempt < 3 AND ?-created_at <= 3600 THEN 'retry' ELSE 'failed' END, lease_token=NULL, lease_until=NULL, due_at=CASE WHEN attempt < 3 AND ?-created_at <= 3600 THEN ? ELSE 0 END, updated_at=? WHERE state='running' AND lease_until IS NOT NULL AND lease_until<=?",
+                (now, now, now, now, now),
+            )
+            row = db.execute(
+                "SELECT * FROM history_search_jobs WHERE state IN ('pending','retry') AND due_at<=? AND (state='pending' OR created_at>?) ORDER BY due_at,created_at LIMIT 1",
+                (now, now - 3600),
+            ).fetchone()
+            if row is None:
+                return None
+            token = os.urandom(16).hex()
+            db.execute(
+                "UPDATE history_search_jobs SET state='running', attempt=attempt+1, lease_token=?, lease_until=?, due_at=0, updated_at=? WHERE job_id=? AND state IN ('pending','retry')",
+                (token, now + _SEARCH_LEASE, now, row["job_id"]),
+            )
+            row = db.execute("SELECT * FROM history_search_jobs WHERE job_id=?", (row["job_id"],)).fetchone()
+        return self._search_row(row)
+
+    def heartbeat_search(self, job_id: str, lease_token: str) -> bool:
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cur = db.execute(
+                "UPDATE history_search_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (time.time() + _SEARCH_LEASE, time.time(), job_id, lease_token, time.time()),
+            )
+            return cur.rowcount == 1
+
+    @staticmethod
+    def _allow_result(result: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(result, dict) or set(result) != {
+            "matches",
+            "total",
+            "ready",
+            "missing",
+            "overflow",
+            "complete",
+            "truncated",
+        }:
+            raise SearchJobError("Invalid search result")
+        if not isinstance(result["matches"], list) or len(result["matches"]) > 100 or any(
+            not isinstance(m, dict)
+            or set(m)
+            != {"ref", "provider", "kind", "captured_day_utc", "size_bucket_kib", "versions", "fetch_capability"}
+            for m in result["matches"]
+        ):
+            raise SearchJobError("Invalid search result")
+        if any(type(result[k]) is not int or result[k] < 0 for k in ("total", "ready", "missing", "overflow")):
+            raise SearchJobError("Invalid search result")
+        if not all(isinstance(result[k], bool) for k in ("complete", "truncated")):
+            raise SearchJobError("Invalid search result")
+        for match in result["matches"]:
+            if (
+                not all(
+                    isinstance(match[k], str) and len(match[k]) <= 512
+                    for k in ("ref", "provider", "kind", "captured_day_utc", "fetch_capability")
+                )
+                or type(match["size_bucket_kib"]) is not int or match["size_bucket_kib"] < 0
+                or type(match["versions"]) is not int or match["versions"] < 0
+            ):
+                raise SearchJobError("Invalid search result")
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 100_000:
+            raise SearchJobError("Invalid search result")
+        return result
+
+    def finish_search(self, job_id: str, lease_token: str, result: dict[str, Any]) -> bool:
+        result = self._allow_result(result)
+        sealed = self._seal_search(result, job_id, "result")
+        now = time.time()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cur = db.execute(
+                "UPDATE history_search_jobs SET state='succeeded',sealed_result=?,result_expires_at=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (sealed, now + _SEARCH_RESULT_TTL, now, job_id, lease_token, now),
+            )
+            return cur.rowcount == 1
+
+    def fail_search(self, job_id: str, lease_token: str, error_code: str = "unknown") -> bool:
+        now = time.time()
+        code = error_code if error_code in _SEARCH_RETRY_CODES | _SEARCH_TERMINAL_CODES else "unknown"
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT attempt,created_at FROM history_search_jobs WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (job_id, lease_token, now),
+            ).fetchone()
+            if row is None:
+                return False
+            state = "retry" if code in _SEARCH_RETRY_CODES and row["attempt"] < 3 and now - row["created_at"] <= 3600 else "failed"
+            due = now + min(600, 2 ** min(row["attempt"], 9)) if state == "retry" else 0
+            cur = db.execute(
+                "UPDATE history_search_jobs SET state=?,error_code=?,lease_token=NULL,lease_until=NULL,due_at=?,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                (state, code, due, now, job_id, lease_token, now),
+            )
+            return cur.rowcount == 1
+
+    def cancel_search(self, job_id: str) -> bool:
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cur = db.execute(
+                "UPDATE history_search_jobs SET state='cancelled',lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state IN ('pending','retry','running')",
+                (time.time(), job_id),
+            )
+            return cur.rowcount == 1
+
+    def get_search_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM history_search_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if row is None or row["state"] == "cancelled":
+            return None
+        if row["state"] == "succeeded" and (
+            row["result_expires_at"] is None or row["result_expires_at"] <= time.time()
+        ):
+            return None
+        result = (
+            self._open_search(row["sealed_result"], job_id, "result")
+            if row["state"] == "succeeded" and row["sealed_result"]
+            else None
+        )
+        response = {"job_id": job_id, "state": row["state"], "result": result}
+        if row["state"] == "failed":
+            response["error_code"] = (
+                row["error_code"] if row["error_code"] in _SEARCH_RETRY_CODES | _SEARCH_TERMINAL_CODES
+                else "unknown"
+            )
+        return response
 
     def begin_scan(self) -> int:
         with self._connect() as db:
@@ -236,16 +539,19 @@ class CaptureJournal:
             row = db.execute("SELECT generation, complete FROM scan_state WHERE id=1").fetchone()
             if row["complete"]:
                 generation = row["generation"] + 1
-                db.execute("UPDATE scan_state SET generation=?, complete=0, seen=0, queued=0, "
-                           "unchanged=0, excluded=0, missing=0, errors=0, finished_at=0 WHERE id=1",
-                           (generation,))
+                db.execute(
+                    "UPDATE scan_state SET generation=?, complete=0, seen=0, queued=0, "
+                    "unchanged=0, excluded=0, missing=0, errors=0, finished_at=0 WHERE id=1",
+                    (generation,),
+                )
                 return generation
             return row["generation"]
 
     def scan_seen(self, source_key: str, generation: int) -> bool:
         with self._connect() as db:
-            row = db.execute("SELECT 1 FROM scan_seen WHERE source_key=? AND generation=?",
-                             (source_key, generation)).fetchone()
+            row = db.execute(
+                "SELECT 1 FROM scan_seen WHERE source_key=? AND generation=?", (source_key, generation)
+            ).fetchone()
             return row is not None
 
     def record_scan_batch(self, generation: int, outcomes: list[tuple[str, str]]) -> None:
@@ -260,14 +566,24 @@ class CaptureJournal:
             for key, outcome in outcomes:
                 if outcome not in counts:
                     raise ValueError("Invalid capture scan outcome")
-                db.execute("INSERT INTO scan_seen (source_key, generation) VALUES (?, ?) "
-                           "ON CONFLICT(source_key) DO UPDATE SET generation=excluded.generation",
-                           (key, generation))
+                db.execute(
+                    "INSERT INTO scan_seen (source_key, generation) VALUES (?, ?) "
+                    "ON CONFLICT(source_key) DO UPDATE SET generation=excluded.generation",
+                    (key, generation),
+                )
                 counts[outcome] += 1
-            db.execute("UPDATE scan_state SET seen=seen+?, queued=queued+?, unchanged=unchanged+?, "
-                       "excluded=excluded+?, missing=missing+?, errors=errors+? WHERE id=1",
-                       (len(outcomes), counts["queued"], counts["unchanged"], counts["excluded"],
-                        counts["missing"], counts["errors"]))
+            db.execute(
+                "UPDATE scan_state SET seen=seen+?, queued=queued+?, unchanged=unchanged+?, "
+                "excluded=excluded+?, missing=missing+?, errors=errors+? WHERE id=1",
+                (
+                    len(outcomes),
+                    counts["queued"],
+                    counts["unchanged"],
+                    counts["excluded"],
+                    counts["missing"],
+                    counts["errors"],
+                ),
+            )
 
     def finish_scan(self, generation: int) -> dict[str, int | float]:
         with self._connect() as db:

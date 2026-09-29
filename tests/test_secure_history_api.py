@@ -66,6 +66,8 @@ async def test_history_search_fetch_requires_auth_and_never_returns_secret(tmp_p
 
 def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
     assert "search_secure_history" in TOOLSETS["core"]
+    assert "start_secure_history_search" in TOOLSETS["core"]
+    assert "poll_secure_history_search" in TOOLSETS["core"]
     assert "fetch_secure_history" in TOOLSETS["core"]
     assert "analyze_secure_history" in TOOLSETS["core"]
     assert not any("reveal" in name for name in TOOLSETS["core"])
@@ -74,6 +76,13 @@ def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
 @pytest.mark.parametrize(("name", "arguments", "data", "marker"), [
     ("search_secure_history", {"query": "parser"},
      {"matches": [{"fetch_capability": "SAFE_CAPABILITY_MARKER"}]}, "SAFE_CAPABILITY_MARKER"),
+    ("start_secure_history_search", {"query": "parser"},
+     {"job_id": "SAFE_JOB_MARKER", "state": "pending"}, "SAFE_JOB_MARKER"),
+    ("poll_secure_history_search", {"job_id": "SAFE_JOB_MARKER"},
+     {"state": "succeeded", "result": {"matches": [{"fetch_capability": "SAFE_CAPABILITY_MARKER"}]}},
+     "SAFE_CAPABILITY_MARKER"),
+    ("cancel_secure_history_search", {"job_id": "SAFE_JOB_MARKER"},
+     {"state": "cancelled", "job_id": "SAFE_JOB_MARKER"}, "SAFE_JOB_MARKER"),
     ("fetch_secure_history", {"capability": "SAFE_CAPABILITY_MARKER"},
      {"redacted_text": "SAFE_TRANSCRIPT_MARKER"}, "SAFE_TRANSCRIPT_MARKER"),
     ("analyze_secure_history", {"capability": "SAFE_CAPABILITY_MARKER"},

@@ -30,6 +30,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 import asyncio
+import sqlite3
 from collections import deque
 from typing import TYPE_CHECKING, Optional, Dict, Any, List
 from pathlib import Path
@@ -117,6 +118,7 @@ _secure_history_fetch_slots = asyncio.Semaphore(1)
 _secure_history_fetch_times: deque[float] = deque()
 _secure_history_analyze_slots = asyncio.Semaphore(1)
 _secure_history_analyze_times: deque[float] = deque()
+_secure_history_job_poll_times: deque[float] = deque()
 
 
 # --- Pydantic Models (API compatibility) ---
@@ -1695,6 +1697,63 @@ async def secure_history_search_endpoint(req: SecureHistorySearchRequest):
     except (VaultIntegrityError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail="Encrypted history search unavailable") from exc
     return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+
+
+@app.post("/history/secure/search/jobs", dependencies=[Depends(verify_main_local_token)])
+async def queue_secure_history_search_endpoint(req: SecureHistorySearchRequest):
+    """Acknowledge only after the sealed search intent is durably committed."""
+    from muninn.history.capture_journal import SearchJobError
+
+    try:
+        job_id = _require_history().queue_secure_search(req.query, limit=req.limit)
+    except SearchJobError as exc:
+        full = str(exc) == "Search queue is full"
+        raise HTTPException(status_code=429 if full else 400,
+                            detail="Search queue is full" if full else "Invalid search request",
+                            headers=NO_STORE) from None
+    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": {"job_id": job_id, "state": "pending"}},
+                        status_code=202, headers=NO_STORE)
+
+
+def _check_search_job_poll(job_id: str) -> None:
+    if len(job_id) != 32 or any(char not in "0123456789abcdef" for char in job_id):
+        raise HTTPException(status_code=404, detail="Search job unavailable", headers=NO_STORE)
+    now = time.monotonic()
+    while _secure_history_job_poll_times and now - _secure_history_job_poll_times[0] > 60:
+        _secure_history_job_poll_times.popleft()
+    if len(_secure_history_job_poll_times) >= 120:
+        raise HTTPException(status_code=429, detail="Search job poll limit reached", headers=NO_STORE)
+    _secure_history_job_poll_times.append(now)
+
+
+@app.get("/history/secure/search/jobs/{job_id}", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_search_job_endpoint(job_id: str):
+    _check_search_job_poll(job_id)
+    try:
+        status = _require_history().secure_search_job_status(job_id)
+    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
+                            headers=NO_STORE) from None
+    if status is None:
+        raise HTTPException(status_code=404, detail="Search job unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
+
+
+@app.delete("/history/secure/search/jobs/{job_id}", dependencies=[Depends(verify_main_local_token)])
+async def cancel_secure_history_search_job_endpoint(job_id: str):
+    _check_search_job_poll(job_id)
+    try:
+        cancelled = _require_history().cancel_secure_search_job(job_id)
+    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
+                            headers=NO_STORE) from None
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Search job unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": {"job_id": job_id, "state": "cancelled"}},
+                        headers=NO_STORE)
 
 
 @app.post("/history/secure/fetch", dependencies=[Depends(verify_main_local_token)])

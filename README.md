@@ -138,6 +138,15 @@ curl http://localhost:42069/health
 # {"status":"ok","memory_count":0,...,"backend":"muninn-native"}
 ```
 
+To check the authenticated, durable history-search queue against your own
+archive without displaying transcript text or credentials, run
+`python scripts/smoke_secure_search_live.py --query "a term you expect"`.
+The probe reads `MUNINN_AUTH_TOKEN` from its environment (or the Windows user
+environment), reports enqueue/search timing and safe match counts, and verifies
+one redacted fetch when a match exists. It never prints the query, capability,
+or fetched span. Search jobs are available through
+`POST /history/secure/search/jobs` and authenticated poll/cancel endpoints.
+
 ---
 
 ## Runtime Modes

@@ -21,7 +21,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -40,6 +40,10 @@ _TERM = re.compile(r"\w+", re.UNICODE)
 _TEXT_KINDS = {"transcript", "prompt_history", "desktop_session", "export"}
 _STRUCTURED_LINE_LIMIT = 256 * 1024
 _STAGING_NAME = re.compile(r"muninn-chunks-[A-Za-z0-9_-]+\.db(?:-journal)?\Z")
+
+
+class SearchCancelled(RuntimeError):
+    """Internal signal to discard an interrupted authenticated search."""
 
 
 def _terms(value: str) -> list[str]:
@@ -558,17 +562,26 @@ class SecureHistoryBlindIndex:
                 "free_disk_bytes": shutil.disk_usage(self.archive.root).free}
 
     def search(self, query: str, *, limit: int = 20,
-               max_candidates: int = 200) -> dict[str, object]:
+               max_candidates: int = 200,
+               should_cancel: Callable[[], bool] | None = None) -> dict[str, object]:
         """Return metadata only after decrypting and authenticating candidates."""
         terms = list(dict.fromkeys(_terms(query)))
         if not terms or len(terms) > 8 or not 1 <= limit <= 100 or not 1 <= max_candidates <= 1000:
             raise ValueError("Invalid bounded history search query")
+
+        def check_cancel() -> None:
+            if should_cancel is not None and should_cancel():
+                raise SearchCancelled()
+
         matches: list[dict[str, str | int]] = []
+        pending_capabilities: list[tuple[dict[str, str | int], dict, int]] = []
         seen_refs: set[str] = set()
         total = ready = overflow = candidates = 0
         truncated = False
+        check_cancel()
         with self._connect() as db:
             for source, version, entry, latest, versions in self._current():
+                check_cancel()
                 total += 1
                 segmented = False
                 completion = self._completion(db, entry)
@@ -580,6 +593,7 @@ class SecureHistoryBlindIndex:
                         "FROM chunk_filters WHERE blob=? ORDER BY ordinal",
                                         (entry["blob"],))
                     for expected_ordinal, row in enumerate(cursor):
+                        check_cancel()
                         row_count += 1
                         ordinal, filter_bytes, nonce, sealed = row
                         if ordinal != expected_ordinal or filter_bytes != completion[3]:
@@ -653,6 +667,7 @@ class SecureHistoryBlindIndex:
 
                 def accept(chunk: bytes) -> None:
                     nonlocal carry, carry_is_start
+                    check_cancel()
                     try:
                         text = carry + decoder.decode(chunk).casefold()
                     except UnicodeDecodeError as exc:
@@ -662,6 +677,7 @@ class SecureHistoryBlindIndex:
                     carry = text[-overlap:]
 
                 self.archive._verify_entry(entry, collect=False, on_chunk=accept)
+                check_cancel()
                 try:
                     tail = decoder.decode(b"", final=True)
                 except UnicodeDecodeError as exc:
@@ -676,8 +692,12 @@ class SecureHistoryBlindIndex:
                     size_bucket_kib=(latest["size"] + 1023) // 1024,
                     versions=versions,
                 ).as_dict()
-                metadata["fetch_capability"] = self._capability(entry, version, terms[0])
                 matches.append(metadata)
+                pending_capabilities.append((metadata, entry, version))
+        check_cancel()
+        for metadata, entry, version in pending_capabilities:
+            metadata["fetch_capability"] = self._capability(entry, version, terms[0])
+        check_cancel()
         missing = total - ready - overflow
         return {"matches": matches, "total": total, "ready": ready,
                 "missing": missing, "overflow": overflow,

@@ -13,12 +13,14 @@ import asyncio
 import logging
 import os
 import re
+import sqlite3
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from muninn.history.blind_index import SecureHistoryBlindIndex
+from muninn.history.blind_index import SearchCancelled, SecureHistoryBlindIndex
 from muninn.history.capture_journal import CaptureJournal
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.importer import import_history, read_thread
@@ -87,6 +89,9 @@ class HistoryService:
         self._secure_index_wakeup = asyncio.Event()
         self._secure_capture_task: Optional[asyncio.Task] = None
         self._secure_capture_wakeup = asyncio.Event()
+        self._secure_search_task: Optional[asyncio.Task] = None
+        self._secure_search_wakeup = asyncio.Event()
+        self._secure_search_active: tuple[str, threading.Event] | None = None
         self._secure_scan_task: Optional[asyncio.Task] = None
         self.last_capture_scan: Optional[Dict[str, Any]] = None
         self.last_secure_capture: Optional[Dict[str, Any]] = None
@@ -493,6 +498,27 @@ class HistoryService:
         archive = self._require_secure_archive()
         return SecureHistoryBlindIndex(archive).search(query, limit=limit, max_candidates=20)
 
+    def queue_secure_search(self, query: str, *, limit: int = 20) -> str:
+        """Commit a private CPU search job before acknowledging its request."""
+        if not strict_history_mode():
+            raise RuntimeError("Secure history search requires strict history mode")
+        job_id = self._require_capture_journal().enqueue_search(query, limit=limit)
+        self._secure_search_wakeup.set()
+        return job_id
+
+    def secure_search_job_status(self, job_id: str) -> dict[str, Any] | None:
+        if not strict_history_mode():
+            raise RuntimeError("Secure history search requires strict history mode")
+        return self._require_capture_journal().get_search_job(job_id)
+
+    def cancel_secure_search_job(self, job_id: str) -> bool:
+        if not strict_history_mode():
+            raise RuntimeError("Secure history search requires strict history mode")
+        cancelled = self._require_capture_journal().cancel_search(job_id)
+        if cancelled and self._secure_search_active and self._secure_search_active[0] == job_id:
+            self._secure_search_active[1].set()
+        return cancelled
+
     def secure_fetch_span(self, capability: str, *, max_chars: int = 3000) -> Dict[str, Any]:
         """Return a bounded sanitized span after full snapshot authentication."""
         if not strict_history_mode():
@@ -553,6 +579,8 @@ class HistoryService:
                 self._secure_capture_task = asyncio.create_task(self._secure_capture_loop())
             if self._secure_scan_task is None:
                 self._secure_scan_task = asyncio.create_task(self._secure_scan_loop())
+            if self._secure_search_task is None:
+                self._secure_search_task = asyncio.create_task(self._secure_search_loop())
             if _flag("MUNINN_HISTORY_INDEX_AUTO") and self._secure_index_task is None:
                 self._secure_index_task = asyncio.create_task(self._secure_index_loop())
             return
@@ -563,7 +591,10 @@ class HistoryService:
     async def stop(self) -> None:
         tasks = [task for task in (self._task, self._job, self._auto_task, self._secure_index_task,
                                   self._secure_capture_task, self._secure_scan_task,
+                                  self._secure_search_task,
                                   *self._background) if task and not task.done()]
+        if self._secure_search_active:
+            self._secure_search_active[1].set()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -572,8 +603,79 @@ class HistoryService:
         self._secure_index_task = None
         self._secure_capture_task = None
         self._secure_scan_task = None
+        self._secure_search_task = None
         if self.vault is not None:
             self.vault.close()
+
+    async def _process_secure_search_once(self) -> bool:
+        journal = self._require_capture_journal()
+        job = await asyncio.to_thread(journal.claim_search)
+        if job is None:
+            return False
+        cancelled = threading.Event()
+        self._secure_search_active = (job.job_id, cancelled)
+        search_task: asyncio.Task | None = None
+        try:
+            index = SecureHistoryBlindIndex(self._require_secure_archive())
+            search_task = asyncio.create_task(asyncio.to_thread(
+                index.search, job.query, limit=job.limit, max_candidates=20,
+                should_cancel=cancelled.is_set,
+            ))
+            started = time.monotonic()
+            while True:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(search_task), timeout=15)
+                    break
+                except asyncio.TimeoutError:
+                    if time.monotonic() - started > 1800:
+                        cancelled.set()
+                    alive = await asyncio.to_thread(
+                        journal.heartbeat_search, job.job_id, job.lease_token,
+                    )
+                    if not alive:
+                        cancelled.set()
+            if cancelled.is_set():
+                raise SearchCancelled()
+            await asyncio.to_thread(journal.finish_search, job.job_id, job.lease_token, result)
+        except asyncio.CancelledError:
+            cancelled.set()
+            if search_task is not None:
+                await asyncio.gather(search_task, return_exceptions=True)
+            await asyncio.to_thread(journal.fail_search, job.job_id, job.lease_token,
+                                    "worker_timeout")
+            raise
+        except SearchCancelled:
+            await asyncio.to_thread(journal.fail_search, job.job_id, job.lease_token,
+                                    "worker_timeout")
+        except VaultIntegrityError:
+            await asyncio.to_thread(journal.fail_search, job.job_id, job.lease_token,
+                                    "vault_integrity")
+        except sqlite3.OperationalError:
+            await asyncio.to_thread(journal.fail_search, job.job_id, job.lease_token,
+                                    "locked")
+        except (OSError, RuntimeError, ValueError):
+            await asyncio.to_thread(journal.fail_search, job.job_id, job.lease_token,
+                                    "archive_unavailable")
+        finally:
+            self._secure_search_active = None
+        return True
+
+    async def _secure_search_loop(self) -> None:
+        """Run one authenticated CPU search at a time, independently of hooks."""
+        while True:
+            try:
+                processed = await self._process_secure_search_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Secure history search worker deferred: %s", type(exc).__name__)
+                processed = False
+            if not processed:
+                try:
+                    await asyncio.wait_for(self._secure_search_wakeup.wait(), timeout=2)
+                    self._secure_search_wakeup.clear()
+                except asyncio.TimeoutError:
+                    pass
 
     async def _secure_index_loop(self) -> None:
         """CPU-only, resumable history projection; no model or ordinary-memory writes."""
