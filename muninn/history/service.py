@@ -402,6 +402,11 @@ class HistoryService:
         task.add_done_callback(self._background.discard)
         return None
 
+    def record_hook_receipt(self, provider: str, event: str, outcome: str) -> None:
+        """Record path-free accepted-invocation telemetry in strict mode only."""
+        if strict_history_mode():
+            self._require_capture_journal().record_hook_receipt(provider, event, outcome)
+
     async def _process_capture_job_once(self) -> bool:
         journal = self._require_capture_journal()
         job = await asyncio.to_thread(journal.claim_due)
@@ -577,6 +582,15 @@ class HistoryService:
               "relocated_by": s.relocated_by, "retention": s.retention})
             for home in history_homes(self.home) for s in history_sources(home)
         ]
+        hook_receipts = None
+        hook_receipts_error = None
+        if strict and self._capture_journal is not None:
+            try:
+                hook_receipts = self._capture_journal.hook_receipts()
+            except Exception:
+                # Optional telemetry must not hide authoritative archive and
+                # capture status. Unknown is distinct from an empty receipt set.
+                hook_receipts_error = "unavailable"
         return {
             "vault": self.vault.status() if self.vault is not None else {
                 "mode": "strict", "ready": archive_ready,
@@ -595,6 +609,8 @@ class HistoryService:
             "last_secure_index": self.last_secure_index,
             "capture_queue": (self._capture_journal.status() if strict and self._capture_journal is not None
                               else None),
+            "hook_receipts": hook_receipts,
+            "hook_receipts_error": hook_receipts_error,
             "last_capture_scan": self.last_capture_scan,
             "last_secure_capture": self.last_secure_capture,
             "import_progress": self.progress,

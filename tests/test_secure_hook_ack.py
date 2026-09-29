@@ -9,6 +9,8 @@ from unittest.mock import Mock
 from fastapi.testclient import TestClient
 
 import server
+from muninn.history import hooks
+from muninn.history.capture_journal import CaptureJournal
 from muninn.history.secure_archive import SecureHistoryArchive
 from muninn.history.service import HistoryService
 
@@ -40,6 +42,12 @@ def test_hook_http_200_follows_durable_row_not_background_capture(monkeypatch, t
     assert response.json() == {}
     assert service._capture_journal.status()["pending"] == 1
     assert service.secure_archive.status()["snapshots"] == 0
+    receipts = service._capture_journal.hook_receipts()
+    assert len(receipts) == 1
+    assert receipts == [{
+        "provider": "codex", "event": "Stop", "accepted_invocations": 1,
+        "last_outcome": "capture_intent", "last_accepted_at": receipts[0]["last_accepted_at"],
+    }]
 
 
 def test_hook_failed_commit_is_nonacknowledged_without_path_in_output(monkeypatch, tmp_path, caplog):
@@ -58,6 +66,113 @@ def test_hook_failed_commit_is_nonacknowledged_without_path_in_output(monkeypatc
     assert "PRIVATE-QUEUED-CANARY" not in response.text
     assert "PRIVATE-QUEUED-CANARY" not in caplog.text
     assert journal.status() == {}
+    assert journal.hook_receipts() == []
+
+
+def test_receipt_failure_cannot_revoke_durable_capture_ack(monkeypatch, tmp_path, caplog):
+    service, source = _service(monkeypatch, tmp_path)
+    journal = service._require_capture_journal()
+
+    def failed_receipt(*_args, **_kwargs):
+        raise OSError("PRIVATE-QUEUED-CANARY")
+
+    monkeypatch.setattr(journal, "record_hook_receipt", failed_receipt)
+    response = TestClient(server.app).post("/hooks/codex", json={
+        "hook_event_name": "Stop", "transcript_path": str(source),
+    })
+    assert response.status_code == 200
+    assert journal.status()["pending"] == 1
+    assert "PRIVATE-QUEUED-CANARY" not in response.text
+    assert "PRIVATE-QUEUED-CANARY" not in caplog.text
+
+
+def test_receipts_are_aggregate_private_and_survive_reopen(monkeypatch, tmp_path):
+    service, source = _service(monkeypatch, tmp_path)
+    client = TestClient(server.app)
+    payload = {"hook_event_name": "Stop", "transcript_path": str(source),
+               "session_id": "PRIVATE-SESSION-CANARY"}
+    assert client.post("/hooks/codex", json=payload).status_code == 200
+    assert client.post("/hooks/codex", json=payload).status_code == 200
+    receipts = CaptureJournal(service.secure_archive, recover=False).hook_receipts()
+    assert len(receipts) == 1
+    assert receipts[0]["provider"] == "codex"
+    assert receipts[0]["event"] == "Stop"
+    assert receipts[0]["accepted_invocations"] == 2
+    assert receipts[0]["last_outcome"] == "capture_intent"
+    assert receipts[0]["last_accepted_at"] > 0
+    status = client.get("/history/status")
+    assert status.status_code == 200
+    assert status.json()["data"]["hook_receipts"] == receipts
+    raw = service._capture_journal.path.read_bytes()
+    assert b"PRIVATE-SESSION-CANARY" not in raw
+    assert b"PRIVATE-QUEUED-CANARY" not in raw
+    assert str(source).encode() not in raw
+
+
+def test_session_start_receipt_follows_successful_briefing(monkeypatch, tmp_path, caplog):
+    service, _source = _service(monkeypatch, tmp_path)
+
+    async def briefing(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(hooks.handoffs, "project_context", briefing)
+    monkeypatch.setattr(hooks.handoffs, "render_briefing", lambda _context: "ready")
+    client = TestClient(server.app)
+    payload = {"hook_event_name": "SessionStart", "cwd": str(tmp_path)}
+    response = client.post("/hooks/claude-code", json=payload)
+    assert response.status_code == 200
+    assert response.json()["hookSpecificOutput"]["additionalContext"] == "ready"
+    assert service._capture_journal.hook_receipts()[0]["last_outcome"] == "briefing"
+
+    async def failed_briefing(*_args, **_kwargs):
+        raise RuntimeError("PRIVATE-BRIEFING-CANARY")
+
+    monkeypatch.setattr(hooks.handoffs, "project_context", failed_briefing)
+    response = client.post("/hooks/codex", json=payload)
+    assert response.status_code == 503
+    assert len(service._capture_journal.hook_receipts()) == 1
+    assert "PRIVATE-BRIEFING-CANARY" not in response.text
+    assert "PRIVATE-BRIEFING-CANARY" not in caplog.text
+
+    def failed_render(_context):
+        raise RuntimeError("PRIVATE-RENDER-CANARY")
+
+    monkeypatch.setattr(hooks.handoffs, "project_context", briefing)
+    monkeypatch.setattr(hooks.handoffs, "render_briefing", failed_render)
+    response = client.post("/hooks/codex", json=payload)
+    assert response.status_code == 503
+    assert len(service._capture_journal.hook_receipts()) == 1
+    assert "PRIVATE-RENDER-CANARY" not in response.text
+    assert "PRIVATE-RENDER-CANARY" not in caplog.text
+
+
+def test_hook_receipts_status_keeps_existing_bearer_boundary(monkeypatch, tmp_path):
+    service, _source = _service(monkeypatch, tmp_path)
+    service.record_hook_receipt("gemini_cli", "SessionStart", "briefing")
+    monkeypatch.setattr(server, "is_security_enabled", lambda: True)
+    monkeypatch.setattr(server, "core_verify_token", lambda token: token == "test-only-bearer")
+    client = TestClient(server.app)
+    assert client.get("/history/status").status_code == 401
+    response = client.get("/history/status", headers={"Authorization": "Bearer test-only-bearer"})
+    assert response.status_code == 200
+    assert response.json()["data"]["hook_receipts"][0]["provider"] == "gemini_cli"
+
+
+def test_receipt_read_failure_does_not_hide_history_status(monkeypatch, tmp_path):
+    service, _source = _service(monkeypatch, tmp_path)
+    journal = service._require_capture_journal()
+
+    def failed_read():
+        raise OSError("PRIVATE-RECEIPT-READ-CANARY")
+
+    monkeypatch.setattr(journal, "hook_receipts", failed_read)
+    response = TestClient(server.app).get("/history/status")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["vault"]["ready"] is True
+    assert data["hook_receipts"] is None
+    assert data["hook_receipts_error"] == "unavailable"
+    assert "PRIVATE-RECEIPT-READ-CANARY" not in response.text
 
 
 def test_hook_cannot_respond_before_journal_commit(monkeypatch, tmp_path):

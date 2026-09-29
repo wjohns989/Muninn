@@ -144,6 +144,12 @@ class CaptureJournal:
             )
             db.execute("INSERT OR IGNORE INTO scan_state VALUES (1, 0, 1, 0, 0, 0, 0, 0, 0, 0)")
             db.execute(
+                "CREATE TABLE IF NOT EXISTS hook_receipts ("
+                "provider TEXT NOT NULL, event TEXT NOT NULL, "
+                "accepted_invocations INTEGER NOT NULL, last_accepted_at REAL NOT NULL, "
+                "last_outcome TEXT NOT NULL, PRIMARY KEY(provider,event))"
+            )
+            db.execute(
                 "CREATE TABLE IF NOT EXISTS history_search_jobs ("
                 "job_id TEXT PRIMARY KEY, vault_id TEXT NOT NULL, sealed_query BLOB NOT NULL, "
                 "sealed_result BLOB, state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, "
@@ -343,6 +349,36 @@ class CaptureJournal:
                 row["state"]: row["count"]
                 for row in db.execute("SELECT state, COUNT(*) AS count FROM jobs GROUP BY state")
             }
+
+    def record_hook_receipt(self, provider: str, event: str, outcome: str) -> None:
+        """Count accepted endpoint invocations, never unique host events.
+
+        This is non-secret telemetry only. Capture intent is committed separately
+        before this method is called; failure here must not revoke that receipt.
+        """
+        if provider not in {"codex", "claude_code", "gemini_cli"}:
+            raise ValueError("Unsupported hook provider")
+        if event not in {"SessionStart", "PreCompact", "PostCompact", "PreCompress",
+                         "SessionEnd", "Stop", "AfterAgent"}:
+            raise ValueError("Unsupported hook event")
+        if outcome not in {"capture_intent", "briefing", "no_transcript"}:
+            raise ValueError("Unsupported hook outcome")
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO hook_receipts(provider,event,accepted_invocations,last_accepted_at,last_outcome) "
+                "VALUES (?,?,1,?,?) ON CONFLICT(provider,event) DO UPDATE SET "
+                "accepted_invocations=MIN(accepted_invocations+1,9223372036854775807), "
+                "last_accepted_at=excluded.last_accepted_at,last_outcome=excluded.last_outcome",
+                (provider, event, time.time(), outcome),
+            )
+
+    def hook_receipts(self) -> list[dict[str, Any]]:
+        """Aggregate, path-free hook acceptance evidence for authenticated status."""
+        with self._connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT provider,event,accepted_invocations,last_accepted_at,last_outcome "
+                "FROM hook_receipts ORDER BY provider,event"
+            )]
 
     def backup_to(self, destination: Path) -> None:
         """Snapshot committed encrypted locators with SQLite's online backup API."""
