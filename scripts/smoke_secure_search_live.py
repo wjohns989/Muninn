@@ -9,10 +9,32 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+
+def _safe_reason(value: object) -> str | None:
+    """Report a bounded machine code, never an arbitrary server message."""
+    if value is None:
+        return None
+    return value if isinstance(value, str) and re.fullmatch(r"[a-z_]{1,64}", value) else "other"
+
+
+def _probe_succeeded(analyze: str | None, wait_auto: bool, details: dict) -> bool:
+    if details.get("state") != "succeeded" or details.get("complete") is not True:
+        return False
+    if analyze:
+        expected = "ollama" if analyze == "local" else "openrouter"
+        if (details.get("match_count", 0) < 1 or details.get("analysis_status") != "ok"
+                or details.get("analysis_provider") != expected):
+            return False
+    if wait_auto and (not details.get("analysis_queued")
+                      or details.get("auto_analysis_state") != "succeeded"):
+        return False
+    return True
 
 
 def _local_auth_token() -> str | None:
@@ -86,7 +108,7 @@ def main() -> int:
         if args.wait_auto:
             analysis_id = status.get("analysis_job_id")
             details["analysis_queued"] = bool(analysis_id)
-            details["analysis_reason"] = status.get("analysis_reason")
+            details["analysis_reason"] = _safe_reason(status.get("analysis_reason"))
             if analysis_id:
                 model_started = time.monotonic()
                 auto_state = None
@@ -119,9 +141,11 @@ def main() -> int:
                 details["analysis_status"] = analyzed["status"]
                 details["analysis_provider"] = analyzed.get("provider")
                 details["analysis_model"] = analyzed.get("model")
+                if analyzed["status"] != "ok":
+                    details["analysis_reason"] = _safe_reason(analyzed.get("reason"))
                 details["analysis_ms"] = round((time.monotonic() - model_started) * 1000)
         print(json.dumps(details, sort_keys=True))
-        return 0
+        return 0 if _probe_succeeded(args.analyze, args.wait_auto, details) else 2
     except (HTTPError, URLError, ValueError, KeyError, TimeoutError) as exc:
         # Avoid printing response bodies, request headers, query, or capabilities.
         code = exc.code if isinstance(exc, HTTPError) else type(exc).__name__
