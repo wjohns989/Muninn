@@ -467,6 +467,13 @@ python -m muninn.history.secure_archive verify --root '<your-private-data-dir>\h
 python -m muninn.history.secure_archive backup --root '<your-private-data-dir>\history_secure_archive' --backup-root '<new-private-backup-dir>'
 ```
 
+On non-Windows systems, add `--portable` to `status`, `plan`, `sync`,
+`catalog`, or `verify` to unlock with a local passphrase prompt. The prompted
+passphrase is passed to the history service in memory, not stored in an
+environment variable or config file. Unattended archive reopening and the
+`backup` command currently require Windows user protection; a portable backup
+can still be restored with its recovery passphrase.
+
 `sync` is a manual, resumable, encrypted copy-only operation. It does not import
 memories or analyze chats; live Codex `state_*.sqlite` files are reported as
 skipped until an encrypted online-SQLite snapshot is available. Claude Code,

@@ -4,6 +4,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def legacy_history_mode(monkeypatch):
+    """Import-count compatibility is tested only under the legacy opt-in."""
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
+
+
 @pytest.mark.asyncio
 async def test_import_all_sums_added_memories_across_batches(monkeypatch):
     import server

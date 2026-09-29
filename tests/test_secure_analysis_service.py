@@ -24,17 +24,21 @@ async def test_search_automatically_queues_and_completes_one_analysis(tmp_path, 
     SecureHistoryBlindIndex(archive).build()
     seen: dict[str, object] = {}
 
-    async def fake_analyze(history, capability, *, allow_remote, should_cancel, before_remote):
+    async def fake_analyze(history, capability, *, allow_remote, should_cancel, before_remote,
+                           remote_not_sent, expected_remote_generation):
         seen["raw_window"] = history._secure_model_window(capability)
         seen["allow_remote"] = allow_remote
         assert not should_cancel()
         assert before_remote is not None
+        assert remote_not_sent is not None
+        assert isinstance(expected_remote_generation, int)
         return {"status": "ok", "provider": "ollama", "model": "fixture-model",
                 "analysis": {"summary": "A parser decision was mentioned.", "decisions": [],
                              "open_items": [], "uncertainty": "Not an execution receipt."}}
 
     monkeypatch.setattr("muninn.history.secure_analysis.analyze_secure_hit", fake_analyze)
-    service = HistoryService(None, tmp_path / "history_vault", home=tmp_path)
+    service = HistoryService(None, tmp_path / "history_vault", home=tmp_path,
+                             archive_passphrase="test-only passphrase")
     await service.start()
     try:
         search_id = service.queue_secure_search("orbital-widget", limit=1)
@@ -52,6 +56,6 @@ async def test_search_automatically_queues_and_completes_one_analysis(tmp_path, 
         assert search["result"]["matches"]
         assert analysis["result"]["analysis"]["summary"] == "A parser decision was mentioned."
         assert "orbital-widget" in seen["raw_window"]
-        assert seen["allow_remote"] is True
+        assert seen["allow_remote"] is False
     finally:
         await service.stop()

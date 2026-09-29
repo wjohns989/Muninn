@@ -64,13 +64,15 @@ def _minutes() -> float:
 class HistoryService:
     def __init__(self, memory: "MuninnMemory", vault_root: Path, home: Optional[Path] = None,
                  interval_minutes: Optional[float] = None,
-                 secure_archive_root: Optional[Path] = None):
+                 secure_archive_root: Optional[Path] = None, *,
+                 archive_passphrase: Optional[str] = None):
         self.memory = memory
         self.data_dir = Path(vault_root).parent.absolute()
         self.home = home
         self.vault = None if strict_history_mode() else HistoryVault(vault_root, home=home, allow_plaintext=True)
         self.secure_archive_root = Path(secure_archive_root or os.environ.get("MUNINN_HISTORY_ARCHIVE_DIR")
                                         or (Path(vault_root).parent / "history_secure_archive"))
+        self._archive_passphrase = archive_passphrase
         self.secure_archive: Optional[SecureHistoryArchive] = None
         self.secure_archive_error: Optional[str] = None
         self._capture_journal: Optional[CaptureJournal] = None
@@ -115,7 +117,8 @@ class HistoryService:
             self.secure_archive_error = "Encrypted archive not initialized"
             return
         try:
-            self.secure_archive = SecureHistoryArchive(self.secure_archive_root)
+            self.secure_archive = SecureHistoryArchive(
+                self.secure_archive_root, getattr(self, "_archive_passphrase", None))
             self.secure_archive_error = None
         except Exception as exc:
             self.secure_archive_error = f"Encrypted archive unavailable: {type(exc).__name__}"

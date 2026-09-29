@@ -1,4 +1,5 @@
 # ruff: noqa: E501
+import os
 import sqlite3
 import time
 
@@ -109,6 +110,7 @@ def test_search_result_allowlist_rejects_oversize(tmp_path):
         j.finish_search(job_id, worker.lease_token, result)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="unattended encrypted backup uses Windows user protection")
 def test_backup_restore_preserves_search_job(tmp_path):
     j, archive = journal(tmp_path)
     job_id = j.enqueue_search("safe")
@@ -116,3 +118,12 @@ def test_backup_restore_preserves_search_job(tmp_path):
     archive.backup_to(backup)
     restored = SecureHistoryArchive.restore_from_backup(backup, tmp_path / "restored", "test-only passphrase")
     assert CaptureJournal(restored).get_search_job(job_id)["state"] == "pending"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows unattended backup is covered above")
+def test_unattended_backup_fails_closed_without_windows_protection(tmp_path):
+    _, archive = journal(tmp_path)
+    destination = tmp_path / "backup"
+    with pytest.raises(VaultIntegrityError, match="Windows user protection"):
+        archive.backup_to(destination)
+    assert not destination.exists()

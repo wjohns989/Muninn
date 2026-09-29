@@ -18,7 +18,8 @@ def _service(monkeypatch, tmp_path):
     root = tmp_path / "encrypted"
     monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
     SecureHistoryArchive.create(root, "test-only portable passphrase")
-    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="test-only portable passphrase")
     monkeypatch.setattr(server, "memory", Mock())
     monkeypatch.setattr(server, "_history", service)
     monkeypatch.setattr(server, "is_security_enabled", lambda: False)

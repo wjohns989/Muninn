@@ -8,6 +8,12 @@ from muninn.core.memory import MuninnMemory
 from muninn.ingestion.models import IngestionChunk, IngestionReport, IngestionSourceResult
 
 
+@pytest.fixture(autouse=True)
+def legacy_history_mode(monkeypatch):
+    """These endpoint tests exercise the explicitly opted-in legacy pipeline."""
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
+
+
 class _Flags:
     def require(self, flag_name: str):
         if flag_name != "multi_source_ingestion":

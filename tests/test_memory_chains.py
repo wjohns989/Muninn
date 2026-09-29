@@ -96,7 +96,7 @@ def test_add_persists_chain_links_when_detector_enabled():
         memory.add(
             "Queue recovered because redis cache warmed.",
             user_id="user-1",
-            metadata={"project": "proj-a"},
+            metadata={"project": "proj-a", "muninn_force_llm_extraction": True},
             namespace="global",
         )
     )

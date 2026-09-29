@@ -32,7 +32,8 @@ async def test_history_search_fetch_requires_auth_and_never_returns_secret(tmp_p
     archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive recovery passphrase")
     archive.archive_file(source, "codex")
     SecureHistoryBlindIndex(archive).build()
-    service = HistoryService(None, tmp_path / "unused-vault", home=tmp_path)
+    service = HistoryService(None, tmp_path / "unused-vault", home=tmp_path,
+                             archive_passphrase="synthetic archive recovery passphrase")
     monkeypatch.setattr(server, "_require_history", lambda: service)
     transport = httpx.ASGITransport(app=server.app, client=("127.0.0.1", 1234))
     async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
@@ -210,7 +211,8 @@ async def test_opt_in_cpu_worker_indexes_new_encrypted_snapshot(tmp_path, monkey
     source.write_text("new memory about an orbital-widget parser", encoding="utf-8")
     archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive recovery passphrase")
     archive.archive_file(source, "codex")
-    service = HistoryService(None, tmp_path / "unused-vault", home=tmp_path)
+    service = HistoryService(None, tmp_path / "unused-vault", home=tmp_path,
+                             archive_passphrase="synthetic archive recovery passphrase")
     await service.start()
     try:
         async def wait_for_index():

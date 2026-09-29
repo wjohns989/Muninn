@@ -26,7 +26,8 @@ async def test_secure_search_job_reaches_result_and_preserves_capability(
     )
     archive.archive_file(source, "codex")
     SecureHistoryBlindIndex(archive).build()
-    service = HistoryService(None, tmp_path / "history_vault", home=tmp_path)
+    service = HistoryService(None, tmp_path / "history_vault", home=tmp_path,
+                             archive_passphrase="synthetic archive recovery passphrase")
     await service.start()
     try:
         start = time.perf_counter()

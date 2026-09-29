@@ -1,6 +1,7 @@
 """Strict history mode must not touch the legacy plaintext import pipeline."""
 
 import asyncio
+import os
 import threading
 from unittest.mock import AsyncMock, Mock
 
@@ -26,10 +27,31 @@ def test_archive_init_is_detected_without_restart(monkeypatch, tmp_path):
     monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
     root = tmp_path / "encrypted"
     monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
-    service = HistoryService(Mock(), tmp_path / "legacy-vault", home=tmp_path)
+    service = HistoryService(Mock(), tmp_path / "legacy-vault", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
     assert service.status()["vault"]["ready"] is False
     SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
     assert service.status()["vault"]["ready"] is True
+
+
+def test_portable_archive_unlock_is_in_memory_and_fails_closed(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    root = tmp_path / "encrypted"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    passphrase = "test-only portable passphrase"
+    SecureHistoryArchive.create(root, passphrase)
+
+    unattended = HistoryService(Mock(), tmp_path / "unattended-vault", home=tmp_path)
+    assert unattended.status()["vault"]["ready"] is (os.name == "nt")
+    wrong = HistoryService(Mock(), tmp_path / "wrong-vault", home=tmp_path,
+                           archive_passphrase="different test passphrase")
+    assert wrong.status()["vault"]["ready"] is False
+    unlocked = HistoryService(Mock(), tmp_path / "unlocked-vault", home=tmp_path,
+                              archive_passphrase=passphrase)
+    status = unlocked.status()
+    assert status["vault"]["ready"] is True
+    assert passphrase not in str(status)
+    assert passphrase not in caplog.text
 
 
 def test_strict_api_blocks_legacy_catalog_before_store_access(monkeypatch):
@@ -110,12 +132,14 @@ async def test_strict_hook_ack_is_durable_and_restart_replays_it(monkeypatch, tm
     source.write_text("PRIVATE-DURABLE-CAPTURE", encoding="utf-8")
     memory = Mock()
 
-    before_crash = HistoryService(memory, tmp_path / "unused", home=tmp_path)
+    before_crash = HistoryService(memory, tmp_path / "unused", home=tmp_path,
+                                  archive_passphrase="recovery passphrase kept off chat")
     assert before_crash.capture_later(str(source), "codex", force=True) == "queued"
     assert before_crash._capture_journal.status()["pending"] == 1
     assert before_crash.secure_archive.status()["snapshots"] == 0
 
-    after_restart = HistoryService(memory, tmp_path / "unused", home=tmp_path)
+    after_restart = HistoryService(memory, tmp_path / "unused", home=tmp_path,
+                                   archive_passphrase="recovery passphrase kept off chat")
     assert await after_restart._process_capture_job_once() is True
     assert after_restart.secure_archive.read_file(source) == b"PRIVATE-DURABLE-CAPTURE"
     assert after_restart._capture_journal.status()["archived"] == 1
@@ -135,7 +159,8 @@ async def test_strict_scan_queues_only_new_or_changed_sources(monkeypatch, tmp_p
     existing.parent.mkdir(parents=True)
     existing.write_text("already archived", encoding="utf-8")
     archive.archive_file(existing, "codex")
-    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
 
     first = await service.scan_capture_sources()
     assert first["queued"] == 0
@@ -157,7 +182,8 @@ async def test_missing_allowed_hook_locator_is_a_retry_not_a_false_archive(monke
     root = tmp_path / "encrypted"
     monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
     SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
-    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
     vanished = (tmp_path / ".codex" / "sessions" / "2026" /
                 "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
     vanished.parent.mkdir(parents=True)
@@ -178,7 +204,8 @@ async def test_source_growth_after_archive_commit_requeues_new_version(monkeypat
               "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
     source.parent.mkdir(parents=True)
     source.write_text("before", encoding="utf-8")
-    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
     service.capture_later(str(source), "codex", force=True)
     archive = service.secure_archive
     original = archive.archive_file
@@ -214,7 +241,8 @@ async def test_stop_waits_for_inflight_archive_write_before_returning(monkeypatc
               "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
     source.parent.mkdir(parents=True)
     source.write_text("wait for the committed snapshot", encoding="utf-8")
-    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
     service.capture_later(str(source), "codex", force=True)
     archive = service.secure_archive
     original = archive.archive_file
@@ -253,7 +281,8 @@ async def test_rolling_scan_finds_same_size_same_mtime_rewrite(monkeypatch, tmp_
     source.write_bytes(b"other version")
     __import__("os").utime(source, ns=(old.st_atime_ns, old.st_mtime_ns))
     assert source.stat().st_size == old.st_size
-    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
 
     assert (await service.scan_capture_sources())["queued"] == 1
     assert await service._process_capture_job_once() is True
@@ -273,7 +302,8 @@ async def test_link_swap_after_validation_cannot_archive_outside_root(monkeypatc
     source.write_bytes(b"allowed")
     outside = tmp_path / "outside.jsonl"
     outside.write_bytes(b"OUTSIDE-PRIVATE-CANARY")
-    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path)
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
     service.capture_later(str(source), "codex", force=True)
     archive = service.secure_archive
     original = archive.archive_file
@@ -299,7 +329,8 @@ async def test_strict_hook_capture_uses_encrypted_archive_without_normal_memory(
     monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
     SecureHistoryArchive.create(root, "recovery passphrase kept off chat")
     memory = Mock()
-    service = HistoryService(memory, tmp_path / "legacy-vault", home=tmp_path)
+    service = HistoryService(memory, tmp_path / "legacy-vault", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
     source = (tmp_path / ".codex" / "sessions" / "2026" /
               "rollout-2026-09-28T01-02-03-11111111-1111-4111-8111-111111111111.jsonl")
     source.parent.mkdir(parents=True)
@@ -370,7 +401,8 @@ async def test_secure_sync_is_copy_only_and_reports_unhandled_sqlite(monkeypatch
     transcript.write_bytes(b"PRIVATE-COPY-ONLY-CANARY")
     (tmp_path / ".codex" / "state_1.sqlite").write_bytes(b"live-db-placeholder")
     memory = Mock()
-    service = HistoryService(memory, tmp_path / "legacy-vault", home=tmp_path)
+    service = HistoryService(memory, tmp_path / "legacy-vault", home=tmp_path,
+                             archive_passphrase="recovery passphrase kept off chat")
     planned = await service.secure_sync(dry_run=True)
     assert planned["apply"] is False
     assert planned["discovered"] == 1

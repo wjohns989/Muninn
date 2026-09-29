@@ -75,7 +75,7 @@ def test_project_relative_env_hint_is_searchable_and_authenticated(tmp_path: Pat
 
 
 @pytest.mark.parametrize("hint", [
-    "C:/Users/name/.env", "../.env", "config//.env", "config\\.env",
+    "C:/Users/user/.env", "../.env", "config//.env", "config\\.env",
     "/.env", "config/./.env", "config/../.env",
 ])
 def test_credential_source_hint_rejects_unsafe_locations(tmp_path: Path, hint: str) -> None:

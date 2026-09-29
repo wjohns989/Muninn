@@ -1056,14 +1056,13 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 # Tool profiles let a client load only what it needs: Cursor caps active tools
 # at 40 across all servers, and every schema costs context on each request.
 CORE_TOOLS = (
-    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
+    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff",
     "add_memory", "search_memory", "search_secure_history", "start_secure_history_search",
     "poll_secure_history_search", "cancel_secure_history_search", "fetch_secure_history",
     "poll_secure_history_analysis", "cancel_secure_history_analysis",
     "analyze_secure_history",
     "search_credential_metadata",
-    "hunt_memory", "update_memory", "delete_memory",
-    "record_retrieval_feedback", "get_project_goal", "set_project_goal", "set_project_instruction",
+    "update_memory", "get_project_goal", "set_project_goal",
     "get_user_profile", "correct_fact",
 )
 TOOLSETS: Dict[str, Tuple[str, ...]] = {

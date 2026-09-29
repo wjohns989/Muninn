@@ -5,6 +5,29 @@ import pytest
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.secure_archive import SecureHistoryArchive
 
+
+def test_portable_plan_forwards_prompted_passphrase_to_service(tmp_path, monkeypatch, capsys):
+    from muninn.history import secure_archive
+
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    root = tmp_path / "archive"
+    passphrase = "test-only portable passphrase"
+    SecureHistoryArchive.create(root, passphrase)
+    def refuse_unattended_unlock(_value):
+        raise RuntimeError("test-only unattended unlock blocked")
+    monkeypatch.setattr(secure_archive, "_dpapi_unwrap", refuse_unattended_unlock)
+    from muninn.history.service import HistoryService
+    without_passphrase = HistoryService(None, tmp_path / "no-unlock-vault", home=tmp_path,
+                                        secure_archive_root=root)
+    assert without_passphrase.status()["vault"]["ready"] is False
+    monkeypatch.setattr(secure_archive.getpass, "getpass", lambda _: passphrase)
+    monkeypatch.setattr(secure_archive.sys, "argv", [
+        "secure_archive", "plan", "--root", str(root), "--home", str(tmp_path), "--portable",
+    ])
+
+    assert secure_archive.main() == 0
+    assert passphrase not in capsys.readouterr().out
+
 PASSPHRASE = "correct horse battery archive recovery"
 
 

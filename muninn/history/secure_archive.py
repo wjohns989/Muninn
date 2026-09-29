@@ -564,6 +564,7 @@ def main() -> int:
     parser.add_argument("--home", type=Path, help="Home whose configured agent history is scanned for sync")
     parser.add_argument("--portable", action="store_true", help="Prompt for recovery passphrase for status")
     args = parser.parse_args()
+    passphrase = None
     if args.action == "init":
         first = getpass.getpass("New history archive recovery passphrase (12+ chars): ")
         second = getpass.getpass("Confirm recovery passphrase: ")
@@ -575,11 +576,13 @@ def main() -> int:
     elif args.action == "restore":
         if args.backup_root is None:
             parser.error("restore requires --backup-root")
+        passphrase = getpass.getpass("Recovery passphrase: ")
         archive = SecureHistoryArchive.restore_from_backup(
-            args.backup_root, args.root, getpass.getpass("Recovery passphrase: "))
+            args.backup_root, args.root, passphrase)
     else:
         portable = args.portable or args.action == "rebind"
-        archive = SecureHistoryArchive(args.root, getpass.getpass("Recovery passphrase: ") if portable else None)
+        passphrase = getpass.getpass("Recovery passphrase: ") if portable else None
+        archive = SecureHistoryArchive(args.root, passphrase)
     if args.action == "rebind":
         archive.rebind_windows_user()
     if args.action == "backup":
@@ -590,7 +593,7 @@ def main() -> int:
         from muninn.history.service import HistoryService
 
         service = HistoryService(None, args.root.parent / "history_vault", home=args.home,
-                                 secure_archive_root=args.root)
+                                 secure_archive_root=args.root, archive_passphrase=passphrase)
         report = asyncio.run(service.secure_sync(dry_run=args.action == "plan"))
     elif args.action == "catalog":
         report = [item.as_dict() for item in archive.metadata_catalog()]
