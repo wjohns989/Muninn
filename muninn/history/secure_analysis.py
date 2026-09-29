@@ -46,6 +46,14 @@ _SOURCE_CREDENTIAL = re.compile(
 )
 
 
+class ModelOutputInvalid(ValueError):
+    """The local model did not return the required bounded schema."""
+
+
+class ModelInputInvalid(ValueError):
+    """The authenticated source window cannot be cleaned safely."""
+
+
 def _loopback_ollama_url() -> str:
     value = os.environ.get("MUNINN_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
     parsed = urlparse(value)
@@ -101,24 +109,27 @@ def _prompt(span: str) -> list[dict[str, str]]:
 
 
 def _clean_result(content: str, *, source_span: str = "") -> dict[str, object]:
-    if not content or len(content) > 50_000:
-        raise ValueError("Model analysis output is invalid")
+    if not isinstance(content, str) or not content or len(content) > 50_000:
+        raise ModelOutputInvalid("Model analysis output is invalid")
     if not isinstance(source_span, str) or len(source_span) > 3000:
-        raise ValueError("Model analysis input is invalid")
-    parsed = json.loads(content)
+        raise ModelInputInvalid("Model analysis input is invalid")
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ModelOutputInvalid("Model analysis output is invalid") from exc
     if not isinstance(parsed, dict) or set(parsed) != set(_SCHEMA["required"]):
-        raise ValueError("Model analysis output is invalid")
+        raise ModelOutputInvalid("Model analysis output is invalid")
     if not all(isinstance(parsed[key], str) for key in ("summary", "uncertainty")):
-        raise ValueError("Model analysis output is invalid")
+        raise ModelOutputInvalid("Model analysis output is invalid")
     for key in ("decisions", "open_items"):
         if not isinstance(parsed[key], list) or len(parsed[key]) > 12 or not all(
             isinstance(item, str) for item in parsed[key]
         ):
-            raise ValueError("Model analysis output is invalid")
+            raise ModelOutputInvalid("Model analysis output is invalid")
 
     source_values = {match.group(1) for match in _SOURCE_CREDENTIAL.finditer(source_span)}
     if len(source_values) > 128:
-        raise ValueError("Model analysis input is invalid")
+        raise ModelInputInvalid("Model analysis input is invalid")
     ordered_values = sorted(source_values, key=len, reverse=True)
 
     def scrub(text: str, limit: int) -> str:
@@ -193,9 +204,15 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
                     response = await client.post(f"{base}/api/chat", json=body)
                     response.raise_for_status()
                 content = (response.json().get("message") or {}).get("content") or ""
-                result = _clean_result(content, source_span=span)
-                return {"status": "ok", "provider": "ollama", "model": model, "analysis": result}
-    # A failed local request does not flow here and must never trigger remote egress.
+                try:
+                    result = _clean_result(content, source_span=span)
+                except ModelOutputInvalid:
+                    # Only a typed model-output failure may reach the separately
+                    # authorized, budgeted ZDR route below. Invalid input and
+                    # transport/OOM failures still fail locally.
+                    reason = "local_output_invalid"
+                else:
+                    return {"status": "ok", "provider": "ollama", "model": model, "analysis": result}
     if not _remote_eligible(span, allow_remote=allow_remote, policy_root=policy_root,
                             expected_generation=expected_remote_generation):
         return {"status": "deferred", "provider": None, "model": None, "reason": reason}

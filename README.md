@@ -511,9 +511,12 @@ is returned by normal job polling. An agent can also call
 expiring capability, selects a fitting installed Ollama completion model using
 live GPU telemetry, and returns bounded, sanitized analysis without persisting
 the prompt or answer. When locally enabled, a call with `allow_remote=true` may
-use ZDR OpenRouter if no local model fits; `prefer_remote=true` explicitly
-selects that route for one hit when `allow_remote=true`. Local model failure never
-silently switches to remote. `MUNINN_INSIGHTS_AUTO` applies only
+use ZDR OpenRouter if no local model fits or if a completed local response
+fails schema validation; both cases still require current consent, budget and
+ZDR checks. `prefer_remote=true` explicitly selects that route for one hit.
+Local transport, timeout, OOM and invalid-input failures never switch remotely.
+Without `allow_remote=true`, an invalid local response is reported as deferred.
+`MUNINN_INSIGHTS_AUTO` applies only
 to legacy history import and must not be treated as enabling strict-mode enrichment.
 The main local bearer token is an administrator capability shared by clients
 on the same trusted Windows account. Anyone who holds it can inspect or cancel
