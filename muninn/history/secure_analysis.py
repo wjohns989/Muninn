@@ -137,7 +137,7 @@ def _remote_eligible(span: str, *, allow_remote: bool) -> bool:
     return (
         allow_remote
         and _local_setting("MUNINN_STRICT_REMOTE_ANALYSIS").lower() in {"1", "true"}
-        and 100 <= len(span) <= 3000
+        and 1 <= len(span) <= 3000
     )
 
 
@@ -149,7 +149,7 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
     # The model is an explicitly authorized interpreter. Public fetch remains
     # redacted; this authenticated raw window never enters an HTTP/MCP result.
     span = await asyncio.to_thread(history._secure_model_window, capability)
-    if len(span) < 100:
+    if not span.strip():
         return {"status": "insufficient_context", "provider": None, "model": None}
     reason = "remote_requested"
     if not prefer_remote:

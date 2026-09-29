@@ -73,13 +73,15 @@ def test_model_echo_scrub_covers_standalone_credential_labels(label):
 
 
 @pytest.mark.asyncio
-async def test_local_route_uses_capability_and_unloads_model(monkeypatch):
+@pytest.mark.parametrize("short", [False, True])
+async def test_local_route_uses_capability_and_unloads_model(monkeypatch, short):
     seen = {}
 
     class History:
         def _secure_model_window(self, capability):
             seen["capability"] = capability
-            return "A real project decision was made to keep SQLite. " * 5 + "CANARY-SECRET-91919"
+            return ("Use SQLite for the local cache." if short else
+                    "A real project decision was made to keep SQLite. " * 5 + "CANARY-SECRET-91919")
 
         def secure_fetch_span(self, *_args, **_kwargs):
             pytest.fail("ordinary redacted fetch must not supply model input")
@@ -122,7 +124,8 @@ async def test_local_route_uses_capability_and_unloads_model(monkeypatch):
     assert seen["capability"] == "opaque-capability"
     assert seen["body"]["keep_alive"] == 0
     assert "untrusted_transcript" in seen["body"]["messages"][1]["content"]
-    assert "CANARY-SECRET-91919" in seen["body"]["messages"][1]["content"]
+    if not short:
+        assert "CANARY-SECRET-91919" in seen["body"]["messages"][1]["content"]
     assert "CANARY-SECRET-91919" not in str(result)
     assert result["provider"] == "ollama" and result["analysis"]["summary"]
 
