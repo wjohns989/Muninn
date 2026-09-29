@@ -296,6 +296,39 @@ def test_client_reads_windows_user_token_when_process_token_is_missing(monkeypat
     assert hook_client._auth_token() == "test-only-token"
 
 
+def test_hook_token_selection_is_endpoint_aware(monkeypatch):
+    from muninn import hook_client
+
+    monkeypatch.setattr(hook_client.sys, "platform", "win32")
+    monkeypatch.setattr(hook_client, "_windows_user_token", lambda: "current-user-token", raising=False)
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", "stale-process-token")
+    assert hook_client._auth_token("http://127.0.0.1:42069") == "current-user-token"
+    assert hook_client._auth_token("http://localhost:42069") == "current-user-token"
+    assert hook_client._auth_token("http://[::1]:42069") == "current-user-token"
+    assert hook_client._auth_token("http://127.0.0.1:42070") == "stale-process-token"
+
+    monkeypatch.delenv("MUNINN_AUTH_TOKEN")
+    assert hook_client._auth_token("http://127.0.0.1:42070") == "current-user-token"
+    assert hook_client._auth_token("https://remote.example") == ""
+    assert hook_client._auth_token("http://127.0.0.1.evil:42069") == ""
+    assert hook_client._auth_token("http://user@127.0.0.1:42069") == ""
+    assert hook_client._auth_token("ftp://127.0.0.1:42069") == ""
+
+
+def test_hook_client_passes_target_url_into_token_selection(monkeypatch):
+    import io
+
+    from muninn import hook_client
+
+    observed = []
+    monkeypatch.setattr(hook_client.sys, "stdin", io.StringIO('{"hook_event_name":"AuthProbe"}'))
+    monkeypatch.setattr(hook_client, "_auth_token", lambda url: observed.append(url) or "")
+    monkeypatch.setattr(hook_client.urllib.request, "urlopen",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")))
+    assert hook_client.main(["hook_client", "codex", "https://remote.example"]) == 0
+    assert observed == ["https://remote.example"]
+
+
 def test_gemini_after_agent_client_timeout_is_shorter_than_host_deadline():
     from muninn import hook_client
 

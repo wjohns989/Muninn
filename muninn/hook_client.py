@@ -19,10 +19,7 @@ DEFAULT_SERVER = "http://127.0.0.1:42069"
 FAST_EVENTS = {"SessionEnd", "Interrupt", "Stop", "AfterAgent"}
 
 
-def _auth_token() -> str:
-    token = os.environ.get("MUNINN_AUTH_TOKEN", "").strip()
-    if token or sys.platform != "win32":
-        return token
+def _windows_user_token() -> str:
     try:
         import winreg
 
@@ -31,6 +28,36 @@ def _auth_token() -> str:
             return value.strip() if isinstance(value, str) else ""
     except (OSError, ValueError):
         return ""
+
+
+def _local_token_target(server_url: str) -> tuple[bool, bool]:
+    """Return (literal loopback, shared-local endpoint); never resolve DNS names."""
+    try:
+        parsed = urllib.parse.urlsplit(server_url)
+        if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
+                or parsed.query or parsed.fragment or parsed.path not in {"", "/"}):
+            return False, False
+        if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            return False, False
+        port = parsed.port
+    except ValueError:
+        return False, False
+    return True, parsed.scheme == "http" and port == 42069
+
+
+def _auth_token(server_url: str = DEFAULT_SERVER) -> str:
+    process_token = os.environ.get("MUNINN_AUTH_TOKEN", "").strip()
+    if sys.platform != "win32":
+        return process_token
+    loopback, shared_local = _local_token_target(server_url)
+    if shared_local:
+        # The shared Windows launcher selects the User token first. Agent CLIs
+        # may load a stale project .env into their hook process environment.
+        return _windows_user_token() or process_token
+    if process_token:
+        return process_token
+    # A registry-scoped token must never be sent to a remote hook URL.
+    return _windows_user_token() if loopback else ""
 
 
 def main(argv) -> int:
@@ -43,7 +70,7 @@ def main(argv) -> int:
     server = argv[2] if len(argv) > 2 else os.environ.get("MUNINN_SERVER_URL", DEFAULT_SERVER)
     url = f"{server.rstrip('/')}/hooks/{agent}"
     headers = {"Content-Type": "application/json"}
-    token = _auth_token()
+    token = _auth_token(server)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, data=raw.encode("utf-8") or b"{}", headers=headers, method="POST")
