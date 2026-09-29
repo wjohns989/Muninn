@@ -1,0 +1,84 @@
+# Local control center overhaul (implementation plan)
+
+Status: planned, not implemented. The encrypted capture/search and model routes
+must be proven on the local installation before this becomes the primary work.
+The existing `dashboard.html` at port 42069 has Overview, Ingestion, Search, and
+System tabs, but mainly operates the older ordinary-memory API. It does not
+display strict-history coverage, durable jobs, vault discovery, or ZDR controls.
+It also presents legacy import and automatic TKG language that is misleading in
+strict vault-first mode. The root page no longer embeds an API bearer; retain
+that property throughout the overhaul.
+
+## Product contract
+
+One loopback UI should answer four questions without confusing denominators:
+
+1. Is the single local service healthy, which code/configuration is running, and
+   are Claude Code, Codex, and Gemini CLI events arriving?
+2. For each source/version, is its text discovered, durably archived, indexed,
+   searchable, credential-scanned, interpreted, and backed up? If not, why?
+3. What is using CPU, RAM, disk, GPU, or OpenRouter now, and what is queued or
+   deferred? Idle must not keep a local completion model in VRAM.
+4. What private data or credential metadata can an agent retrieve, and what
+   local consent, cap, passphrase, and audit boundary governs a sensitive action?
+
+The UI is an operator view over authoritative backend state, never its own
+source of truth. Every count has a denominator and source generation. Every
+operation has a stable id, state, progress, cancellation or retry behavior,
+and an explicit distinction between request accepted and work completed.
+
+## Navigation and screen behavior
+
+| Screen | Required content and actions | Backend dependency |
+| --- | --- | --- |
+| Home | Service owner, health, code/config identity, archive/index/vault/backup generations, pending/errors, resource residency, last real hook by client. | Read-only consolidated status with component timestamps and stale indicators. |
+| History | Project/time/source filters, bounded redacted search results, related transcript windows with provenance and cursor, exact archive-versus-index coverage; no raw credential in normal view. | Authenticated secure search/fetch jobs, project filtering, source event time, pagination. |
+| Work queue | Capture, index, retrieval, analysis, vault-scan and backup jobs; stage, byte/window cursor, retry cause, next attempt, cancel/retry where safe. | Versioned reconciliation ledger and idempotent job APIs. |
+| Models | Installed Ollama models, fresh VRAM/headroom, selected route and reason, active inference, unload confirmation, bounded local test on approved real source. | Resource telemetry and route-decision endpoints; never treat a model `loaded` flag as VRAM proof. |
+| Privacy and spend | Local ZDR enable/revoke, daily/monthly app ceilings, provider-enforced key cap and reset period, spent/remaining, pending remote jobs, one-time first-run budget. | Authenticated persistent policy API with audit, provider-key status without value, per-dispatch recheck and cancellation on revoke. |
+| Credentials | Metadata-only service/project/source-location search, scan coverage/ambiguity/errors, hidden local unlock for explicit use/reveal, reveal/use audit. | Separate credential authorization; never send a value through ordinary search/MCP or a browser URL. |
+| Backups and recovery | Archive/vault backup generation, authenticated validation result, destination, restore drill and warnings about absent passphrases or plaintext originals. | Durable backup receipts and read-only restore verification before any destructive restore. |
+| Setup | Portable data/model paths, one-service topology, hook install/check status, Claude retention, permissions, source roots, and diagnostics. | Validated local configuration API; changing a path never silently relocates/deletes data. |
+
+## Security and interaction rules
+
+- Serve on loopback. Keep the bearer only in tab memory after explicit entry;
+  never embed it in HTML, a URL, localStorage, logs, or a repository file.
+- Normal history retrieval shows bounded, credential-redacted evidence. A model
+  may receive a bounded authenticated raw window only under its route/privacy
+  policy. Credential values require the separate local vault-use/reveal flow.
+- Do not use a generic browser bearer as authority to reveal credentials. Use
+  dedicated local authorization, a hidden passphrase prompt, explicit action,
+  and a non-secret audit receipt. A missing or declined prompt changes no data.
+- Consent and budget controls must show effective provider-side and local caps;
+  increasing a UI number cannot raise the OpenRouter key's own hard limit.
+  Revocation must block new dispatch and clearly classify in-flight outcomes.
+- Escape all displayed source/model text; do not render transcript, project, or
+  model output as trusted HTML. Use content security policy and narrow origins.
+- In strict mode, hide or explicitly label legacy plaintext import/consolidation
+  controls rather than offering a button that will fail or imply auto promotion.
+
+## Dependency-ordered delivery
+
+1. Correct misleading strict-mode copy and disable unsafe legacy affordances.
+   Verify anonymous root contains no bearer and a strict-mode operator cannot
+   trigger the legacy import path from the UI.
+2. Expose read-only consolidated status/coverage with exact generation, last
+   success, pending/error reason, and hook delivery evidence. Check it against
+   archive manifest, index, journal, and a real recent transcript.
+3. Add secure history search/fetch/job views with bounded cursors and explicit
+   timeout/expiry/retry states; manually inspect a real large-source tail hit.
+4. Add resource/model view and ZDR consent/spending API/UI. Test local GPU busy,
+   idle unload, remote denial, cap exhaustion, and revoke-during-queue.
+5. Add vault metadata/scan progress and local authenticated use flow, then
+   backup/recovery and portable setup screens. Test on encrypted real data
+   without displaying values in ordinary search or logs.
+6. Run browser accessibility, keyboard, narrow-window, auth-expiry, origin,
+   script-injection, and restart/recovery checks against the exact installed
+   candidate. Compare every displayed count to its backend generation; record
+   any unsupported state as unknown, not zero or complete.
+
+Implementation should reuse the existing FastAPI service and authenticated
+routes. New write APIs require independent review of privacy/authority and a
+rollback path before the UI invokes them. A polished page is not proof of data
+coverage, model quality, or a current backup.
