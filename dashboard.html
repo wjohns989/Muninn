@@ -95,6 +95,15 @@
                 <span class="nav-text">Encrypted History</span>
                 <div class="tab-beam"></div>
             </li>
+            <li class="nav-item" data-tab="credentials" tabindex="0" role="button" aria-label="Credential Metadata">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="8" cy="15" r="4"></circle>
+                    <path d="M11 12l9-9m-3 3 3 3m-6 0 3 3"></path>
+                </svg>
+                <span class="nav-text">Credential Metadata</span>
+                <div class="tab-beam"></div>
+            </li>
             <li class="nav-item" onclick="showTab('system')">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
@@ -347,6 +356,24 @@
                 <div id="history-results"></div>
             </div>
 
+            <!-- TAB: CREDENTIAL METADATA -->
+            <div id="tab-credentials" class="tab-content">
+                <div class="card">
+                    <h3>Credential metadata</h3>
+                    <p class="card-description">Search the separate local vault by service, project, or source hint.
+                        Values are never returned here. Only previously scanned or recorded sources can match;
+                        discovered candidates remain unverified. Revealing or using a value requires separate local authorization.</p>
+                    <label for="credential-metadata-query">Metadata query</label>
+                    <div class="search-container">
+                        <input type="text" id="credential-metadata-query" class="input-base"
+                            placeholder="Service, project, or source hint..." maxlength="64">
+                        <button type="button" id="credential-metadata-search" class="btn-primary search-btn-absolute">Search metadata</button>
+                    </div>
+                    <p id="credential-metadata-status" role="status" aria-live="polite">Enter the main local token, then search on demand.</p>
+                    <div id="credential-metadata-results"></div>
+                </div>
+            </div>
+
             <!-- TAB: SYSTEM -->
             <div id="tab-system" class="tab-content">
                 <div class="card">
@@ -413,6 +440,7 @@
         let remotePolicyLoadSequence = 0;
         let remotePolicySavePending = false;
         let resourceStatusSequence = 0;
+        let credentialSearchSequence = 0;
         let healthPoll = null;
         let scanPoll = null;
         // Retire credentials persisted by older dashboard releases.
@@ -672,9 +700,21 @@
                     showTab('history');
                 }
             });
+            const credentialsNav = document.querySelector('.nav-item[data-tab="credentials"]');
+            credentialsNav.addEventListener('click', () => showTab('credentials'));
+            credentialsNav.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    showTab('credentials');
+                }
+            });
             document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
             document.getElementById('remote-policy-save').addEventListener('click', saveRemotePolicy);
             document.getElementById('refresh-local-resources').addEventListener('click', loadLocalResources);
+            document.getElementById('credential-metadata-search').addEventListener('click', searchCredentialMetadata);
+            document.getElementById('credential-metadata-query').addEventListener('keydown', event => {
+                if (event.key === 'Enter') searchCredentialMetadata();
+            });
             document.getElementById('history-query').addEventListener('keydown', event => {
                 if (event.key === 'Enter') handleEncryptedHistorySearch();
             });
@@ -819,6 +859,48 @@
                 }
             } finally {
                 if (sequence === resourceStatusSequence) button.disabled = false;
+            }
+        }
+
+        async function searchCredentialMetadata() {
+            const query = document.getElementById('credential-metadata-query').value.trim();
+            const status = document.getElementById('credential-metadata-status');
+            const results = document.getElementById('credential-metadata-results');
+            const sequence = ++credentialSearchSequence;
+            const token = AUTH_TOKEN;
+            results.replaceChildren();
+            if (!query || query.length > 64) {
+                status.textContent = 'Enter 1–64 characters to search metadata.';
+                return;
+            }
+            status.textContent = 'Searching allowlisted local credential metadata...';
+            const response = await api('/credentials/agent-search', 'POST', { query, limit: 10 });
+            if (sequence !== credentialSearchSequence || token !== AUTH_TOKEN) return;
+            if (response.error || !Array.isArray(response.data)) {
+                status.textContent = 'Credential metadata search unavailable or disabled; no coverage conclusion can be drawn.';
+                return;
+            }
+            if (!response.data.length) {
+                status.textContent = 'No metadata matches among scanned sources; this does not prove the credential does not exist.';
+                return;
+            }
+            status.textContent = `${response.data.length} metadata match(es) among scanned sources (maximum 10). Values remain in the local vault.`;
+            const label = value => typeof value === 'string' && value ? value : 'unknown';
+            for (const item of response.data) {
+                const card = document.createElement('div');
+                card.className = 'result-item';
+                const heading = document.createElement('strong');
+                heading.textContent = `Service ${label(item.service)} · project ${label(item.project)}`;
+                const location = document.createElement('p');
+                location.textContent = `Source ${label(item.source_hint)} · ` +
+                    `${item.origin === 'project' || item.origin === 'transcript' ? item.origin : 'origin not reported'} · ` +
+                    `${item.candidate_status === 'unverified' ? 'unverified candidate' : 'status not reported'}`;
+                const reference = document.createElement('p');
+                reference.textContent = `Record ${label(item.id)} · source hash ${label(item.source_hash)}`;
+                card.appendChild(heading);
+                card.appendChild(location);
+                card.appendChild(reference);
+                results.appendChild(card);
             }
         }
 

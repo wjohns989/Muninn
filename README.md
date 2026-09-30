@@ -543,6 +543,10 @@ installed Ollama models, and Ollama residency without loading a model; an
 unavailable probe is shown as unknown, not idle. **Ordinary Search** remains a different
 corpus. This is a narrow operator slice, not the full control-center overhaul described in
 `docs/plans/2026-09-28-local-control-center-overhaul.md`.
+The separate **Credential Metadata** tab searches only allowlisted metadata from
+already scanned or recorded vault sources after explicit local authentication and
+opt-in. It does not return values, prove a missing credential does not exist, or
+offer a reveal/use action; those retain their separate local authorization flow.
 With optional Python Playwright and Microsoft Edge installed, `python -m
 scripts.smoke_dashboard_browser --width 390` checks the authenticated History
 view in an isolated, loopback-only browser context without searching transcripts

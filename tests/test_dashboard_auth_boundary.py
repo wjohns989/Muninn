@@ -462,6 +462,79 @@ vm.runInContext('loadLocalResources()', context).then(async () => {
     assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
 
 
+def test_credential_metadata_ui_never_renders_values_or_stale_results():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    assert 'id="tab-credentials"' in page
+    assert 'id="credential-metadata-query"' in page
+    assert "/credentials/reveal" not in page
+    source = "async function searchCredentialMetadata()" + page.split(
+        "async function searchCredentialMetadata()", 1,
+    )[1].split("async function loadRemotePolicy()", 1)[0]
+    assert "innerHTML" not in source
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const elements = new Map();
+function element() {
+    const obj = {textContent: '', value: '', children: [],
+        replaceChildren(...items) { this.children = items; },
+        appendChild(item) { this.children.push(item); }};
+    Object.defineProperty(obj, 'innerHTML', {set() { throw Error('unsafe HTML'); }});
+    return obj;
+}
+const document = {getElementById(id) {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+}, createElement() { return element(); }};
+const context = vm.createContext({document});
+vm.runInContext("let AUTH_TOKEN = 'local'; let credentialSearchSequence = 0; " + __SOURCE__, context);
+const query = document.getElementById('credential-metadata-query');
+const attack = '<img src=x onerror=steal()>';
+query.value = 'openrouter';
+context.api = async (path, method, body) => {
+    assert.equal(path, '/credentials/agent-search');
+    assert.equal(method, 'POST');
+    assert.equal(body.limit, 10);
+    return {data: [{id: 'record-1', service: attack, project: 'example',
+        source_hint: 'config/.env', source_hash: 'hash-1', origin: 'project',
+        candidate_status: 'unverified', value: 'SECRET-NEVER-RETURNED'}]};
+};
+(async () => {
+    await vm.runInContext('searchCredentialMetadata()', context);
+    const result = document.getElementById('credential-metadata-results');
+    const rendered = result.children[0].children.map(child => child.textContent).join(' ');
+    assert.match(rendered, /<img src=x onerror=steal\(\)>/);
+    assert.doesNotMatch(rendered, /SECRET-NEVER-RETURNED/);
+    let releaseOld;
+    context.api = async (_path, _method, body) => body.query === 'old' ?
+        new Promise(resolve => { releaseOld = resolve; }) : {data: []};
+    query.value = 'old';
+    const old = vm.runInContext('searchCredentialMetadata()', context);
+    query.value = 'new';
+    await vm.runInContext('searchCredentialMetadata()', context);
+    releaseOld({data: [{id: 'stale', service: 'old'}]});
+    await old;
+    assert.equal(result.children.length, 0);
+    assert.match(document.getElementById('credential-metadata-status').textContent,
+        /scanned sources.*does not prove/i);
+    query.value = 'old';
+    const pendingAfterClear = vm.runInContext('searchCredentialMetadata()', context);
+    query.value = '';
+    await vm.runInContext('searchCredentialMetadata()', context);
+    releaseOld({data: [{id: 'stale-after-clear', service: 'old'}]});
+    await pendingAfterClear;
+    assert.equal(result.children.length, 0);
+    assert.match(document.getElementById('credential-metadata-status').textContent, /1.64 characters/);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
+
+
 def test_health_reports_effective_history_security_mode(monkeypatch):
     class HealthyMemory:
         async def health(self):

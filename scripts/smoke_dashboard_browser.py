@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 from tempfile import mkstemp
 from urllib.parse import urlsplit
@@ -37,11 +38,16 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--expect-resources-ready", action="store_true")
+    parser.add_argument("--credential-query", help="Nonsecret metadata query; prints only match count")
     parser.add_argument("--screenshot", action="store_true",
                         help="Save a temporary screenshot of nonsecret status UI")
     args = parser.parse_args()
     if not 320 <= args.width <= 2560 or not 600 <= args.height <= 1600:
         parser.error("Viewport is outside the bounded UI test range")
+    if args.credential_query is not None and not 1 <= len(args.credential_query) <= 64:
+        parser.error("Credential metadata query must be 1–64 characters")
+    if args.credential_query is not None and args.screenshot:
+        parser.error("Do not save a screenshot of credential metadata results")
     origin = urlsplit(args.base)
     if (origin.scheme != "http" or origin.hostname != "127.0.0.1"
             or origin.port != 42069 or origin.path or origin.query or origin.fragment):
@@ -98,6 +104,16 @@ def main() -> int:
                     raise RuntimeError("Live resource status did not become ready")
                 result["resources_checked"] = True
                 result["installed_model_rows"] = page.locator("#local-resource-models li").count()
+            if args.credential_query is not None:
+                page.get_by_role("button", name="Credential Metadata").click()
+                expect(page.get_by_role("heading", name="Credential metadata")).to_be_visible()
+                page.get_by_label("Metadata query").fill(args.credential_query)
+                page.get_by_role("button", name="Search metadata").click()
+                expect(page.locator("#credential-metadata-status")).to_have_text(
+                    re.compile(r"metadata match|No metadata matches", re.I), timeout=15000)
+                result["credential_metadata_checked"] = True
+                result["credential_match_count"] = page.locator(
+                    "#credential-metadata-results .result-item").count()
             if args.screenshot:
                 handle, name = mkstemp(prefix="muninn-dashboard-", suffix=".png")
                 os.close(handle)

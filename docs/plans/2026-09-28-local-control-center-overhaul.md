@@ -93,6 +93,10 @@ An isolated headless Edge check verified authenticated History rendering at
 1280px and 390px against the running loopback service; the narrow check exposed
 and drove a responsive-layout fix. This is not yet keyboard/accessibility or
 resource-endpoint live acceptance.
+The metadata-only Credentials tab uses the existing opt-in authenticated endpoint
+and was exercised in isolated Edge sessions at both widths with a nonsecret
+query; it does not expose values or report complete vault-scan coverage. The
+separate passphrase-gated use flow and scan progress/coverage UI remain pending.
 
 Current delivery boundary: step 3's bounded search/fetch/job view, part of
 step 2's archive/index, capture-intent/source-scan, and accepted-hook status, and part of step 4's
