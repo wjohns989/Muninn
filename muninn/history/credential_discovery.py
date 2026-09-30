@@ -14,12 +14,13 @@ import queue
 import re
 import stat
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import chain
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
 from muninn.history.credential_store import (
+    AmbiguousCandidate,
     CredentialStore,
     _valid_project_label,
     _validated_source_hint,
@@ -72,6 +73,11 @@ class ExtractionStats:
     examined: int = 0
     ambiguous: int = 0
     accepted: int = 0
+    ambiguous_reasons: dict[str, int] = field(default_factory=dict)
+
+    def reject(self, reason: str) -> None:
+        self.ambiguous += 1
+        self.ambiguous_reasons[reason] = self.ambiguous_reasons.get(reason, 0) + 1
 
 
 class ArchiveVerificationError(RuntimeError):
@@ -94,8 +100,29 @@ class CredentialScanBinaryError(ValueError):
     """A selected project text file is binary-like and cannot be safely interpreted."""
 
 
-def _acceptable_value(value: str) -> bool:
-    return not (_PLACEHOLDER.search(value) or len(set(value)) < 4)
+def _value_rejection(value: str) -> str | None:
+    if _PLACEHOLDER.search(value):
+        return "placeholder_like"
+    if len(set(value)) < 4:
+        return "low_diversity"
+    return None
+
+
+def _bounded_candidate(window: str, start: int) -> str:
+    """Keep only a short candidate token, never a surrounding transcript span."""
+    fragment = window[start:start + 128]
+    if any(0xD800 <= ord(char) <= 0xDFFF or
+           (ord(char) < 32 and char not in "\t\r\n") for char in fragment):
+        # A legacy byte/surrogate or binary control is not safe to serialize
+        # into a UTF-8 vault row. Keep the unresolved event with no fragment.
+        return ""
+    if fragment.startswith("${") and "}" in fragment:
+        end = fragment.index("}") + 1
+        if end == len(fragment) or fragment[end].isspace() or fragment[end] in ',;"\'\\]':
+            return fragment[:end]
+    token = re.split(r"[\s,;\"'\\\]\[]", fragment, maxsplit=1)[0]
+    # Never let a truncated prefix look like a complete candidate to a model.
+    return "" if len(token) == len(fragment) == 128 else token
 
 
 def _strip_sgr_chunks(chunks: Iterable[bytes]) -> Iterator[bytes]:
@@ -128,7 +155,8 @@ def _strip_sgr_chunks(chunks: Iterable[bytes]) -> Iterator[bytes]:
 def _iter_findings(chunks: Iterable[bytes], source_hint: str,
                    stats: ExtractionStats, assignment: re.Pattern[str], *,
                    encoding: str = "utf-8-sig", errors: str = "strict",
-                   reject_binary: bool = False) -> Iterator[tuple[str, str, str]]:
+                   reject_binary: bool = False, include_ambiguous: bool = False
+                   ) -> Iterator[tuple[str, str, str] | AmbiguousCandidate]:
     """Scan decoded text with fixed overlap; yield only unambiguous assignments.
 
     The strict env/transcript path rolls back on invalid UTF-8. Project files
@@ -140,7 +168,8 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
     total = 0
     last_start = -1
 
-    def examine(window: str, base: int, safe_end: int) -> Iterator[tuple[str, str, str]]:
+    def examine(window: str, base: int, safe_end: int
+                ) -> Iterator[tuple[str, str, str] | AmbiguousCandidate]:
         nonlocal last_start
         for match in assignment.finditer(window):
             absolute = base + match.start()
@@ -155,15 +184,27 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
                 continue
             stats.examined += 1
             value_match = _VALUE.match(window, match.end())
-            if value_match is None or not _acceptable_value(value_match.group("value")):
-                stats.ambiguous += 1
+            if value_match is None:
+                stats.reject("unparsed_value")
+                if include_ambiguous:
+                    yield AmbiguousCandidate(name, "unparsed_value",
+                                             _bounded_candidate(window, match.end()), source_hint)
+                continue
+            rejection = _value_rejection(value_match.group("value"))
+            if rejection is not None:
+                stats.reject(rejection)
+                if include_ambiguous:
+                    yield AmbiguousCandidate(name, rejection, value_match.group("value"), source_hint)
                 continue
             if reject_binary:
                 line_start = window.rfind("\n", 0, match.start()) + 1
                 context = window[line_start:value_match.end()]
                 if any(0xD800 <= ord(char) <= 0xDFFF or
                        (ord(char) < 32 and char not in "\t\r\n") for char in context):
-                    stats.ambiguous += 1
+                    stats.reject("unsafe_context")
+                    if include_ambiguous:
+                        yield AmbiguousCandidate(name, "unsafe_context",
+                                                 value_match.group("value"), source_hint)
                     continue
             stats.accepted += 1
             yield name, value_match.group("value"), source_hint
@@ -192,12 +233,15 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
 
 
 def iter_env_findings(chunks: Iterable[bytes], source_hint: str,
-                      stats: ExtractionStats) -> Iterator[tuple[str, str, str]]:
-    return _iter_findings(chunks, source_hint, stats, _ASSIGN)
+                      stats: ExtractionStats, *, include_ambiguous: bool = False
+                      ) -> Iterator[tuple[str, str, str] | AmbiguousCandidate]:
+    return _iter_findings(chunks, source_hint, stats, _ASSIGN,
+                          include_ambiguous=include_ambiguous)
 
 
 def iter_project_findings(chunks: Iterable[bytes], source_hint: str,
-                          stats: ExtractionStats) -> Iterator[tuple[str, str, str]]:
+                          stats: ExtractionStats, *, include_ambiguous: bool = False
+                          ) -> Iterator[tuple[str, str, str] | AmbiguousCandidate]:
     """Find safe ASCII assignments in UTF-8, legacy 8-bit, or BOM-marked UTF-16 text."""
     source = iter(chunks)
     prefix_parts = []
@@ -235,13 +279,15 @@ def iter_project_findings(chunks: Iterable[bytes], source_hint: str,
         text_chunks = _strip_sgr_chunks(text_chunks)
     yield from _iter_findings(text_chunks, source_hint, stats,
                               _PROJECT_ASSIGN, encoding=encoding, errors=errors,
-                              reject_binary=True)
+                              reject_binary=True, include_ambiguous=include_ambiguous)
 
 
 def iter_transcript_findings(chunks: Iterable[bytes],
-                             stats: ExtractionStats) -> Iterator[tuple[str, str, str]]:
+                             stats: ExtractionStats, *, include_ambiguous: bool = False
+                             ) -> Iterator[tuple[str, str, str] | AmbiguousCandidate]:
     """Historical observations only; never claim that a captured key is current."""
-    return _iter_findings(chunks, "", stats, _INLINE_ASSIGN)
+    return _iter_findings(chunks, "", stats, _INLINE_ASSIGN,
+                          include_ambiguous=include_ambiguous)
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -293,7 +339,9 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
                   ) -> dict[str, int | bool]:
     report: dict[str, int | bool] = {
         "files": 0, "succeeded": 0, "errors": 0, "walk_errors": 0, "ambiguous": 0,
-        "candidates": 0, "inserted": 0, "updated": 0, "stale": 0, "complete": False,
+        "ambiguous_reasons": {},
+        "candidates": 0, "queued": 0, "inserted": 0, "updated": 0, "stale": 0,
+        "complete": False, "ambiguity_free": False,
         "error_categories": {name: 0 for name in (
             "root", "walk", "path", "metadata", "utf8", "unsupported_binary",
             "io", "source_changed", "other"
@@ -311,7 +359,8 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
         report["error_categories"]["root"] = 1
         if progress is not None:
             progress({key: report[key] for key in (
-                "files", "succeeded", "errors", "walk_errors", "ambiguous", "error_categories"
+                "files", "succeeded", "errors", "walk_errors", "ambiguous", "queued",
+                "error_categories"
             )})
         return report
     project_names: dict[Path, str] = {root: root.name}
@@ -365,7 +414,7 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
                         while block := handle.read(_CHUNK):
                             yield block
                     scanner = iter_env_findings if path.name.lower().startswith(".env") else iter_project_findings
-                    yield from scanner(chunks(), hint, stats)
+                    yield from scanner(chunks(), hint, stats, include_ambiguous=True)
                     after = os.fstat(handle.fileno())
                 current = path.stat(follow_symlinks=False)
                 if (_is_link_or_junction(path) or path.resolve(strict=True) != resolved
@@ -381,7 +430,10 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
             )
             report["succeeded"] += 1
             report["ambiguous"] += stats.ambiguous
+            for reason, count in stats.ambiguous_reasons.items():
+                report["ambiguous_reasons"][reason] = report["ambiguous_reasons"].get(reason, 0) + count
             report["candidates"] += stats.accepted
+            report["queued"] += counts.get("ambiguities", 0)
             report["inserted"] += counts["created"]
             report["updated"] += counts["rotated"]
             report["stale"] += counts["staled"]
@@ -399,12 +451,17 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
             report["error_categories"][category] += 1
         if progress is not None and report["files"] % 100 == 0:
             progress({key: report[key] for key in (
-                "files", "succeeded", "errors", "walk_errors", "ambiguous", "error_categories"
+                "files", "succeeded", "errors", "walk_errors", "ambiguous", "queued",
+                "error_categories"
             )})
+    # Coverage completion does not mean that every credential-looking string
+    # could be interpreted. Keep the two claims separate for callers.
     report["complete"] = report["errors"] == 0
+    report["ambiguity_free"] = report["complete"] and report["ambiguous"] == 0
     if progress is not None:
         progress({key: report[key] for key in (
-            "files", "succeeded", "errors", "walk_errors", "ambiguous", "error_categories"
+            "files", "succeeded", "errors", "walk_errors", "ambiguous", "queued",
+            "error_categories"
         )})
     return report
 
@@ -489,8 +546,10 @@ def scan_archive(archive: SecureHistoryArchive, store: CredentialStore, *,
     report: dict[str, int | bool] = {
         "generation": manifest["generation"], "snapshots_total": total,
         "attempted": 0, "succeeded": 0, "skipped": 0, "errors": 0, "ambiguous": 0,
-        "candidates": 0, "inserted": 0, "updated": 0,
-        "next_offset": end, "complete": False, "changed_during_scan": False,
+        "ambiguous_reasons": {}, "snapshots_not_evaluated": 0,
+        "candidates": 0, "queued": 0, "inserted": 0, "updated": 0,
+        "next_offset": end, "complete": False, "ambiguity_free": False,
+        "changed_during_scan": False,
         "error_categories": {name: 0 for name in (
             "archive_integrity", "utf8", "io", "metadata", "vault", "other"
         )},
@@ -511,15 +570,20 @@ def scan_archive(archive: SecureHistoryArchive, store: CredentialStore, *,
             counts = store.scan_source(
                 passphrase=passphrase, source_hash=identity,
                 project=provider, origin="transcript",
-                findings=iter_transcript_findings(_verified_archive_chunks(archive, entry), stats),
+                findings=iter_transcript_findings(_verified_archive_chunks(archive, entry), stats,
+                                                  include_ambiguous=True),
                 receipt_identity=receipt_identity,
             )
             if counts.get("skipped", 0):
                 report["skipped"] += 1
+                report["snapshots_not_evaluated"] += 1
             else:
                 report["succeeded"] += 1
             report["ambiguous"] += stats.ambiguous
+            for reason, count in stats.ambiguous_reasons.items():
+                report["ambiguous_reasons"][reason] = report["ambiguous_reasons"].get(reason, 0) + count
             report["candidates"] += stats.accepted
+            report["queued"] += counts.get("ambiguities", 0)
             report["inserted"] += counts["created"]
             report["updated"] += counts["rotated"]
         except (OSError, ValueError, RuntimeError, UnicodeError, TypeError, KeyError) as exc:
@@ -533,10 +597,14 @@ def scan_archive(archive: SecureHistoryArchive, store: CredentialStore, *,
             report["error_categories"][category] += 1
         if progress is not None and (report["attempted"] % 100 == 0 or report["attempted"] == end - offset):
             progress({key: report[key] for key in (
-                "generation", "snapshots_total", "attempted", "skipped", "errors", "error_categories"
+                "generation", "snapshots_total", "attempted", "skipped", "errors",
+                "queued", "ambiguous", "error_categories"
             )})
     end_generation = archive._load_manifest()["generation"]
     report["generation_at_end"] = end_generation
     report["changed_during_scan"] = end_generation != manifest["generation"]
     report["complete"] = report["errors"] == 0 and end == total and not report["changed_during_scan"]
+    # A receipt-only scan did not re-evaluate its old rejected assignments.
+    report["ambiguity_free"] = (report["complete"] and report["ambiguous"] == 0
+                                and report["snapshots_not_evaluated"] == 0)
     return report

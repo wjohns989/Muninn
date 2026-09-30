@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from muninn.history.credential_crypto import VaultHeader, VaultIntegrityError
-from muninn.history.credential_store import CredentialStore, source_fingerprint
+from muninn.history.credential_store import AmbiguousCandidate, CredentialStore, source_fingerprint
 from muninn.history.private_acl import VaultPermissionError
 
 _PASSPHRASE = "a local test phrase with enough entropy"
@@ -216,9 +216,121 @@ def test_empty_scan_validates_source_and_stales_active_rows(tmp_path: Path) -> N
         store.scan_source(passphrase=_PASSPHRASE, source_hash="bad", project="test-project", origin="project", findings=[])
     source = source_fingerprint("project/.env")
     store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[("service", "value", ".env")])
-    assert store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[]) == {"created": 0, "rotated": 0, "staled": 1}
+    assert store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[]) == {"created": 0, "rotated": 0, "staled": 1, "ambiguities": 0}
     assert store.search("service") == []
     assert store.search("service", active_only=False)[0]["active"] == 0
+
+
+def test_ambiguity_queue_streams_deduplicates_and_hides_candidate(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    source = source_fingerprint("project/settings.txt")
+    candidate = "synthetic-candidate-918273645"
+    item = AmbiguousCandidate("SERVICE_API_KEY", "invalid-context", candidate, "settings.txt")
+    result = store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[item, item])
+    assert result["ambiguities"] == 1
+    listed = store.list_ambiguities()
+    assert len(listed) == 1
+    assert candidate not in str(listed)
+    assert store.ambiguity_status() == {"pending": 1}
+    assert store.reveal_ambiguity(listed[0]["id"], passphrase=_PASSPHRASE) == candidate
+    with pytest.raises(VaultIntegrityError):
+        store.decide_ambiguity(listed[0]["id"], passphrase="wrong", decision="deferred")
+    store.decide_ambiguity(listed[0]["id"], passphrase=_PASSPHRASE, decision="deferred")
+    assert store.ambiguity_status() == {"deferred": 1}
+    with pytest.raises(VaultIntegrityError):
+        store.decide_ambiguity(listed[0]["id"], passphrase=_PASSPHRASE, decision="rejected")
+    assert store.ambiguity_status() == {"deferred": 1}
+
+
+def test_empty_ambiguity_fragment_is_retained_as_unresolved(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    result = store.scan_source(
+        passphrase=_PASSPHRASE,
+        source_hash=source_fingerprint("project/settings.txt"),
+        project="test-project",
+        origin="project",
+        findings=[AmbiguousCandidate("SERVICE_API_KEY", "no-parse", "", "settings.txt")],
+    )
+    assert result["ambiguities"] == 1
+    assert store.ambiguity_status() == {"pending": 1}
+
+
+def test_ambiguity_groups_deduplicate_across_sources_and_decide_together(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    candidate = AmbiguousCandidate("SERVICE_API_KEY", "no-parse", "synthetic-candidate-918273645", "settings.txt")
+    for locator in ("project/a/settings.txt", "project/b/settings.txt"):
+        store.scan_source(passphrase=_PASSPHRASE, source_hash=source_fingerprint(locator), project="test-project", origin="project", findings=[candidate])
+    groups = store.list_ambiguity_groups()
+    assert len(groups) == 1 and groups[0]["count"] == 2
+    assert groups[0]["name"] == "SERVICE_API_KEY"
+    assert groups[0]["reason"] == "no-parse"
+    assert candidate.candidate not in str(groups[0])
+    assert "settings.txt" not in str(groups[0])
+    assert store.decide_ambiguity_group(groups[0]["representative_id"], passphrase=_PASSPHRASE, decision="deferred") == 2
+    assert store.ambiguity_status() == {"deferred": 2}
+
+
+def test_ambiguity_group_does_not_cross_project_boundary(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    candidate = AmbiguousCandidate("SERVICE_API_KEY", "no-parse", "synthetic-candidate-918273645", "settings.txt")
+    for project in ("project-one", "project-two"):
+        store.scan_source(passphrase=_PASSPHRASE,
+                          source_hash=source_fingerprint(project + "/settings.txt"),
+                          project=project, origin="project", findings=[candidate])
+    groups = store.list_ambiguity_groups()
+    assert len(groups) == 2
+    assert {group["count"] for group in groups} == {1}
+
+
+def test_ambiguity_queue_rolls_back_with_findings(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    source = source_fingerprint("project/settings.txt")
+
+    def failing():
+        yield ("SERVICE_API_KEY", "synthetic-value-918273645", "settings.txt")
+        yield AmbiguousCandidate("SERVICE_API_KEY", "ambiguous", "synthetic-candidate-918273645", "settings.txt")
+        raise RuntimeError("synthetic failure")
+
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=failing())
+    assert store.search("SERVICE") == []
+    assert store.ambiguity_status() == {}
+
+
+def test_v1_scan_receipts_migrate_and_preserve_rows(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    with store._connect() as db:
+        db.execute("ALTER TABLE scan_receipts RENAME TO old_receipts")
+        db.execute("CREATE TABLE scan_receipts (receipt_id TEXT PRIMARY KEY NOT NULL, scanner_version INTEGER NOT NULL CHECK(scanner_version=1), scanned_at REAL NOT NULL)")
+        db.execute("INSERT INTO scan_receipts SELECT * FROM old_receipts")
+        db.execute("INSERT INTO scan_receipts VALUES ('synthetic-v1-receipt', 1, 1.0)")
+        db.execute("DROP TABLE old_receipts")
+    migrated = CredentialStore(store.root)
+    with migrated._connect(readonly=True) as db:
+        assert db.execute("SELECT COUNT(*) FROM scan_receipts WHERE scanner_version=1").fetchone()[0] == 1
+        assert db.execute("SELECT receipt_id FROM scan_receipts WHERE scanner_version=1").fetchone()[0] == "synthetic-v1-receipt"
+        assert db.execute("SELECT sql FROM sqlite_master WHERE name='scan_receipts'").fetchone()[0].find("IN (1,2)") >= 0
+
+
+def test_existing_ambiguity_queue_migrates_group_digest(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    with store._connect() as db:
+        db.execute("ALTER TABLE ambiguity_queue RENAME TO old_ambiguity_queue")
+        db.execute("CREATE TABLE ambiguity_queue (id TEXT PRIMARY KEY NOT NULL, source_hash TEXT NOT NULL, project TEXT NOT NULL, origin TEXT NOT NULL, name TEXT NOT NULL, reason TEXT NOT NULL, source_hint TEXT NOT NULL, ambiguity_key TEXT NOT NULL UNIQUE, envelope TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected','deferred')), created_at REAL NOT NULL, decided_at REAL, decision_actor TEXT, decision_reason TEXT)")
+    migrated = CredentialStore(store.root)
+    with migrated._connect(readonly=True) as db:
+        assert "group_digest" in {row[1] for row in db.execute("PRAGMA table_info(ambiguity_queue)")}
+
+
+def test_ambiguities_survive_portable_backup_restore(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    source = source_fingerprint("project/settings.txt")
+    store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[AmbiguousCandidate("SERVICE_API_KEY", "ambiguous", "synthetic-candidate-918273645", "settings.txt")])
+    backup = tmp_path / "backup"
+    store.backup(backup, passphrase=_PASSPHRASE)
+    restored = CredentialStore(backup)
+    assert restored.ambiguity_status() == {"pending": 1}
+    assert restored.reveal_ambiguity(restored.list_ambiguities()[0]["id"], passphrase=_PASSPHRASE) == "synthetic-candidate-918273645"
 
 
 def test_scan_session_reuses_unlock_and_invalidates_after_exit(tmp_path: Path) -> None:
@@ -427,7 +539,7 @@ def test_project_scan_is_idempotent_rotates_and_stales(tmp_path: Path) -> None:
     first = store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=findings)
     assert first["created"] == 2
     second = store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=findings)
-    assert second == {"created": 0, "rotated": 0, "staled": 0}
+    assert second == {"created": 0, "rotated": 0, "staled": 0, "ambiguities": 0}
     store.scan_source(passphrase=_PASSPHRASE, source_hash=source, project="test-project", origin="project", findings=[findings[0]])
     assert len(store.search("test-project")) == 1
     with store._connect(readonly=True) as db:

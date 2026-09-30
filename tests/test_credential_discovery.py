@@ -27,9 +27,12 @@ class RecordingStore:
     def scan_source(self, *, findings, **_kwargs):
         # The production store commits only after the generator completes.
         proposed = list(findings)
-        self.values.extend(proposed)
+        accepted = [item for item in proposed if isinstance(item, tuple)]
+        self.values.extend(accepted)
         self.projects.append(_kwargs["project"])
-        return {"created": len(proposed), "rotated": 0, "staled": 0}
+        return {"created": len(accepted), "rotated": 0, "staled": 0,
+                "ambiguities": sum(isinstance(item, discovery.AmbiguousCandidate)
+                                   for item in proposed)}
 
 
 def test_boundary_spanning_value_and_ambiguous_examples():
@@ -39,6 +42,33 @@ def test_boundary_spanning_value_and_ambiguous_examples():
     assert found == [("OPENROUTER_API_KEY", "aaaabbbbcccc11112222", ".env.local")]
     assert stats.accepted == 1
     assert stats.ambiguous == 1
+    assert stats.ambiguous_reasons == {"unparsed_value": 1}
+
+
+def test_ambiguous_reasons_do_not_expose_candidate_text():
+    stats = ExtractionStats()
+    payload = (b"FIRST_API_KEY=${SECRET_VALUE}\n"
+               b"SECOND_API_KEY=sampleValue987654\n"
+               b"THIRD_API_KEY=aaaaaaaaaaaaaaaa\n")
+    assert list(iter_env_findings([payload], ".env", stats)) == []
+    assert stats.ambiguous == 3
+    assert stats.ambiguous_reasons == {
+        "unparsed_value": 1, "placeholder_like": 1, "low_diversity": 1,
+    }
+    assert "SECRET_VALUE" not in str(stats.ambiguous_reasons)
+
+
+def test_ambiguous_events_are_opt_in_and_bounded():
+    payload = b"SERVICE_API_KEY=${MISSING_REFERENCE}\n"
+    stats = ExtractionStats()
+    events = list(iter_env_findings([payload], ".env", stats, include_ambiguous=True))
+    assert len(events) == 1
+    assert isinstance(events[0], discovery.AmbiguousCandidate)
+    assert events[0].reason == "unparsed_value"
+    assert events[0].candidate == "${MISSING_REFERENCE}"
+    assert list(iter_env_findings([payload], ".env", ExtractionStats())) == []
+    assert discovery._bounded_candidate("x" * 200, 0) == ""
+    assert discovery._bounded_candidate("${REF}suffix ", 0) == "${REF}suffix"
 
 
 def test_large_noncredential_line_does_not_hide_later_assignment():
@@ -74,6 +104,21 @@ def test_project_scanner_rejects_malformed_assignment_but_retains_safe_text():
                b"GOOD_API_KEY=anotherVALUE12345678\n")
     found = list(discovery.iter_project_findings([payload], "notes.txt", stats))
     assert found == [("GOOD_API_KEY", "anotherVALUE12345678", "notes.txt")]
+
+
+def test_project_queue_keeps_legacy_malformed_assignment_without_losing_valid_key(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "notes.txt").write_bytes(
+        b"BAD_API_KEY=realVALUE12345678\x81suffix\n"
+        b"GOOD_API_KEY=anotherVALUE12345678\n"
+    )
+    store = CredentialStore.create(tmp_path / "vault", "synthetic vault passphrase")
+    report = scan_project_files(root, store, passphrase="synthetic vault passphrase")
+    assert report["complete"] is True
+    assert report["queued"] == 1
+    assert report["inserted"] == 1
+    assert len(store.search("GOOD_API_KEY")) == 1
 
 
 def test_project_txt_scanner_recovers_ansi_colored_assignment_across_chunks():
@@ -292,6 +337,18 @@ def test_documentation_examples_remain_unverified_candidates(tmp_path):
     assert "docsVALUE12345678" not in str(matches)
 
 
+def test_scan_coverage_does_not_claim_ambiguity_is_resolved(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".env").write_text("SERVICE_API_KEY=${UNKNOWN}\n")
+    report = scan_project_env(root, RecordingStore(), passphrase="test-only")
+    assert report["complete"] is True
+    assert report["ambiguity_free"] is False
+    assert report["ambiguous"] == 1
+    assert report["ambiguous_reasons"] == {"unparsed_value": 1}
+    assert "UNKNOWN" not in str(report)
+
+
 def test_collection_root_labels_each_nested_git_project(tmp_path):
     collection = tmp_path / "projects"
     for name, value in (("alpha", "alphaVALUE12345678"), ("beta", "betaVALUE12345678")):
@@ -437,10 +494,13 @@ def test_real_vault_archive_scan_is_idempotent_and_metadata_only(tmp_path):
     store = CredentialStore.create(tmp_path / "vault", "synthetic vault passphrase")
     first = scan_archive(archive, store, passphrase="synthetic vault passphrase")
     assert first["complete"] is True
+    assert first["ambiguity_free"] is True
     assert first["inserted"] == 1
     second = scan_archive(archive, store, passphrase="synthetic vault passphrase")
     assert second["inserted"] == 0
     assert second["skipped"] == 1
+    assert second["snapshots_not_evaluated"] == 1
+    assert second["ambiguity_free"] is False
     matches = store.search("SERVICE_API_KEY")
     assert len(matches) == 1
     assert matches[0]["origin"] == "transcript"
@@ -450,6 +510,23 @@ def test_real_vault_archive_scan_is_idempotent_and_metadata_only(tmp_path):
     with pytest.raises(ValueError, match="generation changed"):
         scan_archive(archive, store, passphrase="synthetic vault passphrase",
                      offset=1, expected_generation=first["generation"] + 1)
+
+
+def test_archive_ambiguity_enters_encrypted_review_queue(tmp_path):
+    archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive passphrase")
+    source = tmp_path / "chat.jsonl"
+    source.write_text('{"content":"SERVICE_API_KEY=${MISSING_REFERENCE}"}\n')
+    archive.archive_file(source, "codex")
+    store = CredentialStore.create(tmp_path / "vault", "synthetic vault passphrase")
+
+    report = scan_archive(archive, store, passphrase="synthetic vault passphrase")
+
+    assert report["complete"] is True
+    assert report["ambiguity_free"] is False
+    assert report["queued"] == 1
+    assert store.ambiguity_status() == {"pending": 1}
+    assert "MISSING_REFERENCE" not in store.db_path.read_bytes().decode("utf-8", errors="ignore")
+    assert "MISSING_REFERENCE" not in str(store.list_ambiguities())
 
 
 def test_leading_underscore_secret_name_can_commit_to_vault(tmp_path):

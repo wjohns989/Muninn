@@ -16,6 +16,7 @@ import threading
 import time
 import unicodedata
 import uuid
+from dataclasses import dataclass
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -29,20 +30,36 @@ from muninn.history.credential_crypto import (
 )
 from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
 
-_RECEIPT_VERSION = 1
-_RECEIPT_SCHEMA = (
+_RECEIPT_VERSION = 2
+_RECEIPT_SCHEMA_V1 = (
     "CREATE TABLE scan_receipts (receipt_id TEXT PRIMARY KEY NOT NULL, "
     "scanner_version INTEGER NOT NULL CHECK(scanner_version=1), "
     "scanned_at REAL NOT NULL)"
 )
+_RECEIPT_SCHEMA = (
+    "CREATE TABLE scan_receipts (receipt_id TEXT PRIMARY KEY NOT NULL, "
+    "scanner_version INTEGER NOT NULL CHECK(scanner_version IN (1,2)), "
+    "scanned_at REAL NOT NULL)"
+)
 _SENTINEL_ID = "__vault_sentinel__"
 _SENTINEL_VALUE = "muninn-credential-vault-v1"
+_EMPTY_AMBIGUITY_VALUE = "muninn-ambiguity-empty-v1"
 _SAFE_LABEL = re.compile(r"[A-Za-z0-9_][A-Za-z0-9 _.-]{0,63}\Z")
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 _OLD_COLUMNS = ["id", "service", "project", "source_hash", "envelope"]
 _LEGACY_COLUMNS = [*_OLD_COLUMNS, "source_hint"]
 _NEW_COLUMNS = [*_LEGACY_COLUMNS, "origin", "active", "discovery_key"]
 _ORIGINS = {"manual", "project", "transcript"}
+
+
+@dataclass(frozen=True)
+class AmbiguousCandidate:
+    """A bounded, non-accepted candidate retained only in the encrypted vault."""
+
+    name: str
+    reason: str
+    candidate: str
+    source_hint: str
 
 
 def _utf16_units(value: str) -> int:
@@ -174,6 +191,15 @@ class CredentialStore:
         db.execute("CREATE TABLE reveal_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                    "record_id TEXT NOT NULL, at REAL NOT NULL)")
         db.execute(_RECEIPT_SCHEMA)
+        db.execute("CREATE TABLE ambiguity_queue (id TEXT PRIMARY KEY NOT NULL, "
+                   "source_hash TEXT NOT NULL, project TEXT NOT NULL, origin TEXT NOT NULL, "
+                   "name TEXT NOT NULL, reason TEXT NOT NULL, source_hint TEXT NOT NULL, "
+                   "ambiguity_key TEXT NOT NULL UNIQUE, group_digest TEXT NOT NULL DEFAULT '', envelope TEXT NOT NULL, "
+                   "status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected','deferred')), "
+                   "created_at REAL NOT NULL, decided_at REAL, decision_actor TEXT, decision_reason TEXT)")
+        db.execute("CREATE TABLE ambiguity_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                   "ambiguity_id TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL)")
+        db.execute("CREATE UNIQUE INDEX ambiguity_queue_key ON ambiguity_queue(ambiguity_key)")
 
     @contextmanager
     def _connect(self, *, readonly: bool = False):
@@ -268,8 +294,38 @@ class CredentialStore:
                     db.execute(_RECEIPT_SCHEMA)
                     current = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='scan_receipts'").fetchone()
                 receipt = current
-        if receipt is None or receipt[0] != _RECEIPT_SCHEMA:
+        if receipt is None:
             raise VaultIntegrityError("Invalid credential scan receipt schema")
+        if receipt[0] == _RECEIPT_SCHEMA_V1:
+            with self._process_lock(), self._connect() as db:
+                db.execute("ALTER TABLE scan_receipts RENAME TO scan_receipts_v1")
+                db.execute(_RECEIPT_SCHEMA)
+                db.execute("INSERT INTO scan_receipts SELECT * FROM scan_receipts_v1")
+                db.execute("DROP TABLE scan_receipts_v1")
+                receipt = ( _RECEIPT_SCHEMA, )
+        if receipt[0] != _RECEIPT_SCHEMA:
+            raise VaultIntegrityError("Invalid credential scan receipt schema")
+        with self._connect(readonly=True) as db:
+            names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "ambiguity_queue" not in names or "ambiguity_audit" not in names:
+            with self._process_lock(), self._connect() as db:
+                if "ambiguity_queue" not in names:
+                    db.execute("CREATE TABLE ambiguity_queue (id TEXT PRIMARY KEY NOT NULL, source_hash TEXT NOT NULL, project TEXT NOT NULL, origin TEXT NOT NULL, name TEXT NOT NULL, reason TEXT NOT NULL, source_hint TEXT NOT NULL, ambiguity_key TEXT NOT NULL UNIQUE, group_digest TEXT NOT NULL DEFAULT '', envelope TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected','deferred')), created_at REAL NOT NULL, decided_at REAL, decision_actor TEXT, decision_reason TEXT)")
+                    db.execute("CREATE INDEX ambiguity_queue_group ON ambiguity_queue(group_digest, status)")
+                    db.execute("CREATE UNIQUE INDEX ambiguity_queue_key ON ambiguity_queue(ambiguity_key)")
+                if "ambiguity_audit" not in names:
+                    db.execute("CREATE TABLE ambiguity_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, ambiguity_id TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL, at REAL NOT NULL)")
+        with self._connect(readonly=True) as db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(ambiguity_queue)")}
+            group_index = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ambiguity_queue_group'"
+            ).fetchone()
+        if "group_digest" not in columns or group_index is None:
+            with self._process_lock(), self._connect() as db:
+                current = {row[1] for row in db.execute("PRAGMA table_info(ambiguity_queue)")}
+                if "group_digest" not in current:
+                    db.execute("ALTER TABLE ambiguity_queue ADD COLUMN group_digest TEXT NOT NULL DEFAULT ''")
+                db.execute("CREATE INDEX IF NOT EXISTS ambiguity_queue_group ON ambiguity_queue(group_digest, status)")
         if self.db_path.with_name("records.db-wal").exists():
             raise VaultIntegrityError("Credential vault WAL must be recovered before opening")
 
@@ -367,14 +423,44 @@ class CredentialStore:
                       if receipt_identity is not None else None)
         seen: set[str] = set()
         _metadata("scan", project, source_hash)
-        counts = {"created": 0, "rotated": 0, "staled": 0}
+        counts = {"created": 0, "rotated": 0, "staled": 0, "ambiguities": 0}
         with self._lock, self._process_lock(), self._connect() as db:
             self._verify_key(db, key)
             if receipt_id is not None and db.execute(
                     "SELECT 1 FROM scan_receipts WHERE receipt_id=? AND scanner_version=?",
                     (receipt_id, _RECEIPT_VERSION)).fetchone() is not None:
                 return {"created": 0, "rotated": 0, "staled": 0, "skipped": 1}
-            for service, value, source_hint in findings:
+            stream = findings
+            for item in stream:
+                if isinstance(item, AmbiguousCandidate):
+                    ambiguity_id = uuid.uuid4().hex
+                    if (not isinstance(item.name, str) or not _SAFE_LABEL.fullmatch(item.name)
+                            or not isinstance(item.reason, str) or not 1 <= len(item.reason) <= 128
+                            or not _safe_display_text(item.reason)
+                            or not isinstance(item.candidate, str) or len(item.candidate) > 512):
+                        raise VaultIntegrityError("Invalid credential ambiguity")
+                    source_hint = _validated_source_hint(item.source_hint)
+                    ambiguity_key = hmac.new(
+                        key, (project + "\0" + origin + "\0" + source_hash + "\0"
+                              + item.name + "\0" + item.reason + "\0"
+                              + item.candidate).encode("utf-8"), hashlib.sha256
+                    ).hexdigest()
+                    meta = _metadata(item.name, project, source_hash, source_hint, origin=origin, active=True, discovery_key=ambiguity_key)
+                    envelope = encrypt_record(key, self.header, ambiguity_id, meta,
+                                              item.candidate or _EMPTY_AMBIGUITY_VALUE).to_json()
+                    # Reuse one local-model judgment only within the same
+                    # project and origin; context can differ across projects.
+                    group_digest = "v2:" + hmac.new(
+                        key,
+                        (project + "\0" + origin + "\0" + item.name + "\0"
+                         + item.reason + "\0" + item.candidate).encode("utf-8"),
+                        hashlib.sha256,
+                    ).hexdigest()
+                    cursor = db.execute("INSERT OR IGNORE INTO ambiguity_queue (id,source_hash,project,origin,name,reason,source_hint,ambiguity_key,group_digest,envelope,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                               (ambiguity_id, source_hash, project, origin, item.name, item.reason, source_hint, ambiguity_key, group_digest, envelope, "pending", time.time()))
+                    counts["ambiguities"] += int(cursor.rowcount == 1)
+                    continue
+                service, value, source_hint = item
                 identity = service + "\0" + project + "\0" + source_hash
                 if origin == "transcript":
                     identity += "\0" + value
@@ -416,6 +502,94 @@ class CredentialStore:
                            (receipt_id, _RECEIPT_VERSION, time.time()))
         return counts
 
+    def ambiguity_status(self) -> dict[str, int]:
+        """Return metadata-only queue counts; never decrypts candidates."""
+        with self._lock, self._connect(readonly=True) as db:
+            rows = db.execute("SELECT status,COUNT(*) AS count FROM ambiguity_queue GROUP BY status").fetchall()
+        return {row["status"]: row["count"] for row in rows}
+
+    def list_ambiguities(self, *, status: str = "pending", limit: int = 50) -> list[dict[str, str | int | float]]:
+        if status not in {"pending", "accepted", "rejected", "deferred"} or not 1 <= limit <= 100:
+            raise ValueError("Invalid ambiguity query")
+        with self._lock, self._connect(readonly=True) as db:
+            rows = db.execute("SELECT id,source_hash,project,origin,name,reason,source_hint,status,created_at,decided_at,decision_actor,decision_reason FROM ambiguity_queue WHERE status=? ORDER BY created_at,id LIMIT ?", (status, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_ambiguity_groups(self, *, status: str = "pending", limit: int = 50) -> list[dict[str, str | int]]:
+        if status not in {"pending", "accepted", "rejected", "deferred"} or not 1 <= limit <= 100:
+            raise ValueError("Invalid ambiguity group query")
+        with self._lock, self._connect(readonly=True) as db:
+            rows = db.execute(
+                "WITH grouped AS (SELECT MIN(id) AS representative_id, "
+                "CASE WHEN group_digest LIKE 'v2:%' THEN group_digest ELSE id END AS grouping_key, "
+                "COUNT(*) AS count, MIN(created_at) AS first_created "
+                "FROM ambiguity_queue WHERE status=? "
+                "GROUP BY CASE WHEN group_digest LIKE 'v2:%' THEN group_digest ELSE id END) "
+                "SELECT grouped.representative_id, rep.name, rep.reason, "
+                "rep.group_digest, grouped.count FROM grouped "
+                "JOIN ambiguity_queue AS rep ON rep.id=grouped.representative_id "
+                "ORDER BY grouped.first_created,grouped.representative_id LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        return [{"representative_id": row["representative_id"], "name": row["name"],
+                 "reason": row["reason"], "group_digest": row["group_digest"],
+                 "count": row["count"]} for row in rows]
+
+    def reveal_ambiguity(self, ambiguity_id: str, *, passphrase: str) -> str:
+        if not isinstance(ambiguity_id, str) or not re.fullmatch(r"[a-f0-9]{32}", ambiguity_id):
+            raise VaultIntegrityError("Credential ambiguity unavailable")
+        with self._lock, self._process_lock(), self._connect() as db:
+            key = self._unlock(db, passphrase)
+            row = db.execute("SELECT * FROM ambiguity_queue WHERE id=?", (ambiguity_id,)).fetchone()
+            if row is None:
+                raise VaultIntegrityError("Credential ambiguity unavailable")
+            meta = _metadata(row["name"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=True, discovery_key=row["ambiguity_key"])
+            value = decrypt_record(key, self.header, ambiguity_id, meta, EncryptedValue.from_json(row["envelope"]))
+            db.execute("INSERT INTO ambiguity_audit (ambiguity_id,action,actor,at) VALUES (?,?,?,?)", (ambiguity_id, "reveal", "local-user", time.time()))
+            return "" if value == _EMPTY_AMBIGUITY_VALUE else value
+
+    def decide_ambiguity(self, ambiguity_id: str, *, passphrase: str, decision: str,
+                         actor: str = "local-user", reason: str = "") -> None:
+        if not isinstance(ambiguity_id, str) or not re.fullmatch(r"[a-f0-9]{32}", ambiguity_id):
+            raise VaultIntegrityError("Credential ambiguity unavailable")
+        if (decision not in {"rejected", "deferred"}
+                or not isinstance(actor, str) or not 1 <= len(actor) <= 64
+                or not _safe_display_text(actor)
+                or reason not in {"", "user-confirmed", "user-rejected", "not-a-secret", "stale-source"}):
+            raise ValueError("Invalid ambiguity decision")
+        with self._lock, self._process_lock(), self._connect() as db:
+            self._unlock(db, passphrase)
+            updated = db.execute(
+                "UPDATE ambiguity_queue SET status=?,decided_at=?,decision_actor=?,decision_reason=? "
+                "WHERE id=? AND status='pending'",
+                (decision, time.time(), actor, reason, ambiguity_id),
+            )
+            if updated.rowcount != 1:
+                raise VaultIntegrityError("Credential ambiguity unavailable")
+            db.execute("INSERT INTO ambiguity_audit (ambiguity_id,action,actor,at) VALUES (?,?,?,?)", (ambiguity_id, decision, actor, time.time()))
+
+    def decide_ambiguity_group(self, representative_id: str, *, passphrase: str,
+                               decision: str, actor: str = "local-user", reason: str = "") -> int:
+        if not isinstance(representative_id, str) or not re.fullmatch(r"[a-f0-9]{32}", representative_id):
+            raise VaultIntegrityError("Credential ambiguity group unavailable")
+        if decision not in {"rejected", "deferred"} or not isinstance(actor, str) or not 1 <= len(actor) <= 64 or not _safe_display_text(actor) or reason not in {"", "user-confirmed", "user-rejected", "not-a-secret", "stale-source"}:
+            raise ValueError("Invalid ambiguity group decision")
+        with self._lock, self._process_lock(), self._connect() as db:
+            self._unlock(db, passphrase)
+            representative = db.execute("SELECT group_digest FROM ambiguity_queue WHERE id=? AND status='pending'", (representative_id,)).fetchone()
+            if representative is None:
+                raise VaultIntegrityError("Credential ambiguity group unavailable")
+            digest = representative["group_digest"]
+            if not digest.startswith("v2:"):
+                ids = [representative_id]
+            else:
+                ids = [row["id"] for row in db.execute("SELECT id FROM ambiguity_queue WHERE group_digest=? AND status='pending'", (digest,))]
+            now = time.time()
+            for ambiguity_id in ids:
+                db.execute("UPDATE ambiguity_queue SET status=?,decided_at=?,decision_actor=?,decision_reason=? WHERE id=? AND status='pending'", (decision, now, actor, reason, ambiguity_id))
+                db.execute("INSERT INTO ambiguity_audit (ambiguity_id,action,actor,at) VALUES (?,?,?,?)", (ambiguity_id, "group-" + decision, actor, now))
+            return len(ids)
+
     def reveal(self, record_id: str, *, passphrase: str) -> str:
         if not isinstance(record_id, str) or not re.fullmatch(r"[a-f0-9]{32}", record_id):
             raise VaultIntegrityError("Credential record unavailable")
@@ -450,6 +624,10 @@ class CredentialStore:
             for row in source_rows:
                 meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=bool(row["active"]), discovery_key=row["discovery_key"])
                 decrypt_record(key, self.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
+            source_ambiguities = db.execute("SELECT * FROM ambiguity_queue ORDER BY id").fetchall()
+            for row in source_ambiguities:
+                meta = _metadata(row["name"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=True, discovery_key=row["ambiguity_key"])
+                decrypt_record(key, self.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
             create_private_directory(staging)
             create_private_file(staging / "header.json")
             create_private_file(staging / "records.db")
@@ -469,6 +647,12 @@ class CredentialStore:
                     meta = _metadata(copied["service"], copied["project"], copied["source_hash"], copied["source_hint"], origin=copied["origin"], active=bool(copied["active"]), discovery_key=copied["discovery_key"])
                     decrypt_record(restored_key, restored.header, copied["id"], meta,
                                    EncryptedValue.from_json(copied["envelope"]))
+                backup_ambiguities = check.execute("SELECT * FROM ambiguity_queue ORDER BY id").fetchall()
+                if [tuple(row) for row in source_ambiguities] != [tuple(row) for row in backup_ambiguities]:
+                    raise VaultIntegrityError("Credential ambiguity backup differs from source")
+                for row in backup_ambiguities:
+                    meta = _metadata(row["name"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=True, discovery_key=row["ambiguity_key"])
+                    decrypt_record(restored_key, restored.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
             if destination.exists() or destination.is_symlink():
                 raise VaultIntegrityError("Credential backup destination appeared during backup")
             # The staging directory remains clearly marked incomplete on any failure.
@@ -506,6 +690,9 @@ class CredentialStore:
                 meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=bool(row["active"]), discovery_key=row["discovery_key"])
                 decrypt_record(key, restored.header, row["id"], meta,
                                EncryptedValue.from_json(row["envelope"]))
+            for row in db.execute("SELECT * FROM ambiguity_queue"):
+                meta = _metadata(row["name"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=True, discovery_key=row["ambiguity_key"])
+                decrypt_record(key, restored.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
         if destination.exists() or destination.is_symlink():
             raise VaultIntegrityError("Credential restore destination appeared during restore")
         os.rename(staging, destination)

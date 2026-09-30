@@ -650,8 +650,12 @@ locally, reads supported text files under approved project roots (`.env`,
 configuration, source, and documentation formats) and/or encrypted history
 snapshots, and stores assignment-shaped credential candidates only inside the
 vault. It streams inputs, rolls a source back on mutation, decoding, or
-archive-integrity failure, and reports incomplete/error/ambiguous counts
-without printing values. Archive reports also include path-free
+archive-integrity failure, and reports separate coverage (`complete`) and
+ambiguity (`ambiguity_free`) claims without printing values. Rejected
+assignment-shaped candidates enter an encrypted, resumable review queue in
+the portable credential backup; reason and queue counts contain no candidate
+text. A completed scan can still have unresolved ambiguities. Archive reports
+also include path-free
 `error_categories` counts (`archive_integrity`, `utf8`, `io`, `metadata`,
 `vault`, `other`); these sum to `errors` and help diagnose incomplete scans
 without exposing source names or exception messages. Project-file values rotate in place; historical
@@ -665,14 +669,25 @@ count of root and walk gaps and must not be added to `errors` again. Source hint
 than rejecting them at an arbitrary short display limit. Each
 fully verified archive snapshot commits an authenticated scan receipt in the
 same vault transaction as its findings, including snapshots with no findings.
-After the live archive grows, rerun from offset zero; receipts skip already
-processed snapshots instead of decrypting the whole history again. Example, with your own
+The queue-enabled scanner version re-evaluates older receipts once, then skips
+unchanged snapshots on later runs. After the live archive grows, rerun from
+offset zero; receipts skip already processed snapshots instead of decrypting
+the whole history again. A bounded local-only review pass uses an installed
+Ollama model only when GPU headroom allows, with `keep_alive=0`; it never sends
+candidate text to OpenRouter or automatically promotes a candidate to a usable
+credential. Clear references can be rejected by rule, high-confidence model
+non-credentials can be rejected, and uncertain/possible credentials are deferred
+for explicit user review. Both decisions and reveals are audited. The portable
+vault still requires a local passphrase prompt for each review run; it does not
+keep an unattended unlock key. Example, with your own
 private paths (no `D:` drive is required):
 
 ```powershell
 python -m muninn.cli credentials scan --root '<your-private-data-dir>\credential_vault' --project-root '<your-project-root>' --archive-root '<your-private-data-dir>\history_secure_archive' --backup-before '<new-private-pre-scan-backup-dir>'
 python -m muninn.cli credentials search API_KEY --root '<your-private-data-dir>\credential_vault'
+python -m muninn.cli credentials review-status --root '<your-private-data-dir>\credential_vault'
 python -m muninn.cli credentials backup --root '<your-private-data-dir>\credential_vault' --destination '<new-private-backup-dir>'
+python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --limit 60 --model qwen2.5:7b --max-pages 100 --apply
 ```
 
 Only the named project roots and archive are scanned. Generated/example `.env`

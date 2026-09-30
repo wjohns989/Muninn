@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def _installed_profiles_match() -> bool:
-    """Attest three configured clients without printing config data."""
+    """Attest four configured clients without printing config data."""
     try:
         try:
             import tomllib as toml_reader
@@ -33,16 +33,24 @@ def _installed_profiles_match() -> bool:
         claude = json.loads(
             (Path.home() / ".claude.json").read_text(encoding="utf-8")
         )["mcpServers"]["muninn"]
+        desktop = json.loads(
+            (Path.home() / "AppData" / "Roaming" / "Claude" /
+             "claude_desktop_config.json").read_text(encoding="utf-8")
+        )["mcpServers"]["muninn"]
         executable = Path(sys.executable).resolve(strict=True)
         for profile, allowed in (
             (codex, {"command", "args", "env", "startup_timeout_sec", "tool_timeout_sec"}),
             (gemini, {"command", "args", "env"}),
             (claude, {"type", "command", "args", "env"}),
+            (desktop, {"command", "args", "env"}),
         ):
             if (not isinstance(profile, dict) or set(profile) - allowed
                     or (profile is claude and profile.get("type") != "stdio")
                     or profile.get("args") != ["-E", "-P", "-m", "muninn_mcp_bridge"]
-                    or profile.get("env") != {"MUNINN_MCP_TOOLSET": "core"}
+                    or profile.get("env") != ({"MUNINN_MCP_TOOLSET": "core",
+                                               "MUNINN_AGENT_NAME": "claude-desktop"}
+                                              if profile is desktop else
+                                              {"MUNINN_MCP_TOOLSET": "core"})
                     or not isinstance(profile.get("command"), str)
                     or Path(profile["command"]).resolve(strict=True) != executable):
                 return False
@@ -54,7 +62,7 @@ def _installed_profiles_match() -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify-installed-profiles", action="store_true",
-                        help="Require actual Codex and Gemini configs to use this exact bridge")
+                        help="Require Codex, Claude Code/Desktop and Gemini configs to use this bridge")
     args = parser.parse_args()
     if os.name != "nt":
         print(json.dumps({"state": "unsupported_host"}))
@@ -120,7 +128,7 @@ def main() -> int:
             raise RuntimeError("context_tool_missing")
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
             "name": "get_project_context",
-            "arguments": {"project": "muninn_mcp", "recent_limit": 1},
+            "arguments": {"project": "Muninn", "recent_limit": 1},
         }})
         context = result_for(3)
         if context.get("isError") is True or not isinstance(context.get("content"), list):

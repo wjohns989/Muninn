@@ -1108,6 +1108,9 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     if args.action == "search":
         print(json.dumps(CredentialStore(root).search(args.query), indent=2))
         return 0
+    if args.action == "review-status":
+        print(json.dumps(CredentialStore(root).ambiguity_status(), sort_keys=True))
+        return 0
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SystemExit("Credential unlock and reveal require an interactive local terminal.")
     passphrase = getpass.getpass("Credential vault passphrase (hidden): ")
@@ -1146,14 +1149,19 @@ def cmd_credentials(args: argparse.Namespace) -> int:
                 ))
             project_totals = {key: sum(int(report[key]) for report in reports) for key in (
                 "files", "succeeded", "errors", "walk_errors", "ambiguous",
-                "candidates", "inserted", "updated", "stale",
+                "candidates", "queued", "inserted", "updated", "stale",
             )}
+            project_totals["ambiguous_reasons"] = {
+                name: sum(int(report["ambiguous_reasons"].get(name, 0)) for report in reports)
+                for name in ("unparsed_value", "placeholder_like", "low_diversity", "unsafe_context")
+            }
             project_totals["error_categories"] = {
                 name: sum(int(report["error_categories"][name]) for report in reports)
                 for name in ("root", "walk", "path", "metadata", "utf8", "unsupported_binary", "io",
                              "source_changed", "other")
             }
             project_totals["complete"] = all(report["complete"] for report in reports)
+            project_totals["ambiguity_free"] = all(report["ambiguity_free"] for report in reports)
             archive_report = None
             if args.archive_root:
                 def progress(status):
@@ -1165,7 +1173,14 @@ def cmd_credentials(args: argparse.Namespace) -> int:
                     expected_generation=args.archive_generation, progress=progress,
                 )
         complete = project_totals["complete"] and (archive_report is None or archive_report["complete"])
-        print(json.dumps({"project": project_totals, "archive": archive_report, "complete": complete},
+        queue_status = store.ambiguity_status()
+        print(json.dumps({"project": project_totals, "archive": archive_report,
+                          "review_queue": queue_status,
+                          "review_resolved": complete and queue_status.get("pending", 0) == 0
+                          and queue_status.get("deferred", 0) == 0
+                          and project_totals["ambiguity_free"]
+                          and (archive_report is None or archive_report["ambiguity_free"]),
+                          "complete": complete},
                          sort_keys=True))
         return 0 if complete else 2
     return 0
@@ -1408,7 +1423,8 @@ def build_parser() -> argparse.ArgumentParser:
         "credentials",
         help="Manage the separate encrypted credential vault and scan approved local project files.",
     )
-    credentials.add_argument("action", choices=["init", "search", "reveal", "backup", "restore", "scan"])
+    credentials.add_argument("action", choices=["init", "search", "review-status",
+                                                "reveal", "backup", "restore", "scan"])
     credentials.add_argument("query", nargs="?", help="Metadata-only query for 'search'.")
     credentials.add_argument("--root", type=Path, help="Vault location (default: MUNINN_DATA_DIR/credential_vault).")
     credentials.add_argument("--record-id", help="Record id for explicit 'reveal'.")

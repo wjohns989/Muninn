@@ -377,23 +377,30 @@ save and handoff routine.
 Claude Desktop launches local servers over stdio. Edit
 `claude_desktop_config.json` (Settings → Developer → Edit Config):
 
+On Windows with the authenticated shared server, use the installed Python
+interpreter and the token-free bridge. Replace the example interpreter path
+with the user's own installed Python; never place the bearer in this file:
+
 ```json
 {
   "mcpServers": {
     "muninn": {
-      "command": "/path/to/Muninn/.venv/bin/python",
-      "args": ["/path/to/Muninn/mcp_wrapper.py"],
+      "command": "C:\\path\\to\\python.exe",
+      "args": ["-E", "-P", "-m", "muninn_mcp_bridge"],
       "env": {
         "MUNINN_AGENT_NAME": "claude-desktop",
-        "MUNINN_AUTH_TOKEN": "only-if-the-server-has-one"
+        "MUNINN_MCP_TOOLSET": "core"
       }
     }
   }
 }
 ```
 
-On Windows use `silent_mcp.py` instead of `mcp_wrapper.py` to avoid a console
-window. Restart Claude Desktop after editing.
+Preserve every existing MCP server in `claude_desktop_config.json`. Restart
+Claude Desktop when convenient to load the new entry; this does not launch a
+second Muninn server. On other platforms, use the shared authenticated HTTP
+endpoint if the client supports it, or the standard-library wrapper with an
+OS-managed token.
 
 The Code tab runs Claude Code, which also reads Claude Code's own configuration
 (below). Current Desktop builds inject `claude_desktop_config.json` servers into

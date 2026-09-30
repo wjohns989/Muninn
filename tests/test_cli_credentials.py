@@ -39,6 +39,13 @@ def test_credential_cli_requires_terminal_for_unlock(tmp_path: Path) -> None:
     assert not (tmp_path / "vault").exists()
 
 
+def test_review_status_is_nonsecret_and_does_not_require_terminal(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "vault"
+    CredentialStore.create(root, _PASSPHRASE)
+    assert cmd_credentials(_args("review-status", root)) == 0
+    assert json.loads(capsys.readouterr().out) == {}
+
+
 def test_credential_cli_search_reveal_backup_restore(tmp_path: Path, monkeypatch) -> None:
     output = _TTY()
     monkeypatch.setattr(sys, "stdin", _TTY())
