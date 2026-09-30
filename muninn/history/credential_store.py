@@ -30,15 +30,14 @@ from muninn.history.credential_crypto import (
 )
 from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
 
-_RECEIPT_VERSION = 2
-_RECEIPT_SCHEMA_V1 = (
-    "CREATE TABLE scan_receipts (receipt_id TEXT PRIMARY KEY NOT NULL, "
-    "scanner_version INTEGER NOT NULL CHECK(scanner_version=1), "
-    "scanned_at REAL NOT NULL)"
-)
+# Keep the v1 table constraint so an already-running server can still open the
+# vault. A new HMAC namespace forces one queue-enabled rescan without a schema
+# change or a collision with prior authenticated receipts.
+_RECEIPT_VERSION = 1
+_RECEIPT_NAMESPACE = b"credential-scan-snapshot-v2\0"
 _RECEIPT_SCHEMA = (
     "CREATE TABLE scan_receipts (receipt_id TEXT PRIMARY KEY NOT NULL, "
-    "scanner_version INTEGER NOT NULL CHECK(scanner_version IN (1,2)), "
+    "scanner_version INTEGER NOT NULL CHECK(scanner_version=1), "
     "scanned_at REAL NOT NULL)"
 )
 _SENTINEL_ID = "__vault_sentinel__"
@@ -296,13 +295,6 @@ class CredentialStore:
                 receipt = current
         if receipt is None:
             raise VaultIntegrityError("Invalid credential scan receipt schema")
-        if receipt[0] == _RECEIPT_SCHEMA_V1:
-            with self._process_lock(), self._connect() as db:
-                db.execute("ALTER TABLE scan_receipts RENAME TO scan_receipts_v1")
-                db.execute(_RECEIPT_SCHEMA)
-                db.execute("INSERT INTO scan_receipts SELECT * FROM scan_receipts_v1")
-                db.execute("DROP TABLE scan_receipts_v1")
-                receipt = ( _RECEIPT_SCHEMA, )
         if receipt[0] != _RECEIPT_SCHEMA:
             raise VaultIntegrityError("Invalid credential scan receipt schema")
         with self._connect(readonly=True) as db:
@@ -432,7 +424,7 @@ class CredentialStore:
                                              not isinstance(receipt_identity, str) or
                                              not 1 <= len(receipt_identity) <= 512):
             raise VaultIntegrityError("Invalid credential scan receipt")
-        receipt_id = (hmac.new(key, b"credential-scan-snapshot-v1\0" +
+        receipt_id = (hmac.new(key, _RECEIPT_NAMESPACE +
                                receipt_identity.encode("utf-8"), hashlib.sha256).hexdigest()
                       if receipt_identity is not None else None)
         seen: set[str] = set()

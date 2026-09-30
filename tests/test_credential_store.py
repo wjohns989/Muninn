@@ -303,19 +303,21 @@ def test_ambiguity_queue_rolls_back_with_findings(tmp_path: Path) -> None:
     assert store.ambiguity_status() == {}
 
 
-def test_v1_scan_receipts_migrate_and_preserve_rows(tmp_path: Path) -> None:
+def test_new_scan_receipt_namespace_preserves_old_server_schema(tmp_path: Path) -> None:
     store = _new(tmp_path)
     with store._connect() as db:
-        db.execute("ALTER TABLE scan_receipts RENAME TO old_receipts")
-        db.execute("CREATE TABLE scan_receipts (receipt_id TEXT PRIMARY KEY NOT NULL, scanner_version INTEGER NOT NULL CHECK(scanner_version=1), scanned_at REAL NOT NULL)")
-        db.execute("INSERT INTO scan_receipts SELECT * FROM old_receipts")
         db.execute("INSERT INTO scan_receipts VALUES ('synthetic-v1-receipt', 1, 1.0)")
-        db.execute("DROP TABLE old_receipts")
-    migrated = CredentialStore(store.root)
-    with migrated._connect(readonly=True) as db:
-        assert db.execute("SELECT COUNT(*) FROM scan_receipts WHERE scanner_version=1").fetchone()[0] == 1
-        assert db.execute("SELECT receipt_id FROM scan_receipts WHERE scanner_version=1").fetchone()[0] == "synthetic-v1-receipt"
-        assert db.execute("SELECT sql FROM sqlite_master WHERE name='scan_receipts'").fetchone()[0].find("IN (1,2)") >= 0
+    reopened = CredentialStore(store.root)
+    kwargs = {"passphrase": _PASSPHRASE, "source_hash": source_fingerprint("snapshot"),
+              "project": "codex", "origin": "transcript", "findings": [],
+              "receipt_identity": "synthetic-snapshot"}
+    assert reopened.scan_source(**kwargs)["ambiguities"] == 0
+    assert reopened.scan_source(**kwargs)["skipped"] == 1
+    with reopened._connect(readonly=True) as db:
+        assert db.execute("SELECT COUNT(*) FROM scan_receipts WHERE scanner_version=1").fetchone()[0] == 2
+        assert db.execute("SELECT 1 FROM scan_receipts WHERE receipt_id='synthetic-v1-receipt'").fetchone()
+        assert "CHECK(scanner_version=1)" in db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='scan_receipts'").fetchone()[0]
 
 
 def test_existing_ambiguity_queue_migrates_group_digest(tmp_path: Path) -> None:
