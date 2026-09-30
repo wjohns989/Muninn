@@ -1587,7 +1587,10 @@ async def credential_agent_search_endpoint(req: CredentialAgentSearchRequest):
         matches = await asyncio.to_thread(_credential_store_for_api().search, req.query, limit=req.limit)
         safe = [
             {**{key: item[key] for key in ("id", "service", "project", "source_hash", "source_hint")},
-             **({"origin": item["origin"], "candidate_status": "unverified"}
+             **({"origin": item["origin"], "candidate_status": "needs_review",
+                 "review_status": item["review_status"], "vault_record_type": "ambiguity"}
+                if item.get("vault_record_type") == "ambiguity" else
+                {"origin": item["origin"], "candidate_status": "unverified"}
                 if item.get("origin") in {"project", "transcript"} else {})}
             for item in matches
         ]

@@ -54,7 +54,7 @@ def classify_local(items: list[CandidateForReview], *, model: str,
         raise ValueError("Local review batch must contain 1-12 candidates")
     if not model or len(model) > 255:
         raise ValueError("Invalid local review model")
-    if base_url.rstrip("/") not in {"http://127.0.0.1:11434", "http://localhost:11434"}:
+    if base_url.rstrip("/") != "http://127.0.0.1:11434":
         raise ValueError("Credential triage requires loopback Ollama")
     if any(len(item.candidate) > 512 for item in items):
         raise ValueError("Oversized local review candidate")

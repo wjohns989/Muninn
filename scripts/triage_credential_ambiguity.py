@@ -27,13 +27,12 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
         model: str, apply: bool, base_url: str) -> dict:
     if not 1 <= limit <= 100 or not 0 <= model_limit <= min(limit, 100):
         raise ValueError("Invalid local triage bounds")
-    if base_url.rstrip("/") not in {"http://127.0.0.1:11434", "http://localhost:11434"}:
+    if base_url.rstrip("/") != "http://127.0.0.1:11434":
         raise ValueError("Credential triage requires loopback Ollama")
     store = CredentialStore(root)
     groups = store.list_ambiguity_groups(status="pending", limit=limit)
     rule_decisions = []
     model_inputs = []
-    left_pending = 0
     for group in groups:
         candidate = store.reveal_ambiguity(group["representative_id"], passphrase=passphrase)
         item = CandidateForReview(group["representative_id"], group["name"],
@@ -43,8 +42,6 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
             rule_decisions.append(rule)
         elif len(model_inputs) < model_limit:
             model_inputs.append(item)
-        else:
-            left_pending += 1
     model_decisions = []
     route_reason = "no_model_needed" if not model_inputs else "deferred"
     if model_inputs:
@@ -61,20 +58,19 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
                     model_inputs[start:start + 12], model=model,
                     base_url=base_url,
                 ))
-        else:
-            left_pending += len(model_inputs)
     if apply:
         for decision in [*rule_decisions, *model_decisions]:
             store.decide_ambiguity_group(
                 decision.id, passphrase=passphrase, decision=decision.decision,
                 actor="local-agent", reason="not-a-secret" if decision.decision == "rejected" else "",
             )
+    queue_counts = store.ambiguity_status()
     return {
         "groups_seen": len(groups), "rule_rejected": sum(d.decision == "rejected" for d in rule_decisions),
         "model_rejected": sum(d.decision == "rejected" for d in model_decisions),
         "deferred_for_user": sum(d.decision == "deferred" for d in [*rule_decisions, *model_decisions]),
-        "left_pending": left_pending, "model_route": route_reason,
-        "applied": apply, "queue_counts": store.ambiguity_status(),
+        "left_pending": queue_counts.get("pending", 0), "model_route": route_reason,
+        "applied": apply, "queue_counts": queue_counts,
     }
 
 

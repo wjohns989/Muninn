@@ -14,7 +14,7 @@ import pytest
 
 import server
 from muninn.history.credential_api import RevealLimiter
-from muninn.history.credential_store import CredentialStore, source_fingerprint
+from muninn.history.credential_store import AmbiguousCandidate, CredentialStore, source_fingerprint
 from muninn.mcp.definitions import TOOLSETS
 
 _TOKEN = "synthetic-local-credential-api-token-123456"
@@ -111,6 +111,11 @@ async def test_opt_in_agent_metadata_search_never_reveals_values(tmp_path, monke
         project="codex", origin="transcript",
         findings=[("SERVICE_API_KEY", _VALUE, "")],
     )
+    store.scan_source(
+        passphrase=_PASSPHRASE, source_hash=source_fingerprint("ambiguous-chat"),
+        project="codex", origin="transcript",
+        findings=[AmbiguousCandidate("SECONDARY_API_KEY", "unparsed_value", _VALUE, "")],
+    )
     headers = {"Authorization": f"Bearer {main_token}"}
     async with _client("127.0.0.1") as client:
         disabled = await client.post("/credentials/agent-search", json={"query": "openrouter"}, headers=headers)
@@ -132,6 +137,12 @@ async def test_opt_in_agent_metadata_search_never_reveals_values(tmp_path, monke
         assert historical.json()["data"][0]["origin"] == "transcript"
         assert historical.json()["data"][0]["candidate_status"] == "unverified"
         assert _VALUE not in historical.text
+        unresolved = await client.post("/credentials/agent-search", json={"query": "SECONDARY_API_KEY"}, headers=headers)
+        assert unresolved.status_code == 200
+        assert unresolved.json()["data"][0]["candidate_status"] == "needs_review"
+        assert unresolved.json()["data"][0]["review_status"] == "pending"
+        assert unresolved.json()["data"][0]["vault_record_type"] == "ambiguity"
+        assert _VALUE not in unresolved.text
     async with _client("192.168.1.2") as remote:
         assert (await remote.post("/credentials/agent-search", json={"query": "openrouter"},
                                   headers=headers)).status_code == 404

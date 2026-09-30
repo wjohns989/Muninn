@@ -43,6 +43,8 @@ def test_local_model_is_loopback_only_and_returns_decisions_without_values(monke
     assert "synthetic-987654" not in str(result)
     with pytest.raises(ValueError, match="loopback"):
         classify_local([item], model="local-test", base_url="https://example.com")
+    with pytest.raises(ValueError, match="loopback"):
+        classify_local([item], model="local-test", base_url="http://localhost:11434")
 
 
 def test_malformed_model_reply_defers(monkeypatch):
@@ -73,7 +75,7 @@ def test_bounded_rule_pass_updates_group_without_returning_candidate(monkeypatch
             self.decisions.append(kwargs["decision"])
 
         def ambiguity_status(self):
-            return {"pending": 0, "rejected": 7}
+            return {"pending": 3, "rejected": 7}
 
     instance = FakeStore(tmp_path)
     monkeypatch.setattr(runner, "CredentialStore", lambda _root: instance)
@@ -82,8 +84,13 @@ def test_bounded_rule_pass_updates_group_without_returning_candidate(monkeypatch
                         base_url="http://127.0.0.1:11434")
     assert report["rule_rejected"] == 1
     assert instance.decisions == ["rejected"]
+    assert report["left_pending"] == 3
     assert "SECRET_REFERENCE" not in str(report)
     with pytest.raises(ValueError, match="loopback"):
         runner.run(root=tmp_path, passphrase="test-passphrase", limit=1,
                    model_limit=0, model="qwen2.5:7b", apply=False,
                    base_url="https://example.com")
+    with pytest.raises(ValueError, match="loopback"):
+        runner.run(root=tmp_path, passphrase="test-passphrase", limit=1,
+                   model_limit=0, model="qwen2.5:7b", apply=False,
+                   base_url="http://localhost:11434")
