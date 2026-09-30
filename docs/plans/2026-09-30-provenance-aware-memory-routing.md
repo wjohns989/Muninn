@@ -44,6 +44,11 @@ evidence cannot settle a consequential classification or conflict.
   path. It is a special lane of this workflow, not a substitute for review of
   project identity, duplicate versus distinct, facts, decisions, tasks, and
   contradictory or time-scoped claims.
+- Current transcript credential scanning records provider as the queue's
+  `project` and does not carry original source path or message timestamp into
+  the classifier input. Its value-based review groups can span distinct
+  source snapshots. A model judgment about one representative must not reject
+  an entire cross-source group until all relevant contexts are evaluated.
 
 ## Options considered
 
