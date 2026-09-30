@@ -164,8 +164,13 @@ async def test_strict_scan_queues_only_new_or_changed_sources(monkeypatch, tmp_p
                              archive_passphrase="recovery passphrase kept off chat")
 
     first = await service.scan_capture_sources()
-    assert first["queued"] == 0
-    assert first["unchanged"] >= 1
+    # The rotating integrity bucket may requeue an unchanged file for a
+    # content-hash check. Which bucket matches depends on the archive key.
+    assert first["queued"] + first["unchanged"] >= 1
+    assert first["queued"] <= 1
+    if first["queued"]:
+        assert await service._process_capture_job_once() is True
+        assert archive.status()["snapshots"] == 1
 
     new_source = existing.with_name(
         "rollout-2026-09-28T01-02-04-22222222-2222-4222-8222-222222222222.jsonl"
