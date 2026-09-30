@@ -133,6 +133,7 @@ def test_history_status_ui_shows_exact_coverage_and_receipts_as_text():
         pytest.skip("Node is unavailable")
     page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
     assert 'id="history-coverage-status"' in page
+    assert 'id="history-capture-status"' in page
     assert 'id="history-hook-receipts"' in page
     source = "async function loadHistoryStatus()" + page.split("async function loadHistoryStatus()", 1)[1].split(
         "async function loadRemotePolicy()", 1,
@@ -154,6 +155,8 @@ const context = vm.createContext({document});
 vm.runInContext("let historyStatusSequence = 0; let AUTH_TOKEN = 'local'; " + __SOURCE__, context);
 let state = {vault: {ready: true, archive: {generation: 222, snapshots: 4039, sources: 3953}},
     last_secure_index: {archive_generation: 221, ready: 4038, total: 4039, missing: 1, complete: false},
+    capture_queue: {archived: 4010, pending: 2, retry: 1, unavailable: 3},
+    last_capture_scan: {generation: 14, complete: 1, missing: 0, errors: 0},
     hook_receipts: [{provider: 'gemini_cli', event: '<img src=x onerror=steal()>',
         accepted_invocations: 2, last_outcome: 'capture_intent', last_accepted_at: 1790675130}],
     hook_receipts_error: null};
@@ -163,15 +166,26 @@ context.api = async path => {
 };
 vm.runInContext('loadHistoryStatus()', context).then(async () => {
     const coverage = document.getElementById('history-coverage-status').textContent;
+    const capture = document.getElementById('history-capture-status').textContent;
     const receipts = document.getElementById('history-hook-receipts').textContent;
     assert.match(coverage, /generation 222/);
     assert.match(coverage, /4038\/4039/);
     assert.match(coverage, /1 missing/);
+    assert.match(capture, /4010 archived intents/);
+    assert.match(capture, /2 pending/);
+    assert.match(capture, /3 unavailable/);
+    assert.match(capture, /scan generation 14 complete/);
     assert.match(coverage, /current archive fully indexed: unknown/);
     assert.match(receipts, /gemini_cli/);
     assert.match(receipts, /<img src=x onerror=steal\(\)>/);
     assert.match(receipts, /claude_code.*no accepted receipt recorded/s);
     assert.match(receipts, /accepted endpoint invocations, not unique host events/);
+    state = {...state, capture_queue: null, last_capture_scan: null};
+    await vm.runInContext('loadHistoryStatus()', context);
+    assert.match(document.getElementById('history-capture-status').textContent, /unavailable/);
+    state = {...state, capture_queue: {}, last_capture_scan: {generation: 15}};
+    await vm.runInContext('loadHistoryStatus()', context);
+    assert.match(document.getElementById('history-capture-status').textContent, /scan generation 15 status unknown/);
     state = {...state, vault: {...state.vault, ready: false},
         last_secure_index: {...state.last_secure_index, archive_generation: 222,
             ready: 4039, total: 4039, missing: 0, complete: true}};

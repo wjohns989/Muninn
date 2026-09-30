@@ -303,6 +303,7 @@
                     <p class="card-description">Archive and index counts come from the authenticated local service.
                         Hook counts are accepted endpoint invocations, not proof of unique host events or completed archival.</p>
                     <p id="history-coverage-status" role="status" aria-live="polite">Enter the main local token to inspect coverage.</p>
+                    <p id="history-capture-status" role="status" aria-live="polite">Capture queue not loaded.</p>
                     <p id="history-hook-receipts" class="history-hook-receipts">Hook receipts not loaded.</p>
                 </div>
                 <div class="card" id="remote-policy-card">
@@ -696,13 +697,16 @@
             const sequence = ++historyStatusSequence;
             const token = AUTH_TOKEN;
             const coverage = document.getElementById('history-coverage-status');
+            const capture = document.getElementById('history-capture-status');
             const hooks = document.getElementById('history-hook-receipts');
             coverage.textContent = 'Loading encrypted archive and index coverage...';
+            capture.textContent = 'Loading capture queue and source scan...';
             hooks.textContent = 'Loading hook receipts...';
             const response = await api('/history/status');
             if (sequence !== historyStatusSequence || token !== AUTH_TOKEN) return;
             if (response.error || !response.data) {
                 coverage.textContent = `Coverage unavailable: ${response.error || 'unexpected response'}`;
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
                 hooks.textContent = 'Hook receipts unavailable; no delivery conclusion can be drawn.';
                 return;
             }
@@ -722,6 +726,29 @@
                 `Index generation ${count(index.archive_generation)}: ` +
                 `${count(index.ready)}/${count(index.total)} ready, ${count(index.missing)} missing; ` +
                 `current archive fully indexed: ${caughtUp}.`;
+            const queue = data.capture_queue;
+            if (queue && typeof queue === 'object' && !Array.isArray(queue)) {
+                const queued = state => Object.prototype.hasOwnProperty.call(queue, state) ?
+                    count(queue[state]) : '0';
+                const scan = data.last_capture_scan;
+                const scanKnown = scan && Number.isSafeInteger(scan.generation) &&
+                    Number.isSafeInteger(scan.missing) && Number.isSafeInteger(scan.errors) &&
+                    (scan.complete === true || scan.complete === 1 ||
+                        scan.complete === false || scan.complete === 0);
+                const scanLabel = scan && typeof scan === 'object' &&
+                    Number.isSafeInteger(scan.generation) ?
+                    `scan generation ${count(scan.generation)} ` +
+                    (scanKnown ? ((scan.complete === true || scan.complete === 1) &&
+                        scan.missing === 0 && scan.errors === 0 ? 'complete' : 'incomplete') : 'status unknown') +
+                    ` (${count(scan.missing)} missing, ${count(scan.errors)} errors)` :
+                    'source scan not yet reported';
+                capture.textContent = `Capture intents: ${queued('archived')} archived intents, ` +
+                    `${queued('pending')} pending, ${queued('running')} running, ` +
+                    `${queued('retry')} retry, ${queued('unavailable')} unavailable; ${scanLabel}. ` +
+                    'Intent counts are not archive snapshot counts.';
+            } else {
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+            }
             if (data.hook_receipts_error) {
                 hooks.textContent = 'Hook receipt ledger unavailable; no delivery conclusion can be drawn.';
                 return;
