@@ -97,6 +97,24 @@ def test_structured_fetch_keeps_message_when_jsonl_metadata_has_secret(tmp_path:
     assert "CANARY-SECRET-91919" not in str(span)
 
 
+def test_single_record_beyond_old_line_cap_keeps_tail_hit_and_omits_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "one-large-record.jsonl"
+    source.write_text(json.dumps({"type": "event_msg", "payload": {
+        "type": "user_message", "message": "ordinary filler " * 20000 + "Fix the lunar-widget parser",
+        "api_key": "CANARY-SECRET-91919"}}) + "\n", encoding="utf-8")
+    assert source.stat().st_size > 256 * 1024
+    archive = SecureHistoryArchive.create(tmp_path / "archive", PASSPHRASE)
+    archive.archive_file(source, "codex")
+    index = SecureHistoryBlindIndex(archive)
+    index.build()
+    capability = index.search("lunar-widget")["matches"][0]["fetch_capability"]
+    for text in (index.fetch_span(capability)["redacted_text"], index._model_window(capability)):
+        assert "Fix the lunar-widget parser" in text
+        assert len(text) <= 3000
+        assert "CANARY-SECRET-91919" not in text
+        assert '"payload"' not in text
+
+
 def test_structured_fetch_streams_oversize_snapshot(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "huge-codex.jsonl"
     filler = json.dumps({"type": "event_msg", "payload": {

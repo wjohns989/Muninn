@@ -1,5 +1,6 @@
 param(
     [Parameter(Mandatory = $true)][string]$VaultRoot,
+    [Parameter(Mandatory = $true)][string]$ArchiveRoot,
     [Parameter(Mandatory = $true)][string]$LogPath,
     [Parameter(Mandatory = $true)][string]$PreBackupDestination,
     [Parameter(Mandatory = $true)][string]$BackupDestination,
@@ -14,6 +15,9 @@ $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path -LiteralPath $VaultRoot -PathType Container)) {
     throw 'Vault root is missing'
+}
+if (-not (Test-Path -LiteralPath $ArchiveRoot -PathType Container)) {
+    throw 'Archive root is missing'
 }
 if (Test-Path -LiteralPath $LogPath) {
     throw 'Log path already exists'
@@ -43,7 +47,7 @@ if ($ModelLimit -gt $PageSize) {
 Set-Location -LiteralPath $repository
 Start-Transcript -LiteralPath $LogPath -ErrorAction Stop | Out-Null
 try {
-    & $Python -m scripts.triage_credential_ambiguity --root $VaultRoot `
+    & $Python -m scripts.triage_credential_ambiguity --root $VaultRoot --archive-root $ArchiveRoot `
         --model $Model --limit $PageSize --model-limit $ModelLimit `
         --max-pages $MaxPages --backup-before $PreBackupDestination `
         --backup-after $BackupDestination --apply

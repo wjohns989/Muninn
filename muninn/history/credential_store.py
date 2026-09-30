@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import os
 import re
 import shutil
@@ -59,6 +60,8 @@ class AmbiguousCandidate:
     reason: str
     candidate: str
     source_hint: str
+    source_line: int | None = None
+    context: str = ""
 
 
 def _utf16_units(value: str) -> int:
@@ -514,11 +517,23 @@ class CredentialStore:
             rows = db.execute("SELECT status,COUNT(*) AS count FROM ambiguity_queue GROUP BY status").fetchall()
         return {row["status"]: row["count"] for row in rows}
 
-    def list_ambiguities(self, *, status: str = "pending", limit: int = 50) -> list[dict[str, str | int | float]]:
+    def list_ambiguities(self, *, status: str = "pending", limit: int = 50,
+                        after: dict | None = None) -> list[dict[str, str | int | float]]:
         if status not in {"pending", "accepted", "rejected", "deferred"} or not 1 <= limit <= 100:
             raise ValueError("Invalid ambiguity query")
         with self._lock, self._connect(readonly=True) as db:
-            rows = db.execute("SELECT id,source_hash,project,origin,name,reason,source_hint,status,created_at,decided_at,decision_actor,decision_reason FROM ambiguity_queue WHERE status=? ORDER BY created_at,id LIMIT ?", (status, limit)).fetchall()
+            parameters = [status]
+            cursor_clause = ""
+            if after is not None:
+                if (not isinstance(after, dict) or set(after) != {"created_at", "id"}
+                        or type(after["created_at"]) not in (float, int)
+                        or not math.isfinite(after["created_at"])
+                        or not isinstance(after["id"], str) or not re.fullmatch(r"[a-f0-9]{32}", after["id"])):
+                    raise ValueError("Invalid ambiguity cursor")
+                cursor_clause = " AND (created_at>? OR (created_at=? AND id>?))"
+                parameters.extend([after["created_at"], after["created_at"], after["id"]])
+            parameters.append(limit)
+            rows = db.execute("SELECT id,source_hash,project,origin,name,reason,source_hint,status,created_at,decided_at,decision_actor,decision_reason FROM ambiguity_queue WHERE status=?" + cursor_clause + " ORDER BY created_at,id LIMIT ?", parameters).fetchall()
         return [dict(row) for row in rows]
 
     def list_ambiguity_groups(self, *, status: str = "pending", limit: int = 50) -> list[dict[str, str | int]]:

@@ -148,7 +148,9 @@ class _Frame:
     next_index: int = 0
 
 
-def events(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
+def events(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096,
+           include_record_position: bool = False,
+           allow_multiline: bool = False,
            ) -> Iterator[tuple[str, tuple[str | int, ...], str]]:
     """Validate JSONL grammar and emit scalar/string fragments with paths.
 
@@ -164,6 +166,7 @@ def events(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
     key_chars = 0
     key_overflow = False
     value_path: tuple[str | int, ...] = ()
+    physical_line = 0
 
     def start_value() -> tuple[str | int, ...]:
         nonlocal root_state
@@ -264,11 +267,15 @@ def events(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
                 stack[-1].state = "next_key" if stack[-1].kind == "object" else "next_value"
         elif kind == "newline":
             if stack or root_state == "in_value":
-                raise StreamingJSONError("JSONL record crosses physical lines")
+                if not allow_multiline:
+                    raise StreamingJSONError("JSONL record crosses physical lines")
+                physical_line += 1
+                continue
             if root_state == "complete":
-                yield "record_end", (), ""
+                yield "record_end", (), str(physical_line) if include_record_position else ""
             root_state = "empty"
+            physical_line += 1
     if stack or root_state == "in_value":
         raise StreamingJSONError("Truncated JSONL record")
     if root_state == "complete":
-        yield "record_end", (), ""
+        yield "record_end", (), str(physical_line) if include_record_position else ""

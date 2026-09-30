@@ -695,7 +695,7 @@ python -m muninn.cli credentials search API_KEY --root '<your-private-data-dir>\
 python -m muninn.cli credentials review-status --root '<your-private-data-dir>\credential_vault'
 python -m muninn.cli credentials review-list --root '<your-private-data-dir>\credential_vault' --review-state deferred
 python -m muninn.cli credentials backup --root '<your-private-data-dir>\credential_vault' --destination '<new-private-backup-dir>'
-python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --limit 60 --model qwen2.5:7b --max-pages 200 --backup-before '<new-private-pre-triage-backup-dir>' --backup-after '<new-private-reviewed-backup-dir>' --apply
+python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --archive-root '<your-private-data-dir>\history_secure_archive' --limit 60 --model '<your-installed-Ollama-chat-model>' --max-pages 200 --backup-before '<new-private-pre-triage-backup-dir>' --backup-after '<new-private-reviewed-backup-dir>' --apply
 ```
 
 For a specific opaque ID returned by `review-list`, use `credentials
@@ -711,6 +711,31 @@ Triage exits with code 2 while pending or deferred items still require review;
 this is not a backup failure. If an error interrupts triage, its terminal JSON
 reports which backup stage completed without printing candidate text; the
 post-triage backup is only validated after a successful processing pass.
+
+Local model review now joins every original ambiguous assignment occurrence to
+its authenticated snapshot and source unit. Project evidence and provider event
+time are carried separately from archive capture time and file mtime. An absent
+timestamp remains unknown; a later Codex cwd never rewrites earlier turns.
+The classifier cannot reject a whole cross-source value group based on one
+representative. Every matching occurrence must support rejection; uncertainty
+stays pending and later rows remain reachable through keyset pagination.
+Encrypted per-context decisions are reusable only for the same immutable source
+and model-weight identity. Unsupported source shapes remain pending, and integrity
+failures abort. No candidate or model reply is printed by the triage runner.
+
+The private `source-evidence` and `credential-context` sidecars are encrypted,
+rebuildable, and included in portable archive backup/restore verification. Their
+raw pages are not public transcript endpoints. Conversational extraction streams
+large JSON strings, including pretty-printed Gemini container JSON, without
+imposing a whole-message byte limit; normal agent pages stay bounded and redacted.
+These source units are groundwork for general evidence-gated memory filing—not
+proof that full historical fact/task/conflict backfill is implemented.
+
+To check bounded real-source samples without sending inference or printing text:
+
+```powershell
+python -m scripts.smoke_source_evidence_archive --archive-root '<your-private-data-dir>\history_secure_archive'
+```
 
 Only the named project roots and archive are scanned. Generated/example `.env`
 files, linked paths, and unsupported assignments are not silently treated as

@@ -74,6 +74,7 @@ def check(query: str, *, remote: bool) -> dict:
     analysis = outcome.get("analysis") or {}
     return {
         "status": outcome.get("status"), "provider": provider,
+        "reason": outcome.get("reason"),
         "expected_provider": expected, "route_matched": provider == expected,
         "model": outcome.get("model") if provider == expected else None,
         "search_matches": len(candidates), "span_chars": span_chars,

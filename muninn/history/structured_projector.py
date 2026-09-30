@@ -31,14 +31,20 @@ _BLOCK_TYPES = {"text", "input_text", "output_text"}
 
 
 def _metadata_units(source: Iterable[bytes], provider: str,
-                    should_cancel: Callable[[], bool]
+                    should_cancel: Callable[[], bool], *,
+                    extra_paths: dict[tuple[str, ...], int] | None = None,
                     ) -> Iterator[tuple[tuple[str | int, ...], dict[tuple[str, ...], str]]]:
+    limits = {path: 128 for path in _META_PATHS}
+    limits.update(extra_paths or {})
     meta: dict[tuple[str, ...], str] = {}
     active: tuple[str, ...] | None = None
+    value_kind = ""
     value = ""
     container_messages = False
     item_prefix: tuple[str | int, ...] | None = None
-    for event, path, part in events(source):
+    seen: set[tuple[str | int, ...]] = set()
+    for event, path, part in events(source, include_record_position=True,
+                                    allow_multiline=provider == "gemini_cli"):
         if should_cancel():
             raise ProjectionCancelled("projection cancelled")
         if provider == "gemini_cli" and event == "container_start" and path == ("messages",):
@@ -51,30 +57,45 @@ def _metadata_units(source: Iterable[bytes], provider: str,
                 raise UnsupportedTranscript("Gemini message item is not an object")
             item_prefix = path
             meta = {}
+            seen = set()
         if (container_messages and event == "value_start" and len(path) == 2
                 and path[0] == "messages" and isinstance(path[1], int)):
             raise UnsupportedTranscript("Gemini message item is not an object")
+        relative = path[len(item_prefix):] if item_prefix and path[:len(item_prefix)] == item_prefix else (
+            path if not container_messages else None)
+        if event in {"value_start", "container_start"} and relative in limits:
+            if relative in seen:
+                raise StreamingJSONError("Repeated transcript metadata key")
+            seen.add(relative)
         if event == "value_start":
-            relative = path[len(item_prefix):] if item_prefix and path[:len(item_prefix)] == item_prefix else (
-                path if not container_messages else None)
-            active = relative if relative in _META_PATHS else None
+            active = relative if relative in limits else None
+            value_kind = part
             value = ""
         elif event == "value_chunk" and active is not None:
-            if len(value) <= 128:
-                value += part[:129 - len(value)]
+            bound = limits[active]
+            if len(value) <= bound:
+                value += part[:bound + 1 - len(value)]
         elif event == "value_end" and active is not None:
             if active in meta and meta[active] != value:
                 raise StreamingJSONError("Conflicting transcript metadata")
             meta[active] = value
+            if extra_paths and active in extra_paths:
+                kind_path = ("__value_kind__",) + active
+                if kind_path in meta and meta[kind_path] != value_kind:
+                    raise StreamingJSONError("Conflicting transcript metadata type")
+                meta[kind_path] = value_kind
             active = None
         elif event == "record_end":
             if not container_messages:
+                meta[("__physical_line__",)] = part
                 yield (), meta
             meta = {}
+            seen = set()
         elif event == "container_end" and item_prefix is not None and path == item_prefix:
             yield item_prefix, meta
             item_prefix = None
             meta = {}
+            seen = set()
 
 
 def _role(provider: str, meta: dict[tuple[str, ...], str]) -> str | None:
@@ -197,7 +218,7 @@ def project_transcript(archive: Any, entry: dict[str, Any],
     provider = entry["provider"]
     first_source = archive._iter_verified_entry(entry)
     labels = _metadata_units(first_source, provider, should_cancel)
-    body = iter(events(source))
+    body = iter(events(source, allow_multiline=provider == "gemini_cli"))
     saw_container = False
     try:
         while True:

@@ -140,6 +140,8 @@ async def test_local_route_uses_capability_and_unloads_model(monkeypatch, short)
     result = await analysis.analyze_secure_hit(History(), "opaque-capability")
     assert seen["capability"] == "opaque-capability"
     assert seen["body"]["keep_alive"] == 0
+    assert seen["body"]["format"]["properties"]["decisions"]["maxItems"] == 12
+    assert seen["body"]["format"]["properties"]["open_items"]["maxItems"] == 12
     assert "untrusted_transcript" in seen["body"]["messages"][1]["content"]
     if not short:
         assert "CANARY-SECRET-91919" in seen["body"]["messages"][1]["content"]

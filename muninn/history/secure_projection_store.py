@@ -41,6 +41,8 @@ def _j(value: Any) -> bytes:
 
 
 class SecureProjectionStore:
+    max_page_chars = MAX_PAGE_CHARS
+
     def __init__(self, archive: Any, root: Path | None = None) -> None:
         self.archive = archive
         self.root = Path(root) if root is not None else Path(archive.root) / "projections"
@@ -162,6 +164,9 @@ class SecureProjectionStore:
     def _aad(self, ident: dict[str, Any], attempt: str, ordinal: int, length: int) -> bytes:
         return _j({**ident, "attempt": attempt, "page": ordinal, "plaintext_length": length})
 
+    def _staged_pages(self, text: Iterable[str], page_chars: int) -> Iterable[str]:
+        return redacted_pages(text, page_chars=page_chars)
+
     def build(self, entry: dict[str, Any], version: int,
               projector: Callable[[Iterable[bytes]], Iterable[str]], *,
               page_chars: int = MAX_PAGE_CHARS,
@@ -208,8 +213,8 @@ class SecureProjectionStore:
             db.commit()
             try:
                 ordinal = 0
-                for page in redacted_pages(projector(tracked()), page_chars=page_chars):
-                    if not isinstance(page, str) or not 1 <= len(page) <= MAX_PAGE_CHARS:
+                for page in self._staged_pages(projector(tracked()), page_chars):
+                    if not isinstance(page, str) or not 1 <= len(page) <= self.max_page_chars:
                         raise ProjectionIntegrityError("projector yielded an invalid page")
                     raw = page.encode("utf-8")
                     nonce = os.urandom(12)
@@ -316,16 +321,38 @@ class SecureProjectionStore:
             count, _stats = self._authenticated_count(db, ident, attempt)
             if ordinal >= count:
                 raise ProjectionIntegrityError("projection page unavailable")
-            try:
-                page = db.execute(
-                    "SELECT length,ciphertext FROM pages WHERE attempt=? AND ordinal=?", (attempt, ordinal)
-                ).fetchone()
-                if not page:
-                    raise ValueError
-                raw = aead.AESGCM(self._key()).decrypt(
-                    page[1][:12], page[1][12:], self._aad(ident, attempt, ordinal, page[0]))
-                if len(raw) != page[0]:
-                    raise ValueError
-                return raw.decode("utf-8")
-            except (InvalidTag, KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
-                raise ProjectionIntegrityError("projection authentication failed") from exc
+            page = db.execute(
+                "SELECT length,ciphertext FROM pages WHERE attempt=? AND ordinal=?", (attempt, ordinal)
+            ).fetchone()
+            return self._decrypt_page(ident, attempt, ordinal, page)
+
+    def _decrypt_page(self, ident: dict, attempt: str, ordinal: int, page,
+                      cipher: aead.AESGCM | None = None) -> str:
+        try:
+            if not page:
+                raise ValueError
+            cipher = cipher or aead.AESGCM(self._key())
+            raw = cipher.decrypt(page[1][:12], page[1][12:],
+                                 self._aad(ident, attempt, ordinal, page[0]))
+            if len(raw) != page[0]:
+                raise ValueError
+            return raw.decode("utf-8")
+        except (InvalidTag, KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise ProjectionIntegrityError("projection authentication failed") from exc
+
+    def _iter_sealed_pages(self, entry: dict, version: int, attempt: str) -> Iterator[str]:
+        """Private linear-time read of one pinned, completed SQLite snapshot."""
+        ident = self._identity(entry, version)
+        with self._connect() as db:
+            db.execute("BEGIN")
+            count, _stats = self._authenticated_count(db, ident, attempt)
+            cipher = aead.AESGCM(self._key())
+            seen = 0
+            for ordinal, length, ciphertext in db.execute(
+                    "SELECT ordinal,length,ciphertext FROM pages WHERE attempt=? ORDER BY ordinal", (attempt,)):
+                if ordinal != seen:
+                    raise ProjectionIntegrityError("projection page sequence is incomplete")
+                yield self._decrypt_page(ident, attempt, ordinal, (length, ciphertext), cipher)
+                seen += 1
+            if seen != count:
+                raise ProjectionIntegrityError("projection page sequence is incomplete")

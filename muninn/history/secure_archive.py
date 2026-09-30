@@ -516,6 +516,27 @@ class SecureHistoryArchive:
         journal = source_root / "capture-jobs.db"
         if copy_journal and (journal.exists() or _is_link(journal)):
             copy_sealed(journal, destination / journal.name)
+        for evidence_name in ("source-evidence", "credential-context"):
+            evidence = source_root / evidence_name
+            if not (evidence.exists() or _is_link(evidence)):
+                continue
+            # Snapshot SQLite transactionally: copying a live DB file alone
+            # could split a committed evidence seal from its encrypted pages.
+            import sqlite3
+
+            verify_private(evidence)
+            original = evidence / "projections.sqlite3"
+            verify_private(original)
+            create_private_directory(destination / evidence_name)
+            target = destination / evidence_name / "projections.sqlite3"
+            create_private_file(target)
+            source_db = sqlite3.connect(original.resolve().as_uri() + "?mode=ro", uri=True)
+            target_db = sqlite3.connect(target)
+            try:
+                source_db.backup(target_db)
+            finally:
+                source_db.close()
+                target_db.close()
 
     @classmethod
     def restore_from_backup(cls, backup_root: Path, destination: Path,
@@ -528,6 +549,14 @@ class SecureHistoryArchive:
             from muninn.history.capture_journal import CaptureJournal
 
             CaptureJournal(restored, recover=False).verify_all()
+        if (destination / "source-evidence").exists():
+            from muninn.history.source_evidence import SourceEvidenceStore
+
+            SourceEvidenceStore(restored).verify_all()
+        if (destination / "credential-context").exists():
+            from muninn.history.credential_context import CredentialContextStore
+
+            CredentialContextStore(restored).verify_all()
         return restored
 
     def backup_to(self, destination: Path) -> dict[str, int]:
@@ -545,6 +574,14 @@ class SecureHistoryArchive:
                 raise VaultIntegrityError("History backup identity mismatch")
             report = backup.verify_all()
             CaptureJournal(backup, recover=False).verify_all()
+            if (destination / "source-evidence").exists():
+                from muninn.history.source_evidence import SourceEvidenceStore
+
+                report["evidence_snapshots_verified"] = SourceEvidenceStore(backup).verify_all()["snapshots"]
+            if (destination / "credential-context").exists():
+                from muninn.history.credential_context import CredentialContextStore
+
+                report["credential_context_snapshots_verified"] = CredentialContextStore(backup).verify_all()["snapshots"]
             return report
 
     def metadata_catalog(self, *, provider: str | None = None, offset: int = 0,

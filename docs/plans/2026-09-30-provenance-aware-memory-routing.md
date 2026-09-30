@@ -1,4 +1,4 @@
-# Provenance-aware memory routing (proposed architecture; implementation pending)
+# Provenance-aware memory routing (source-unit foundation implemented; filing pending)
 
 ## Decision and observable outcome
 
@@ -25,6 +25,9 @@ evidence cannot settle a consequential classification or conflict.
   alone. A 256 KiB physical-line limit in its fast path can also lose
   structured context even though the streaming projection supports large
   values.
+  **Update:** the model-window fast path now uses authenticated streaming source
+  units, eliminating that physical-line cap. Encrypted sidecars preserve unit
+  provenance for review; ordinary analysis still lacks durable claim filing.
 - Strict secure analysis interprets a pertinent search hit in a bounded
   window. It does not provide full historical-archive enrichment coverage.
   The encrypted analysis result in the search journal expires after 24 hours;
@@ -60,6 +63,14 @@ evidence cannot settle a consequential classification or conflict.
   not reliably its project. Parse `session_meta` and each `turn_context.cwd`
   as bounded provider metadata, attaching the applicable cwd to each turn;
   never apply the session's final cwd retroactively to earlier turns.
+
+**Implemented foundation:** immutable encrypted source-unit pages, per-occurrence
+credential context replay, model-weight-bound review caches, keyset review
+pagination that retains UNKNOWN as pending, and portable sidecar recovery.
+Both streaming source passes authenticate their complete size/hash before
+publication. Gemini supports pretty-printed container JSON; other providers
+retain strict JSONL. See the source-unit integration evidence receipt for the
+bounded real-provider/model checks and exact remaining gaps.
 
 The 2026-09-30 read-only local join audit found 24,627 ambiguity rows across
 1,074 transcript snapshots, with 0 missing and 0 nonunique archive joins.

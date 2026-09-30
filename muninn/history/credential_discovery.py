@@ -155,7 +155,8 @@ def _strip_sgr_chunks(chunks: Iterable[bytes]) -> Iterator[bytes]:
 def _iter_findings(chunks: Iterable[bytes], source_hint: str,
                    stats: ExtractionStats, assignment: re.Pattern[str], *,
                    encoding: str = "utf-8-sig", errors: str = "strict",
-                   reject_binary: bool = False, include_ambiguous: bool = False
+                   reject_binary: bool = False, include_ambiguous: bool = False,
+                   include_context: bool = False,
                    ) -> Iterator[tuple[str, str, str] | AmbiguousCandidate]:
     """Scan decoded text with fixed overlap; yield only unambiguous assignments.
 
@@ -166,11 +167,22 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
     decoder = codecs.getincrementaldecoder(encoding)(errors)
     tail = ""
     total = 0
+    total_lines = 0
     last_start = -1
 
     def examine(window: str, base: int, safe_end: int
                 ) -> Iterator[tuple[str, str, str] | AmbiguousCandidate]:
         nonlocal last_start
+        def ambiguity(name: str, reason: str, candidate: str, start: int) -> AmbiguousCandidate:
+            line_start = window.rfind("\n", 0, start) + 1
+            line_end = window.find("\n", start)
+            if line_end < 0:
+                line_end = len(window)
+            return AmbiguousCandidate(
+                name, reason, candidate, source_hint,
+                total_lines - tail.count("\n") + window.count("\n", 0, start) if include_context else None,
+                window[max(line_start, start - 256):min(line_end, start + 1024)] if include_context else "",
+            )
         for match in assignment.finditer(window):
             absolute = base + match.start()
             if absolute <= last_start or (base > 0 and match.start() == 0):
@@ -187,14 +199,14 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
             if value_match is None:
                 stats.reject("unparsed_value")
                 if include_ambiguous:
-                    yield AmbiguousCandidate(name, "unparsed_value",
-                                             _bounded_candidate(window, match.end()), source_hint)
+                    yield ambiguity(name, "unparsed_value",
+                                    _bounded_candidate(window, match.end()), match.start())
                 continue
             rejection = _value_rejection(value_match.group("value"))
             if rejection is not None:
                 stats.reject(rejection)
                 if include_ambiguous:
-                    yield AmbiguousCandidate(name, rejection, value_match.group("value"), source_hint)
+                    yield ambiguity(name, rejection, value_match.group("value"), match.start())
                 continue
             if reject_binary:
                 line_start = window.rfind("\n", 0, match.start()) + 1
@@ -203,8 +215,7 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
                        (ord(char) < 32 and char not in "\t\r\n") for char in context):
                     stats.reject("unsafe_context")
                     if include_ambiguous:
-                        yield AmbiguousCandidate(name, "unsafe_context",
-                                                 value_match.group("value"), source_hint)
+                        yield ambiguity(name, "unsafe_context", value_match.group("value"), match.start())
                     continue
             stats.accepted += 1
             yield name, value_match.group("value"), source_hint
@@ -222,6 +233,7 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
         safe_end = max(0, len(window) - _OVERLAP)
         yield from examine(window, base, safe_end)
         total += len(decoded)
+        total_lines += decoded.count("\n")
         tail = window[-_OVERLAP:]
     final = decoder.decode(b"", final=True)
     if reject_binary and final:
@@ -283,11 +295,12 @@ def iter_project_findings(chunks: Iterable[bytes], source_hint: str,
 
 
 def iter_transcript_findings(chunks: Iterable[bytes],
-                             stats: ExtractionStats, *, include_ambiguous: bool = False
+                             stats: ExtractionStats, *, include_ambiguous: bool = False,
+                             include_context: bool = False,
                              ) -> Iterator[tuple[str, str, str] | AmbiguousCandidate]:
     """Historical observations only; never claim that a captured key is current."""
     return _iter_findings(chunks, "", stats, _INLINE_ASSIGN,
-                          include_ambiguous=include_ambiguous)
+                          include_ambiguous=include_ambiguous, include_context=include_context)
 
 
 def _is_link_or_junction(path: Path) -> bool:

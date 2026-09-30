@@ -20,6 +20,7 @@ class CandidateForReview:
     name: str
     reason: str
     candidate: str
+    source_context: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -61,8 +62,11 @@ def classify_local(items: list[CandidateForReview], *, model: str,
         raise ValueError("Invalid local review residency")
     if any(len(item.candidate) > 512 for item in items):
         raise ValueError("Oversized local review candidate")
+    if any(not item.source_context for item in items):
+        return [ReviewDecision(item.id, "deferred", "unresolved") for item in items]
     data = [{"index": index, "name": item.name, "reason": item.reason,
-             "candidate": item.candidate} for index, item in enumerate(items)]
+             "candidate": item.candidate, "source_context": item.source_context}
+            for index, item in enumerate(items)]
     messages = [
         {"role": "system", "content": (
             "You classify possible credential assignments for a local encrypted vault. "
@@ -71,6 +75,10 @@ def classify_local(items: list[CandidateForReview], *, model: str,
             '"confidence":0.0}]}. Include every index once. Never repeat any input text, '
             "never invent a credential, and choose uncertain when evidence is insufficient. "
             "A reference or documentation placeholder is not a credential value."
+            " Use its original source type, record, project evidence and timestamp; "
+            "capture time is not conversation time. A key shown in documentation "
+            "can still be real. Reject only when this specific occurrence proves "
+            "it is not a secret, never merely because it looks unfamiliar."
         )},
         {"role": "user", "content": json.dumps({"items": data}, ensure_ascii=True)},
     ]
