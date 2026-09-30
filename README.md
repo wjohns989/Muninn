@@ -616,7 +616,7 @@ inaccessible directory increments `walk_errors` and `errors` without stopping
 accessible siblings or the independent archive scan; the final report remains
 `complete=false` and the command exits with code 2 until every coverage gap is
 resolved. Project reports likewise classify `root`, `walk`, `path`, `metadata`,
-`utf8`, `io`, `source_changed`, and `other`; `walk_errors` remains a compatible
+`utf8`, `unsupported_binary`, `io`, `source_changed`, and `other`; `walk_errors` remains a compatible
 count of root and walk gaps and must not be added to `errors` again. Source hints retain valid long and Unicode relative paths rather
 than rejecting them at an arbitrary short display limit. Each
 fully verified archive snapshot commits an authenticated scan receipt in the
@@ -632,9 +632,12 @@ python -m muninn.cli credentials backup --root '<your-private-data-dir>\credenti
 ```
 
 Only the named project roots and archive are scanned. Generated/example `.env`
-files, linked paths, unsupported assignments, and non-UTF-8 sources are not
-silently treated as recovered credentials; check the scan report and the source
-before assuming a key is absent. Documentation examples and commented-out code
+files, linked paths, and unsupported assignments are not silently treated as
+recovered credentials. Project text scanning supports UTF-8, BOM-marked UTF-16,
+and ASCII-shaped assignments surrounded by legacy 8-bit text; `.env` and
+transcript decoding remain strict UTF-8. Binary-like project files are reported
+as `unsupported_binary` coverage errors, not successful scans. Check the scan
+report and the source before assuming a key is absent. Documentation examples and commented-out code
 may be detected: every discovered record is marked `candidate_status=unverified`,
 not proof that the key is live or valid. The passphrase is not stored for background
 scanning, so newly changed project files require another explicit local scan.

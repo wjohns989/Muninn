@@ -12,8 +12,10 @@ import json
 import os
 import queue
 import re
+import stat
 import threading
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
@@ -58,6 +60,9 @@ _PROJECT_TEXT_SUFFIXES = {
 _PROJECT_TEXT_NAMES = {"dockerfile", "makefile", "config", "settings"}
 _OVERLAP = 1024
 _CHUNK = 64 * 1024
+_BINARY_CONTROLS = str.maketrans("", "", "".join(
+    chr(codepoint) for codepoint in range(32) if codepoint not in (9, 10, 13)
+))
 
 
 @dataclass(repr=False)
@@ -83,19 +88,25 @@ class CredentialScanSourceChangedError(RuntimeError):
     """A selected source changed before its scan could commit."""
 
 
+class CredentialScanBinaryError(ValueError):
+    """A selected project text file is binary-like and cannot be safely interpreted."""
+
+
 def _acceptable_value(value: str) -> bool:
     return not (_PLACEHOLDER.search(value) or len(set(value)) < 4)
 
 
 def _iter_findings(chunks: Iterable[bytes], source_hint: str,
-                   stats: ExtractionStats, assignment: re.Pattern[str]) -> Iterator[tuple[str, str, str]]:
-    """Scan every UTF-8 byte with fixed overlap; yield only unambiguous assignments.
+                   stats: ExtractionStats, assignment: re.Pattern[str], *,
+                   encoding: str = "utf-8-sig", errors: str = "strict",
+                   reject_binary: bool = False) -> Iterator[tuple[str, str, str]]:
+    """Scan decoded text with fixed overlap; yield only unambiguous assignments.
 
-    A truncated or invalid UTF-8 stream raises and therefore rolls back the
-    caller's source transaction. Quoted, expanded, and multiline values are
-    counted as ambiguous, never guessed or silently accepted.
+    The strict env/transcript path rolls back on invalid UTF-8. Project files
+    may preserve undecodable bytes as surrogates, but never accept them inside
+    an assignment. A late binary-like block rolls back the whole source.
     """
-    decoder = codecs.getincrementaldecoder("utf-8-sig")("strict")
+    decoder = codecs.getincrementaldecoder(encoding)(errors)
     tail = ""
     total = 0
     last_start = -1
@@ -118,6 +129,13 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
             if value_match is None or not _acceptable_value(value_match.group("value")):
                 stats.ambiguous += 1
                 continue
+            if reject_binary:
+                line_start = window.rfind("\n", 0, match.start()) + 1
+                context = window[line_start:value_match.end()]
+                if any(0xD800 <= ord(char) <= 0xDFFF or
+                       (ord(char) < 32 and char not in "\t\r\n") for char in context):
+                    stats.ambiguous += 1
+                    continue
             stats.accepted += 1
             yield name, value_match.group("value"), source_hint
 
@@ -125,6 +143,10 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
         if not isinstance(raw, bytes):
             raise TypeError("Credential scan input is not bytes")
         decoded = decoder.decode(raw)
+        if reject_binary and decoded:
+            controls = len(decoded) - len(decoded.translate(_BINARY_CONTROLS))
+            if controls / len(decoded) > 0.02:
+                raise CredentialScanBinaryError("Unsupported binary-like project source")
         window = tail + decoded
         base = total - len(tail)
         safe_end = max(0, len(window) - _OVERLAP)
@@ -132,6 +154,10 @@ def _iter_findings(chunks: Iterable[bytes], source_hint: str,
         total += len(decoded)
         tail = window[-_OVERLAP:]
     final = decoder.decode(b"", final=True)
+    if reject_binary and final:
+        controls = len(final) - len(final.translate(_BINARY_CONTROLS))
+        if controls / len(final) > 0.02:
+            raise CredentialScanBinaryError("Unsupported binary-like project source")
     window = tail + final
     yield from examine(window, total - len(tail), len(window))
 
@@ -143,8 +169,41 @@ def iter_env_findings(chunks: Iterable[bytes], source_hint: str,
 
 def iter_project_findings(chunks: Iterable[bytes], source_hint: str,
                           stats: ExtractionStats) -> Iterator[tuple[str, str, str]]:
-    """Find assignment-shaped credentials in supported project text files."""
-    return _iter_findings(chunks, source_hint, stats, _PROJECT_ASSIGN)
+    """Find safe ASCII assignments in UTF-8, legacy 8-bit, or BOM-marked UTF-16 text."""
+    source = iter(chunks)
+    prefix_parts = []
+    prefix_size = 0
+    while prefix_size < 4096:
+        try:
+            part = next(source)
+        except StopIteration:
+            break
+        if not isinstance(part, bytes):
+            raise TypeError("Credential scan input is not bytes")
+        prefix_parts.append(part)
+        prefix_size += len(part)
+    prefix = b"".join(prefix_parts)
+    encoding = "utf-8-sig"
+    errors = "surrogateescape"
+    if prefix.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        encoding, errors = "utf-16", "strict"
+    elif prefix.startswith(codecs.BOM_UTF8):
+        # Some exported Markdown has a UTF-8 BOM followed by a UTF-16LE body.
+        sample = prefix[3:4099]
+        high = sample[1::2]
+        low = sample[::2]
+        if (len(high) >= 8 and high.count(0) / len(high) >= 0.6
+                and low.count(0) / len(low) <= 0.2):
+            try:
+                decoded = sample[:len(sample) - len(sample) % 2].decode("utf-16le")
+            except UnicodeError:
+                decoded = ""
+            if decoded and sum(char.isprintable() or char in "\t\r\n" for char in decoded) / len(decoded) >= 0.9:
+                prefix = prefix[3:]
+                encoding, errors = "utf-16le", "strict"
+    yield from _iter_findings(chain((prefix,), source), source_hint, stats,
+                              _PROJECT_ASSIGN, encoding=encoding, errors=errors,
+                              reject_binary=True)
 
 
 def iter_transcript_findings(chunks: Iterable[bytes],
@@ -154,7 +213,16 @@ def iter_transcript_findings(chunks: Iterable[bytes],
 
 
 def _is_link_or_junction(path: Path) -> bool:
-    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+    try:
+        info = os.lstat(path)
+    except OSError:
+        # The caller's walk/source check reports an inaccessible entry.
+        return False
+    # Some Windows directory reparse tags (e.g. inaccessible WSL links) are
+    # neither Path.is_symlink() nor Path.is_junction(). Never descend into one.
+    if getattr(info, "st_file_attributes", 0) & 0x400:
+        return True
+    return stat.S_ISLNK(info.st_mode) or (hasattr(path, "is_junction") and path.is_junction())
 
 
 def _env_files(root: Path, *, all_project_text: bool,
@@ -195,7 +263,8 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
         "files": 0, "succeeded": 0, "errors": 0, "walk_errors": 0, "ambiguous": 0,
         "candidates": 0, "inserted": 0, "updated": 0, "stale": 0, "complete": False,
         "error_categories": {name: 0 for name in (
-            "root", "walk", "path", "metadata", "utf8", "io", "source_changed", "other"
+            "root", "walk", "path", "metadata", "utf8", "unsupported_binary",
+            "io", "source_changed", "other"
         )},
     }
     try:
@@ -291,6 +360,7 @@ def _scan_project(root: Path, store: CredentialStore, *, passphrase: str,
             category = ("path" if isinstance(exc, CredentialScanPathError)
                         else "metadata" if isinstance(exc, CredentialScanMetadataError)
                         else "source_changed" if isinstance(exc, CredentialScanSourceChangedError)
+                        else "unsupported_binary" if isinstance(exc, CredentialScanBinaryError)
                         else "utf8" if isinstance(exc, UnicodeError)
                         else "io" if isinstance(exc, OSError)
                         else "other")

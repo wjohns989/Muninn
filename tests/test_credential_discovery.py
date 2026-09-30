@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 import muninn.history.credential_discovery as discovery
 from muninn.history.credential_crypto import VaultIntegrityError
@@ -51,6 +52,85 @@ def test_large_noncredential_line_does_not_hide_later_assignment():
 def test_invalid_utf8_is_not_silently_skipped():
     with pytest.raises(UnicodeDecodeError):
         list(iter_env_findings([b"API_KEY=goodVALUE123\n", b"\xff"], ".env", ExtractionStats()))
+
+
+@pytest.mark.parametrize("payload", [
+    b"legacy \x96 text\nSERVICE_API_KEY=realVALUE12345678\n",
+    b"legacy \x81 text\nSERVICE_API_KEY=realVALUE12345678\n",
+    "SERVICE_API_KEY=realVALUE12345678\n".encode("utf-16"),
+    "SERVICE_API_KEY=realVALUE12345678\n".encode("utf-16-be").join([b"\xfe\xff", b""]),
+    b"\xef\xbb\xbf" + "SERVICE_API_KEY=realVALUE12345678\n".encode("utf-16le"),
+])
+def test_project_text_scanner_accepts_legacy_bytes_and_utf16(payload):
+    stats = ExtractionStats()
+    found = list(discovery.iter_project_findings([payload[:9], payload[9:]], "settings.txt", stats))
+    assert found == [("SERVICE_API_KEY", "realVALUE12345678", "settings.txt")]
+
+
+def test_project_scanner_rejects_malformed_assignment_but_retains_safe_text():
+    stats = ExtractionStats()
+    payload = (b"BAD_API_KEY=realVALUE12345678\x81suffix\n"
+               b"x" * 98 + b"\x00\n"
+               b"GOOD_API_KEY=anotherVALUE12345678\n")
+    found = list(discovery.iter_project_findings([payload], "notes.txt", stats))
+    assert found == [("GOOD_API_KEY", "anotherVALUE12345678", "notes.txt")]
+
+
+@pytest.mark.parametrize("payload", [
+    b"\x00\x05\x16\x07" + b"\x00" * 4096,  # AppleDouble-like metadata
+    b"\x03\x00\x08\x00" + b"\x00" * 4096,  # binary Android XML-like data
+])
+def test_project_scanner_classifies_binary_data_as_coverage_gap(payload):
+    with pytest.raises(discovery.CredentialScanBinaryError):
+        list(discovery.iter_project_findings([payload], "binary.xml", ExtractionStats()))
+
+
+def test_project_scanner_rejects_binary_late_without_partial_vault_write(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "settings.txt").write_bytes(
+        b"SERVICE_API_KEY=realVALUE12345678\n" + b"a" * 65536 + b"\x00" * 65536
+    )
+    store = CredentialStore.create(tmp_path / "vault", "synthetic vault passphrase")
+    report = scan_project_files(root, store, passphrase="synthetic vault passphrase")
+    assert report["complete"] is False
+    assert report["error_categories"]["unsupported_binary"] == 1
+    assert report["succeeded"] == 0
+    assert store.search("SERVICE_API_KEY") == []
+    assert "realVALUE12345678" not in str(report)
+
+
+def test_windows_reparse_directory_is_not_followed_when_not_reported_as_junction(tmp_path, monkeypatch):
+    target = tmp_path / "foreign-reparse"
+    target.mkdir()
+    (target / "hidden.py").write_text('HIDDEN_API_KEY = "hiddenVALUE12345678"\n')
+    accessible = tmp_path / "accessible"
+    accessible.mkdir()
+    (accessible / "visible.py").write_text('VISIBLE_API_KEY = "visibleVALUE12345678"\n')
+    original_lstat = discovery.os.lstat
+
+    def lstat(path, *args, **kwargs):
+        if str(path) == str(target):
+            return SimpleNamespace(st_file_attributes=0x400)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(discovery.os, "lstat", lstat)
+    assert discovery._is_link_or_junction(target) is True
+
+    def walk(_root, *, followlinks, onerror):
+        assert followlinks is False
+        children = ["foreign-reparse", "accessible"]
+        yield str(tmp_path), children, []
+        assert children == ["accessible"]
+        onerror(OSError("unrelated inaccessible directory"))
+        yield str(accessible), [], ["visible.py"]
+
+    monkeypatch.setattr(discovery.os, "walk", walk)
+    store = RecordingStore()
+    report = scan_project_files(tmp_path, store, passphrase="test-only")
+    assert report["files"] == report["succeeded"] == 1
+    assert report["walk_errors"] == report["errors"] == 1
+    assert [name for name, _, _ in store.values] == ["VISIBLE_API_KEY"]
 
 
 def test_project_scan_excludes_templates_and_reports_bad_source(tmp_path):

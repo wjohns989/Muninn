@@ -96,6 +96,26 @@ def test_credential_cli_scans_selected_project_without_printing_value(tmp_path: 
     assert CredentialStore(root).search("SERVICE_AUTH_TOKEN")[0]["source_hint"] == "config.yaml"
 
 
+def test_credential_cli_reports_binary_coverage_gap_without_source_details(tmp_path: Path, monkeypatch) -> None:
+    output = _TTY()
+    monkeypatch.setattr(sys, "stdin", _TTY())
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: _PASSPHRASE)
+    root = tmp_path / "vault"
+    CredentialStore.create(root, _PASSPHRASE)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "private-source.py").write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 4096)
+
+    code = cmd_credentials(_args("scan", root, project_root=[project]))
+    report = json.loads(output.getvalue().splitlines()[-1])
+    assert code == 2
+    assert report["complete"] is False
+    assert report["project"]["error_categories"]["unsupported_binary"] == 1
+    assert report["project"]["errors"] == 1
+    assert "private-source.py" not in output.getvalue()
+
+
 def test_walk_error_does_not_prevent_archive_phase(tmp_path: Path, monkeypatch) -> None:
     output = _TTY()
     monkeypatch.setattr(sys, "stdin", _TTY())

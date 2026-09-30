@@ -1085,7 +1085,7 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             )}
             project_totals["error_categories"] = {
                 name: sum(int(report["error_categories"][name]) for report in reports)
-                for name in ("root", "walk", "path", "metadata", "utf8", "io",
+                for name in ("root", "walk", "path", "metadata", "utf8", "unsupported_binary", "io",
                              "source_changed", "other")
             }
             project_totals["complete"] = all(report["complete"] for report in reports)
