@@ -24,7 +24,17 @@ def _safe_reason(value: object) -> str | None:
 
 
 def _probe_succeeded(analyze: str | None, wait_auto: bool, details: dict) -> bool:
-    if details.get("state") != "succeeded" or details.get("complete") is not True:
+    if details.get("state") != "succeeded":
+        return False
+    # A short result limit may intentionally truncate an otherwise healthy
+    # archive. Do not present that search as exhaustive, but still verify the
+    # returned hit and its independently queued analysis.
+    if details.get("complete") is not True and not (
+        details.get("truncated") is True
+        and details.get("missing") == 0
+        and details.get("overflow") == 0
+        and details.get("match_count", 0) > 0
+    ):
         return False
     if analyze:
         expected = "ollama" if analyze == "local" else "openrouter"

@@ -30,3 +30,12 @@ def test_reason_output_is_bounded_to_nonsecret_code():
     assert _safe_reason("ollama_model_already_resident") == "ollama_model_already_resident"
     assert _safe_reason("token=secret") == "other"
     assert _safe_reason("a" * 100) == "other"
+
+
+def test_bounded_search_can_probe_analysis_without_claiming_exhaustive_results():
+    base = {"state": "succeeded", "complete": False, "truncated": True,
+            "missing": 0, "overflow": 0, "match_count": 3,
+            "analysis_queued": True, "auto_analysis_state": "succeeded"}
+    assert _probe_succeeded(None, True, base)
+    assert not _probe_succeeded(None, True, {**base, "missing": 1})
+    assert not _probe_succeeded(None, True, {**base, "truncated": False})
