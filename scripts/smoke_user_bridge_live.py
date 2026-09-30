@@ -6,6 +6,7 @@ read-only project-context call. Never prints the token or returned context.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import queue
@@ -16,10 +17,51 @@ import time
 from pathlib import Path
 
 
+def _installed_profiles_match() -> bool:
+    """Attest three configured clients without printing config data."""
+    try:
+        try:
+            import tomllib as toml_reader
+        except ModuleNotFoundError:
+            import tomli as toml_reader
+        codex = toml_reader.loads(
+            (Path.home() / ".codex" / "config.toml").read_text(encoding="utf-8")
+        )["mcp_servers"]["muninn"]
+        gemini = json.loads(
+            (Path.home() / ".gemini" / "settings.json").read_text(encoding="utf-8")
+        )["mcpServers"]["muninn"]
+        claude = json.loads(
+            (Path.home() / ".claude.json").read_text(encoding="utf-8")
+        )["mcpServers"]["muninn"]
+        executable = Path(sys.executable).resolve(strict=True)
+        for profile, allowed in (
+            (codex, {"command", "args", "env", "startup_timeout_sec", "tool_timeout_sec"}),
+            (gemini, {"command", "args", "env"}),
+            (claude, {"type", "command", "args", "env"}),
+        ):
+            if (not isinstance(profile, dict) or set(profile) - allowed
+                    or (profile is claude and profile.get("type") != "stdio")
+                    or profile.get("args") != ["-E", "-P", "-m", "muninn_mcp_bridge"]
+                    or profile.get("env") != {"MUNINN_MCP_TOOLSET": "core"}
+                    or not isinstance(profile.get("command"), str)
+                    or Path(profile["command"]).resolve(strict=True) != executable):
+                return False
+    except (ImportError, OSError, KeyError, TypeError, ValueError):
+        return False
+    return True
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify-installed-profiles", action="store_true",
+                        help="Require actual Codex and Gemini configs to use this exact bridge")
+    args = parser.parse_args()
     if os.name != "nt":
         print(json.dumps({"state": "unsupported_host"}))
         return 2
+    if args.verify_installed_profiles and not _installed_profiles_match():
+        print(json.dumps({"state": "failed", "reason": "installed_profile_mismatch"}))
+        return 1
     env = os.environ.copy()
     env.pop("MUNINN_AUTH_TOKEN", None)
     env.pop("MUNINN_SERVER_URL", None)
@@ -85,6 +127,7 @@ def main() -> int:
             raise RuntimeError("context_call_failed")
         print(json.dumps({"state": "passed", "tool_count": len(names),
                           "context_call_ok": True,
+                          "installed_profiles_match": (True if args.verify_installed_profiles else None),
                           "elapsed_ms": round((time.monotonic() - started) * 1000)}, sort_keys=True))
         return 0
     except (BrokenPipeError, OSError, RuntimeError, TimeoutError, queue.Empty) as exc:
