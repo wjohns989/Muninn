@@ -89,6 +89,10 @@ The on-demand local GPU/Ollama resource view and its authenticated API are
 implemented in source but await a controlled service restart and live validation.
 The existing dashboard can serve the new HTML before that restart, but the new
 endpoint is unavailable until the running server loads the updated code.
+An isolated headless Edge check verified authenticated History rendering at
+1280px and 390px against the running loopback service; the narrow check exposed
+and drove a responsive-layout fix. This is not yet keyboard/accessibility or
+resource-endpoint live acceptance.
 
 Current delivery boundary: step 3's bounded search/fetch/job view, part of
 step 2's archive/index, capture-intent/source-scan, and accepted-hook status, and part of step 4's

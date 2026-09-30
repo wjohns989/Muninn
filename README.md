@@ -543,6 +543,11 @@ installed Ollama models, and Ollama residency without loading a model; an
 unavailable probe is shown as unknown, not idle. **Ordinary Search** remains a different
 corpus. This is a narrow operator slice, not the full control-center overhaul described in
 `docs/plans/2026-09-28-local-control-center-overhaul.md`.
+With optional Python Playwright and Microsoft Edge installed, `python -m
+scripts.smoke_dashboard_browser --width 390` checks the authenticated History
+view in an isolated, loopback-only browser context without searching transcripts
+or printing the token. Add `--expect-resources-ready` after deploying the new
+resource endpoint to verify its live UI response.
 For authenticated CLI commands, token precedence is explicit `--token-file`,
 `MUNINN_TOKEN_FILE`, process `MUNINN_AUTH_TOKEN`, Windows user environment,
 then the default `.muninn_token`. An explicit missing/empty token file does not
