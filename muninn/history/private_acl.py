@@ -116,3 +116,45 @@ def create_private_file(path: Path) -> None:
     except BaseException:
         # Leave any created empty file for inspection; never overwrite an existing one.
         raise
+
+
+def seal_owner_only_staging_file(path: Path) -> None:
+    """Seal a disposable SQLite staging file that inherited only this user's ACE.
+
+    This is deliberately not a repair operation for vault records or arbitrary
+    files. Callers must first constrain the path to their own staging namespace.
+    """
+    path = Path(path)
+    details = path.lstat()
+    if (_is_link(path) or not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1):
+        raise VaultPermissionError("History staging path is not a regular private file")
+    verify_private(path.parent)
+    if os.name != "nt":
+        verify_private(path)
+        return
+    if details.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise VaultPermissionError("History staging path is a reparse point")
+    security, user = _windows_identity()
+    try:
+        descriptor = security.GetNamedSecurityInfo(
+            str(path), security.SE_FILE_OBJECT,
+            security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION,
+        )
+        owner = descriptor.GetSecurityDescriptorOwner()
+        acl = descriptor.GetSecurityDescriptorDacl()
+        if (security.ConvertSidToStringSid(owner) != security.ConvertSidToStringSid(user)
+                or acl is None or acl.GetAceCount() != 1):
+            raise VaultPermissionError("History staging ACL is not owner-only")
+        (ace_type, _flags), _mask, ace_sid = acl.GetAce(0)
+        if (ace_type != security.ACCESS_ALLOWED_ACE_TYPE
+                or security.ConvertSidToStringSid(ace_sid) != security.ConvertSidToStringSid(user)):
+            raise VaultPermissionError("History staging ACL grants another identity")
+        control, _revision = descriptor.GetSecurityDescriptorControl()
+        if not control & security.SE_DACL_PROTECTED:
+            _protect_new_windows(path)
+        verify_private(path)
+    except VaultPermissionError:
+        raise
+    except (OSError, AttributeError, ValueError) as exc:
+        raise VaultPermissionError("History staging ACL sealing failed") from exc

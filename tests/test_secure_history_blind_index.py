@@ -444,6 +444,20 @@ def test_build_cleans_only_abandoned_private_chunk_staging(tmp_path: Path) -> No
     assert unrelated.read_text(encoding="utf-8") == "keep"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows inherited ACL regression")
+def test_build_recovers_owner_only_inherited_sqlite_journal(tmp_path: Path) -> None:
+    archive, _source = _archive(tmp_path)
+    index = SecureHistoryBlindIndex(archive)
+    journal = archive.root / "muninn-chunks-abandoned.db-journal"
+    journal.write_bytes(b"rebuildable encrypted staging journal")
+    from muninn.history.private_acl import VaultPermissionError, verify_private
+
+    with pytest.raises(VaultPermissionError, match="inherits"):
+        verify_private(journal)
+    assert index.build()["complete"] is True
+    assert not journal.exists()
+
+
 def test_legacy_small_overflow_upgrades_without_rewriting_archive(tmp_path: Path) -> None:
     archive, source = _archive(tmp_path)
     index = SecureHistoryBlindIndex(archive, filter_bytes=128)

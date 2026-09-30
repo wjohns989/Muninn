@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from muninn.history.credential_crypto import VaultIntegrityError
-from muninn.history.private_acl import create_private_file, verify_private
+from muninn.history.private_acl import create_private_file, seal_owner_only_staging_file, verify_private
 from muninn.history.safe_span import sanitize_agent_span
 from muninn.history.secure_archive import SafeHistoryMetadata, SecureHistoryArchive
 
@@ -147,7 +147,9 @@ class SecureHistoryBlindIndex:
                 continue
             if candidate.is_symlink() or candidate.resolve(strict=True).parent != root:
                 raise VaultIntegrityError("History index staging path is unsafe")
-            verify_private(candidate)
+            seal_owner_only_staging_file(candidate)
+            if candidate.resolve(strict=True).parent != root or candidate.lstat().st_nlink != 1:
+                raise VaultIntegrityError("History index staging path changed")
             candidate.unlink()
 
     def _aad(self, entry: dict, version: int) -> bytes:
@@ -369,6 +371,9 @@ class SecureHistoryBlindIndex:
         staged = sqlite3.connect(handle.name)
         keep_staging = False
         try:
+            mode = staged.execute("PRAGMA journal_mode=OFF").fetchone()
+            if not mode or str(mode[0]).lower() != "off":
+                raise VaultIntegrityError("History staging journal could not be disabled")
             staged.execute("CREATE TABLE chunks (ordinal INTEGER PRIMARY KEY, nonce BLOB, sealed BLOB)")
             decoder = codecs.getincrementaldecoder("utf-8")("strict")
             carry = ""
