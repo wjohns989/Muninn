@@ -101,6 +101,47 @@ def _iter_server_blocks(cfg: dict) -> list[dict]:
     return server_blocks
 
 
+def _bridge_profile_kind(server_cfg: dict, *, codex: bool = False) -> str | None:
+    """Classify the no-secret Windows stdio bridge without trusting its launch.
+
+    A bridge-looking near miss is never eligible for generic token injection.
+    """
+    command = server_cfg.get("command")
+    args = server_cfg.get("args")
+    mentions_bridge = ("muninn_mcp_bridge" in str(command).casefold() or
+                       (isinstance(args, list) and any(
+                           "muninn_mcp_bridge" in str(arg).casefold() for arg in args)))
+    if not mentions_bridge:
+        return None
+    allowed = {"command", "args", "env"}
+    if codex:
+        allowed.update({"startup_timeout_sec", "tool_timeout_sec"})
+    env = server_cfg.get("env")
+    executable = str(command).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if (set(server_cfg) <= allowed and executable in {"python.exe", "python"}
+            and args == ["-E", "-P", "-m", "muninn_mcp_bridge"]
+            and isinstance(env, dict)
+            and env == {"MUNINN_MCP_TOOLSET": "core"}):
+        return "exact"
+    return "near-miss"
+
+
+def _codex_bridge_profile_kind(text: str, section: list[str]) -> str | None:
+    if "muninn_mcp_bridge" not in "\n".join(section).casefold():
+        return None
+    try:
+        try:
+            import tomllib as toml_reader
+        except ModuleNotFoundError:
+            import tomli as toml_reader
+        profile = toml_reader.loads(text)["mcp_servers"]["muninn"]
+        if isinstance(profile, dict):
+            return _bridge_profile_kind(profile, codex=True) or "near-miss"
+    except (ImportError, KeyError, TypeError, ValueError):
+        pass
+    return "near-miss"
+
+
 def _patch_mcp_config_env(
     config_path: Path,
     *,
@@ -137,6 +178,10 @@ def _patch_mcp_config_env(
                 continue
             # Match any server whose name contains "muninn" (case-insensitive)
             if "muninn" not in server_name.lower():
+                continue
+            if _bridge_profile_kind(server_cfg) is not None:
+                # The bridge loads the user token at launch. Never serialize it
+                # into this config, including during rotate-token or --repair.
                 continue
             # HTTP MCP profiles authenticate in their own headers, not stdio
             # env. Injecting env here leaves the real auth unchanged and can
@@ -236,6 +281,8 @@ def _patch_codex_toml(
         return existing, updated
 
     muninn_body = lines[muninn_idx + 1 : muninn_end]
+    if _codex_bridge_profile_kind(text, muninn_body) is not None:
+        return False
     # The line-oriented writer understands bare TOML keys only. Quoted keys
     # are valid TOML but appending a bare duplicate would invalidate the file.
     if any(re.match(r"^\s*[\"']", line) for line in muninn_body):
@@ -358,6 +405,15 @@ def _collect_muninn_server_entries(config_path: Path) -> list[_DoctorServerEntry
                                                   token_check=False, url_check=False,
                                                   note="unsupported profile"))
                 continue
+            bridge_kind = _bridge_profile_kind(server_cfg)
+            if bridge_kind is not None:
+                entries.append(_DoctorServerEntry(
+                    config_path, server_name, None, None,
+                    token_check=False, url_check=False,
+                    note=("runtime-auth bridge; launch unverified" if bridge_kind == "exact"
+                          else "unsupported bridge-like profile"),
+                ))
+                continue
             if server_cfg.get("disabled"):
                 entries.append(_DoctorServerEntry(config_path, server_name, None, None,
                                                   token_check=False, url_check=False,
@@ -431,6 +487,14 @@ def _collect_codex_muninn_entries(config_path: Path) -> list[_DoctorServerEntry]
         return len(lines)
 
     muninn_end = _section_end(muninn_idx)
+    bridge_kind = _codex_bridge_profile_kind(text, lines[muninn_idx + 1:muninn_end])
+    if bridge_kind is not None:
+        return [_DoctorServerEntry(
+            config_path, "codex.muninn", None, None,
+            token_check=False, url_check=False,
+            note=("runtime-auth bridge; launch unverified" if bridge_kind == "exact"
+                  else "unsupported bridge-like profile"),
+        )]
     server_url = None
     bearer_token_env_var = None
     for line in lines[muninn_idx + 1 : muninn_end]:

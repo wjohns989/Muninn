@@ -74,6 +74,54 @@ def test_doctor_detects_drift_and_repairs_config(tmp_path, monkeypatch):
     assert env["MUNINN_SERVER_URL"] == "http://127.0.0.1:42069"
 
 
+def test_doctor_preserves_runtime_auth_bridge_profiles(tmp_path, monkeypatch, capsys):
+    token_file = tmp_path / "expected.token"
+    token_file.write_text("expected-test-token", encoding="utf-8")
+    gemini = tmp_path / "gemini.json"
+    _write_json(gemini, {"mcpServers": {"muninn": {
+        "command": "C:/Python/python.exe",
+        "args": ["-E", "-P", "-m", "muninn_mcp_bridge"],
+        "env": {"MUNINN_MCP_TOOLSET": "core"},
+    }}})
+    codex = tmp_path / "config.toml"
+    codex.write_text('[mcp_servers.muninn]\ncommand = "C:/Python/python.exe"\n'
+                     'args = ["-E", "-P", "-m", "muninn_mcp_bridge"]\n'
+                     '[mcp_servers.muninn.env]\nMUNINN_MCP_TOOLSET = "core"\n', encoding="utf-8")
+    before = (gemini.read_bytes(), codex.read_bytes())
+    monkeypatch.setattr(cli, "_MCP_CONFIG_PATHS", [gemini])
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", codex)
+    monkeypatch.setattr(cli, "_check_server_health", lambda url, token, timeout: (True, "ok"))
+    args = cli.build_parser().parse_args(["doctor", "--token-file", str(token_file), "--repair"])
+
+    assert cli.cmd_doctor(args) == 1  # Static config cannot prove the bridge launched.
+    output = capsys.readouterr().out
+    assert "token drift" not in output and "do not pin" not in output
+    assert "unverified" in output
+    assert (gemini.read_bytes(), codex.read_bytes()) == before
+    assert "expected-test-token" not in gemini.read_text(encoding="utf-8")
+    assert "expected-test-token" not in codex.read_text(encoding="utf-8")
+
+
+def test_doctor_never_injects_into_bridge_lookalikes(tmp_path):
+    gemini = tmp_path / "gemini.json"
+    _write_json(gemini, {"mcpServers": {"muninn": {
+        "command": "python.exe",
+        "args": ["-E", "-P", "-m", "muninn_mcp_bridge", "--unexpected"],
+        "env": {"MUNINN_MCP_TOOLSET": "core"},
+    }}})
+    codex = tmp_path / "config.toml"
+    codex.write_text('[mcp_servers.muninn]\ncommand = "python.exe"\n'
+                     'args = ["-E", "-P", "-m", "muninn_mcp_bridge", "--unexpected"]\n',
+                     encoding="utf-8")
+    before = (gemini.read_bytes(), codex.read_bytes())
+
+    assert cli._collect_muninn_server_entries(gemini)[0].note is not None
+    assert cli._collect_codex_muninn_entries(codex)[0].note is not None
+    assert not cli._patch_mcp_config_env(gemini, new_token="must-not-write", dry_run=False)
+    assert not cli._patch_codex_toml(codex, new_token="must-not-write", dry_run=False)
+    assert (gemini.read_bytes(), codex.read_bytes()) == before
+
+
 def test_doctor_returns_critical_when_no_expected_token(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_MCP_CONFIG_PATHS", [])
     monkeypatch.delenv("MUNINN_AUTH_TOKEN", raising=False)
