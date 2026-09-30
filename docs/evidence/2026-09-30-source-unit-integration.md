@@ -45,6 +45,37 @@
 
 ## Remaining acceptance gaps
 
+## Follow-up: credential context reader lock (2026-09-30)
+
+The first monitored six-row/two-call live sample validated its pre-review
+backup (10,424 credential records), then failed with `OperationalError` after
+one local model call. The post-review backup was not produced. An isolated
+regression reproduced `database is locked`: a DELETE-journal reader remained
+open across the yield while the same database tried to commit the review cache.
+No completed queue decision is claimed for that failed pass.
+
+The reader now releases connections before external yields, reads at most
+32 bounded encrypted pages at a time, and compares the consumed ciphertext
+sequence with a final pinned scan before iteration completes. This does not
+change the encrypted format or require a vault migration. Late mutation of an
+already-yielded page, deletion and invalid length fail closed. Cache writes
+can commit while the reader is suspended. A real encrypted-store integration
+test proves a partial review resumes from its cache and a late integrity
+failure prevents applying a queue decision (synthetic input/model only).
+
+Focused verification: 36 tests passed in 12.89 seconds plus two added
+integration cases passed in 2.86 seconds. Independent actual-diff review
+cleared this lock/integrity fix for the bounded retry, not broader activation.
+A fresh local interactive retry was opened with separate before/after
+destinations; its completion and classification quality remain to be observed.
+
+Read-only runtime recheck: strict archive ready, 5,248 snapshots / 4,112 sources;
+health/authenticated routes 200, anonymous protected route 401, no dashboard
+token disclosure, one expected interpreter/listener. Ollama had no loaded
+models and GPU utilization was 0%. The earlier corrected Linux CI and the
+capture-error diagnostic commit both passed all five GitHub checks. These
+claims do not prove this follow-up has been loaded by the running HTTP process.
+
 General durable claim extraction, project/type filing, temporal conflict review,
 historical backfill and UI integration are still implementation work. This slice
 does not promote provisional text into ordinary indexes. Credential triage needs

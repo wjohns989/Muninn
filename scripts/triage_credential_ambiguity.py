@@ -12,6 +12,7 @@ import getpass
 import json
 import sys
 import hashlib
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -258,11 +259,15 @@ def main() -> int:
             return 0 if review_resolved else 2
     except BaseException as exc:
         # Exception text can contain private source context; return only type.
-        print(json.dumps({"state": "failed", "error_category": type(exc).__name__,
+        failure = {"state": "failed", "error_category": type(exc).__name__,
                           "backup_state": backup_state,
                           "post_backup_unavailable": args.backup_after is not None
-                          and backup_state != "validated_post_triage_backup"},
-                         sort_keys=True), flush=True)
+                          and backup_state != "validated_post_triage_backup"}
+        if isinstance(exc, sqlite3.Error) and getattr(exc, "sqlite_errorname", "") in {
+                "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_READONLY", "SQLITE_FULL",
+                "SQLITE_IOERR", "SQLITE_CANTOPEN", "SQLITE_CORRUPT"}:
+            failure["sqlite_error_code"] = exc.sqlite_errorname
+        print(json.dumps(failure, sort_keys=True), flush=True)
         return 130 if isinstance(exc, KeyboardInterrupt) else 1
     return 0
 

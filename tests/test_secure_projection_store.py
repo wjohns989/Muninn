@@ -47,6 +47,47 @@ def test_success_and_wrong_version(tmp_path):
         store.get_page(ENTRY, 4, attempt, 0)
 
 
+@pytest.mark.parametrize("mutation", ["already_yielded", "later_deleted", "later_length"])
+def test_iterator_detects_changes_after_yield_even_with_same_count(tmp_path, mutation):
+    store, _ = _store(tmp_path)
+    attempt = store.build(ENTRY, 0, pages, page_chars=10)
+    reader = store._iter_sealed_pages(ENTRY, 0, attempt)
+    assert next(reader) == "alpha beta"
+    with store._connect() as db:
+        if mutation == "already_yielded":
+            db.execute("UPDATE pages SET ciphertext=zeroblob(length(ciphertext)) "
+                       "WHERE attempt=? AND ordinal=0", (attempt,))
+        elif mutation == "later_deleted":
+            db.execute("DELETE FROM pages WHERE attempt=? AND ordinal=1", (attempt,))
+        else:
+            db.execute("UPDATE pages SET length=999999999 "
+                       "WHERE attempt=? AND ordinal=1", (attempt,))
+    with pytest.raises(ProjectionIntegrityError):
+        list(reader)
+
+
+def test_iterator_multiple_batches_release_reader_before_each_yield(tmp_path):
+    store, _ = _store(tmp_path)
+
+    def many(source):
+        list(source)
+        yield "alpha beta gamma " * 100
+
+    attempt = store.build(ENTRY, 0, many, page_chars=10)
+    expected = store.count_pages(ENTRY, 0, attempt)
+    assert expected > 64
+    seen = 0
+    for page in store._iter_sealed_pages(ENTRY, 0, attempt):
+        assert 1 <= len(page) <= 10
+        # A committed write at every yield proves no consumer-spanning reader
+        # survives even at a batch boundary under DELETE journal mode.
+        with store._connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS iterator_write_probe(n INTEGER)")
+            db.execute("INSERT INTO iterator_write_probe VALUES(?)", (seen,))
+        seen += 1
+    assert seen == expected
+
+
 def test_no_plaintext_and_early_exit_and_late_tamper(tmp_path):
     store, archive = _store(tmp_path)
     with pytest.raises(ProjectionIntegrityError):

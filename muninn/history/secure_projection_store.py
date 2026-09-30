@@ -341,18 +341,62 @@ class SecureProjectionStore:
             raise ProjectionIntegrityError("projection authentication failed") from exc
 
     def _iter_sealed_pages(self, entry: dict, version: int, attempt: str) -> Iterator[str]:
-        """Private linear-time read of one pinned, completed SQLite snapshot."""
+        """Read bounded authenticated batches, releasing DB locks before yield.
+
+        Consumers can persist per-page review results while iterating. A pinned
+        read transaction would deadlock those writes under DELETE journaling.
+        Pages bind their immutable attempt/ordinal independently; completion is
+        authenticated at both ends. A final pinned ciphertext scan detects
+        changes even to pages already yielded. Consumers must exhaust before
+        promotion; no read transaction spans a consumer/model call.
+        """
         ident = self._identity(entry, version)
         with self._connect() as db:
-            db.execute("BEGIN")
-            count, _stats = self._authenticated_count(db, ident, attempt)
-            cipher = aead.AESGCM(self._key())
-            seen = 0
-            for ordinal, length, ciphertext in db.execute(
-                    "SELECT ordinal,length,ciphertext FROM pages WHERE attempt=? ORDER BY ordinal", (attempt,)):
+            count, stats = self._authenticated_count(db, ident, attempt)
+        cipher = aead.AESGCM(self._key())
+        consumed = hashlib.sha256()
+
+        def fingerprint(digest, ordinal, length, ciphertext):
+            if (not isinstance(ordinal, int) or ordinal < 0
+                    or not isinstance(length, int) or not 1 <= length <= self.max_page_chars * 4
+                    or not isinstance(ciphertext, bytes) or len(ciphertext) != length + 28):
+                raise ProjectionIntegrityError("projection authentication failed")
+            digest.update(ordinal.to_bytes(8, "big"))
+            digest.update(length.to_bytes(8, "big"))
+            digest.update(ciphertext)
+
+        seen = 0
+        while seen < count:
+            with self._connect() as db:
+                batch = db.execute(
+                    "SELECT ordinal,length,CASE WHEN length BETWEEN 1 AND ? "
+                    "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
+                    "FROM pages WHERE attempt=? AND ordinal>=? ORDER BY ordinal LIMIT 32",
+                    (self.max_page_chars * 4, attempt, seen)).fetchall()
+            if not batch:
+                raise ProjectionIntegrityError("projection page sequence is incomplete")
+            for ordinal, length, ciphertext in batch:
                 if ordinal != seen:
                     raise ProjectionIntegrityError("projection page sequence is incomplete")
+                fingerprint(consumed, ordinal, length, ciphertext)
                 yield self._decrypt_page(ident, attempt, ordinal, (length, ciphertext), cipher)
                 seen += 1
-            if seen != count:
-                raise ProjectionIntegrityError("projection page sequence is incomplete")
+        with self._connect() as db:
+            # This short scan has no external yields and sees one SQLite
+            # snapshot. Cache writes change a different table, not this digest.
+            db.execute("BEGIN")
+            final_count, final_stats = self._authenticated_count(db, ident, attempt)
+            current = hashlib.sha256()
+            checked = 0
+            for ordinal, length, ciphertext in db.execute(
+                    "SELECT ordinal,length,CASE WHEN length BETWEEN 1 AND ? "
+                    "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
+                    "FROM pages WHERE attempt=? ORDER BY ordinal",
+                    (self.max_page_chars * 4, attempt)):
+                if ordinal != checked:
+                    raise ProjectionIntegrityError("projection page sequence is incomplete")
+                fingerprint(current, ordinal, length, ciphertext)
+                checked += 1
+        if (seen != count or checked != count or final_count != count
+                or final_stats != stats or current.digest() != consumed.digest()):
+            raise ProjectionIntegrityError("projection page sequence is incomplete")

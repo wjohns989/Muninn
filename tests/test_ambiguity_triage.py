@@ -239,6 +239,64 @@ def test_all_contexts_must_finish_and_previous_model_decisions_are_reused(tmp_pa
     assert len(calls) == 2 and store.ambiguity_status() == {"rejected": 1}
 
 
+@pytest.mark.parametrize("tamper_after_model", [False, True])
+def test_real_context_store_review_cache_commit_and_late_integrity_gate(tmp_path, monkeypatch,
+                                                                       tamper_after_model):
+    from muninn.history.secure_archive import SecureHistoryArchive
+    from muninn.history.credential_review_source import CredentialReviewSource
+    from muninn.history.credential_discovery import ExtractionStats, iter_transcript_findings
+    from muninn.history.secure_projection_store import ProjectionIntegrityError
+    from muninn.history.ambiguity_triage import ReviewDecision
+    phrase = "synthetic passphrase long enough"
+    path = tmp_path / "chat.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in [
+        {"type": "session_meta", "payload": {"cwd": "C:/synthetic-project"}},
+        *[{"type": "event_msg", "timestamp": "2026-09-30T12:00:00Z", "payload": {
+            "type": "user_message", "message": "SERVICE_API_KEY=abc-123$def"}}] * 2,
+    ]) + "\n", encoding="utf-8")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", phrase)
+    archive.archive_file(path, "codex")
+    entry = archive._load_manifest()["files"][str(path.resolve())][0]
+    root = tmp_path / "vault"
+    store = CredentialStore.create(root, phrase)
+    store.scan_source(passphrase=phrase, project="codex", origin="transcript",
+                      source_hash=source_fingerprint(
+                          f"{archive.vault_id}:{entry['blob']}:{entry['sha256']}"),
+                      findings=iter_transcript_findings([path.read_bytes()], ExtractionStats(),
+                                                        include_ambiguous=True))
+    assert store.ambiguity_status() == {"pending": 1}
+    source = CredentialReviewSource(archive)
+    prepared = source.prepare(store.list_ambiguities(status="pending", limit=1)[0])
+    monkeypatch.setattr(runner, "probe_gpu", lambda: GpuState(7_500, 16_376, 1, time.time()))
+    monkeypatch.setattr(runner, "probe_ollama", lambda _url: (
+        [{"name": "qwen2.5:7b", "size": 4_700 * 1024 * 1024, "digest": "synthetic-weights"}], ()))
+    calls = []
+
+    def classify(items, **kwargs):
+        assert items[0].source_context["time_basis"] != "unknown"
+        calls.append(items[0].id)
+        if tamper_after_model and len(calls) == 1:
+            with source.contexts._connect() as db:
+                db.execute("UPDATE pages SET ciphertext=zeroblob(length(ciphertext)) "
+                           "WHERE attempt=? AND ordinal=1", (prepared[3],))
+        return [ReviewDecision(items[0].id, "rejected", "local-model")]
+
+    monkeypatch.setattr(runner, "classify_local", classify)
+    kwargs = dict(root=root, passphrase=phrase, limit=1, model_limit=1,
+                  model="qwen2.5:7b", apply=True, base_url="http://127.0.0.1:11434",
+                  review_source=source)
+    if tamper_after_model:
+        with pytest.raises(ProjectionIntegrityError):
+            runner.run(**kwargs)
+        assert store.ambiguity_status() == {"pending": 1}
+    else:
+        first = runner.run(**kwargs)
+        assert first["model_calls"] == 1 and first["left_pending"] == 1
+        second = runner.run(**kwargs)
+        assert second["contexts_reused"] == 1 and second["model_rejected"] == 1
+        assert len(calls) == 2 and store.ambiguity_status() == {"rejected": 1}
+
+
 def test_interactive_triage_validates_backups_before_and_after(tmp_path, monkeypatch):
     passphrase = "synthetic passphrase long enough"
     root = tmp_path / "vault"

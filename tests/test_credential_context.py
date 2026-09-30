@@ -67,6 +67,23 @@ def test_context_decision_cache_binds_source_page_and_model_identity(tmp_path):
         store.cached_review(entry, 0, attempt, 1, identity)
 
 
+def test_record_review_while_context_iterator_is_open_does_not_hold_read_lock(tmp_path):
+    import time
+    archive, entry = _fixture(tmp_path)
+    store = CredentialContextStore(archive)
+    attempt = store.build_snapshot(entry, 0)
+    contexts = store.contexts(entry, 0, attempt)
+    assert next(contexts).source_line == 2
+    started = time.monotonic()
+    try:
+        store.record_review(entry, 0, attempt, 0, "a" * 64, "rejected")
+        assert store.cached_review(entry, 0, attempt, 0, "a" * 64) == "rejected"
+        assert len(list(contexts)) == 1
+        assert time.monotonic() - started < 5
+    finally:
+        contexts.close()
+
+
 def test_orphan_review_fails_portable_backup_verification(tmp_path):
     archive, entry = _fixture(tmp_path)
     store = CredentialContextStore(archive)
