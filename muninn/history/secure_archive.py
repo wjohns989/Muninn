@@ -361,12 +361,38 @@ class SecureHistoryArchive:
 
     def _verify_entry(self, entry: dict[str, Any], *, collect: bool,
                       on_chunk: Callable[[bytes], None] | None = None) -> bytes | None:
+        """Authenticate the complete entry before returning to a caller.
+
+        The private iterator yields per-frame plaintext before final trailer
+        verification. This wrapper always exhausts it; a future projection
+        writer must do the same before publishing its encrypted staging data.
+        """
+        output = bytearray() if collect else None
+        for chunk in self._iter_verified_entry(entry):
+            if output is not None:
+                output.extend(chunk)
+            if on_chunk is not None:
+                try:
+                    on_chunk(chunk)
+                except (InvalidTag, ValueError, zlib.error) as exc:
+                    # Preserve the old callback contract: a derived reader's
+                    # parse/integrity failure cannot appear as a successful
+                    # archive verification with a harmless caller error.
+                    raise VaultIntegrityError("History blob authentication failed") from exc
+        return bytes(output) if output is not None else None
+
+    def _iter_verified_entry(self, entry: dict[str, Any]) -> Iterator[bytes]:
+        """Yield bounded decrypted chunks; normal exhaustion is the integrity gate.
+
+        No caller may publish derived data after breaking, closing, or failing
+        this iterator early. The final manifest digest, size, and trailer are
+        checked only after its final yielded chunk has been consumed.
+        """
         blob_id = entry["blob"]
         if not isinstance(blob_id, str) or len(blob_id) != 32 or any(c not in "0123456789abcdef" for c in blob_id):
             raise VaultIntegrityError("History archive blob identity is invalid")
         blob = self._blobs / f"{blob_id}.enc"
         verify_private(blob)
-        output = bytearray() if collect else None
         digest = hashlib.sha256()
         size = 0
         with blob.open("rb") as handle:
@@ -393,15 +419,15 @@ class SecureHistoryArchive:
                     if final:
                         trailer = json.loads(payload)
                     else:
-                        chunk = zlib.decompress(payload)
-                        if len(chunk) > _CHUNK:
+                        inflater = zlib.decompressobj()
+                        chunk = inflater.decompress(payload, _CHUNK + 1)
+                        if (len(chunk) > _CHUNK or not inflater.eof
+                                or inflater.unused_data or inflater.unconsumed_tail
+                                or inflater.flush(1)):
                             raise ValueError
                         size += len(chunk)
-                        if output is not None:
-                            output.extend(chunk)
-                        if on_chunk is not None:
-                            on_chunk(chunk)
                         digest.update(chunk)
+                        yield chunk
                 except (InvalidTag, ValueError, zlib.error) as exc:
                     raise VaultIntegrityError("History blob authentication failed") from exc
             if handle.read(1):
@@ -410,7 +436,6 @@ class SecureHistoryArchive:
                 or trailer != {"size": entry["size"], "sha256": entry["sha256"],
                                "chunks": entry["chunks"]}):
             raise VaultIntegrityError("History blob does not match its authenticated manifest")
-        return bytes(output) if output is not None else None
 
     def verify_all(self) -> dict[str, int]:
         """Stream every archived snapshot through authentication without retaining plaintext."""

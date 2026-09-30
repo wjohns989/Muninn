@@ -1,9 +1,11 @@
+import struct
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from muninn.history.credential_crypto import VaultIntegrityError
-from muninn.history.secure_archive import SecureHistoryArchive
+from muninn.history.secure_archive import _MAGIC, SecureHistoryArchive
 
 
 def test_portable_plan_forwards_prompted_passphrase_to_service(tmp_path, monkeypatch, capsys):
@@ -76,6 +78,50 @@ def test_blob_and_manifest_tampering_fail_closed(tmp_path):
     newest.write_bytes(raw)
     with pytest.raises(VaultIntegrityError):
         SecureHistoryArchive(archive.root, PASSPHRASE)
+
+
+def test_verified_chunk_iterator_requires_full_exhaustion(tmp_path):
+    source = tmp_path / "long.jsonl"
+    source.write_bytes(b"a" * (2 * 1024 * 1024 + 73))
+    archive = SecureHistoryArchive.create(tmp_path / "secure", PASSPHRASE)
+    archive.archive_file(source, "codex")
+    entry = archive._load_manifest()["files"][str(source.resolve())][0]
+    assert b"".join(archive._iter_verified_entry(entry)) == source.read_bytes()
+
+    blob = archive.root / "blobs" / f"{entry['blob']}.enc"
+    altered = bytearray(blob.read_bytes())
+    altered[-1] ^= 1  # Late trailer failure, after all plaintext chunks.
+    blob.write_bytes(altered)
+    iterator = archive._iter_verified_entry(entry)
+    assert next(iterator) == b"a" * (1024 * 1024)
+    iterator.close()  # An early consumer has not authenticated the source.
+    with pytest.raises(VaultIntegrityError):
+        list(archive._iter_verified_entry(entry))
+    with pytest.raises(VaultIntegrityError):
+        archive._verify_entry(entry, collect=False)
+
+
+def test_authenticated_frame_rejects_trailing_compressed_data(tmp_path):
+    source = tmp_path / "source.jsonl"
+    source.write_bytes(b"private message")
+    archive = SecureHistoryArchive.create(tmp_path / "secure", PASSPHRASE)
+    archive.archive_file(source, "codex")
+    entry = archive._load_manifest()["files"][str(source.resolve())][0]
+    blob = archive.root / "blobs" / f"{entry['blob']}.enc"
+    raw = blob.read_bytes()
+    prefix_size = len(_MAGIC) + 8
+    prefix = raw[:prefix_size]
+    sealed_size = struct.unpack(">I", raw[prefix_size:prefix_size + 4])[0]
+    sealed_start = prefix_size + 4
+    sealed_end = sealed_start + sealed_size
+    cipher = AESGCM(archive._key)
+    nonce = prefix[len(_MAGIC):] + struct.pack(">I", 0)
+    aad = archive._chunk_aad(entry["blob"], 0, False)
+    compressed = cipher.decrypt(nonce, raw[sealed_start:sealed_end], aad)
+    resealed = cipher.encrypt(nonce, compressed + b"TRAILING-GARBAGE", aad)
+    blob.write_bytes(prefix + struct.pack(">I", len(resealed)) + resealed + raw[sealed_end:])
+    with pytest.raises(VaultIntegrityError, match="authentication failed"):
+        archive._verify_entry(entry, collect=False)
 
 
 def test_missing_manifest_fails_closed(tmp_path):
