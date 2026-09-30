@@ -665,3 +665,99 @@ def test_mimir_api_auth_does_not_bypass_generated_bearer(monkeypatch):
     assert security.verify_api_token(None) is False
     assert security.verify_api_token("wrong") is False
     assert security.verify_api_token("generated-test-bearer") is True
+
+
+def test_home_status_is_generation_bound_and_does_not_confuse_intents_with_snapshots():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    for element_id in ("overview-service-status", "overview-history-status",
+                       "overview-queue-status", "overview-hooks-status"):
+        assert f'id="{element_id}"' in page
+    source = "function formatOverviewStatus(data)" + page.split(
+        "function formatOverviewStatus(data)", 1,
+    )[1].split("async function loadOverviewStatus()", 1)[0]
+    assert "innerHTML" not in source
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const context = vm.createContext({});
+vm.runInContext(__SOURCE__, context);
+const current = {
+    history_security: 'strict', vault: {ready: true, archive: {generation: 9, snapshots: 12, sources: 8}},
+    last_secure_index: {archive_generation: 9, ready: 12, total: 12, missing: 0,
+        unsearchable: 0, complete: true, at: 100},
+    capture_queue: {archived: 7, pending: 2, retry: 1, unavailable: 3},
+    last_capture_scan: {generation: 4, complete: 1, missing: 0, errors: 0},
+    hook_receipts: [
+        {provider: 'codex', event: 'SessionEnd', accepted_invocations: 1, last_accepted_at: 10},
+        {provider: 'codex', event: 'PreCompact', accepted_invocations: 2, last_accepted_at: 20},
+    ], hook_receipts_error: null,
+};
+const ready = context.formatOverviewStatus(current);
+assert.match(ready.coverage, /12 encrypted snapshot versions/);
+assert.match(ready.coverage, /current archive fully indexed: yes/);
+assert.match(ready.capture, /7 archived intents/);
+assert.match(ready.capture, /2 pending/);
+assert.match(ready.capture, /3 unavailable/);
+assert.match(ready.capture, /not archive snapshot counts/);
+assert.match(ready.hooks, /codex: PreCompact/);
+assert.doesNotMatch(ready.hooks, /codex: SessionEnd/);
+assert.match(ready.hooks, /not.*archival proof/i);
+const stale = context.formatOverviewStatus({...current,
+    last_secure_index: {...current.last_secure_index, archive_generation: 8}});
+assert.match(stale.coverage, /current index coverage: unknown/i);
+assert.doesNotMatch(stale.coverage, /12\/12 ready/);
+const missing = context.formatOverviewStatus({history_security: 'strict',
+    vault: {ready: true, archive: {generation: 9, snapshots: 12}}});
+assert.match(missing.coverage, /current index coverage: unknown/i);
+assert.match(missing.capture, /unavailable/);
+assert.match(missing.hooks, /unknown/);
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
+
+
+def test_home_status_discards_out_of_order_and_old_token_responses():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    source = "async function loadOverviewStatus()" + page.split(
+        "async function loadOverviewStatus()", 1,
+    )[1].split("function historyMessage(message)", 1)[0]
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const nodes = new Map();
+const document = {getElementById(id) {
+    if (!nodes.has(id)) nodes.set(id, {textContent: '', classList: {contains: () => true}});
+    return nodes.get(id);
+}};
+const pending = [];
+const api = () => new Promise(resolve => pending.push(resolve));
+const context = vm.createContext({document, api,
+    formatOverviewStatus: data => ({coverage: data.marker, capture: data.marker,
+                                    hooks: data.marker})});
+vm.runInContext("let AUTH_TOKEN = 'first'; let SECURITY_ENABLED = true; " +
+    "let overviewStatusSequence = 0; " + __SOURCE__, context);
+(async () => {
+    const older = vm.runInContext('loadOverviewStatus()', context);
+    const newer = vm.runInContext('loadOverviewStatus()', context);
+    pending[1]({data: {marker: 'new'}});
+    await newer;
+    pending[0]({data: {marker: 'old'}});
+    await older;
+    assert.equal(nodes.get('overview-history-status').textContent, 'new');
+    const oldToken = vm.runInContext('loadOverviewStatus()', context);
+    vm.runInContext("AUTH_TOKEN = 'second'", context);
+    pending[2]({data: {marker: 'wrong-token'}});
+    await oldToken;
+    assert.notEqual(nodes.get('overview-history-status').textContent, 'wrong-token');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")

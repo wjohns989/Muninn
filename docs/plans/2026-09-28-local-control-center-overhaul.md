@@ -2,7 +2,10 @@
 
 Status (2026-09-30): partially implemented. The local installation has proven
 bounded secure search and both local/Ollama and ZDR/OpenRouter analysis routes.
-The dashboard at port 42069 has an Encrypted History tab with durable search-job
+The dashboard at port 42069 has a Home card for authenticated service health,
+generation-bound archive/index coverage, capture-intent states, and each client's
+latest accepted hook. Its 30-second refresh runs only while Home is active and
+does not sample GPU or call a remote provider. The Encrypted History tab has durable search-job
 status, generation-bound archive/index coverage, capture-intent queue and source-scan
 status, accepted hook invocation counts,
 on-click bounded excerpts, persistent local ZDR consent, adjustable daily/monthly
@@ -118,7 +121,8 @@ replace the live vault. Backup receipts and recovery guidance in the UI remain
 pending.
 
 Current delivery boundary: step 3's bounded search/fetch/job view, part of
-step 2's archive/index, capture-intent/source-scan, and accepted-hook status, and part of step 4's
+step 2's read-only Home status with exact archive/index generation checks and
+capture-intent/source-scan and accepted-hook status, and part of step 4's
 consent/admission and provider-key-cap status UI are implemented. The rest of steps 1-6 are not
 accepted as complete; in particular, a source-only UI check is not a rendered
 browser or accessibility acceptance test. Runtime counts, provider spending,

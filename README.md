@@ -558,8 +558,11 @@ running local service without printing transcript or model text, run
 `python -m scripts.smoke_secure_history_routes --query <nonsecret-term>
 --provider ollama` (or `--provider openrouter` only after configuring its
 ZDR key, consent, and finite provider-enforced cap).
-At `http://127.0.0.1:42069`, the dashboard now has a separate **Encrypted
-History** tab. After local bearer authentication, it queues a durable search,
+At `http://127.0.0.1:42069`, the authenticated Home view shows live service
+health, generation-bound encrypted archive/index coverage, capture-intent states,
+and each client's latest accepted hook; unknown or stale coverage is labeled as
+such. It does not sample GPU or call a remote provider in the background. The
+dashboard also has a separate **Encrypted History** tab that queues a durable search,
 reports archive/index generations, indexed/total coverage, capture-intent/source-scan
 status, accepted hook invocation counts, and partial results, and loads a bounded excerpt only when
 selected. The UI labels current coverage unknown unless the index report is

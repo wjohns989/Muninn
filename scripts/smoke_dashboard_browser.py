@@ -41,6 +41,8 @@ def main() -> int:
     parser.add_argument("--expect-resources-ready", action="store_true")
     parser.add_argument("--keyboard-nav", action="store_true",
                         help="Exercise every sidebar action with Enter or Space")
+    parser.add_argument("--home-status", action="store_true",
+                        help="Check authenticated service, archive, queue, and hook status on Home")
     parser.add_argument("--credential-query", help="Nonsecret metadata query; prints only match count")
     parser.add_argument("--candidate-html", action="store_true",
                         help="Render checked-out dashboard HTML against the real loopback backend")
@@ -89,6 +91,18 @@ def main() -> int:
             page.get_by_placeholder("Paste your Auth Token here...").fill(token)
             page.get_by_role("button", name="Authenticate & Enter").click()
             expect(page.locator("#auth-modal")).to_be_hidden()
+            if args.home_status:
+                expect(page.locator("#overview-service-status")).to_contain_text(
+                    "reports ok", timeout=15000)
+                expect(page.locator("#overview-history-status")).to_contain_text(
+                    "Archive generation", timeout=15000)
+                expect(page.locator("#overview-queue-status")).to_contain_text(
+                    "Capture intents", timeout=15000)
+                expect(page.locator("#overview-hooks-status")).to_contain_text(
+                    "accepted endpoint invocations", timeout=15000)
+                page.get_by_role("button", name="Refresh local status").click()
+                expect(page.locator("#overview-refreshed-status")).to_contain_text(
+                    "Local status checked at", timeout=15000)
             keyboard_nav_checked = 0
             if args.keyboard_nav:
                 page.get_by_role("button", name="Overview", exact=True).focus()
@@ -132,6 +146,8 @@ def main() -> int:
                       "resources_checked": False, "candidate_html": args.candidate_html}
             if args.keyboard_nav:
                 result["keyboard_nav_checked"] = keyboard_nav_checked
+            if args.home_status:
+                result["home_status_checked"] = True
             if args.expect_resources_ready:
                 page.get_by_role("button", name="Check GPU and Ollama").click()
                 expect(page.locator("#local-resource-status")).not_to_contain_text(

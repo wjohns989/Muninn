@@ -191,6 +191,20 @@
                     </div>
                 </div>
 
+                <div class="card" id="overview-local-status">
+                    <h3>Local Service & Encrypted History</h3>
+                    <p class="card-description">Live service state and generation-bound encrypted coverage. Capture
+                        intents, archive snapshots, and indexed versions are different counts.</p>
+                    <p id="overview-service-status" class="overview-status-text">Authenticate to check service health.</p>
+                    <p id="overview-history-status" class="overview-status-text">Encrypted archive coverage: unknown.</p>
+                    <p id="overview-queue-status" class="overview-status-text">Capture queue: unknown.</p>
+                    <p id="overview-hooks-status" class="overview-status-text">Hook delivery: unknown.</p>
+                    <p id="overview-refreshed-status" class="card-description">Not refreshed in this browser session.</p>
+                    <button onclick="checkHealth()" class="btn-secondary">Refresh local status</button>
+                    <p class="card-description">GPU and Ollama are sampled only when you request them in Encrypted
+                        History. Backup currency and running code revision are not yet reported by this service.</p>
+                </div>
+
                 <div class="card">
                     <h3>Recent Activity</h3>
                     <div id="activity-log" class="activity-log-container">
@@ -446,6 +460,7 @@
         let historyTranscriptNextCursor = null;
         let historyTranscriptPageNumber = 0;
         let historyStatusSequence = 0;
+        let overviewStatusSequence = 0;
         let remotePolicyLoadedEnabled = false;
         let remotePolicyLoadSequence = 0;
         let remotePolicySavePending = false;
@@ -640,6 +655,7 @@
         }
 
         function showTab(tabId) {
+            if (tabId !== 'overview') overviewStatusSequence++;
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.nav-item').forEach(t => {
                 t.classList.remove('active');
@@ -665,6 +681,7 @@
                 loadHistoryStatus();
                 loadRemotePolicy();
             }
+            if (tabId === 'overview' && (AUTH_TOKEN || !SECURITY_ENABLED)) checkHealth();
         }
 
         // Original log function (now `originalLog`)
@@ -758,6 +775,104 @@
             if (!nav) return;
             if (enable) nav.classList.add('pulse-active');
             else nav.classList.remove('pulse-active');
+        }
+
+        function formatOverviewStatus(data) {
+            const count = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            const archive = data?.vault?.archive;
+            const index = data?.last_secure_index;
+            let coverage = 'Encrypted archive coverage: unknown.';
+            if (data?.history_security !== 'strict') {
+                coverage = 'Encrypted archive inactive or security mode unknown; no strict-history coverage claim.';
+            } else if (data?.vault?.ready === true && archive && typeof archive === 'object') {
+                coverage = `Archive generation ${count(archive.generation)}: ` +
+                    `${count(archive.snapshots)} encrypted snapshot versions across ${count(archive.sources)} sources. `;
+                const sameGeneration = Number.isSafeInteger(archive.generation) &&
+                    archive.generation >= 0 && index?.archive_generation === archive.generation;
+                if (sameGeneration && Number.isSafeInteger(index.ready) && index.ready >= 0 &&
+                    Number.isSafeInteger(index.total) && index.total >= 0 &&
+                    Number.isSafeInteger(index.missing) && index.missing >= 0 &&
+                    Number.isSafeInteger(index.unsearchable) && index.unsearchable >= 0 &&
+                    Number.isSafeInteger(archive.snapshots) && archive.snapshots >= 0) {
+                    const caughtUp = index.complete === true && index.ready === archive.snapshots &&
+                        index.total === archive.snapshots && index.missing === 0 && index.unsearchable === 0;
+                    coverage += `Current index: ${count(index.ready)}/${count(index.total)} ready, ` +
+                        `${count(index.missing)} missing, ${count(index.unsearchable)} unsearchable; ` +
+                        `current archive fully indexed: ${caughtUp ? 'yes' : 'no'}.`;
+                } else {
+                    coverage += `Current index coverage: unknown (index report generation ` +
+                        `${count(index?.archive_generation)} is absent, invalid, or does not match).`;
+                }
+            }
+
+            const queue = data?.capture_queue;
+            let capture = 'Capture queue unavailable; no archival conclusion can be drawn.';
+            if (queue && typeof queue === 'object' && !Array.isArray(queue)) {
+                const stateCount = state => Object.prototype.hasOwnProperty.call(queue, state) ?
+                    count(queue[state]) : '0';
+                capture = `Capture intents: ${stateCount('archived')} archived intents, ` +
+                    `${stateCount('pending')} pending, ${stateCount('running')} running, ` +
+                    `${stateCount('retry')} retry, ${stateCount('unavailable')} unavailable. ` +
+                    'Intent counts are not archive snapshot counts.';
+                const scan = data.last_capture_scan;
+                if (scan && Number.isSafeInteger(scan.generation) && scan.generation >= 0) {
+                    const scanComplete = (scan.complete === true || scan.complete === 1) &&
+                        scan.missing === 0 && scan.errors === 0;
+                    capture += ` Last source scan generation ${count(scan.generation)}: ` +
+                        `${scanComplete ? 'complete' : 'incomplete or status unknown'}.`;
+                } else {
+                    capture += ' Last source scan: unknown.';
+                }
+            }
+
+            let hooks = 'Hook receipt ledger unavailable; delivery is unknown.';
+            if (!data?.hook_receipts_error && Array.isArray(data?.hook_receipts)) {
+                const clients = ['claude_code', 'codex', 'gemini_cli'];
+                hooks = clients.map(client => {
+                    const latest = data.hook_receipts.filter(receipt => receipt?.provider === client &&
+                        typeof receipt.event === 'string' && receipt.event.length <= 64 &&
+                        Number.isSafeInteger(receipt.accepted_invocations) &&
+                        receipt.accepted_invocations >= 0 &&
+                        typeof receipt.last_accepted_at === 'number' &&
+                        Number.isFinite(receipt.last_accepted_at) && receipt.last_accepted_at >= 0
+                    ).reduce((best, receipt) => !best || receipt.last_accepted_at > best.last_accepted_at ?
+                        receipt : best, null);
+                    if (!latest) return `${client}: no accepted receipt recorded`;
+                    return `${client}: ${latest.event} accepted ` +
+                        `${count(latest.accepted_invocations)} time(s) as of ` +
+                        `${new Date(latest.last_accepted_at * 1000).toLocaleString()}`;
+                }).join('\n') +
+                    '\nThese are accepted endpoint invocations, not unique host events or archival proof.';
+            }
+            return {coverage, capture, hooks};
+        }
+
+        async function loadOverviewStatus() {
+            if ((!AUTH_TOKEN && SECURITY_ENABLED) ||
+                !document.getElementById('tab-overview').classList.contains('active')) return;
+            const sequence = ++overviewStatusSequence;
+            const token = AUTH_TOKEN;
+            const coverage = document.getElementById('overview-history-status');
+            const capture = document.getElementById('overview-queue-status');
+            const hooks = document.getElementById('overview-hooks-status');
+            const refreshed = document.getElementById('overview-refreshed-status');
+            coverage.textContent = 'Loading encrypted archive coverage...';
+            capture.textContent = 'Loading capture queue...';
+            hooks.textContent = 'Loading hook receipts...';
+            const response = await api('/history/status');
+            if (sequence !== overviewStatusSequence || token !== AUTH_TOKEN ||
+                !document.getElementById('tab-overview').classList.contains('active')) return;
+            if (response.error || !response.data) {
+                coverage.textContent = 'Encrypted archive coverage unavailable; current state unknown.';
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+                hooks.textContent = 'Hook receipt ledger unavailable; delivery is unknown.';
+            } else {
+                const status = formatOverviewStatus(response.data);
+                coverage.textContent = status.coverage;
+                capture.textContent = status.capture;
+                hooks.textContent = status.hooks;
+            }
+            refreshed.textContent = `Local status checked at ${new Date().toLocaleTimeString()}.`;
         }
 
         function historyMessage(message) {
@@ -1615,20 +1730,28 @@
             const data = await api('/health');
             const healthDot = document.getElementById('health-dot');
             const authDot = document.getElementById('auth-dot');
+            const service = document.getElementById('overview-service-status');
 
-            if (data.error) {
+            if (data.error || data.status !== 'ok') {
                 healthDot.className = 'status-dot offline';
                 authDot.className = 'status-dot offline';
+                service.textContent = data.error ? 'Service health unavailable; readiness unknown.' :
+                    `Service state: ${String(data.status || 'unknown')}; readiness not confirmed.`;
+                document.getElementById('legacy-section').style.display = 'none';
+                document.getElementById('strict-history-note').style.display = 'none';
             } else {
                 healthDot.className = 'status-dot online';
                 authDot.className = 'status-dot online';
                 HISTORY_SECURITY_MODE = data.history_security_mode || 'unknown';
+                service.textContent = `Service: ${String(data.backend || 'unknown')} reports ok; ` +
+                    `history security: ${HISTORY_SECURITY_MODE}. Running code revision: not reported.`;
                 document.getElementById('legacy-section').style.display =
                     HISTORY_SECURITY_MODE === 'legacy' ? '' : 'none';
                 document.getElementById('strict-history-note').style.display =
                     HISTORY_SECURITY_MODE === 'strict' ? '' : 'none';
                 updateStats(data);
             }
+            if (document.getElementById('tab-overview').classList.contains('active')) loadOverviewStatus();
         }
 
         async function updateScanBadge() {
