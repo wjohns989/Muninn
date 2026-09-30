@@ -159,8 +159,11 @@ values. The ready response includes authenticated counts of included and
 omitted records/messages. Unsupported formats fail closed; `fetch_secure_history`
 remains the short-span compatibility path. Projection runs on CPU on demand and
 does not load an Ollama model or reserve VRAM.
-After deploying these routes, add `--transcript-pages 3` to the live search
+On a running installation, add `--transcript-pages 3` to the live search
 probe above to check actual continuation pages without printing their text.
+For the browser viewer, run `python scripts/smoke_dashboard_browser.py --transcript-query "a nonsecret term"`; add `--candidate-html` to test the
+checked-out page against the real loopback backend before a service reload.
+The browser probe reports counts only and never saves a transcript screenshot.
 Before a service restart, the checked-out code can be tested directly against
 your configured encrypted archive:
 
