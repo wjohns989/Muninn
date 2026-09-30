@@ -687,7 +687,7 @@ python -m muninn.cli credentials scan --root '<your-private-data-dir>\credential
 python -m muninn.cli credentials search API_KEY --root '<your-private-data-dir>\credential_vault'
 python -m muninn.cli credentials review-status --root '<your-private-data-dir>\credential_vault'
 python -m muninn.cli credentials backup --root '<your-private-data-dir>\credential_vault' --destination '<new-private-backup-dir>'
-python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --limit 60 --model qwen2.5:7b --max-pages 100 --apply
+python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --limit 60 --model qwen2.5:7b --max-pages 100 --backup-after '<new-private-reviewed-backup-dir>' --apply
 ```
 
 Only the named project roots and archive are scanned. Generated/example `.env`

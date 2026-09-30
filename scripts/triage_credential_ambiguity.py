@@ -87,10 +87,16 @@ def main() -> int:
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--max-pages", type=int, default=1,
                         help="Process successive pages with one local unlock (1-10000)")
+    parser.add_argument("--backup-after", type=Path,
+                        help="Create and validate a new portable vault backup after review")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.max_pages <= 10000:
         parser.error("--max-pages must be between 1 and 10000")
+    if args.backup_after is not None and not args.apply:
+        parser.error("--backup-after requires --apply")
+    if args.backup_after is not None and args.backup_after.exists():
+        parser.error("--backup-after destination already exists")
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print(json.dumps({"state": "interactive_terminal_required"}))
         return 2
@@ -106,6 +112,13 @@ def main() -> int:
             if (not args.apply or report["groups_seen"] == 0 or decided == 0
                     or report["queue_counts"].get("pending", 0) == 0):
                 break
+        if args.backup_after is not None:
+            count = CredentialStore(args.root).backup(args.backup_after,
+                                                      passphrase=passphrase)
+            print(json.dumps({"stage": "validated_post_triage_backup",
+                              "credential_records": count,
+                              "review_queue": CredentialStore(args.root).ambiguity_status()},
+                             sort_keys=True), flush=True)
     except (OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
         # Exception text can contain private source context; return only type.
         print(json.dumps({"state": "failed", "error_category": type(exc).__name__}))
