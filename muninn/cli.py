@@ -1111,6 +1111,16 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     if args.action == "review-status":
         print(json.dumps(CredentialStore(root).ambiguity_status(), sort_keys=True))
         return 0
+    if args.action == "review-list":
+        print(json.dumps(CredentialStore(root).list_ambiguities(status=args.review_state),
+                         sort_keys=True))
+        return 0
+    if args.action == "review-accept":
+        if not args.confirm_exact_candidate or args.backup_before is None:
+            raise SystemExit("Exact-candidate confirmation and --backup-before are required.")
+    if args.action == "review-reject":
+        if not args.confirm_not_credential or args.backup_before is None:
+            raise SystemExit("Not-a-credential confirmation and --backup-before are required.")
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SystemExit("Credential unlock and reveal require an interactive local terminal.")
     passphrase = getpass.getpass("Credential vault passphrase (hidden): ")
@@ -1122,6 +1132,31 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     elif args.action == "reveal":
         # Reveal is intentionally printed only to an interactive local terminal.
         print(CredentialStore(root).reveal(args.record_id, passphrase=passphrase))
+    elif args.action == "review-reveal":
+        # Explicit local-only reveal; never use inside a PowerShell transcript.
+        print(CredentialStore(root).reveal_ambiguity(args.record_id,
+                                                     passphrase=passphrase))
+    elif args.action == "review-accept":
+        store = CredentialStore(root)
+        backup_count = store.backup(args.backup_before, passphrase=passphrase)
+        print(json.dumps({"stage": "validated_pre_accept_backup",
+                          "records": backup_count}, sort_keys=True), flush=True)
+        record_id = store.accept_ambiguity(
+            args.record_id, passphrase=passphrase,
+            confirm_exact_candidate=True,
+        )
+        print(json.dumps({"stage": "accepted", "record_id": record_id},
+                         sort_keys=True))
+    elif args.action == "review-reject":
+        store = CredentialStore(root)
+        backup_count = store.backup(args.backup_before, passphrase=passphrase)
+        print(json.dumps({"stage": "validated_pre_reject_backup",
+                          "records": backup_count}, sort_keys=True), flush=True)
+        store.decide_ambiguity(args.record_id, passphrase=passphrase,
+                               decision="rejected", actor="local-user",
+                               reason="user-rejected")
+        print(json.dumps({"stage": "rejected", "ambiguity_id": args.record_id},
+                         sort_keys=True))
     elif args.action == "backup":
         count = CredentialStore(root).backup(args.destination, passphrase=passphrase)
         print(f"Validated encrypted backup at {args.destination} ({count} records).")
@@ -1424,10 +1459,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Manage the separate encrypted credential vault and scan approved local project files.",
     )
     credentials.add_argument("action", choices=["init", "search", "review-status",
+                                                "review-list", "review-reveal", "review-accept",
+                                                "review-reject",
                                                 "reveal", "backup", "restore", "scan"])
     credentials.add_argument("query", nargs="?", help="Metadata-only query for 'search'.")
     credentials.add_argument("--root", type=Path, help="Vault location (default: MUNINN_DATA_DIR/credential_vault).")
     credentials.add_argument("--record-id", help="Record id for explicit 'reveal'.")
+    credentials.add_argument("--review-state", choices=["pending", "deferred", "accepted", "rejected"],
+                             default="pending", help="Queue status for 'review-list'.")
+    credentials.add_argument("--confirm-exact-candidate", action="store_true",
+                             help="For 'review-accept': I verified the entire candidate value locally.")
+    credentials.add_argument("--confirm-not-credential", action="store_true",
+                             help="For 'review-reject': I verified this candidate is not a credential.")
     credentials.add_argument("--destination", type=Path, help="New directory for 'backup'.")
     credentials.add_argument("--source", type=Path, help="Existing encrypted backup directory for 'restore'.")
     credentials.add_argument("--project-root", type=Path, action="append",
@@ -1498,8 +1541,8 @@ def main() -> int:
     if args.command == "credentials":
         if args.action == "search" and not args.query:
             parser.error("credentials search requires a metadata query")
-        if args.action == "reveal" and not args.record_id:
-            parser.error("credentials reveal requires --record-id")
+        if args.action in {"reveal", "review-reveal", "review-accept", "review-reject"} and not args.record_id:
+            parser.error(f"credentials {args.action} requires --record-id")
         if args.action == "backup" and not args.destination:
             parser.error("credentials backup requires --destination")
         if args.action == "restore" and not args.source:

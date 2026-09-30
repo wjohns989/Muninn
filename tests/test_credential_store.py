@@ -246,6 +246,11 @@ def test_ambiguity_queue_streams_deduplicates_and_hides_candidate(tmp_path: Path
     with pytest.raises(VaultIntegrityError):
         store.decide_ambiguity(listed[0]["id"], passphrase=_PASSPHRASE, decision="rejected")
     assert store.ambiguity_status() == {"deferred": 1}
+    store.decide_ambiguity(listed[0]["id"], passphrase=_PASSPHRASE,
+                           decision="rejected", actor="local-user",
+                           reason="user-rejected")
+    assert store.ambiguity_status() == {"rejected": 1}
+    assert store.search("SERVICE_API_KEY") == []
 
 
 def test_empty_ambiguity_fragment_is_retained_as_unresolved(tmp_path: Path) -> None:
@@ -259,6 +264,61 @@ def test_empty_ambiguity_fragment_is_retained_as_unresolved(tmp_path: Path) -> N
     )
     assert result["ambiguities"] == 1
     assert store.ambiguity_status() == {"pending": 1}
+
+
+def test_user_confirmed_ambiguity_is_atomically_vaulted_once(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    candidate = "synthetic-review-secret-918273645"
+    store.scan_source(
+        passphrase=_PASSPHRASE, source_hash=source_fingerprint("review-source"),
+        project="test-project", origin="transcript",
+        findings=[AmbiguousCandidate("SERVICE_API_KEY", "unparsed_value", candidate, "")],
+    )
+    ambiguity_id = store.list_ambiguities()[0]["id"]
+    with pytest.raises(ValueError, match="confirmation"):
+        store.accept_ambiguity(ambiguity_id, passphrase=_PASSPHRASE,
+                               confirm_exact_candidate=False)
+    with pytest.raises(ValueError, match="local user"):
+        store.accept_ambiguity(ambiguity_id, passphrase=_PASSPHRASE,
+                               confirm_exact_candidate=True, actor="local-agent")
+    with pytest.raises(VaultIntegrityError):
+        store.accept_ambiguity(ambiguity_id, passphrase="wrong passphrase",
+                               confirm_exact_candidate=True)
+    assert store.ambiguity_status() == {"pending": 1}
+    assert store.search("SERVICE_API_KEY")[0]["candidate_status"] == "needs_review"
+    record_id = store.accept_ambiguity(ambiguity_id, passphrase=_PASSPHRASE,
+                                       confirm_exact_candidate=True)
+    assert store.accept_ambiguity(ambiguity_id, passphrase=_PASSPHRASE,
+                                  confirm_exact_candidate=True) == record_id
+    assert store.ambiguity_status() == {"accepted": 1}
+    matches = store.search("SERVICE_API_KEY")
+    assert len(matches) == 1 and matches[0]["id"] == record_id
+    assert candidate not in str(matches)
+    assert store.reveal(record_id, passphrase=_PASSPHRASE) == candidate
+    with store._connect(readonly=True) as db:
+        assert db.execute("SELECT COUNT(*) FROM credentials").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM ambiguity_audit WHERE action='accepted'").fetchone()[0] == 1
+    backup = tmp_path / "accepted-backup"
+    assert store.backup(backup, passphrase=_PASSPHRASE) == 1
+    restored = CredentialStore.restore(backup, tmp_path / "restored-accepted",
+                                       passphrase=_PASSPHRASE)
+    assert restored.ambiguity_status() == {"accepted": 1}
+    assert restored.reveal(record_id, passphrase=_PASSPHRASE) == candidate
+
+
+def test_empty_ambiguity_cannot_be_promoted(tmp_path: Path) -> None:
+    store = _new(tmp_path)
+    store.scan_source(
+        passphrase=_PASSPHRASE, source_hash=source_fingerprint("empty-review-source"),
+        project="test-project", origin="project",
+        findings=[AmbiguousCandidate("SERVICE_API_KEY", "unparsed_value", "", "")],
+    )
+    ambiguity_id = store.list_ambiguities()[0]["id"]
+    with pytest.raises(VaultIntegrityError):
+        store.accept_ambiguity(ambiguity_id, passphrase=_PASSPHRASE,
+                               confirm_exact_candidate=True)
+    assert store.ambiguity_status() == {"pending": 1}
+    assert store.search("SERVICE_API_KEY")[0]["candidate_status"] == "needs_review"
 
 
 def test_ambiguity_groups_deduplicate_across_sources_and_decide_together(tmp_path: Path) -> None:

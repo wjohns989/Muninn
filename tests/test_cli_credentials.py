@@ -12,7 +12,7 @@ import pytest
 
 import muninn.history.credential_discovery as discovery
 from muninn.cli import build_parser, cmd_credentials
-from muninn.history.credential_store import CredentialStore, source_fingerprint
+from muninn.history.credential_store import AmbiguousCandidate, CredentialStore, source_fingerprint
 from muninn.history.secure_archive import SecureHistoryArchive
 
 _PASSPHRASE = "synthetic long local passphrase"
@@ -28,7 +28,9 @@ def _args(action: str, root: Path, **overrides) -> argparse.Namespace:
     values = {"action": action, "root": root, "query": None, "record_id": None,
               "destination": None, "source": None, "project_root": None,
               "archive_root": None, "archive_offset": 0, "archive_generation": None,
-              "max_snapshots": None, "backup_before": None}
+              "max_snapshots": None, "backup_before": None,
+              "review_state": "pending", "confirm_exact_candidate": False,
+              "confirm_not_credential": False}
     values.update(overrides)
     return argparse.Namespace(**values)
 
@@ -44,6 +46,60 @@ def test_review_status_is_nonsecret_and_does_not_require_terminal(tmp_path: Path
     CredentialStore.create(root, _PASSPHRASE)
     assert cmd_credentials(_args("review-status", root)) == 0
     assert json.loads(capsys.readouterr().out) == {}
+
+
+def test_local_ambiguity_review_requires_explicit_confirmation(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "vault"
+    store = CredentialStore.create(root, _PASSPHRASE)
+    store.scan_source(
+        passphrase=_PASSPHRASE, source_hash=source_fingerprint("review-source"),
+        project="test", origin="project",
+        findings=[AmbiguousCandidate("SERVICE_API_KEY", "unparsed_value", _VALUE, ".env")],
+    )
+    ambiguity_id = store.list_ambiguities()[0]["id"]
+    output = _TTY()
+    monkeypatch.setattr(sys, "stdin", _TTY())
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: _PASSPHRASE)
+    assert cmd_credentials(_args("review-list", root)) == 0
+    assert _VALUE not in output.getvalue()
+    assert json.loads(output.getvalue())[0]["id"] == ambiguity_id
+    output.seek(0)
+    output.truncate(0)
+    with pytest.raises(SystemExit, match="confirmation"):
+        cmd_credentials(_args("review-accept", root, record_id=ambiguity_id))
+    assert store.ambiguity_status() == {"pending": 1}
+    backup = tmp_path / "before-accept"
+    assert cmd_credentials(_args("review-accept", root, record_id=ambiguity_id,
+                                 confirm_exact_candidate=True, backup_before=backup)) == 0
+    assert CredentialStore(backup).ambiguity_status() == {"pending": 1}
+    assert store.ambiguity_status() == {"accepted": 1}
+    assert _VALUE not in output.getvalue()
+
+
+def test_local_user_can_reject_deferred_ambiguity_with_backup(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "vault"
+    store = CredentialStore.create(root, _PASSPHRASE)
+    store.scan_source(
+        passphrase=_PASSPHRASE, source_hash=source_fingerprint("deferred-source"),
+        project="test", origin="transcript",
+        findings=[AmbiguousCandidate("SERVICE_API_KEY", "unparsed_value", _VALUE, "")],
+    )
+    ambiguity_id = store.list_ambiguities()[0]["id"]
+    store.decide_ambiguity(ambiguity_id, passphrase=_PASSPHRASE, decision="deferred")
+    output = _TTY()
+    monkeypatch.setattr(sys, "stdin", _TTY())
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: _PASSPHRASE)
+    with pytest.raises(SystemExit, match="confirmation"):
+        cmd_credentials(_args("review-reject", root, record_id=ambiguity_id))
+    backup = tmp_path / "before-reject"
+    assert cmd_credentials(_args("review-reject", root, record_id=ambiguity_id,
+                                 confirm_not_credential=True, backup_before=backup)) == 0
+    assert CredentialStore(backup).ambiguity_status() == {"deferred": 1}
+    assert store.ambiguity_status() == {"rejected": 1}
+    assert store.search("SERVICE_API_KEY") == []
+    assert _VALUE not in output.getvalue()
 
 
 def test_credential_cli_search_reveal_backup_restore(tmp_path: Path, monkeypatch) -> None:
@@ -76,6 +132,11 @@ def test_credential_parser_has_no_passphrase_argv_option() -> None:
     parser = build_parser()
     args = parser.parse_args(["credentials", "reveal", "--record-id", "a" * 32])
     assert args.action == "reveal"
+    review = parser.parse_args([
+        "credentials", "review-accept", "--record-id", "a" * 32,
+        "--confirm-exact-candidate", "--backup-before", "private-backup",
+    ])
+    assert review.action == "review-accept" and review.confirm_exact_candidate
     with pytest.raises(SystemExit):
         parser.parse_args(["credentials", "init", "--passphrase", "do-not-put-secrets-in-argv"])
 

@@ -565,9 +565,14 @@ class CredentialStore:
             raise ValueError("Invalid ambiguity decision")
         with self._lock, self._process_lock(), self._connect() as db:
             self._unlock(db, passphrase)
+            # A model may defer a finding, but only a locally authenticated
+            # user may close that deferred finding as a false positive.
+            eligible = ("status IN ('pending','deferred')"
+                        if decision == "rejected" and actor == "local-user"
+                        and reason == "user-rejected" else "status='pending'")
             updated = db.execute(
                 "UPDATE ambiguity_queue SET status=?,decided_at=?,decision_actor=?,decision_reason=? "
-                "WHERE id=? AND status='pending'",
+                f"WHERE id=? AND {eligible}",
                 (decision, time.time(), actor, reason, ambiguity_id),
             )
             if updated.rowcount != 1:
@@ -595,6 +600,71 @@ class CredentialStore:
                 db.execute("UPDATE ambiguity_queue SET status=?,decided_at=?,decision_actor=?,decision_reason=? WHERE id=? AND status='pending'", (decision, now, actor, reason, ambiguity_id))
                 db.execute("INSERT INTO ambiguity_audit (ambiguity_id,action,actor,at) VALUES (?,?,?,?)", (ambiguity_id, "group-" + decision, actor, now))
             return len(ids)
+
+    def accept_ambiguity(self, ambiguity_id: str, *, passphrase: str,
+                         confirm_exact_candidate: bool,
+                         actor: str = "local-user") -> str:
+        """Vault one exact candidate only after a user's explicit local confirmation.
+
+        The queue transition, encrypted credential insert, and audit are one
+        transaction. A repeated confirmation returns the original record ID.
+        The local classifier never calls this method.
+        """
+        if not confirm_exact_candidate:
+            raise ValueError("Exact-candidate confirmation is required")
+        if actor != "local-user":
+            raise ValueError("Only the local user may accept an ambiguity")
+        if (not isinstance(ambiguity_id, str) or not re.fullmatch(r"[a-f0-9]{32}", ambiguity_id)
+                or not isinstance(actor, str) or not 1 <= len(actor) <= 64
+                or not _safe_display_text(actor)):
+            raise VaultIntegrityError("Credential ambiguity unavailable")
+        with self._lock, self._process_lock(), self._connect() as db:
+            key = self._unlock(db, passphrase)
+            row = db.execute("SELECT * FROM ambiguity_queue WHERE id=?", (ambiguity_id,)).fetchone()
+            if row is None or row["status"] not in {"pending", "deferred", "accepted"}:
+                raise VaultIntegrityError("Credential ambiguity unavailable")
+            discovery_key = hmac.new(
+                key, b"accepted-ambiguity-v1\0" + bytes.fromhex(row["ambiguity_key"]),
+                hashlib.sha256,
+            ).hexdigest()
+            existing = db.execute("SELECT id FROM credentials WHERE discovery_key=?",
+                                  (discovery_key,)).fetchone()
+            if row["status"] == "accepted":
+                if existing is None:
+                    raise VaultIntegrityError("Credential ambiguity integrity failure")
+                return existing["id"]
+            if existing is not None:
+                raise VaultIntegrityError("Credential ambiguity integrity failure")
+            source_meta = _metadata(row["name"], row["project"], row["source_hash"],
+                                    row["source_hint"], origin=row["origin"],
+                                    active=True, discovery_key=row["ambiguity_key"])
+            candidate = decrypt_record(
+                key, self.header, ambiguity_id, source_meta,
+                EncryptedValue.from_json(row["envelope"]),
+            )
+            if not candidate or candidate == _EMPTY_AMBIGUITY_VALUE:
+                raise VaultIntegrityError("Empty ambiguity cannot be accepted")
+            record_id = uuid.uuid4().hex
+            accepted_meta = _metadata(row["name"], row["project"], row["source_hash"],
+                                      row["source_hint"], origin=row["origin"],
+                                      active=True, discovery_key=discovery_key)
+            envelope = encrypt_record(key, self.header, record_id, accepted_meta,
+                                      candidate).to_json()
+            db.execute("INSERT INTO credentials (id,service,project,source_hash,envelope,"
+                       "source_hint,origin,active,discovery_key) VALUES (?,?,?,?,?,?,?,?,?)",
+                       (record_id, row["name"], row["project"], row["source_hash"],
+                        envelope, row["source_hint"], row["origin"], 1, discovery_key))
+            updated = db.execute(
+                "UPDATE ambiguity_queue SET status='accepted',decided_at=?,"
+                "decision_actor=?,decision_reason='user-confirmed' "
+                "WHERE id=? AND status IN ('pending','deferred')",
+                (time.time(), actor, ambiguity_id),
+            )
+            if updated.rowcount != 1:
+                raise VaultIntegrityError("Credential ambiguity unavailable")
+            db.execute("INSERT INTO ambiguity_audit (ambiguity_id,action,actor,at) "
+                       "VALUES (?,?,?,?)", (ambiguity_id, "accepted", actor, time.time()))
+            return record_id
 
     def reveal(self, record_id: str, *, passphrase: str) -> str:
         if not isinstance(record_id, str) or not re.fullmatch(r"[a-f0-9]{32}", record_id):

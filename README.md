@@ -677,7 +677,12 @@ Ollama model only when GPU headroom allows, with `keep_alive=0`; it never sends
 candidate text to OpenRouter or automatically promotes a candidate to a usable
 credential. Clear references can be rejected by rule, high-confidence model
 non-credentials can be rejected, and uncertain/possible credentials are deferred
-for explicit user review. Both decisions and reveals are audited. The portable
+for explicit user review. A user can inspect queue metadata, explicitly reveal
+one candidate in a private local terminal, then confirm its entire value before
+atomic promotion to a normal encrypted credential, or reject a false positive.
+Both decisions and reveals are audited; accept/reject each require a new,
+validated encrypted pre-change backup. Do not run `review-reveal` under
+`Start-Transcript` or any terminal logger because it prints the candidate. The portable
 vault still requires a local passphrase prompt for each review run; it does not
 keep an unattended unlock key. Example, with your own
 private paths (no `D:` drive is required):
@@ -686,9 +691,20 @@ private paths (no `D:` drive is required):
 python -m muninn.cli credentials scan --root '<your-private-data-dir>\credential_vault' --project-root '<your-project-root>' --archive-root '<your-private-data-dir>\history_secure_archive' --backup-before '<new-private-pre-scan-backup-dir>'
 python -m muninn.cli credentials search API_KEY --root '<your-private-data-dir>\credential_vault'
 python -m muninn.cli credentials review-status --root '<your-private-data-dir>\credential_vault'
+python -m muninn.cli credentials review-list --root '<your-private-data-dir>\credential_vault' --review-state deferred
 python -m muninn.cli credentials backup --root '<your-private-data-dir>\credential_vault' --destination '<new-private-backup-dir>'
 python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --limit 60 --model qwen2.5:7b --max-pages 100 --backup-after '<new-private-reviewed-backup-dir>' --apply
 ```
+
+For a specific opaque ID returned by `review-list`, use `credentials
+review-reveal --record-id <id>` only in an unlogged private terminal if you
+need to inspect the exact candidate. After independently checking its source,
+use `credentials review-accept --record-id <id> --confirm-exact-candidate
+--backup-before <new-private-backup-dir>` or `credentials review-reject
+--record-id <id> --confirm-not-credential --backup-before
+<new-private-backup-dir>`. These commands prompt locally for the passphrase;
+do not pass secrets as arguments or paste revealed values into agent chat.
+An empty or truncated candidate cannot be promoted as an exact value.
 
 Only the named project roots and archive are scanned. Generated/example `.env`
 files, linked paths, and unsupported assignments are not silently treated as
