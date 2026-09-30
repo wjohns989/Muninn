@@ -4,10 +4,10 @@ Status (2026-09-29): partially implemented. The local installation has proven
 bounded secure search and both local/Ollama and ZDR/OpenRouter analysis routes.
 The dashboard at port 42069 has an Encrypted History tab with durable search-job
 status, generation-bound archive/index coverage, accepted hook invocation counts,
-on-click bounded excerpts, and persistent local ZDR consent plus adjustable
-daily/monthly admission thresholds. Hook counts do not prove unique host events
-or completed capture. This is not yet a full spending or resource control center:
-provider-side key-cap status, actual spend, vault scan coverage, model residency,
+on-click bounded excerpts, persistent local ZDR consent, adjustable daily/monthly
+admission thresholds, and provider-side key-cap status. Hook counts do not prove
+unique host events or completed capture. This is not yet a full spending or
+resource control center: actual spend, vault scan coverage, model residency,
 host-origin hook proof, and backup receipts are not shown there. The full
 overhaul remains lower priority than the working local capture/recovery and
 credential-discovery path.
@@ -86,7 +86,7 @@ and an explicit distinction between request accepted and work completed.
 
 Current delivery boundary: step 3's bounded search/fetch/job view, part of
 step 2's archive/index and accepted-hook status, and part of step 4's
-consent/admission UI are implemented. The rest of steps 1-6 are not
+consent/admission and provider-key-cap status UI are implemented. The rest of steps 1-6 are not
 accepted as complete; in particular, a source-only UI check is not a rendered
 browser or accessibility acceptance test. Runtime counts, provider spending,
 and backups must come from authoritative, generation-labeled backend receipts

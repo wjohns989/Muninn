@@ -922,7 +922,8 @@ def _prompt_openrouter_key(*, first_run: bool) -> bool:
         print(
             "\nMuninn can use OpenRouter to understand your imported conversations: pull out decisions,\n"
             "preferences, fixes and open items, and summarize each thread. Every request requires\n"
-            "zero data retention (no storage, no training), and secrets are redacted before sending.\n"
+            "zero data retention (no storage, no training). With your local consent, remote\n"
+            "analysis may receive bounded raw transcript windows, including secrets they contain.\n"
             f"Default model: {llm_settings.DEFAULT_MODEL} (about $2 per 1,000 threads).\n"
             f"Get a key at {llm_settings.KEYS_PAGE}. Press Enter to skip and use local Ollama instead;\n"
             "you can add a key later with: python -m muninn.cli openrouter set\n"
