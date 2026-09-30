@@ -157,14 +157,38 @@ def choose_route(
     current = time.time() if now is None else now
     fallback_reason = "gpu_telemetry_unavailable"
     if gpu is not None and current - gpu.sampled_at <= 10 and gpu.sampled_at <= current + 1:
+        candidates = list(installed)
+
+        def for_hint(hint: str) -> list[Mapping[str, Any]]:
+            # Exact names outrank substring aliases, regardless of the order
+            # returned by Ollama's installed-model list.
+            return sorted(
+                candidates,
+                key=lambda item: str(item.get("name") or item.get("model") or "").casefold()
+                != hint.casefold(),
+            )
+
         if gpu.loaded_models:
             fallback_reason = "ollama_model_already_resident"
+            if gpu.utilization_percent > max_gpu_utilization:
+                fallback_reason = "gpu_busy"
+            elif gpu.free_mib < inference_overhead_mib + reserve_mib:
+                fallback_reason = "no_eligible_model_fits"
+            else:
+                # Reuse an eligible resident model without loading a second
+                # model into VRAM. Still require idle GPU and context headroom.
+                loaded = set(gpu.loaded_models)
+                for hint in model_hints:
+                    for item in for_hint(hint):
+                        name = str(item.get("name") or item.get("model") or "")
+                        if name in loaded and hint.lower() in name.lower():
+                            return Route("ollama", name, "ollama_model_already_resident",
+                                         gpu.free_mib)
         elif gpu.utilization_percent > max_gpu_utilization:
             fallback_reason = "gpu_busy"
         else:
-            candidates = list(installed)
             for hint in model_hints:
-                for item in candidates:
+                for item in for_hint(hint):
                     name = str(item.get("name") or item.get("model") or "")
                     if hint.lower() not in name.lower():
                         continue

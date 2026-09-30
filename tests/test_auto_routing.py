@@ -250,6 +250,29 @@ def test_busy_or_occupied_gpu_never_loads_another_local_model():
                             now=100.0).provider == "openrouter"
 
 
+def test_idle_gpu_reuses_requested_resident_model_without_loading_another():
+    route = choose_route(_gpu(free=7_500, loaded=("qwen2.5:7b",)), MODELS,
+                         model_hints=("qwen2.5:7b",), now=100.0)
+    assert (route.provider, route.model, route.reason) == (
+        "ollama", "qwen2.5:7b", "ollama_model_already_resident")
+    assert choose_route(_gpu(free=1_000, loaded=("qwen2.5:7b",)), MODELS,
+                        model_hints=("qwen2.5:7b",), now=100.0).provider == "deferred"
+    assert choose_route(_gpu(free=7_500, used=70, loaded=("qwen2.5:7b",)), MODELS,
+                        model_hints=("qwen2.5:7b",), now=100.0).provider == "deferred"
+    assert choose_route(_gpu(free=7_500, loaded=("qwen2.5:7b",)), MODELS,
+                        model_hints=("qwen35",), now=100.0).provider == "deferred"
+
+
+def test_exact_model_hint_wins_over_overlapping_resident_name():
+    overlapping = [
+        {"name": "qwen2.5:7b-instruct", "size": 4_700 * 1024 * 1024},
+        {"name": "qwen2.5:7b", "size": 4_700 * 1024 * 1024},
+    ]
+    gpu = _gpu(free=7_500, loaded=("qwen2.5:7b", "qwen2.5:7b-instruct"))
+    assert choose_route(gpu, overlapping, model_hints=("qwen2.5:7b",),
+                        now=100.0).model == "qwen2.5:7b"
+
+
 def test_missing_stale_or_insufficient_gpu_fails_closed():
     assert choose_route(None, MODELS, now=100.0).provider == "deferred"
     assert choose_route(_gpu(free=5_000), MODELS, now=100.0).provider == "deferred"

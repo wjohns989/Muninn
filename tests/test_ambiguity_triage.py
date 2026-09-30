@@ -3,6 +3,7 @@
 import io
 import json
 import sys
+import time
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from muninn.history.ambiguity_triage import (
     CandidateForReview, classify_local, deterministic_decision,
 )
 from scripts import triage_credential_ambiguity as runner
+from muninn.history.auto_routing import GpuState
 from muninn.history.credential_store import AmbiguousCandidate, CredentialStore, source_fingerprint
 
 
@@ -104,6 +106,55 @@ def test_bounded_rule_pass_updates_group_without_returning_candidate(monkeypatch
         runner.run(root=tmp_path, passphrase="test-passphrase", limit=1,
                    model_limit=0, model="qwen2.5:7b", apply=False,
                    base_url="http://localhost:11434")
+
+
+def test_two_triage_pages_reuse_requested_resident_model(monkeypatch, tmp_path):
+    class FakeStore:
+        pending = ["one", "two"]
+
+        def list_ambiguity_groups(self, *, status, limit):
+            assert (status, limit) == ("pending", 1)
+            return [{"representative_id": self.pending[0], "name": "SERVICE_API_KEY",
+                     "reason": "unparsed_value", "count": 1}] if self.pending else []
+
+        def reveal_ambiguity(self, _id, *, passphrase):
+            assert passphrase == "test-passphrase"
+            return "synthetic-987654"
+
+        def decide_ambiguity_group(self, record_id, **kwargs):
+            assert kwargs["decision"] == "rejected"
+            self.pending.remove(record_id)
+
+        def ambiguity_status(self):
+            return {"pending": len(self.pending), "rejected": 2 - len(self.pending)}
+
+    store = FakeStore()
+    monkeypatch.setattr(runner, "CredentialStore", lambda _root: store)
+    monkeypatch.setattr(runner, "probe_gpu", lambda: GpuState(7_500, 16_376, 1, time.time()))
+    loaded = iter([(), ("qwen2.5:7b",)])
+    monkeypatch.setattr(runner, "probe_ollama", lambda _url: (
+        [{"name": "qwen2.5:7b", "size": 4_700 * 1024 * 1024}], next(loaded)))
+    requests = []
+
+    def handler(request):
+        assert request.url.path == "/api/chat"
+        body = json.loads(request.content)
+        requests.append(body)
+        return httpx.Response(200, json={"message": {"content": json.dumps({
+            "items": [{"index": 0, "class": "not_credential", "confidence": 1.0}],
+        })}})
+
+    original = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: original(
+        transport=httpx.MockTransport(handler), **kwargs))
+    reports = [runner.run(root=tmp_path, passphrase="test-passphrase", limit=1,
+                          model_limit=1, model="qwen2.5:7b", apply=True,
+                          base_url="http://127.0.0.1:11434", keep_alive="30s")
+               for _ in range(2)]
+    assert [report["model_rejected"] for report in reports] == [1, 1]
+    assert [body["model"] for body in requests] == ["qwen2.5:7b", "qwen2.5:7b"]
+    assert all(body["keep_alive"] == "30s" for body in requests)
+    assert store.ambiguity_status()["pending"] == 0
 
 
 def test_interactive_triage_validates_backups_before_and_after(tmp_path, monkeypatch):
