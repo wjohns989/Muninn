@@ -16,10 +16,11 @@ encrypted conversational transcript projection and page routes. Checked-out
 code projected real archived transcripts through 154 MiB without printing text.
 After the 2026-09-30 controlled restart, the authenticated live HTTP route
 served three bounded pages from a real archive hit and the MCP core tool list
-exposed start/page continuation. The checked-out dashboard now has a bounded
-page viewer; isolated Edge checks of that candidate HTML against the real
-loopback backend read two pages at desktop and 390px width. The running server
-still serves the earlier dashboard until a later approved restart.
+exposed start/page continuation. A later approved restart loaded the checked-out
+dashboard's bounded page viewer into the live loopback service. An authenticated
+Edge check at 390px read two pages from a real encrypted-history hit (8,000
+bounded characters total) without printing transcript text; the same live UI
+also reported installed Ollama models through the resource endpoint.
 Some legacy-oriented controls and copy remain outside the History tab and need
 strict-mode review. The root page no longer embeds an API bearer; retain that
 property throughout the overhaul.
@@ -96,14 +97,14 @@ and an explicit distinction between request accepted and work completed.
 The on-demand local GPU/Ollama resource endpoint was validated on the existing
 authenticated listener. The new transcript-page routes passed API/MCP tests,
 real-archive direct validation, and a live authenticated HTTP smoke after the
-controlled restart. The checked-out History UI now pages the new projection,
-but that UI update has not been loaded by the running server. The live smoke observed 5,037/5,037
-indexed snapshots after recovery of a stale owner-only SQLite staging journal;
-ongoing capture can advance the archive generation again.
+controlled restart. The live History UI now pages the new projection. The
+latest restart check observed 5,097/5,097 indexed snapshots with zero missing
+or unsearchable; ongoing capture can advance the archive generation again.
 An isolated headless Edge check verified authenticated History rendering at
 1280px and 390px against the running loopback service; the narrow check exposed
-and drove a responsive-layout fix. This is not yet keyboard/accessibility or
-resource-endpoint live acceptance.
+and drove a responsive-layout fix. This is not yet keyboard/accessibility
+acceptance. A subsequent live 390px check exercised the authenticated resource
+endpoint and displayed 15 installed model rows without loading an Ollama model.
 The metadata-only Credentials tab uses the existing opt-in authenticated endpoint
 and was exercised in isolated Edge sessions at both widths with a nonsecret
 query; it does not expose values or report complete vault-scan coverage. The
