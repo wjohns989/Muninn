@@ -706,6 +706,9 @@ root. Records may include a validated selected-root-relative file hint; the agen
 `search_credential_metadata` tool requires `MUNINN_CREDENTIAL_AGENT_SEARCH=1`
 and returns metadata only. A vault search still cannot prove absence of a key
 in an unscanned, ambiguous, or unsupported source.
+Pending or deferred ambiguity entries appear as `candidate_status=needs_review`
+in authorized metadata searches; they never expose candidate text and cannot be
+revealed through the ordinary credential API or MCP tools.
 The separate `/credentials/search` and `/credentials/reveal/{id}` API routes
 are disabled unless a dedicated `MUNINN_CREDENTIAL_API_TOKEN` is configured;
 reveal also requires the vault passphrase in a bounded JSON body and accepts

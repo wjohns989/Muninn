@@ -397,9 +397,23 @@ class CredentialStore:
                 "OR source_hint LIKE ? ESCAPE '\\') LIMIT ?",
                 (int(active_only), pattern, pattern, pattern, limit),
             ).fetchall()
-        return [({k: row[k] for k in ("id", "service", "project", "source_hash", "source_hint")}
+            remaining = limit - len(rows)
+            ambiguities = db.execute(
+                "SELECT id,name,project,source_hash,source_hint,origin,status "
+                "FROM ambiguity_queue WHERE status IN ('pending','deferred') "
+                "AND (name LIKE ? ESCAPE '\\' OR project LIKE ? ESCAPE '\\' "
+                "OR source_hint LIKE ? ESCAPE '\\') ORDER BY created_at,id LIMIT ?",
+                (pattern, pattern, pattern, remaining),
+            ).fetchall() if remaining else []
+        found = [({k: row[k] for k in ("id", "service", "project", "source_hash", "source_hint")}
                   if row["origin"] == "manual" else {**dict(row), "candidate_status": "unverified"})
-                for row in rows if _validated_source_hint(row["source_hint"]) is not None]
+                 for row in rows if _validated_source_hint(row["source_hint"]) is not None]
+        found.extend({"id": row["id"], "service": row["name"], "project": row["project"],
+                      "source_hash": row["source_hash"], "source_hint": row["source_hint"],
+                      "origin": row["origin"], "candidate_status": "needs_review",
+                      "review_status": row["status"], "vault_record_type": "ambiguity"}
+                     for row in ambiguities if _validated_source_hint(row["source_hint"]) is not None)
+        return found
 
     def scan_source(self, *, passphrase: str, source_hash: str, project: str,
                     origin: str, findings, receipt_identity: str | None = None) -> dict[str, int]:

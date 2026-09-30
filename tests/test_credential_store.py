@@ -232,11 +232,17 @@ def test_ambiguity_queue_streams_deduplicates_and_hides_candidate(tmp_path: Path
     assert len(listed) == 1
     assert candidate not in str(listed)
     assert store.ambiguity_status() == {"pending": 1}
+    visible = store.search("SERVICE_API_KEY")
+    assert len(visible) == 1
+    assert visible[0]["candidate_status"] == "needs_review"
+    assert visible[0]["vault_record_type"] == "ambiguity"
+    assert candidate not in str(visible)
     assert store.reveal_ambiguity(listed[0]["id"], passphrase=_PASSPHRASE) == candidate
     with pytest.raises(VaultIntegrityError):
         store.decide_ambiguity(listed[0]["id"], passphrase="wrong", decision="deferred")
     store.decide_ambiguity(listed[0]["id"], passphrase=_PASSPHRASE, decision="deferred")
     assert store.ambiguity_status() == {"deferred": 1}
+    assert store.search("SERVICE_API_KEY")[0]["review_status"] == "deferred"
     with pytest.raises(VaultIntegrityError):
         store.decide_ambiguity(listed[0]["id"], passphrase=_PASSPHRASE, decision="rejected")
     assert store.ambiguity_status() == {"deferred": 1}
