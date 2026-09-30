@@ -158,6 +158,11 @@ h3,
     box-shadow: 0 0 20px rgba(188, 19, 254, 0.15);
 }
 
+.nav-item:focus-visible {
+    outline: 2px solid var(--neon-purple);
+    outline-offset: 2px;
+}
+
 .nav-badge {
     background: var(--rose-500);
     color: white;

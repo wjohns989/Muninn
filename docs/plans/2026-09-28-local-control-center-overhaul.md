@@ -102,13 +102,20 @@ latest restart check observed 5,097/5,097 indexed snapshots with zero missing
 or unsearchable; ongoing capture can advance the archive generation again.
 An isolated headless Edge check verified authenticated History rendering at
 1280px and 390px against the running loopback service; the narrow check exposed
-and drove a responsive-layout fix. This is not yet keyboard/accessibility
-acceptance. A subsequent live 390px check exercised the authenticated resource
-endpoint and displayed 15 installed model rows without loading an Ollama model.
+and drove a responsive-layout fix. A subsequent live 390px check exercised the
+authenticated resource endpoint and displayed 15 installed model rows without
+loading an Ollama model. All seven sidebar actions are focusable and pass
+Enter/Space activation against the live UI at 390px and 1280px; Tab traversal
+from Overview to Ingestion was also verified. This is not a full accessibility
+audit of every dialog and workflow.
 The metadata-only Credentials tab uses the existing opt-in authenticated endpoint
 and was exercised in isolated Edge sessions at both widths with a nonsecret
 query; it does not expose values or report complete vault-scan coverage. The
 separate passphrase-gated use flow and scan progress/coverage UI remain pending.
+Separately, a local CLI restore drill validated a 9,439-record encrypted
+credential backup into a new directory with matching vault identity; it did not
+replace the live vault. Backup receipts and recovery guidance in the UI remain
+pending.
 
 Current delivery boundary: step 3's bounded search/fetch/job view, part of
 step 2's archive/index, capture-intent/source-scan, and accepted-hook status, and part of step 4's

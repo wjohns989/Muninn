@@ -55,7 +55,7 @@
             <span>MUNINN</span>
         </div>
         <ul class="nav-list">
-            <li class="nav-item active" onclick="showTab('overview')">
+            <li class="nav-item active" data-tab="overview" tabindex="0" role="button" aria-label="Overview" aria-current="page">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="3" width="7" height="7"></rect>
@@ -66,7 +66,7 @@
                 <span class="nav-text">Overview</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('ingest')">
+            <li class="nav-item" data-tab="ingest" tabindex="0" role="button" aria-label="Ingestion">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -77,7 +77,7 @@
                 <span id="ingest-badge" class="nav-badge hidden pulse-active">0</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('search')">
+            <li class="nav-item" data-tab="search" tabindex="0" role="button" aria-label="Ordinary Search">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="11" cy="11" r="8"></circle>
@@ -104,7 +104,7 @@
                 <span class="nav-text">Credential Metadata</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('system')">
+            <li class="nav-item" data-tab="system" tabindex="0" role="button" aria-label="System">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
@@ -115,7 +115,7 @@
                 <span class="nav-text">System</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="openUserProfile()">
+            <li class="nav-item" data-action="profile" tabindex="0" role="button" aria-label="User Profile">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
@@ -641,14 +641,19 @@
 
         function showTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(t => {
+                t.classList.remove('active');
+                t.removeAttribute('aria-current');
+            });
 
             const activeTab = document.getElementById('tab-' + tabId);
             if (activeTab) activeTab.classList.add('active');
 
-            const activeNav = document.querySelector(`.nav-item[data-tab="${tabId}"]`) ||
-                document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
-            if (activeNav) activeNav.classList.add('active');
+            const activeNav = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
+            if (activeNav) {
+                activeNav.classList.add('active');
+                activeNav.setAttribute('aria-current', 'page');
+            }
 
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
 
@@ -707,21 +712,16 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            const historyNav = document.querySelector('.nav-item[data-tab="history"]');
-            historyNav.addEventListener('click', () => showTab('history'));
-            historyNav.addEventListener('keydown', event => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    showTab('history');
-                }
-            });
-            const credentialsNav = document.querySelector('.nav-item[data-tab="credentials"]');
-            credentialsNav.addEventListener('click', () => showTab('credentials'));
-            credentialsNav.addEventListener('keydown', event => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    showTab('credentials');
-                }
+            document.querySelectorAll('.nav-item[data-tab], .nav-item[data-action="profile"]').forEach(nav => {
+                const activate = () => nav.dataset.action === 'profile'
+                    ? openUserProfile() : showTab(nav.dataset.tab);
+                nav.addEventListener('click', activate);
+                nav.addEventListener('keydown', event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        activate();
+                    }
+                });
             });
             document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
             document.getElementById('history-transcript-next').addEventListener('click', () => {

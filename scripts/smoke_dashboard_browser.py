@@ -39,6 +39,8 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--expect-resources-ready", action="store_true")
+    parser.add_argument("--keyboard-nav", action="store_true",
+                        help="Exercise every sidebar action with Enter or Space")
     parser.add_argument("--credential-query", help="Nonsecret metadata query; prints only match count")
     parser.add_argument("--candidate-html", action="store_true",
                         help="Render checked-out dashboard HTML against the real loopback backend")
@@ -87,6 +89,29 @@ def main() -> int:
             page.get_by_placeholder("Paste your Auth Token here...").fill(token)
             page.get_by_role("button", name="Authenticate & Enter").click()
             expect(page.locator("#auth-modal")).to_be_hidden()
+            keyboard_nav_checked = 0
+            if args.keyboard_nav:
+                page.get_by_role("button", name="Overview", exact=True).focus()
+                page.keyboard.press("Tab")
+                expect(page.get_by_role("button", name="Ingestion", exact=True)).to_be_focused()
+                for index, (name, tab) in enumerate((
+                    ("Overview", "overview"), ("Ingestion", "ingest"),
+                    ("Ordinary Search", "search"), ("Encrypted History", "history"),
+                    ("Credential Metadata", "credentials"), ("System", "system"),
+                )):
+                    nav = page.get_by_role("button", name=name, exact=True)
+                    nav.focus()
+                    expect(nav).to_be_focused()
+                    page.keyboard.press("Enter" if index % 2 == 0 else "Space")
+                    expect(page.locator(f"#tab-{tab}")).to_have_class(re.compile(r"\bactive\b"))
+                    expect(nav).to_have_attribute("aria-current", "page")
+                    keyboard_nav_checked += 1
+                profile = page.get_by_role("button", name="User Profile", exact=True)
+                profile.focus()
+                page.keyboard.press("Enter")
+                expect(page.locator("#profile-modal")).to_have_class(re.compile(r"\bactive\b"))
+                page.locator("#profile-modal button", has_text="Cancel").click()
+                keyboard_nav_checked += 1
             page.get_by_role("button", name="Encrypted History").click()
             if not page.get_by_role("heading", name="Encrypted capture status").is_visible():
                 failure = {"state": "history_hidden", "tab_class": page.locator("#tab-history").get_attribute("class"),
@@ -105,6 +130,8 @@ def main() -> int:
             result = {"authenticated_history_visible": True,
                       "capture_status_visible": page.locator("#history-capture-status").is_visible(),
                       "resources_checked": False, "candidate_html": args.candidate_html}
+            if args.keyboard_nav:
+                result["keyboard_nav_checked"] = keyboard_nav_checked
             if args.expect_resources_ready:
                 page.get_by_role("button", name="Check GPU and Ollama").click()
                 expect(page.locator("#local-resource-status")).not_to_contain_text(
