@@ -13,9 +13,11 @@ host-origin hook proof, and backup receipts are not shown there. The full
 overhaul remains lower priority than the working local capture/recovery and
 credential-discovery path. The backend now has authenticated, cursor-bound,
 encrypted conversational transcript projection and page routes. Checked-out
-code projected real archived transcripts through 154 MiB without printing text;
-the running service and dashboard still need a controlled restart and browser
-integration for this new continuation flow.
+code projected real archived transcripts through 154 MiB without printing text.
+After the 2026-09-30 controlled restart, the authenticated live HTTP route
+served three bounded pages from a real archive hit and the MCP core tool list
+exposed start/page continuation. The dashboard still needs browser integration
+for this flow.
 Some legacy-oriented controls and copy remain outside the History tab and need
 strict-mode review. The root page no longer embeds an API bearer; retain that
 property throughout the overhaul.
@@ -90,10 +92,12 @@ and an explicit distinction between request accepted and work completed.
    any unsupported state as unknown, not zero or complete.
 
 The on-demand local GPU/Ollama resource endpoint was validated on the existing
-authenticated listener. The new transcript-page routes have passed API/MCP
-tests and real-archive direct validation, but are not live on that listener
-until it loads the new code. The History UI still displays only a short excerpt;
-it does not yet paginate the new projection.
+authenticated listener. The new transcript-page routes passed API/MCP tests,
+real-archive direct validation, and a live authenticated HTTP smoke after the
+controlled restart. The History UI still displays only a short excerpt; it
+does not yet paginate the new projection. The live smoke observed 5,037/5,037
+indexed snapshots after recovery of a stale owner-only SQLite staging journal;
+ongoing capture can advance the archive generation again.
 An isolated headless Edge check verified authenticated History rendering at
 1280px and 390px against the running loopback service; the narrow check exposed
 and drove a responsive-layout fix. This is not yet keyboard/accessibility or
