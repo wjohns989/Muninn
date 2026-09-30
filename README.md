@@ -673,7 +673,9 @@ The queue-enabled scanner version re-evaluates older receipts once, then skips
 unchanged snapshots on later runs. After the live archive grows, rerun from
 offset zero; receipts skip already processed snapshots instead of decrypting
 the whole history again. A bounded local-only review pass uses an installed
-Ollama model only when GPU headroom allows, with `keep_alive=0`; it never sends
+Ollama model only when GPU headroom allows. A one-page review uses
+`keep_alive=0`; a multi-page pass uses a 30-second idle lease to avoid reloading
+the model for every batch, then Ollama frees it after the lease. It never sends
 candidate text to OpenRouter or automatically promotes a candidate to a usable
 credential. Clear references can be rejected by rule, high-confidence model
 non-credentials can be rejected, and uncertain/possible credentials are deferred
@@ -693,7 +695,7 @@ python -m muninn.cli credentials search API_KEY --root '<your-private-data-dir>\
 python -m muninn.cli credentials review-status --root '<your-private-data-dir>\credential_vault'
 python -m muninn.cli credentials review-list --root '<your-private-data-dir>\credential_vault' --review-state deferred
 python -m muninn.cli credentials backup --root '<your-private-data-dir>\credential_vault' --destination '<new-private-backup-dir>'
-python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --limit 60 --model qwen2.5:7b --max-pages 100 --backup-after '<new-private-reviewed-backup-dir>' --apply
+python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --limit 60 --model qwen2.5:7b --max-pages 200 --backup-before '<new-private-pre-triage-backup-dir>' --backup-after '<new-private-reviewed-backup-dir>' --apply
 ```
 
 For a specific opaque ID returned by `review-list`, use `credentials
@@ -705,6 +707,10 @@ use `credentials review-accept --record-id <id> --confirm-exact-candidate
 <new-private-backup-dir>`. These commands prompt locally for the passphrase;
 do not pass secrets as arguments or paste revealed values into agent chat.
 An empty or truncated candidate cannot be promoted as an exact value.
+Triage exits with code 2 while pending or deferred items still require review;
+this is not a backup failure. If an error interrupts triage, its terminal JSON
+reports which backup stage completed without printing candidate text; the
+post-triage backup is only validated after a successful processing pass.
 
 Only the named project roots and archive are scanned. Generated/example `.env`
 files, linked paths, and unsupported assignments are not silently treated as

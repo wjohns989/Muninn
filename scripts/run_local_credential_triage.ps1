@@ -1,10 +1,11 @@
 param(
     [Parameter(Mandatory = $true)][string]$VaultRoot,
     [Parameter(Mandatory = $true)][string]$LogPath,
+    [Parameter(Mandatory = $true)][string]$PreBackupDestination,
     [Parameter(Mandatory = $true)][string]$BackupDestination,
     [string]$Python = 'python',
     [string]$Model = 'qwen2.5:7b',
-    [ValidateRange(1, 10000)][int]$MaxPages = 100,
+    [ValidateRange(1, 10000)][int]$MaxPages = 200,
     [ValidateRange(1, 100)][int]$PageSize = 60,
     [ValidateRange(0, 100)][int]$ModelLimit = 12
 )
@@ -20,11 +21,20 @@ if (Test-Path -LiteralPath $LogPath) {
 if (Test-Path -LiteralPath $BackupDestination) {
     throw 'Backup destination already exists'
 }
+if (Test-Path -LiteralPath $PreBackupDestination) {
+    throw 'Pre-triage backup destination already exists'
+}
+if ($PreBackupDestination -eq $BackupDestination) {
+    throw 'Pre- and post-triage backup destinations must differ'
+}
 if (-not (Test-Path -LiteralPath (Split-Path -Parent $LogPath) -PathType Container)) {
     throw 'Log parent is missing'
 }
 if (-not (Test-Path -LiteralPath (Split-Path -Parent $BackupDestination) -PathType Container)) {
     throw 'Backup parent is missing'
+}
+if (-not (Test-Path -LiteralPath (Split-Path -Parent $PreBackupDestination) -PathType Container)) {
+    throw 'Pre-triage backup parent is missing'
 }
 if ($ModelLimit -gt $PageSize) {
     throw 'ModelLimit must not exceed PageSize'
@@ -35,7 +45,8 @@ Start-Transcript -LiteralPath $LogPath -ErrorAction Stop | Out-Null
 try {
     & $Python -m scripts.triage_credential_ambiguity --root $VaultRoot `
         --model $Model --limit $PageSize --model-limit $ModelLimit `
-        --max-pages $MaxPages --backup-after $BackupDestination --apply
+        --max-pages $MaxPages --backup-before $PreBackupDestination `
+        --backup-after $BackupDestination --apply
     $triageExit = $LASTEXITCODE
     Write-Host ("MUNINN_TRIAGE_EXIT_CODE={0}" -f $triageExit)
 } finally {

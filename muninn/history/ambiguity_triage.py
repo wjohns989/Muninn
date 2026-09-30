@@ -48,7 +48,8 @@ def deterministic_decision(item: CandidateForReview) -> ReviewDecision | None:
 
 def classify_local(items: list[CandidateForReview], *, model: str,
                    base_url: str = "http://127.0.0.1:11434",
-                   timeout_seconds: float = 180.0) -> list[ReviewDecision]:
+                   timeout_seconds: float = 180.0,
+                   keep_alive: int | str = 0) -> list[ReviewDecision]:
     """Ask one installed Ollama model; malformed/uncertain replies defer safely."""
     if not 1 <= len(items) <= 12:
         raise ValueError("Local review batch must contain 1-12 candidates")
@@ -56,6 +57,8 @@ def classify_local(items: list[CandidateForReview], *, model: str,
         raise ValueError("Invalid local review model")
     if base_url.rstrip("/") != "http://127.0.0.1:11434":
         raise ValueError("Credential triage requires loopback Ollama")
+    if keep_alive not in (0, "30s"):
+        raise ValueError("Invalid local review residency")
     if any(len(item.candidate) > 512 for item in items):
         raise ValueError("Oversized local review candidate")
     data = [{"index": index, "name": item.name, "reason": item.reason,
@@ -72,7 +75,7 @@ def classify_local(items: list[CandidateForReview], *, model: str,
         {"role": "user", "content": json.dumps({"items": data}, ensure_ascii=True)},
     ]
     body = {"model": model, "messages": messages, "format": "json", "stream": False,
-            "keep_alive": 0, "options": {"temperature": 0, "num_predict": 480}}
+            "keep_alive": keep_alive, "options": {"temperature": 0, "num_predict": 480}}
     with httpx.Client(timeout=timeout_seconds, trust_env=False) as client:
         response = client.post(base_url.rstrip("/") + "/api/chat", json=body)
         response.raise_for_status()
