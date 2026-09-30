@@ -37,6 +37,11 @@
   source units, blind search and secure analysis. Independent final inspection
   cleared the reviewed pagination/schema changes. Full merge suite remains a
   separate gate; no merge claimed.
+- The first Linux full CI run had 2,280 passed / 13 skipped and three new
+  review-setup failures because path-only reopening required a passphrase
+  without Windows DPAPI. ReviewSource now accepts an already authenticated
+  archive handle and the tests use their passphrase-created handle. The
+  corrected full CI run must be observed before claiming the merge gate passed.
 
 ## Remaining acceptance gaps
 

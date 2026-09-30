@@ -98,7 +98,8 @@ def test_review_prepare_defers_only_unsupported_provenance(tmp_path, monkeypatch
     from muninn.history.streaming_jsonl import StreamingJSONError
     from muninn.history.credential_crypto import VaultIntegrityError
     archive, entry = _fixture(tmp_path)
-    review = CredentialReviewSource(archive.root)
+    review = CredentialReviewSource(archive)
+    assert review.archive is archive
     errors = {"unsupported": UnsupportedTranscript, "malformed": StreamingJSONError,
               "integrity": VaultIntegrityError}
     def fail(*args, **kwargs):

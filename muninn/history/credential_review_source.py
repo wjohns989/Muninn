@@ -18,8 +18,10 @@ from muninn.history.structured_projector import UnsupportedTranscript
 
 
 class CredentialReviewSource:
-    def __init__(self, root: Path):
-        self.archive = SecureHistoryArchive(root)
+    def __init__(self, root: Path | SecureHistoryArchive):
+        # Portable callers can reuse a passphrase-authenticated archive handle;
+        # path-only Windows callers retain the existing local DPAPI unlock.
+        self.archive = root if isinstance(root, SecureHistoryArchive) else SecureHistoryArchive(root)
         self.index = archive_source_index(self.archive)
         self.manifest = self.archive._load_manifest()
         self.units = SourceEvidenceStore(self.archive)
