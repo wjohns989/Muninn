@@ -50,6 +50,9 @@ historical backfill and UI integration are still implementation work. This slice
 does not promote provisional text into ordinary indexes. Credential triage needs
 a local interactive unlock and representative context proof before a large pass.
 The observed capture queue had two unavailable items requiring diagnosis.
+Read-only journal diagnosis identifies both as missing Claude Code sources,
+not model, archive-unlock, or GPU failures. They remain explicitly unavailable;
+this check does not establish whether their last bytes were captured elsewhere.
 New application code needs a separately authorized single-service restart before
 its live HTTP behavior can be claimed. Other services have not been stopped.
 

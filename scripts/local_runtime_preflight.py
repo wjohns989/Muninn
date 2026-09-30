@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import httpx
@@ -76,6 +77,26 @@ def inspect_models() -> dict:
                        for name in ("qwen2.5:7b", "muninn-qwen35-defiant-q8-test:latest")]}
 
 
+def inspect_capture_errors(repo: Path) -> list[dict]:
+    from muninn.history.auto_routing import _local_setting
+    configured = _local_setting("MUNINN_HISTORY_ARCHIVE_DIR")
+    data = Path(_local_setting("MUNINN_DATA_DIR") or repo / ".muninn_runtime")
+    archive = Path(configured) if configured else data / "history_secure_archive"
+    if not archive.is_absolute():
+        archive = repo / archive
+    path = archive / "capture-jobs.db"
+    if not path.is_file():
+        return []
+    with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        rows = db.execute("SELECT provider,state,last_error_code,COUNT(*) FROM jobs "
+                          "WHERE state!='archived' GROUP BY provider,state,last_error_code").fetchall()
+    allowed_codes = {"missing", "locked", "changed", "permission", "archive_error", "unknown", ""}
+    return [{"provider": provider if provider in {"codex", "claude_code", "gemini_cli"} else "unknown",
+             "state": state if state in {"pending", "capturing", "retry", "unavailable"} else "unknown",
+             "error_code": code if code in allowed_codes else "other", "count": count}
+            for provider, state, code, count in rows]
+
+
 if __name__ == "__main__":
     import sys
 
@@ -83,4 +104,6 @@ if __name__ == "__main__":
                              authenticated="--authenticated" in sys.argv)
     if "--models" in sys.argv:
         report["models"] = inspect_models()
+    if "--capture-errors" in sys.argv:
+        report["capture_errors"] = inspect_capture_errors(Path(__file__).resolve().parents[1])
     print(json.dumps(report, sort_keys=True))
