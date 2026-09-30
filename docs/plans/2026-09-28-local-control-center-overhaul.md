@@ -1,6 +1,6 @@
 # Local control center overhaul (implementation plan)
 
-Status (2026-09-29): partially implemented. The local installation has proven
+Status (2026-09-30): partially implemented. The local installation has proven
 bounded secure search and both local/Ollama and ZDR/OpenRouter analysis routes.
 The dashboard at port 42069 has an Encrypted History tab with durable search-job
 status, generation-bound archive/index coverage, capture-intent queue and source-scan
@@ -11,7 +11,11 @@ unique host events or completed capture. This is not yet a full spending or
 resource control center: actual spend, vault scan coverage, model residency,
 host-origin hook proof, and backup receipts are not shown there. The full
 overhaul remains lower priority than the working local capture/recovery and
-credential-discovery path.
+credential-discovery path. The backend now has authenticated, cursor-bound,
+encrypted conversational transcript projection and page routes. Checked-out
+code projected real archived transcripts through 154 MiB without printing text;
+the running service and dashboard still need a controlled restart and browser
+integration for this new continuation flow.
 Some legacy-oriented controls and copy remain outside the History tab and need
 strict-mode review. The root page no longer embeds an API bearer; retain that
 property throughout the overhaul.
@@ -85,10 +89,11 @@ and an explicit distinction between request accepted and work completed.
    candidate. Compare every displayed count to its backend generation; record
    any unsupported state as unknown, not zero or complete.
 
-The on-demand local GPU/Ollama resource view and its authenticated API are
-implemented in source but await a controlled service restart and live validation.
-The existing dashboard can serve the new HTML before that restart, but the new
-endpoint is unavailable until the running server loads the updated code.
+The on-demand local GPU/Ollama resource endpoint was validated on the existing
+authenticated listener. The new transcript-page routes have passed API/MCP
+tests and real-archive direct validation, but are not live on that listener
+until it loads the new code. The History UI still displays only a short excerpt;
+it does not yet paginate the new projection.
 An isolated headless Edge check verified authenticated History rendering at
 1280px and 390px against the running loopback service; the narrow check exposed
 and drove a responsive-layout fix. This is not yet keyboard/accessibility or
