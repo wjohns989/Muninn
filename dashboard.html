@@ -306,6 +306,14 @@
                     <p id="history-capture-status" role="status" aria-live="polite">Capture queue not loaded.</p>
                     <p id="history-hook-receipts" class="history-hook-receipts">Hook receipts not loaded.</p>
                 </div>
+                <div class="card">
+                    <h3>Local model resources</h3>
+                    <p class="card-description">Sample current GPU headroom and Ollama residency on demand. An empty Ollama
+                        residency list does not prove other applications are idle; no model is loaded by this check.</p>
+                    <button type="button" id="refresh-local-resources" class="btn-secondary">Check GPU and Ollama</button>
+                    <p id="local-resource-status" role="status" aria-live="polite">Not sampled in this tab.</p>
+                    <ul id="local-resource-models"></ul>
+                </div>
                 <div class="card" id="remote-policy-card">
                     <h3>Private OpenRouter fallback</h3>
                     <p class="card-description">Local models remain preferred. When enabled, ZDR OpenRouter may interpret a pertinent
@@ -404,6 +412,7 @@
         let remotePolicyLoadedEnabled = false;
         let remotePolicyLoadSequence = 0;
         let remotePolicySavePending = false;
+        let resourceStatusSequence = 0;
         let healthPoll = null;
         let scanPoll = null;
         // Retire credentials persisted by older dashboard releases.
@@ -665,6 +674,7 @@
             });
             document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
             document.getElementById('remote-policy-save').addEventListener('click', saveRemotePolicy);
+            document.getElementById('refresh-local-resources').addEventListener('click', loadLocalResources);
             document.getElementById('history-query').addEventListener('keydown', event => {
                 if (event.key === 'Enter') handleEncryptedHistorySearch();
             });
@@ -768,6 +778,48 @@
             });
             hooks.textContent = lines.join('\n') +
                 '\nCounts are accepted endpoint invocations, not unique host events or archival proof.';
+        }
+
+        async function loadLocalResources() {
+            const sequence = ++resourceStatusSequence;
+            const token = AUTH_TOKEN;
+            const status = document.getElementById('local-resource-status');
+            const models = document.getElementById('local-resource-models');
+            const button = document.getElementById('refresh-local-resources');
+            button.disabled = true;
+            status.textContent = 'Sampling local GPU and Ollama without loading a model...';
+            models.replaceChildren();
+            try {
+                const response = await api('/history/secure/resources');
+                if (sequence !== resourceStatusSequence || token !== AUTH_TOKEN) return;
+                if (response.error || !response.data) {
+                    status.textContent = 'Local resource status unavailable; no idle or headroom conclusion can be drawn.';
+                    return;
+                }
+                const gpu = response.data.gpu || {};
+                const ollama = response.data.ollama || {};
+                const stamped = value => Number.isFinite(value) && value > 0 ?
+                    new Date(value * 1000).toLocaleString() : 'time unknown';
+                const gpuText = gpu.state === 'ready' && Number.isSafeInteger(gpu.free_mib) &&
+                    Number.isSafeInteger(gpu.total_mib) && Number.isSafeInteger(gpu.utilization_percent) ?
+                    `GPU ${gpu.free_mib} MiB free of ${gpu.total_mib} MiB; ${gpu.utilization_percent}% utilization ` +
+                    `(sampled ${stamped(gpu.sampled_at)})` : 'GPU telemetry unavailable';
+                const resident = Array.isArray(ollama.resident_models) ? ollama.resident_models : null;
+                const ollamaText = ollama.state === 'ready' && resident ?
+                    (resident.length ? `Ollama resident models: ${resident.join(', ')}` :
+                        'no Ollama models resident') + ` (sampled ${stamped(ollama.sampled_at)})` :
+                    'Ollama status unavailable';
+                status.textContent = `${gpuText}. ${ollamaText}.`;
+                if (ollama.state !== 'ready' || !Array.isArray(ollama.installed)) return;
+                for (const item of ollama.installed) {
+                    if (typeof item.name !== 'string' || !Number.isSafeInteger(item.size_bytes)) continue;
+                    const row = document.createElement('li');
+                    row.textContent = `${item.name} · ${(item.size_bytes / (1024 ** 3)).toFixed(2)} GiB on disk`;
+                    models.appendChild(row);
+                }
+            } finally {
+                if (sequence === resourceStatusSequence) button.disabled = false;
+            }
         }
 
         async function loadRemotePolicy() {

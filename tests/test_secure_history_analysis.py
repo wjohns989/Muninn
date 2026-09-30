@@ -10,6 +10,11 @@ import pytest
 from muninn.history import secure_analysis as analysis
 
 
+def test_localhost_ollama_url_is_canonicalized_to_numeric_loopback(monkeypatch):
+    monkeypatch.setenv("MUNINN_OLLAMA_URL", "http://localhost:11434")
+    assert analysis._loopback_ollama_url() == "http://127.0.0.1:11434"
+
+
 def test_installed_model_pool_is_dynamic(monkeypatch):
     monkeypatch.setattr(analysis, "_local_setting", lambda _name: "")
     installed = [{"name": "another-chat-model:latest"}, {"name": "qwen2.5:7b"}]

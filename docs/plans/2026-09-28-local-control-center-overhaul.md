@@ -85,6 +85,11 @@ and an explicit distinction between request accepted and work completed.
    candidate. Compare every displayed count to its backend generation; record
    any unsupported state as unknown, not zero or complete.
 
+The on-demand local GPU/Ollama resource view and its authenticated API are
+implemented in source but await a controlled service restart and live validation.
+The existing dashboard can serve the new HTML before that restart, but the new
+endpoint is unavailable until the running server loads the updated code.
+
 Current delivery boundary: step 3's bounded search/fetch/job view, part of
 step 2's archive/index, capture-intent/source-scan, and accepted-hook status, and part of step 4's
 consent/admission and provider-key-cap status UI are implemented. The rest of steps 1-6 are not

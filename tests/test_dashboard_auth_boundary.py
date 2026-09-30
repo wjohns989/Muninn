@@ -408,6 +408,60 @@ vm.runInContext(__SOURCE__, context);
     assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
 
 
+def test_local_resource_ui_renders_untrusted_model_names_as_text():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    assert 'id="refresh-local-resources"' in page
+    assert 'id="local-resource-status"' in page
+    source = "async function loadLocalResources()" + page.split(
+        "async function loadLocalResources()", 1,
+    )[1].split("async function loadRemotePolicy()", 1)[0]
+    assert "innerHTML" not in source
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const elements = new Map();
+function element() {
+    const obj = {textContent: '', children: [], disabled: false,
+        replaceChildren(...items) { this.children = items; },
+        appendChild(item) { this.children.push(item); }};
+    Object.defineProperty(obj, 'innerHTML', {set() { throw Error('unsafe HTML'); }});
+    return obj;
+}
+const document = {getElementById(id) {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+}, createElement() { return element(); }};
+const context = vm.createContext({document});
+vm.runInContext("let AUTH_TOKEN = 'local'; let resourceStatusSequence = 0; " + __SOURCE__, context);
+const attack = '<img src=x onerror=steal()>';
+context.api = async path => {
+    assert.equal(path, '/history/secure/resources');
+    return {data: {gpu: {state: 'ready', free_mib: 8000, total_mib: 16000,
+        utilization_percent: 1, sampled_at: 123},
+        ollama: {state: 'ready', sampled_at: 124, installed: [
+            {name: attack, size_bytes: 1000}], resident_models: []}}};
+};
+vm.runInContext('loadLocalResources()', context).then(async () => {
+    const status = document.getElementById('local-resource-status').textContent;
+    const list = document.getElementById('local-resource-models');
+    assert.match(status, /8000 MiB free/);
+    assert.match(status, /no Ollama models resident/);
+    assert.match(list.children[0].textContent, /<img src=x onerror=steal\(\)>/);
+    context.api = async () => ({data: {gpu: {state: 'unavailable'},
+        ollama: {state: 'unavailable'}}});
+    await vm.runInContext('loadLocalResources()', context);
+    assert.match(document.getElementById('local-resource-status').textContent, /unavailable/);
+    assert.equal(list.children.length, 0);
+}).catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
+
+
 def test_health_reports_effective_history_security_mode(monkeypatch):
     class HealthyMemory:
         async def health(self):

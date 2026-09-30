@@ -1893,6 +1893,15 @@ async def secure_remote_key_status_endpoint():
     return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
 
 
+@app.get("/history/secure/resources", dependencies=[Depends(verify_main_local_token)])
+async def secure_local_resource_status_endpoint():
+    """Sample local GPU and Ollama residency only when explicitly requested."""
+    from muninn.history.auto_routing import local_resource_status
+
+    status = await asyncio.to_thread(local_resource_status)
+    return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
+
+
 @app.post("/history/secure/remote-policy", dependencies=[Depends(verify_main_local_token)])
 async def update_secure_remote_policy_endpoint(req: RemotePolicyUpdateRequest, request: Request):
     from muninn.history.auto_routing import _legacy_remote_policy

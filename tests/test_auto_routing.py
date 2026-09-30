@@ -11,7 +11,52 @@ import pytest
 def _legacy_history_test_mode(monkeypatch):
     monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
 
+from muninn.history import auto_routing
 from muninn.history.auto_routing import GpuState, choose_route, model_hints_for_thread
+
+
+def test_ollama_probe_rejects_nonloopback_without_network(monkeypatch):
+    monkeypatch.setattr(auto_routing.httpx, "Client", lambda **_kwargs: pytest.fail("network attempted"))
+    assert auto_routing.probe_ollama("http://remote.example:11434") == ([], ())
+    assert auto_routing.probe_ollama("http://127.0.0.1:11434@remote.example") == ([], ())
+
+
+def test_ollama_probe_ignores_proxy_environment_and_redirects(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://remote.example:8080")
+    called = []
+
+    class Response:
+        def __init__(self, data):
+            self.data = data
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.data
+
+    class Client:
+        def __init__(self, **kwargs):
+            called.append(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, url):
+            assert url.startswith("http://127.0.0.1:11434/api/")
+            return Response({"models": [{"name": "qwen2.5:7b", "size": 1000}]} if url.endswith("/tags")
+                            else {"models": []})
+
+    monkeypatch.setattr(auto_routing.httpx, "Client", Client)
+    assert auto_routing.probe_ollama("http://127.0.0.1:11434") == (
+        [{"name": "qwen2.5:7b", "size": 1000}], ())
+    assert auto_routing.probe_ollama("http://localhost:11434") == (
+        [{"name": "qwen2.5:7b", "size": 1000}], ())
+    assert called == [{"timeout": 3.0, "trust_env": False, "follow_redirects": False}] * 2
 
 
 def test_openrouter_budget_ceiling_requires_explicit_override(monkeypatch):

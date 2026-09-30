@@ -12,13 +12,13 @@ import os
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from urllib.parse import urlparse
 
 import httpx
 
 from muninn.history import llm_settings
 from muninn.history.auto_routing import (
     _local_setting,
+    canonical_loopback_ollama_url,
     choose_route,
     guarded_openrouter_available,
     probe_gpu,
@@ -55,11 +55,11 @@ class ModelInputInvalid(ValueError):
 
 
 def _loopback_ollama_url() -> str:
-    value = os.environ.get("MUNINN_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-    parsed = urlparse(value)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise RuntimeError("Ollama must use a loopback HTTP endpoint")
-    return value
+    value = os.environ.get("MUNINN_OLLAMA_URL", "http://127.0.0.1:11434")
+    try:
+        return canonical_loopback_ollama_url(value)
+    except ValueError as exc:
+        raise RuntimeError("Ollama must use a loopback HTTP endpoint") from exc
 
 
 def _candidate_names(installed: list[dict]) -> list[str]:

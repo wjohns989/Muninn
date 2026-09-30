@@ -409,7 +409,7 @@ Key environment variables:
 | `MUNINN_HISTORY_HOMES` | - | Extra home folders to scan for app history (e.g. the Windows home from WSL) |
 | `MUNINN_DATA_DIR` | platform data directory | All Muninn stores; choose a private local directory with enough space for your history and reliable advisory file locking, not a repository checkout or network share |
 | `MUNINN_PYTHON_PATH` | `python` on `PATH` | Windows shared launcher interpreter; set a user-scoped path to a trusted Python executable with Muninn's dependencies, or pass `-PythonPath` to the launcher. This setting authorizes execution of that file; do not point it at an untrusted checkout or download. No interpreter path is hard-coded in the repo |
-| `MUNINN_OLLAMA_URL` | `http://localhost:11434` | Your Ollama endpoint; no particular model directory or drive letter is assumed |
+| `MUNINN_OLLAMA_URL` | `http://127.0.0.1:11434` | Loopback-only HTTP Ollama endpoint for private analysis and status; no model directory or drive letter is assumed |
 | `MUNINN_OLLAMA_MODEL` | `llama3.2:3b` | Model for explicitly requested Ollama analysis |
 | `MUNINN_AUTO_LOCAL_MODEL_HINTS` | local measured defaults | Comma-separated installed model tags in preferred order for strict on-demand analysis; unlisted installed chat-capable models remain fallback candidates. Legacy analysis also accepts model-name fragments |
 | `MUNINN_OLLAMA_KEEP_ALIVE` | `0` | Release an Ollama model after an analysis request instead of leaving it resident in VRAM |
@@ -531,13 +531,16 @@ running local service without printing transcript or model text, run
 ZDR key, consent, and finite provider-enforced cap).
 At `http://127.0.0.1:42069`, the dashboard now has a separate **Encrypted
 History** tab. After local bearer authentication, it queues a durable search,
-reports archive/index generations, indexed/total coverage, accepted hook
-invocation counts, and partial results, and loads a bounded excerpt only when
+reports archive/index generations, indexed/total coverage, capture-intent/source-scan
+status, accepted hook invocation counts, and partial results, and loads a bounded excerpt only when
 selected. The UI labels current coverage unknown unless the index report is
 bound to the ready archive's generation; hook counts alone do not prove a
 host-origin event or completed archival. Excerpts receive best-effort redaction,
 not a guarantee that all sensitive text is gone; the dashboard has no raw
-transcript or credential reveal control. **Ordinary Search** remains a different
+transcript or credential reveal control. An on-demand local resource check uses
+the authenticated `GET /history/secure/resources` endpoint to report GPU telemetry,
+installed Ollama models, and Ollama residency without loading a model; an
+unavailable probe is shown as unknown, not idle. **Ordinary Search** remains a different
 corpus. This is a narrow operator slice, not the full control-center overhaul described in
 `docs/plans/2026-09-28-local-control-center-overhaul.md`.
 For authenticated CLI commands, token precedence is explicit `--token-file`,

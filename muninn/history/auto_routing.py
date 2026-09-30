@@ -40,6 +40,13 @@ class Route:
     free_mib: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class OllamaState:
+    installed: tuple[dict[str, Any], ...]
+    loaded_models: tuple[str, ...]
+    sampled_at: float
+
+
 def probe_gpu(*, now: Optional[float] = None) -> Optional[GpuState]:
     """Use the current NVIDIA reading; never infer headroom from static GPU size."""
     try:
@@ -60,21 +67,77 @@ def probe_gpu(*, now: Optional[float] = None) -> Optional[GpuState]:
         return None
 
 
-def probe_ollama(base_url: str) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
-    """Inspect installed and resident models without invoking inference."""
-    base = base_url.rstrip("/")
+def canonical_loopback_ollama_url(base_url: str) -> str:
+    """Normalize localhost to a numeric loopback target, avoiding DNS/hosts drift."""
+    parsed = urlsplit(base_url.rstrip("/"))
+    if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path or parsed.query or parsed.fragment):
+        raise ValueError("Ollama must use a loopback HTTP endpoint")
+    port = parsed.port  # Also validates malformed ports.
+    host = "127.0.0.1" if parsed.hostname == "localhost" else parsed.hostname
+    authority = f"[{host}]" if host == "::1" else host
+    return f"http://{authority}" + (f":{port}" if port is not None else "")
+
+
+def inspect_ollama(base_url: str) -> Optional[OllamaState]:
+    """Read loopback model status, distinguishing an empty set from probe failure."""
     try:
-        with httpx.Client(timeout=3.0) as client:
+        base = canonical_loopback_ollama_url(base_url)
+        with httpx.Client(timeout=3.0, trust_env=False, follow_redirects=False) as client:
             tags = client.get(f"{base}/api/tags")
             running = client.get(f"{base}/api/ps")
+            if tags.status_code != 200 or running.status_code != 200:
+                return None
             tags.raise_for_status()
             running.raise_for_status()
-        installed = tags.json().get("models") or []
+        installed = tags.json().get("models")
+        running_models = running.json().get("models")
+        if not isinstance(installed, list) or not isinstance(running_models, list):
+            return None
+        if any(not isinstance(item, dict) for item in installed + running_models):
+            return None
         loaded = tuple(str(item.get("name") or item.get("model") or "")
-                       for item in (running.json().get("models") or []))
-        return [item for item in installed if isinstance(item, dict)], loaded
-    except (httpx.HTTPError, ValueError, TypeError):
-        return [], ()
+                       for item in running_models)
+        if any(not name for name in loaded):
+            return None
+        return OllamaState(tuple(installed), loaded, time.time())
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def probe_ollama(base_url: str) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+    """Compatibility route probe; unavailable Ollama never selects a model."""
+    state = inspect_ollama(base_url)
+    return (list(state.installed), state.loaded_models) if state is not None else ([], ())
+
+
+def local_resource_status() -> dict[str, Any]:
+    """On-demand local telemetry only; never starts a model or emits paths."""
+    gpu = probe_gpu()
+    ollama = inspect_ollama(os.environ.get("MUNINN_OLLAMA_URL", "http://127.0.0.1:11434"))
+    gpu_report: dict[str, Any] = {"state": "unavailable"}
+    if gpu is not None:
+        gpu_report = {"state": "ready", "free_mib": gpu.free_mib,
+                      "total_mib": gpu.total_mib,
+                      "utilization_percent": gpu.utilization_percent,
+                      "sampled_at": gpu.sampled_at}
+    ollama_report: dict[str, Any] = {"state": "unavailable"}
+    if ollama is not None:
+        models = []
+        for item in ollama.installed:
+            name = item.get("name") or item.get("model")
+            size = item.get("size")
+            if not isinstance(name, str) or not name or len(name) > 255 or (
+                type(size) is not int or size < 0
+            ):
+                return {"gpu": gpu_report, "ollama": {"state": "unavailable"}}
+            models.append({"name": name, "size_bytes": size})
+        if any(len(name) > 255 for name in ollama.loaded_models):
+            return {"gpu": gpu_report, "ollama": {"state": "unavailable"}}
+        ollama_report = {"state": "ready", "sampled_at": ollama.sampled_at,
+                         "installed": models, "resident_models": list(ollama.loaded_models)}
+    return {"gpu": gpu_report, "ollama": ollama_report}
 
 
 def choose_route(
