@@ -63,6 +63,8 @@ _CHUNK = 64 * 1024
 _BINARY_CONTROLS = str.maketrans("", "", "".join(
     chr(codepoint) for codepoint in range(32) if codepoint not in (9, 10, 13)
 ))
+_SGR_BYTES = re.compile(rb"\x1b\[[0-9;:]{0,64}m")
+_SGR_PARTIAL = re.compile(rb"\x1b(?:\[[0-9;:]{0,64})?$")
 
 
 @dataclass(repr=False)
@@ -94,6 +96,33 @@ class CredentialScanBinaryError(ValueError):
 
 def _acceptable_value(value: str) -> bool:
     return not (_PLACEHOLDER.search(value) or len(set(value)) < 4)
+
+
+def _strip_sgr_chunks(chunks: Iterable[bytes]) -> Iterator[bytes]:
+    """Discard only bounded ANSI color codes, including split codes.
+
+    Other escapes and incomplete or overlong codes remain in the byte stream,
+    where the binary and per-assignment guards can reject them. The fast path
+    leaves ordinary text chunks unchanged.
+    """
+    pending = b""
+    for raw in chunks:
+        if not isinstance(raw, bytes):
+            raise TypeError("Credential scan input is not bytes")
+        if not pending and b"\x1b" not in raw:
+            yield raw
+            continue
+        data = pending + raw
+        match = _SGR_PARTIAL.search(data)
+        if match is None:
+            pending = b""
+            body = data
+        else:
+            pending = data[match.start():]
+            body = data[:match.start()]
+        yield _SGR_BYTES.sub(b"", body)
+    if pending:
+        yield pending
 
 
 def _iter_findings(chunks: Iterable[bytes], source_hint: str,
@@ -201,7 +230,10 @@ def iter_project_findings(chunks: Iterable[bytes], source_hint: str,
             if decoded and sum(char.isprintable() or char in "\t\r\n" for char in decoded) / len(decoded) >= 0.9:
                 prefix = prefix[3:]
                 encoding, errors = "utf-16le", "strict"
-    yield from _iter_findings(chain((prefix,), source), source_hint, stats,
+    text_chunks = chain((prefix,), source)
+    if Path(source_hint).suffix.lower() == ".txt":
+        text_chunks = _strip_sgr_chunks(text_chunks)
+    yield from _iter_findings(text_chunks, source_hint, stats,
                               _PROJECT_ASSIGN, encoding=encoding, errors=errors,
                               reject_binary=True)
 

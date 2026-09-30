@@ -76,6 +76,34 @@ def test_project_scanner_rejects_malformed_assignment_but_retains_safe_text():
     assert found == [("GOOD_API_KEY", "anotherVALUE12345678", "notes.txt")]
 
 
+def test_project_txt_scanner_recovers_ansi_colored_assignment_across_chunks():
+    payload = (b"x" * 4094 + b"\x1b[31m" * 100
+               + b"\nSERVICE_API_KEY=\x1b[32mrealVALUE12345678\x1b[0m\n")
+    parts = [payload[:4096], payload[4096:4098], payload[4098:4101],
+             payload[4101:]]
+    found = list(discovery.iter_project_findings(parts, "notes.txt", ExtractionStats()))
+    assert found == [("SERVICE_API_KEY", "realVALUE12345678", "notes.txt")]
+
+
+def test_project_txt_scanner_recovers_colon_form_sgr():
+    payload = (b"\x1b[38:2::255:0:0m" * 100
+               + b"\nSERVICE_API_KEY=realVALUE12345678\n")
+    found = list(discovery.iter_project_findings([payload], "notes.txt", ExtractionStats()))
+    assert found == [("SERVICE_API_KEY", "realVALUE12345678", "notes.txt")]
+
+
+def test_project_txt_scanner_keeps_malformed_escape_binary_as_coverage_gap():
+    payload = b"\x1b[bad" * 100 + b"\nSERVICE_API_KEY=realVALUE12345678\n"
+    with pytest.raises(discovery.CredentialScanBinaryError):
+        list(discovery.iter_project_findings([payload], "notes.txt", ExtractionStats()))
+
+
+def test_project_non_txt_scanner_does_not_strip_ansi():
+    payload = b"\x1b[31m" * 100 + b"SERVICE_API_KEY=realVALUE12345678\n"
+    with pytest.raises(discovery.CredentialScanBinaryError):
+        list(discovery.iter_project_findings([payload], "code.py", ExtractionStats()))
+
+
 @pytest.mark.parametrize("payload", [
     b"\x00\x05\x16\x07" + b"\x00" * 4096,  # AppleDouble-like metadata
     b"\x03\x00\x08\x00" + b"\x00" * 4096,  # binary Android XML-like data
@@ -89,7 +117,8 @@ def test_project_scanner_rejects_binary_late_without_partial_vault_write(tmp_pat
     root = tmp_path / "project"
     root.mkdir()
     (root / "settings.txt").write_bytes(
-        b"SERVICE_API_KEY=realVALUE12345678\n" + b"a" * 65536 + b"\x00" * 65536
+        b"\x1b[31mSERVICE_API_KEY=realVALUE12345678\x1b[0m\n"
+        + b"a" * 65536 + b"\x00" * 65536
     )
     store = CredentialStore.create(tmp_path / "vault", "synthetic vault passphrase")
     report = scan_project_files(root, store, passphrase="synthetic vault passphrase")
@@ -98,6 +127,12 @@ def test_project_scanner_rejects_binary_late_without_partial_vault_write(tmp_pat
     assert report["succeeded"] == 0
     assert store.search("SERVICE_API_KEY") == []
     assert "realVALUE12345678" not in str(report)
+
+
+def test_project_txt_scanner_keeps_overlong_sgr_and_rejects_affected_assignment():
+    payload = b"SERVICE_API_KEY=\x1b[" + b"1" * 100 + b"mrealVALUE12345678\n"
+    assert b"".join(discovery._strip_sgr_chunks([payload])) == payload
+    assert list(discovery.iter_project_findings([payload], "notes.txt", ExtractionStats())) == []
 
 
 def test_windows_reparse_directory_is_not_followed_when_not_reported_as_junction(tmp_path, monkeypatch):
