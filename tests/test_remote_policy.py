@@ -134,3 +134,33 @@ async def test_policy_api_requires_main_token_loopback_and_same_browser_origin(t
     async with httpx.AsyncClient(transport=remote, base_url="http://localhost") as client:
         assert (await client.post(route, json=body,
                                   headers={"Authorization": f"Bearer {token}"})).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_provider_key_status_api_requires_main_token_and_returns_only_sanitized_data(tmp_path, monkeypatch):
+    from muninn.history import auto_routing
+
+    token = "test-main-auth-token-aaaaaaaaaaaaaaaaaaaaaaaa"
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", token)
+    monkeypatch.setenv("MUNINN_NO_AUTH", "0")
+    monkeypatch.setattr(server, "is_security_enabled", lambda: True)
+    monkeypatch.setattr(server, "_require_history", lambda: SimpleNamespace(data_dir=tmp_path))
+    expected = {
+        "state": "ready", "admission_ready": True, "key_limit_usd": 1.0,
+        "key_remaining_usd": 0.5, "key_reset": "daily", "usage_daily_usd": 0.5,
+        "usage_monthly_usd": 2.0,
+    }
+    monkeypatch.setattr(auto_routing, "openrouter_key_status",
+                        lambda **_kwargs: expected)
+    route = "/history/secure/remote-policy/key-status"
+    local = httpx.ASGITransport(app=server.app, client=("127.0.0.1", 1234))
+    async with httpx.AsyncClient(transport=local, base_url="http://localhost") as client:
+        assert (await client.get(route)).status_code == 401
+        response = await client.get(route, headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert response.json() == {"success": True, "data": expected}
+        assert "test-main-auth-token" not in response.text
+    remote = httpx.ASGITransport(app=server.app, client=("192.168.1.2", 1234))
+    async with httpx.AsyncClient(transport=remote, base_url="http://localhost") as client:
+        assert (await client.get(route, headers={"Authorization": f"Bearer {token}"})).status_code == 404

@@ -564,6 +564,9 @@ request. Application thresholds are **not hard spending caps**: an individual
 request or overlapping requests can cross one. Use OpenRouter key and account
 guardrails for hard limits. Changing Muninn's local threshold does not raise the
 API key's own limit.
+The dashboard shows the provider-enforced key limit, reset period, remaining
+amount, and current route eligibility when remote use is enabled. This status
+requires the main local token and does not expose the API key or key label.
 
 Open the localhost dashboard's Encrypted History tab with the main local token
 to save or revoke ZDR fallback and adjust daily/monthly thresholds without

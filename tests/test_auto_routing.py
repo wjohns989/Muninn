@@ -105,6 +105,74 @@ def test_openrouter_budget_probe_rejects_non_https_endpoint(monkeypatch):
     assert auto_routing.guarded_openrouter_available() is False
 
 
+@pytest.mark.parametrize("data, expected", [
+    ({"limit": 1, "limit_remaining": 0.75, "limit_reset": "daily",
+      "usage_daily": 0.25, "usage_monthly": 2}, "ready"),
+    ({"limit": 6, "limit_remaining": 6, "limit_reset": "daily",
+      "usage_daily": 0, "usage_monthly": 0}, "key_cap_exceeds_local_threshold"),
+    ({"limit": 1, "limit_remaining": 0, "limit_reset": "daily",
+      "usage_daily": 1, "usage_monthly": 2}, "key_exhausted"),
+    ({"limit": 1, "limit_remaining": 0.5, "limit_reset": "daily",
+      "usage_daily": 5, "usage_monthly": 10}, "local_threshold_reached"),
+    ({"limit": None, "limit_remaining": 1, "limit_reset": "daily",
+      "usage_daily": 0, "usage_monthly": 0}, "invalid_provider_data"),
+    ({"limit": float("inf"), "limit_remaining": 1, "limit_reset": "daily",
+      "usage_daily": 0, "usage_monthly": 0}, "invalid_provider_data"),
+    ({"limit": 10 ** 1000, "limit_remaining": 1, "limit_reset": "daily",
+      "usage_daily": 0, "usage_monthly": 0}, "invalid_provider_data"),
+    ({"limit": 1, "limit_remaining": -1, "limit_reset": "daily",
+      "usage_daily": 0, "usage_monthly": 0}, "invalid_provider_data"),
+    ({"limit": 1, "limit_remaining": 1, "limit_reset": None,
+      "usage_daily": 0, "usage_monthly": 0}, "invalid_provider_data"),
+    ({"limit": 1, "limit_remaining": 1, "limit_reset": "daily",
+      "usage_daily": 0, "usage_monthly": 0, "disabled": "false"}, "invalid_provider_data"),
+])
+def test_openrouter_key_status_is_sanitized_and_fail_closed(monkeypatch, data, expected):
+    from muninn.history import auto_routing, llm_settings
+
+    monkeypatch.setattr(llm_settings, "api_key", lambda: "secret-fixture-key")
+    monkeypatch.setattr(auto_routing, "_local_setting", lambda _name: "")
+    options = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            options.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, *_args, **_kwargs):
+            return SimpleNamespace(raise_for_status=lambda: None,
+                                   json=lambda: {"data": {**data, "label": "private-label"}})
+
+    monkeypatch.setattr(auto_routing.httpx, "Client", FakeClient)
+    status = auto_routing.openrouter_key_status(5, 50)
+    assert status["state"] == expected
+    assert status["admission_ready"] is (expected == "ready")
+    assert "secret-fixture-key" not in str(status)
+    assert "private-label" not in str(status)
+    assert options["trust_env"] is False
+    assert options["follow_redirects"] is False
+
+
+def test_openrouter_key_status_does_not_probe_when_disabled_or_key_missing(monkeypatch):
+    from muninn.history import auto_routing, llm_settings
+
+    monkeypatch.setattr(auto_routing.httpx, "Client",
+                        lambda **_kwargs: pytest.fail("provider must not be contacted"))
+    monkeypatch.setattr(auto_routing, "openrouter_budget_ceiling", lambda _root: (0.0, 0.0))
+    monkeypatch.setattr(llm_settings, "api_key",
+                        lambda: pytest.fail("key must not be read when disabled"))
+    assert auto_routing.openrouter_key_status(policy_root=object())["state"] == "disabled"
+
+    monkeypatch.setattr(auto_routing, "openrouter_budget_ceiling", lambda _root: (5.0, 50.0))
+    monkeypatch.setattr(llm_settings, "api_key", lambda: None)
+    assert auto_routing.openrouter_key_status(policy_root=object())["state"] == "key_missing"
+
+
 def _gpu(free=13_600, used=1, loaded=()):
     return GpuState(free, 16_376, used, 100.0, loaded)
 

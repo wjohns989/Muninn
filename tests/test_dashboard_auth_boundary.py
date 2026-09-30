@@ -348,6 +348,52 @@ document.getElementById('remote-monthly-usd').value = '20';
     assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
 
 
+def test_remote_key_status_ui_uses_text_only_and_fixed_provider_fields():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable")
+    page = Path(__file__).resolve().parents[1].joinpath("dashboard.html").read_text(encoding="utf-8")
+    source = "async function loadRemoteKeyStatus(enabled)" + page.split(
+        "async function loadRemoteKeyStatus(enabled)", 1,
+    )[1].split("async function saveRemotePolicy()", 1)[0]
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const status = {textContent: ''};
+Object.defineProperty(status, 'innerHTML', {set() { throw Error('unsafe HTML'); }});
+const document = {getElementById(id) {
+    assert.equal(id, 'remote-key-status');
+    return status;
+}};
+const context = vm.createContext({document});
+vm.runInContext(__SOURCE__, context);
+(async () => {
+    let calls = 0;
+    context.api = async path => {
+        calls++;
+        assert.equal(path, '/history/secure/remote-policy/key-status');
+        return {data: {state: '<img src=x onerror=alert(1)>',
+            label: 'private-key-label', key_limit_usd: Infinity,
+            key_remaining_usd: 1, key_reset: 'daily'}};
+    };
+    await vm.runInContext('loadRemoteKeyStatus(false)', context);
+    assert.equal(calls, 0);
+    await vm.runInContext('loadRemoteKeyStatus(true)', context);
+    assert.equal(calls, 1);
+    assert.match(status.textContent, /Provider status unknown/);
+    assert.doesNotMatch(status.textContent, /private-key-label|<img/);
+    context.api = async () => ({data: {state: 'ready', key_limit_usd: 1,
+        key_remaining_usd: 0.5, key_reset: 'daily'}});
+    await vm.runInContext('loadRemoteKeyStatus(true)', context);
+    assert.match(status.textContent, /hard cap \$1\.00\/daily/);
+    assert.match(status.textContent, /\$0\.50 currently remaining/);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("__SOURCE__", json.dumps(source))
+    checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
+                             capture_output=True, timeout=15, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", errors="replace")
+
+
 def test_health_reports_effective_history_security_mode(monkeypatch):
     class HealthyMemory:
         async def health(self):

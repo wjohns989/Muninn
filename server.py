@@ -1884,6 +1884,15 @@ async def secure_remote_policy_endpoint():
     return JSONResponse({"success": True, "data": _remote_policy_data(policy)}, headers=NO_STORE)
 
 
+@app.get("/history/secure/remote-policy/key-status", dependencies=[Depends(verify_main_local_token)])
+async def secure_remote_key_status_endpoint():
+    """Show provider-enforced spending state without returning key material."""
+    from muninn.history.auto_routing import openrouter_key_status
+
+    status = await asyncio.to_thread(openrouter_key_status, policy_root=_remote_policy_root())
+    return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
+
+
 @app.post("/history/secure/remote-policy", dependencies=[Depends(verify_main_local_token)])
 async def update_secure_remote_policy_endpoint(req: RemotePolicyUpdateRequest, request: Request):
     from muninn.history.auto_routing import _legacy_remote_policy

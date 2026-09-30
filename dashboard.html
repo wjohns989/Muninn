@@ -321,6 +321,7 @@
                     <label><input type="checkbox" id="remote-policy-override"> Explicitly override the default $10/day and $100/month app ceilings</label>
                     <div class="m-t-8"><button type="button" id="remote-policy-save" class="btn-primary">Save local policy</button></div>
                     <p id="remote-policy-status" role="status" aria-live="polite">Enter the main local token to inspect policy.</p>
+                    <p id="remote-key-status" role="status" aria-live="polite">Provider key limit not checked.</p>
                 </div>
                 <div class="help-box">
                     <b>Encrypted History Search</b>
@@ -761,6 +762,42 @@
             document.getElementById('remote-policy-override').checked = policy.override_ceiling === true;
             status.textContent = `${policy.enabled ? 'Enabled' : 'Disabled'} · ${policy.source} policy · generation ${policy.generation}. ` +
                 'The OpenRouter key must have its own finite provider-enforced cap.';
+            await loadRemoteKeyStatus(policy.enabled === true);
+        }
+
+        async function loadRemoteKeyStatus(enabled) {
+            const status = document.getElementById('remote-key-status');
+            if (!enabled) {
+                status.textContent = 'Provider key not checked while remote use is disabled.';
+                return;
+            }
+            status.textContent = 'Checking provider-enforced key limit...';
+            const response = await api('/history/secure/remote-policy/key-status');
+            if (response.error || !response.data) {
+                status.textContent = 'Provider key status unavailable; remote admission is unverified.';
+                return;
+            }
+            const key = response.data;
+            const money = value => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'unknown';
+            const states = {
+                ready: 'Remote admission currently eligible',
+                disabled: 'Remote use disabled',
+                key_missing: 'OpenRouter key missing',
+                key_disabled: 'OpenRouter key disabled',
+                key_exhausted: 'OpenRouter key cap exhausted',
+                key_cap_exceeds_local_threshold: 'Remote route blocked: key hard cap exceeds local threshold',
+                local_threshold_reached: 'Local admission threshold reached',
+                provider_unavailable: 'Provider status unavailable; remote admission unverified',
+                invalid_provider_data: 'Provider limit data invalid; remote admission unverified'
+            };
+            const label = states[key.state] || 'Provider status unknown; remote admission unverified';
+            const limit = key.key_limit_usd;
+            const reset = key.key_reset;
+            const detail = Number.isFinite(limit) && (reset === 'daily' || reset === 'monthly')
+                ? ` Provider hard cap ${money(limit)}/${reset}; ${money(key.key_remaining_usd)} currently remaining.`
+                : '';
+            status.textContent = label + '.' + detail +
+                ' Local daily/monthly values above are admission thresholds, not hard caps.';
         }
 
         async function saveRemotePolicy() {
@@ -792,6 +829,7 @@
                     remotePolicyLoadedEnabled = response.data.enabled === true;
                     status.textContent = `Saved · ${remotePolicyLoadedEnabled ? 'enabled' : 'disabled'} · generation ${response.data.generation}. ` +
                         'Already-admitted remote requests may finish.';
+                    await loadRemoteKeyStatus(remotePolicyLoadedEnabled);
                 }
             } finally {
                 button.disabled = false;

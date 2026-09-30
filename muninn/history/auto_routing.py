@@ -7,6 +7,7 @@ means no local model is loaded; a separately approved cloud route may be used.
 from __future__ import annotations
 
 import os
+import math
 import subprocess
 import time
 from dataclasses import dataclass
@@ -187,47 +188,99 @@ def openrouter_budget_ceiling(policy_root: Path | None = None) -> tuple[float, f
         return 0.0, 0.0
 
 
-def guarded_openrouter_available(daily_cap_usd: float | None = None,
-                                 monthly_cap_usd: float | None = None,
-                                 *, policy_root: Path | None = None) -> bool:
-    """Require a finite provider-enforced key cap and both period ceilings.
+def openrouter_key_status(daily_cap_usd: float | None = None,
+                          monthly_cap_usd: float | None = None,
+                          *, policy_root: Path | None = None) -> dict[str, Any]:
+    """Return bounded, nonsecret provider-cap state for the same admission rule.
 
     Application-side estimates cannot enforce a hard dollar cap if a response
     costs more than forecast. A dedicated OpenRouter key enforces its chosen
     reset period; the secondary period uses provider-reported usage as a guard.
-    The key is never returned, logged, or placed in the route decision.
+    The key, label, and raw provider response never leave this function.
     """
     from muninn.history import llm_settings
 
-    key = llm_settings.api_key()
     configured_daily, configured_monthly = openrouter_budget_ceiling(policy_root)
     daily_cap = min(configured_daily, daily_cap_usd) if daily_cap_usd is not None else configured_daily
     monthly_cap = min(configured_monthly, monthly_cap_usd) if monthly_cap_usd is not None else configured_monthly
-    if not key or daily_cap <= 0 or monthly_cap <= 0:
-        return False
+    result: dict[str, Any] = {
+        "state": "unknown", "admission_ready": False,
+        "key_limit_usd": None, "key_remaining_usd": None, "key_reset": None,
+        "usage_daily_usd": None, "usage_monthly_usd": None,
+    }
+    if daily_cap <= 0 or monthly_cap <= 0:
+        result["state"] = "disabled"
+        return result
+    key = llm_settings.api_key()
+    if not key:
+        result["state"] = "key_missing"
+        return result
     endpoint = urlsplit(llm_settings.OPENROUTER_API)
     if (endpoint.scheme != "https" or endpoint.netloc != "openrouter.ai"
             or endpoint.path != "/api/v1" or endpoint.query or endpoint.fragment):
-        return False
+        result["state"] = "provider_unavailable"
+        return result
     try:
-        with httpx.Client(timeout=5.0, trust_env=False) as client:
+        with httpx.Client(timeout=5.0, trust_env=False, follow_redirects=False) as client:
             response = client.get(f"{llm_settings.OPENROUTER_API}/key",
                                   headers={"Authorization": f"Bearer {key}"})
             response.raise_for_status()
-        data = response.json().get("data") or {}
-        limit = float(data["limit"])
-        remaining = float(data["limit_remaining"])
-        if data.get("disabled") or not (0 < limit < float("inf") and remaining > 0):
-            return False
-        daily_used = float(data["usage_daily"])
-        monthly_used = float(data["usage_monthly"])
-        if not (0 <= daily_used < daily_cap and 0 <= monthly_used < monthly_cap):
-            return False
+        body = response.json()
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, dict):
+            result["state"] = "invalid_provider_data"
+            return result
+        raw_numbers = [data.get(name) for name in (
+            "limit", "limit_remaining", "usage_daily", "usage_monthly"
+        )]
+        numbers = []
+        for raw in raw_numbers:
+            if type(raw) not in (int, float):
+                result["state"] = "invalid_provider_data"
+                return result
+            try:
+                number = float(raw)
+            except OverflowError:
+                result["state"] = "invalid_provider_data"
+                return result
+            if not math.isfinite(number):
+                result["state"] = "invalid_provider_data"
+                return result
+            numbers.append(number)
+        if (numbers[0] <= 0 or numbers[1] < 0 or numbers[1] > numbers[0]
+                or numbers[2] < 0 or numbers[3] < 0):
+            result["state"] = "invalid_provider_data"
+            return result
+        limit, remaining, daily_used, monthly_used = numbers
         reset = data.get("limit_reset")
-        if reset == "daily":
-            return limit <= daily_cap
-        if reset == "monthly":
-            return limit <= monthly_cap
-        return False
-    except (httpx.HTTPError, KeyError, TypeError, ValueError):
-        return False
+        if reset not in {"daily", "monthly"}:
+            result["state"] = "invalid_provider_data"
+            return result
+        result.update(key_limit_usd=limit, key_remaining_usd=remaining,
+                      key_reset=reset, usage_daily_usd=daily_used,
+                      usage_monthly_usd=monthly_used)
+        if "disabled" in data and type(data["disabled"]) is not bool:
+            result["state"] = "invalid_provider_data"
+        elif data.get("disabled") is True:
+            result["state"] = "key_disabled"
+        elif limit > (daily_cap if reset == "daily" else monthly_cap):
+            result["state"] = "key_cap_exceeds_local_threshold"
+        elif remaining <= 0:
+            result["state"] = "key_exhausted"
+        elif daily_used >= daily_cap or monthly_used >= monthly_cap:
+            result["state"] = "local_threshold_reached"
+        else:
+            result["state"] = "ready"
+            result["admission_ready"] = True
+        return result
+    except (httpx.HTTPError, TypeError, ValueError):
+        result["state"] = "provider_unavailable"
+        return result
+
+
+def guarded_openrouter_available(daily_cap_usd: float | None = None,
+                                 monthly_cap_usd: float | None = None,
+                                 *, policy_root: Path | None = None) -> bool:
+    """Require a finite provider-enforced key cap and both period ceilings."""
+    return bool(openrouter_key_status(daily_cap_usd, monthly_cap_usd,
+                                      policy_root=policy_root)["admission_ready"])
