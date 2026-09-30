@@ -49,6 +49,24 @@ evidence cannot settle a consequential classification or conflict.
   the classifier input. Its value-based review groups can span distinct
   source snapshots. A model judgment about one representative must not reject
   an entire cross-source group until all relevant contexts are evaluated.
+  Existing transcript rows can be joined back to an authenticated archive
+  blob by recomputing the recorded SHA-256 fingerprint of
+  `vault_id:blob_id:content_sha256`. The manifest then supplies the original
+  path/version, mtime, and capture time; none is a substitute for an absent
+  provider event timestamp. A missing or nonunique join is `source_unverified`.
+  Keep full paths inside encrypted state or a local ephemeral lookup; models
+  receive only the bounded project/source-type context they need.
+  For Codex specifically, session file location identifies a session/date,
+  not reliably its project. Parse `session_meta` and each `turn_context.cwd`
+  as bounded provider metadata, attaching the applicable cwd to each turn;
+  never apply the session's final cwd retroactively to earlier turns.
+
+The 2026-09-30 read-only local join audit found 24,627 ambiguity rows across
+1,074 transcript snapshots, with 0 missing and 0 nonunique archive joins.
+This proves source lookup coverage for those rows, **not** that their values
+are credentials, that message event times are available, or that group-wide
+model decisions are safe. Do not run a mass classifier pass on the current
+name/reason/value-only input.
 
 ## Options considered
 
