@@ -16,8 +16,10 @@ encrypted conversational transcript projection and page routes. Checked-out
 code projected real archived transcripts through 154 MiB without printing text.
 After the 2026-09-30 controlled restart, the authenticated live HTTP route
 served three bounded pages from a real archive hit and the MCP core tool list
-exposed start/page continuation. The dashboard still needs browser integration
-for this flow.
+exposed start/page continuation. The checked-out dashboard now has a bounded
+page viewer; isolated Edge checks of that candidate HTML against the real
+loopback backend read two pages at desktop and 390px width. The running server
+still serves the earlier dashboard until a later approved restart.
 Some legacy-oriented controls and copy remain outside the History tab and need
 strict-mode review. The root page no longer embeds an API bearer; retain that
 property throughout the overhaul.
@@ -94,8 +96,8 @@ and an explicit distinction between request accepted and work completed.
 The on-demand local GPU/Ollama resource endpoint was validated on the existing
 authenticated listener. The new transcript-page routes passed API/MCP tests,
 real-archive direct validation, and a live authenticated HTTP smoke after the
-controlled restart. The History UI still displays only a short excerpt; it
-does not yet paginate the new projection. The live smoke observed 5,037/5,037
+controlled restart. The checked-out History UI now pages the new projection,
+but that UI update has not been loaded by the running server. The live smoke observed 5,037/5,037
 indexed snapshots after recovery of a stale owner-only SQLite staging journal;
 ongoing capture can advance the archive generation again.
 An isolated headless Edge check verified authenticated History rendering at

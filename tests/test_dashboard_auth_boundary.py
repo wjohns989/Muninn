@@ -43,6 +43,11 @@ def test_dashboard_exposes_distinct_bounded_history_search_without_remote_assets
     assert "fonts.googleapis.com" not in page
     assert "/history/secure/search/jobs" in page
     assert "/history/secure/fetch" in page
+    assert 'id="history-transcript-viewer"' in page
+    assert 'id="history-transcript-next"' in page
+    assert "/history/secure/transcript/start" in page
+    assert "/history/secure/transcript/poll" in page
+    assert "/history/secure/transcript/page" in page
     assert 'id="remote-policy-enabled"' in page
     assert 'id="remote-policy-override"' in page
     assert "/history/secure/remote-policy" in page
@@ -51,6 +56,9 @@ def test_dashboard_exposes_distinct_bounded_history_search_without_remote_assets
     assert "cache: 'no-store'" in page
     history_logic = page.split("function historyMessage(message)", 1)[1].split("async function handleSearch()", 1)[0]
     assert "excerpt.textContent" in history_logic
+    assert "history-transcript-page').textContent" in history_logic
+    assert "[...page.redacted_text].length > 4000" in history_logic
+    assert "currentHistoryTranscript(searchSequence, viewerSequence)" in history_logic
     assert "innerHTML" not in history_logic
     assert "copyToClipboard" not in history_logic
     assert "sequence !== historySearchSequence" in history_logic
@@ -212,7 +220,9 @@ def test_history_ui_discards_stale_search_and_fetch_responses():
         "async function handleSearch()", 1,
     )[0]
     source = "let HISTORY_SECURITY_MODE = 'strict'; let historySearchSequence = 0; " + (
-        "let historySearchJobId = null; function historyMessage(message)" + source
+        "let historySearchJobId = null; let historyTranscriptSequence = 0; "
+        "let historyTranscriptNextCursor = null; let historyTranscriptPageNumber = 0; "
+        "function historyMessage(message)" + source
     )
     harness = r"""
 const assert = require('node:assert/strict');
@@ -273,7 +283,43 @@ const document = {
     vm.runInContext('historySearchSequence += 1', context);
     releaseFetch({data: {redacted_text: 'late sensitive response'}});
     await pendingFetch;
-    assert.doesNotMatch(card.children[3].textContent, /late sensitive response/);
+    assert.doesNotMatch(card.children[4].textContent, /late sensitive response/);
+
+    const transcriptText = '<img src=x onerror=steal()> transcript';
+    context.api = async (path, method, body) => {
+        if (path.endsWith('/start')) return {data: {state: 'ready', cursor: 'first'}};
+        if (path.endsWith('/page') && body.cursor === 'first')
+            return {data: {redacted_text: transcriptText, next_cursor: 'second'}};
+        if (path.endsWith('/page') && body.cursor === 'second')
+            return {data: {redacted_text: 'last page', next_cursor: null}};
+        throw Error('unexpected transcript request');
+    };
+    await vm.runInContext("openHistoryTranscript('signed', historySearchSequence, 'source')", context);
+    assert.equal(document.getElementById('history-transcript-page').textContent, transcriptText);
+    assert.equal(document.getElementById('history-transcript-next').hidden, false);
+    await vm.runInContext(
+        "loadHistoryTranscriptPage(historyTranscriptNextCursor, historySearchSequence, historyTranscriptSequence)",
+        context
+    );
+    assert.equal(document.getElementById('history-transcript-page').textContent, 'last page');
+    assert.equal(document.getElementById('history-transcript-next').hidden, true);
+
+    context.api = async () => ({data: {redacted_text: 'X'.repeat(4001), next_cursor: null}});
+    await vm.runInContext(
+        "loadHistoryTranscriptPage('bad', historySearchSequence, historyTranscriptSequence)", context
+    );
+    assert.equal(document.getElementById('history-transcript-page').textContent, 'last page');
+    assert.match(document.getElementById('history-transcript-status').textContent, /invalid response/);
+
+    let releaseTranscript;
+    context.api = async () => new Promise(resolve => { releaseTranscript = resolve; });
+    const staleTranscript = vm.runInContext(
+        "openHistoryTranscript('signed', historySearchSequence, 'old source')", context
+    );
+    vm.runInContext('historySearchSequence += 1; clearHistoryTranscript()', context);
+    releaseTranscript({data: {state: 'ready', cursor: 'stale'}});
+    await staleTranscript;
+    assert.equal(document.getElementById('history-transcript-page').textContent, '');
 
     // Exercise the terminal timeout path after a new search invalidates the old sequence.
     const status = document.getElementById('history-search-status');

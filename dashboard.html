@@ -346,6 +346,7 @@
                     This searches locally archived transcripts, separate from ordinary memories.
                     Search enqueues a durable local encrypted-index job. Excerpts are bounded and sanitized with
                     best-effort redaction; do not treat them as guaranteed free of sensitive information.
+                    Open a result to read one redacted transcript page at a time; non-conversational tool output is omitted.
                 </div>
                 <div class="search-container">
                     <input type="text" id="history-query" aria-label="Search encrypted history"
@@ -354,6 +355,12 @@
                 </div>
                 <p id="history-search-status" role="status" aria-live="polite">Enter a query to search encrypted history.</p>
                 <div id="history-results"></div>
+                <div id="history-transcript-viewer" class="card" hidden>
+                    <h3 id="history-transcript-heading">Redacted transcript</h3>
+                    <p id="history-transcript-status" role="status" aria-live="polite"></p>
+                    <pre id="history-transcript-page" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
+                    <button type="button" id="history-transcript-next" class="btn-secondary" hidden>Next page</button>
+                </div>
             </div>
 
             <!-- TAB: CREDENTIAL METADATA -->
@@ -435,6 +442,9 @@
         let HISTORY_SECURITY_MODE = "unknown";
         let historySearchSequence = 0;
         let historySearchJobId = null;
+        let historyTranscriptSequence = 0;
+        let historyTranscriptNextCursor = null;
+        let historyTranscriptPageNumber = 0;
         let historyStatusSequence = 0;
         let remotePolicyLoadedEnabled = false;
         let remotePolicyLoadSequence = 0;
@@ -662,7 +672,7 @@
         //     logDiv.prepend(line);
         // }
 
-        async function api(endpoint, method = 'GET', body = null) {
+        async function api(endpoint, method = 'GET', body = null, timeoutMs = 0) {
             const options = {
                 method,
                 cache: 'no-store',
@@ -672,6 +682,9 @@
                 }
             };
             if (body) options.body = JSON.stringify(body);
+            const controller = timeoutMs > 0 ? new AbortController() : null;
+            if (controller) options.signal = controller.signal;
+            const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
             try {
                 const res = await fetch(`${API_BASE}${endpoint}`, options);
@@ -688,6 +701,8 @@
                 return payload;
             } catch (e) {
                 return { error: e.message };
+            } finally {
+                if (timer !== null) clearTimeout(timer);
             }
         }
 
@@ -709,6 +724,12 @@
                 }
             });
             document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
+            document.getElementById('history-transcript-next').addEventListener('click', () => {
+                const cursor = historyTranscriptNextCursor;
+                if (!cursor) return;
+                historyTranscriptNextCursor = null;
+                void loadHistoryTranscriptPage(cursor, historySearchSequence, historyTranscriptSequence);
+            });
             document.getElementById('remote-policy-save').addEventListener('click', saveRemotePolicy);
             document.getElementById('refresh-local-resources').addEventListener('click', loadLocalResources);
             document.getElementById('credential-metadata-search').addEventListener('click', searchCredentialMetadata);
@@ -998,6 +1019,89 @@
             }
         }
 
+        function clearHistoryTranscript() {
+            historyTranscriptSequence++;
+            historyTranscriptNextCursor = null;
+            historyTranscriptPageNumber = 0;
+            document.getElementById('history-transcript-viewer').hidden = true;
+            document.getElementById('history-transcript-page').textContent = '';
+            document.getElementById('history-transcript-status').textContent = '';
+            const next = document.getElementById('history-transcript-next');
+            next.hidden = true;
+            next.disabled = true;
+        }
+
+        function currentHistoryTranscript(searchSequence, viewerSequence) {
+            return searchSequence === historySearchSequence &&
+                viewerSequence === historyTranscriptSequence;
+        }
+
+        async function loadHistoryTranscriptPage(cursor, searchSequence, viewerSequence) {
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            const status = document.getElementById('history-transcript-status');
+            const next = document.getElementById('history-transcript-next');
+            next.hidden = true;
+            next.disabled = true;
+            status.textContent = 'Authenticating and loading one redacted page...';
+            const response = await api('/history/secure/transcript/page', 'POST', { cursor }, 30000);
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            const page = response.data;
+            if (response.error || !page || typeof page.redacted_text !== 'string' ||
+                    [...page.redacted_text].length > 4000 ||
+                    !(page.next_cursor == null || (typeof page.next_cursor === 'string' &&
+                        page.next_cursor.length > 0 && page.next_cursor.length <= 4096))) {
+                historyTranscriptNextCursor = null;
+                status.textContent = `Transcript page unavailable: ${response.error || 'invalid response'}. Search again to restart.`;
+                return;
+            }
+            historyTranscriptPageNumber++;
+            document.getElementById('history-transcript-page').textContent = page.redacted_text;
+            historyTranscriptNextCursor = page.next_cursor || null;
+            status.textContent = `Redacted transcript · page ${historyTranscriptPageNumber}` +
+                (historyTranscriptNextCursor ? ' · more available.' : ' · end of transcript.');
+            next.hidden = !historyTranscriptNextCursor;
+            next.disabled = !historyTranscriptNextCursor;
+        }
+
+        async function openHistoryTranscript(capability, searchSequence, label) {
+            clearHistoryTranscript();
+            const viewerSequence = historyTranscriptSequence;
+            const viewer = document.getElementById('history-transcript-viewer');
+            viewer.hidden = false;
+            document.getElementById('history-transcript-heading').textContent = `Redacted transcript · ${label}`;
+            const status = document.getElementById('history-transcript-status');
+            if (!capability) {
+                status.textContent = 'Transcript capability unavailable; search again.';
+                return;
+            }
+            status.textContent = 'Preparing authenticated transcript pages...';
+            const deadline = Date.now() + 180000;
+            let response = await api('/history/secure/transcript/start', 'POST', { capability }, 30000);
+            while (currentHistoryTranscript(searchSequence, viewerSequence) &&
+                    !response.error && response.data?.state === 'pending' && Date.now() < deadline) {
+                status.textContent = 'Preparing transcript in the background; this may take longer for large sources...';
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) break;
+                response = await api('/history/secure/transcript/poll', 'POST', { capability },
+                    Math.min(30000, remaining));
+            }
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            if (!response.error && response.data?.state === 'pending') {
+                historyTranscriptNextCursor = null;
+                status.textContent = 'Transcript preparation is still running. Search again later to resume.';
+                return;
+            }
+            if (response.error || response.data?.state !== 'ready' ||
+                    typeof response.data.cursor !== 'string' || !response.data.cursor) {
+                status.textContent = `Transcript unavailable: ${response.error || response.data?.state || 'invalid response'}. ` +
+                    'Search again to retry.';
+                return;
+            }
+            await loadHistoryTranscriptPage(response.data.cursor, searchSequence, viewerSequence);
+        }
+
         function renderHistoryMatches(result, sequence) {
             const container = document.getElementById('history-results');
             container.replaceChildren();
@@ -1047,6 +1151,17 @@
                         (typeof span.redacted_text === 'string' ? span.redacted_text : 'No text returned.');
                 });
                 card.appendChild(button);
+                const transcriptButton = document.createElement('button');
+                transcriptButton.type = 'button';
+                transcriptButton.className = 'btn-secondary';
+                transcriptButton.textContent = 'Open redacted transcript';
+                transcriptButton.addEventListener('click', () => {
+                    if (sequence !== historySearchSequence) return;
+                    transcriptButton.disabled = true;
+                    void openHistoryTranscript(capability, sequence, heading.textContent)
+                        .finally(() => { transcriptButton.disabled = false; });
+                });
+                card.appendChild(transcriptButton);
                 card.appendChild(excerpt);
                 container.appendChild(card);
             }
@@ -1063,6 +1178,7 @@
                 return;
             }
             const sequence = ++historySearchSequence;
+            clearHistoryTranscript();
             const previous = historySearchJobId;
             historySearchJobId = null;
             document.getElementById('history-results').replaceChildren();

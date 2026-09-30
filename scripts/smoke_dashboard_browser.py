@@ -1,8 +1,9 @@
-"""Read-only isolated Edge check of the live loopback dashboard.
+"""Isolated Edge check of the live loopback dashboard or checked-out candidate.
 
 Requires optional Python Playwright and an installed Edge channel. The main
 token is read from the process or Windows user environment and never printed.
-No transcript search, policy write, credential reveal, or inference occurs.
+Transcript search enqueues a durable read job only with --transcript-query.
+No policy write, credential reveal, or model inference occurs.
 """
 
 from __future__ import annotations
@@ -39,6 +40,9 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--expect-resources-ready", action="store_true")
     parser.add_argument("--credential-query", help="Nonsecret metadata query; prints only match count")
+    parser.add_argument("--candidate-html", action="store_true",
+                        help="Render checked-out dashboard HTML against the real loopback backend")
+    parser.add_argument("--transcript-query", help="Real encrypted-history query; prints only page metadata")
     parser.add_argument("--screenshot", action="store_true",
                         help="Save a temporary screenshot of nonsecret status UI")
     args = parser.parse_args()
@@ -46,8 +50,10 @@ def main() -> int:
         parser.error("Viewport is outside the bounded UI test range")
     if args.credential_query is not None and not 1 <= len(args.credential_query) <= 64:
         parser.error("Credential metadata query must be 1–64 characters")
-    if args.credential_query is not None and args.screenshot:
-        parser.error("Do not save a screenshot of credential metadata results")
+    if (args.credential_query is not None or args.transcript_query is not None) and args.screenshot:
+        parser.error("Do not save a screenshot of credential or transcript results")
+    if args.transcript_query is not None and not 1 <= len(args.transcript_query) <= 240:
+        parser.error("Transcript query must be 1–240 characters")
     origin = urlsplit(args.base)
     if (origin.scheme != "http" or origin.hostname != "127.0.0.1"
             or origin.port != 42069 or origin.path or origin.query or origin.fragment):
@@ -55,6 +61,7 @@ def main() -> int:
     token = _token()
     if not token:
         parser.error("MUNINN_AUTH_TOKEN is unavailable in this process or Windows user environment")
+    candidate = (Path(__file__).resolve().parents[1] / "dashboard.html").read_bytes() if args.candidate_html else None
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="msedge", headless=True,
@@ -66,7 +73,10 @@ def main() -> int:
             def local_only(route):
                 target = urlsplit(route.request.url)
                 if target.scheme == "http" and target.hostname == "127.0.0.1" and target.port == 42069:
-                    route.continue_()
+                    if candidate is not None and target.path in ("", "/") and route.request.method == "GET":
+                        route.fulfill(status=200, content_type="text/html; charset=utf-8", body=candidate)
+                    else:
+                        route.continue_()
                 else:
                     route.abort()
 
@@ -94,7 +104,7 @@ def main() -> int:
 
             result = {"authenticated_history_visible": True,
                       "capture_status_visible": page.locator("#history-capture-status").is_visible(),
-                      "resources_checked": False}
+                      "resources_checked": False, "candidate_html": args.candidate_html}
             if args.expect_resources_ready:
                 page.get_by_role("button", name="Check GPU and Ollama").click()
                 expect(page.locator("#local-resource-status")).not_to_contain_text(
@@ -114,6 +124,27 @@ def main() -> int:
                 result["credential_metadata_checked"] = True
                 result["credential_match_count"] = page.locator(
                     "#credential-metadata-results .result-item").count()
+            if args.transcript_query is not None:
+                page.get_by_role("button", name="Encrypted History").click()
+                page.get_by_label("Search encrypted history").fill(args.transcript_query)
+                page.get_by_role("button", name="Search History").click()
+                expect(page.locator("#history-results .result-item").first).to_be_visible(timeout=180000)
+                page.get_by_role("button", name="Open redacted transcript").first.click()
+                expect(page.locator("#history-transcript-status")).to_contain_text(
+                    "page 1", timeout=300000)
+                first_length = page.locator("#history-transcript-page").evaluate(
+                    "node => Array.from(node.textContent).length")
+                if not 0 <= first_length <= 4000:
+                    raise RuntimeError("First transcript page exceeded bound")
+                expect(page.get_by_role("button", name="Next page")).to_be_visible()
+                page.get_by_role("button", name="Next page").click()
+                expect(page.locator("#history-transcript-status")).to_contain_text("page 2", timeout=30000)
+                second_length = page.locator("#history-transcript-page").evaluate(
+                    "node => Array.from(node.textContent).length")
+                if not 0 <= second_length <= 4000:
+                    raise RuntimeError("Second transcript page exceeded bound")
+                result["transcript_pages_checked"] = 2
+                result["transcript_chars_checked"] = first_length + second_length
             if args.screenshot:
                 handle, name = mkstemp(prefix="muninn-dashboard-", suffix=".png")
                 os.close(handle)
