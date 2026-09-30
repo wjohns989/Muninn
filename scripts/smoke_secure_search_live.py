@@ -23,7 +23,8 @@ def _safe_reason(value: object) -> str | None:
     return value if isinstance(value, str) and re.fullmatch(r"[a-z_]{1,64}", value) else "other"
 
 
-def _probe_succeeded(analyze: str | None, wait_auto: bool, details: dict) -> bool:
+def _probe_succeeded(analyze: str | None, wait_auto: bool, details: dict,
+                     transcript_pages: int = 0) -> bool:
     if details.get("state") != "succeeded":
         return False
     # A short result limit may intentionally truncate an otherwise healthy
@@ -43,6 +44,9 @@ def _probe_succeeded(analyze: str | None, wait_auto: bool, details: dict) -> boo
             return False
     if wait_auto and (not details.get("analysis_queued")
                       or details.get("auto_analysis_state") != "succeeded"):
+        return False
+    if transcript_pages and (details.get("transcript_state") != "ready"
+                             or details.get("transcript_pages_checked", 0) < 1):
         return False
     return True
 
@@ -84,7 +88,11 @@ def main() -> int:
                         help="Optional explicit model-route probe; never prints analysis text")
     parser.add_argument("--wait-auto", action="store_true",
                         help="Wait for the automatically queued analysis job, printing only route and timing")
+    parser.add_argument("--transcript-pages", type=int, default=0,
+                        help="Check up to this many redacted continuation pages without printing their text (1-20)")
     args = parser.parse_args()
+    if not 0 <= args.transcript_pages <= 20:
+        parser.error("--transcript-pages must be between 0 and 20")
     if not args.base.startswith("http://127.0.0.1:"):
         parser.error("Only the local loopback Muninn service is permitted")
     token = _local_auth_token()
@@ -142,6 +150,44 @@ def main() -> int:
             )["data"]
             details["fetch_redaction"] = span["redaction"]
             details["fetch_chars"] = len(span["redacted_text"])
+            if args.transcript_pages:
+                projection_started = time.monotonic()
+                projected = _request(
+                    args.base, token, "/history/secure/transcript/start",
+                    body={"capability": capability},
+                )["data"]
+                while (projected["state"] == "pending"
+                       and time.monotonic() - started < args.deadline_seconds):
+                    time.sleep(2)
+                    projected = _request(
+                        args.base, token, "/history/secure/transcript/poll",
+                        body={"capability": capability},
+                    )["data"]
+                details["transcript_state"] = projected["state"]
+                details["transcript_build_ms"] = round((time.monotonic() - projection_started) * 1000)
+                coverage = projected.get("coverage")
+                if isinstance(coverage, dict):
+                    details["transcript_coverage"] = {
+                        key: coverage.get(key) for key in
+                        ("source_units", "conversational_units", "omitted_units")
+                    }
+                if projected["state"] == "ready":
+                    cursor = projected["cursor"]
+                    checked = 0
+                    characters = 0
+                    while cursor and checked < args.transcript_pages:
+                        page = _request(
+                            args.base, token, "/history/secure/transcript/page",
+                            body={"cursor": cursor},
+                        )["data"]
+                        if len(page["redacted_text"]) > 4000:
+                            raise ValueError("transcript page exceeded size bound")
+                        checked += 1
+                        characters += len(page["redacted_text"])
+                        cursor = page["next_cursor"]
+                    details["transcript_pages_checked"] = checked
+                    details["transcript_chars_checked"] = characters
+                    details["transcript_more"] = cursor is not None
             if args.analyze:
                 model_started = time.monotonic()
                 analyzed = _request(
@@ -157,7 +203,8 @@ def main() -> int:
                     details["analysis_reason"] = _safe_reason(analyzed.get("reason"))
                 details["analysis_ms"] = round((time.monotonic() - model_started) * 1000)
         print(json.dumps(details, sort_keys=True))
-        return 0 if _probe_succeeded(args.analyze, args.wait_auto, details) else 2
+        return 0 if _probe_succeeded(args.analyze, args.wait_auto, details,
+                                     args.transcript_pages) else 2
     except (HTTPError, URLError, ValueError, KeyError, TimeoutError) as exc:
         # Avoid printing response bodies, request headers, query, or capabilities.
         code = exc.code if isinstance(exc, HTTPError) else type(exc).__name__

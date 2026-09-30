@@ -476,6 +476,9 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "poll_secure_history_analysis": _do_poll_secure_history_analysis,
         "cancel_secure_history_analysis": _do_cancel_secure_history_analysis,
         "fetch_secure_history": _do_fetch_secure_history,
+        "start_secure_history_transcript": _do_start_secure_history_transcript,
+        "poll_secure_history_transcript": _do_poll_secure_history_transcript,
+        "read_secure_history_transcript_page": _do_read_secure_history_transcript_page,
         "analyze_secure_history": _do_analyze_secure_history,
         "search_credential_metadata": _do_search_credential_metadata,
         "hunt_memory": _do_hunt_memory,
@@ -763,6 +766,30 @@ def _do_fetch_secure_history(args: Dict[str, Any], deadline: Optional[float]) ->
     response = make_request_with_retry(
         "POST", f"{SERVER_URL}/history/secure/fetch", deadline_epoch=deadline,
         json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_start_secure_history_transcript(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/transcript/start", deadline_epoch=deadline,
+        json={"capability": args.get("capability")}, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_poll_secure_history_transcript(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/transcript/poll", deadline_epoch=deadline,
+        json={"capability": args.get("capability")}, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_read_secure_history_transcript_page(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/transcript/page", deadline_epoch=deadline,
+        json={"cursor": args.get("cursor")}, timeout=DEFAULT_HTTP_TIMEOUT,
     )
     return response.json()
 

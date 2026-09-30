@@ -76,6 +76,8 @@ class HistoryService:
         self.secure_archive: Optional[SecureHistoryArchive] = None
         self.secure_archive_error: Optional[str] = None
         self._capture_journal: Optional[CaptureJournal] = None
+        self._projection_access = None
+        self._projection_access_lock = threading.Lock()
         if strict_history_mode():
             self._open_secure_archive()
         self.interval = (interval_minutes or _minutes()) * 60.0
@@ -556,6 +558,25 @@ class HistoryService:
         archive = self._require_secure_archive()
         return SecureHistoryBlindIndex(archive).fetch_span(capability, max_chars=max_chars)
 
+    def _require_projection_access(self):
+        if not strict_history_mode():
+            raise RuntimeError("Secure transcript pages require strict history mode")
+        with self._projection_access_lock:
+            if self._projection_access is None:
+                from muninn.history.secure_projection_access import ProjectionAccess
+
+                self._projection_access = ProjectionAccess(self._require_secure_archive())
+            return self._projection_access
+
+    def secure_projection_start(self, capability: str) -> Dict[str, Any]:
+        return self._require_projection_access().start(capability)
+
+    def secure_projection_poll(self, capability: str) -> Dict[str, Any]:
+        return self._require_projection_access().poll(capability)
+
+    def secure_projection_page(self, cursor: str) -> Dict[str, Any]:
+        return self._require_projection_access().page(cursor)
+
     def _secure_model_window(self, capability: str) -> str:
         """In-process inference only; never add this to HTTP or MCP dispatch."""
         if not strict_history_mode():
@@ -638,6 +659,11 @@ class HistoryService:
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
+        with self._projection_access_lock:
+            projection_access = self._projection_access
+            self._projection_access = None
+        if projection_access is not None:
+            projection_access.close()
         tasks = [task for task in (self._task, self._job, self._auto_task, self._secure_index_task,
                                   self._secure_capture_task, self._secure_scan_task,
                                   self._secure_search_task,

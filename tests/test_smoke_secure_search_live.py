@@ -39,3 +39,13 @@ def test_bounded_search_can_probe_analysis_without_claiming_exhaustive_results()
     assert _probe_succeeded(None, True, base)
     assert not _probe_succeeded(None, True, {**base, "missing": 1})
     assert not _probe_succeeded(None, True, {**base, "truncated": False})
+
+
+def test_requested_transcript_probe_needs_a_real_bounded_page():
+    base = {"state": "succeeded", "complete": True, "match_count": 1}
+    assert not _probe_succeeded(None, False, base, transcript_pages=2)
+    assert not _probe_succeeded(None, False, {**base, "transcript_state": "pending"},
+                                transcript_pages=2)
+    assert _probe_succeeded(None, False,
+                            {**base, "transcript_state": "ready", "transcript_pages_checked": 1},
+                            transcript_pages=2)

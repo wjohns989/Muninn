@@ -146,6 +146,21 @@ environment), reports enqueue/search timing and safe match counts, and verifies
 one redacted fetch when a match exists. It never prints the query, capability,
 or fetched span. Search jobs are available through
 `POST /history/secure/search/jobs` and authenticated poll/cancel endpoints.
+For more context, `start_secure_history_transcript` queues a CPU-only encrypted
+projection of the selected snapshot. Repeat that call while pending (or use
+`poll_secure_history_transcript` in the full tool profile),
+then pass its signed cursor to `read_secure_history_transcript_page` repeatedly.
+Each page has at most 4,000 credential-redacted characters; the cursor is
+one-use and expires after 10 minutes of inactivity, but there is no total
+transcript-size/page-count limit. A renewed search can reopen a completed
+projection after an expiry or service restart. Pages contain supported
+user/assistant text only, not tool output, raw JSON, source paths, or credential
+values. The ready response includes authenticated counts of included and
+omitted records/messages. Unsupported formats fail closed; `fetch_secure_history`
+remains the short-span compatibility path. Projection runs on CPU on demand and
+does not load an Ollama model or reserve VRAM.
+After deploying these routes, add `--transcript-pages 3` to the live search
+probe above to check actual continuation pages without printing their text.
 Optional `--analyze local` or `--analyze remote` exercises a model route without
 printing its analysis. The remote option sends the authenticated raw hit window
 to the configured ZDR OpenRouter route only when local consent and budget checks
@@ -254,6 +269,7 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | `search_memory` | Hybrid 5-signal search with `media_type` filtering and recall traces |
 | `search_secure_history` | Search an owner-only encrypted lexical index for archived transcript references and short-lived fetch grants |
 | `fetch_secure_history` | Retrieve one authenticated, bounded, best-effort redacted transcript span from a search grant |
+| `start_secure_history_transcript`, `poll_secure_history_transcript`, `read_secure_history_transcript_page` | Queue a CPU-only encrypted conversational projection and continue through signed, bounded, redacted pages |
 | `search_credential_metadata` | Opt-in lookup of vault record existence and project-relative `.env` location; never a secret value |
 | `get_all_memories` | Paginated memory listing with filters |
 | `update_memory` | Update content or metadata of an existing memory |

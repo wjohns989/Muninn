@@ -30,11 +30,12 @@ queues bounded work. It never falls back to returning raw JSONL.
 The parser must consume JSON tokens and long string values incrementally.
 `json.loads` per line and `ijson` scalar events can materialize an arbitrarily
 large string, so neither alone establishes bounded memory. For fields whose
-role is known only later in a record, stage candidate text in encrypted
-bounded frames and publish it only after the complete record validates as a
-supported conversational message. Unknown schemas, malformed JSON, tool
-results, metadata, attachments, and injected host content are omitted with
-explicit counts, never treated as conversation text.
+role is known only later, use two synchronized, authenticated reads of the
+same immutable snapshot: one classifies a record or Gemini container message
+item using bounded metadata; the other streams selected conversational text.
+No raw candidate text is staged. Unknown schemas and non-object Gemini items
+fail closed. Tool results, metadata, attachments, and injected host content are
+omitted with sealed counts, never treated as conversation text.
 
 Redaction must run over logical message content before slicing it into pages.
 It needs streaming state for secrets that cross input/page boundaries;
@@ -49,10 +50,10 @@ spool file or model call is part of projection building.
 A new MCP/HTTP context-page operation starts from an existing search hit and
 returns at most 4,000 redacted characters plus a signed continuation token.
 Continuation binds the original hit's vault/blob/hash/version/term, next page,
-parser/redactor generation, expiry, and a page/session budget. The endpoint
-still requires the main local token, no-store response, one-at-a-time execution,
-and rate limiting. A client cannot choose an arbitrary offset or another
-snapshot. A renewed search can begin another bounded session, so quotas are
+parser/redactor generation, expiry, and an ephemeral session. The endpoint
+still requires the main local token, no-store response, one CPU builder,
+and page rate limiting. A client cannot choose an arbitrary offset or another
+snapshot. A renewed search can begin another session, so concurrency/rate quotas are
 resource/privacy controls rather than a permanent transcript-size cutoff.
 
 For a large source, page retrieval reads only authenticated projection pages,

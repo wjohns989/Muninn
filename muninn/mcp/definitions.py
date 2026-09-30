@@ -375,6 +375,32 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "start_secure_history_transcript",
+        "description": (
+            "Queue a CPU-only encrypted projection of the full conversational transcript "
+            "selected by a search_secure_history capability. Returns pending or a page cursor."
+        ),
+        "inputSchema": {"type": "object", "properties": {
+            "capability": {"type": "string", "description": "Expiring search hit capability."}},
+            "required": ["capability"]},
+    },
+    {
+        "name": "poll_secure_history_transcript",
+        "description": "Poll transcript projection status using the original search capability.",
+        "inputSchema": {"type": "object", "properties": {
+            "capability": {"type": "string"}}, "required": ["capability"]},
+    },
+    {
+        "name": "read_secure_history_transcript_page",
+        "description": (
+            "Read up to 4000 redacted conversational characters. Follow next_cursor "
+            "repeatedly to continue without a transcript-size cutoff."
+        ),
+        "inputSchema": {"type": "object", "properties": {
+            "cursor": {"type": "string", "description": "Opaque cursor from start, poll, or prior page."}},
+            "required": ["cursor"]},
+    },
+    {
         "name": "analyze_secure_history",
         "description": (
             "Interpret one authenticated encrypted-history hit on demand. Selects a fitting "
@@ -962,6 +988,7 @@ READ_ONLY_TOOLS = {
     "get_project_context", "get_thread",
     "search_memory", "search_secure_history", "poll_secure_history_search",
     "poll_secure_history_analysis", "fetch_secure_history",
+    "poll_secure_history_transcript", "read_secure_history_transcript_page",
     "search_credential_metadata", "hunt_memory",
     "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
@@ -1058,8 +1085,10 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 CORE_TOOLS = (
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff",
     "add_memory", "search_memory", "search_secure_history", "start_secure_history_search",
-    "poll_secure_history_search", "cancel_secure_history_search", "fetch_secure_history",
-    "poll_secure_history_analysis", "cancel_secure_history_analysis",
+    "poll_secure_history_search", "fetch_secure_history",
+    "start_secure_history_transcript",
+    "read_secure_history_transcript_page",
+    "poll_secure_history_analysis",
     "analyze_secure_history",
     "search_credential_metadata",
     "update_memory", "get_project_goal", "set_project_goal",
@@ -1075,6 +1104,8 @@ PRIVATE_MAIN_TOKEN_TOOLS = frozenset({
     "search_secure_history", "start_secure_history_search", "poll_secure_history_search",
     "cancel_secure_history_search", "poll_secure_history_analysis",
     "cancel_secure_history_analysis", "fetch_secure_history", "analyze_secure_history",
+    "start_secure_history_transcript", "poll_secure_history_transcript",
+    "read_secure_history_transcript_page",
     "search_credential_metadata",
 })
 DEFAULT_TOOLSET = "full"

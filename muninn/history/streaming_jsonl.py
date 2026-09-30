@@ -235,15 +235,18 @@ def events(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
                 value_path = start_value()
                 if len(stack) >= 64:
                     raise StreamingJSONError("JSON nesting exceeds schema bound")
-                stack.append(_Frame("object" if value == "{" else "array", value_path,
+                container_kind = "object" if value == "{" else "array"
+                stack.append(_Frame(container_kind, value_path,
                                     "first_key" if value == "{" else "first_value"))
+                yield "container_start", value_path, container_kind
             elif value in "}]":
                 expected = "object" if value == "}" else "array"
                 if (not stack or stack[-1].kind != expected
                         or stack[-1].state not in ({"first_key", "comma_or_end"} if expected == "object"
                                                 else {"first_value", "comma_or_end"})):
                     raise StreamingJSONError("Unexpected JSON container end")
-                stack.pop()
+                finished = stack.pop()
+                yield "container_end", finished.path, finished.kind
                 complete_value()
             elif value == ":":
                 if not stack or stack[-1].kind != "object" or stack[-1].state != "colon":

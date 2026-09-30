@@ -71,6 +71,9 @@ def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
     assert "poll_secure_history_search" in TOOLSETS["core"]
     assert "poll_secure_history_analysis" in TOOLSETS["core"]
     assert "fetch_secure_history" in TOOLSETS["core"]
+    assert "start_secure_history_transcript" in TOOLSETS["core"]
+    assert "poll_secure_history_transcript" in TOOLSETS["full"]
+    assert "read_secure_history_transcript_page" in TOOLSETS["core"]
     assert "analyze_secure_history" in TOOLSETS["core"]
     assert not any("reveal" in name for name in TOOLSETS["core"])
 
@@ -92,6 +95,12 @@ def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
      {"state": "cancelled", "job_id": "SAFE_ANALYSIS_JOB_MARKER"}, "SAFE_ANALYSIS_JOB_MARKER"),
     ("fetch_secure_history", {"capability": "SAFE_CAPABILITY_MARKER"},
      {"redacted_text": "SAFE_TRANSCRIPT_MARKER"}, "SAFE_TRANSCRIPT_MARKER"),
+    ("start_secure_history_transcript", {"capability": "SAFE_CAPABILITY_MARKER"},
+     {"state": "pending"}, "pending"),
+    ("poll_secure_history_transcript", {"capability": "SAFE_CAPABILITY_MARKER"},
+     {"state": "ready", "cursor": "SAFE_CURSOR_MARKER"}, "SAFE_CURSOR_MARKER"),
+    ("read_secure_history_transcript_page", {"cursor": "SAFE_CURSOR_MARKER"},
+     {"redacted_text": "SAFE_PAGE_MARKER"}, "SAFE_PAGE_MARKER"),
     ("analyze_secure_history", {"capability": "SAFE_CAPABILITY_MARKER"},
      {"status": "ok", "analysis": {"summary": "SAFE_SUMMARY_MARKER"}}, "SAFE_SUMMARY_MARKER"),
     ("search_credential_metadata", {"query": "openrouter"},
@@ -101,7 +110,10 @@ def test_private_mcp_result_preserves_required_fields(monkeypatch, name, argumen
     from muninn.mcp import handlers
 
     monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER", "0")
-    monkeypatch.setattr(handlers, "active_toolset", lambda: "core")
+    monkeypatch.setattr(handlers, "active_toolset",
+                        lambda: "full" if name in {
+                            "poll_secure_history_transcript", "cancel_secure_history_search",
+                            "cancel_secure_history_analysis"} else "core")
     monkeypatch.setattr(
         handlers, "make_request_with_retry",
         lambda *_args, **_kwargs: SimpleNamespace(json=lambda: {"success": True, "data": data}),
@@ -157,6 +169,8 @@ async def test_secure_analysis_endpoint_is_local_and_auth_only(monkeypatch):
     "poll_secure_history_search", "cancel_secure_history_search",
     "poll_secure_history_analysis", "cancel_secure_history_analysis",
     "fetch_secure_history", "analyze_secure_history",
+    "start_secure_history_transcript", "poll_secure_history_transcript",
+    "read_secure_history_transcript_page",
 ])
 async def test_mcp_private_tools_reject_generic_api_key(tmp_path, monkeypatch, tool_name):
     monkeypatch.setenv("MUNINN_AUTH_TOKEN", "main-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -200,6 +214,105 @@ async def test_mcp_private_tools_reject_generic_api_key(tmp_path, monkeypatch, t
             assert denied_sse.status_code == 401
     finally:
         await mcp_sse._close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_transcript_page_routes_require_main_local_token(monkeypatch):
+    token = "test-main-auth-token-aaaaaaaaaaaaaaaaaaaaaaaa"
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", token)
+    monkeypatch.setenv("MUNINN_API_KEY", "test-generic-api-key-bbbbbbbbbbbbbbbbbbbb")
+    monkeypatch.setenv("MUNINN_NO_AUTH", "0")
+    monkeypatch.setattr(server, "is_security_enabled", lambda: True)
+    fake = SimpleNamespace(
+        secure_projection_start=lambda cap: {"state": "pending"},
+        secure_projection_poll=lambda cap: {"state": "ready", "cursor": "opaque-cursor"},
+        secure_projection_page=lambda cursor: {"redacted_text": "safe continuation", "next_cursor": None},
+    )
+    monkeypatch.setattr(server, "_require_history", lambda: fake)
+    server._secure_history_page_times.clear()
+    local = httpx.ASGITransport(app=server.app, client=("127.0.0.1", 1234))
+    async with httpx.AsyncClient(transport=local, base_url="http://localhost") as client:
+        start = "/history/secure/transcript/start"
+        assert (await client.post(start, json={"capability": "opaque"})).status_code == 401
+        generic = {"Authorization": "Bearer test-generic-api-key-bbbbbbbbbbbbbbbbbbbb"}
+        assert (await client.post(start, json={"capability": "opaque"}, headers=generic)).status_code == 401
+        main = {"Authorization": f"Bearer {token}"}
+        queued = await client.post(start, json={"capability": "opaque"}, headers=main)
+        assert queued.status_code == 202 and queued.headers["cache-control"] == "no-store"
+        polled = await client.post("/history/secure/transcript/poll",
+                                   json={"capability": "opaque"}, headers=main)
+        assert polled.json()["data"]["cursor"] == "opaque-cursor"
+        page = await client.post("/history/secure/transcript/page",
+                                 json={"cursor": "opaque-cursor"}, headers=main)
+        assert page.json()["data"]["redacted_text"] == "safe continuation"
+        assert page.headers["cache-control"] == "no-store"
+    remote = httpx.ASGITransport(app=server.app, client=("192.168.1.2", 1234))
+    async with httpx.AsyncClient(transport=remote, base_url="http://localhost") as client:
+        assert (await client.post(start, json={"capability": "opaque"}, headers=main)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_real_archive_search_to_http_transcript_continuation(tmp_path, monkeypatch):
+    import json
+
+    token = "test-main-auth-token-aaaaaaaaaaaaaaaaaaaaaaaa"
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", token)
+    monkeypatch.setenv("MUNINN_NO_AUTH", "0")
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(tmp_path / "archive"))
+    monkeypatch.setattr(server, "is_security_enabled", lambda: True)
+    source = tmp_path / "conversation.jsonl"
+    rows = [
+        {"type": "event_msg", "payload": {"type": "user_message",
+                                           "message": "orbital-widget " * 700 + " api_key=secretvalue"}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "output": "TOOL_CANARY"}},
+        {"type": "event_msg", "payload": {"type": "agent_message",
+                                           "message": "Final answer."}},
+    ]
+    source.write_bytes(b"\n".join(json.dumps(row).encode() for row in rows) + b"\n")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic archive recovery passphrase")
+    archive.archive_file(source, "codex")
+    SecureHistoryBlindIndex(archive).build()
+    service = HistoryService(None, tmp_path / "unused-vault", home=tmp_path,
+                             archive_passphrase="synthetic archive recovery passphrase")
+    monkeypatch.setattr(server, "_require_history", lambda: service)
+    server._secure_history_page_times.clear()
+    transport = httpx.ASGITransport(app=server.app, client=("127.0.0.1", 1234))
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            found = await client.post("/history/secure/search", json={"query": "orbital-widget"},
+                                      headers=headers)
+            assert found.status_code == 200
+            capability = found.json()["data"]["matches"][0]["fetch_capability"]
+            status = await client.post("/history/secure/transcript/start",
+                                       json={"capability": capability}, headers=headers)
+            for _ in range(100):
+                if status.json()["data"]["state"] != "pending":
+                    break
+                await asyncio.sleep(.01)
+                status = await client.post("/history/secure/transcript/poll",
+                                           json={"capability": capability}, headers=headers)
+            assert status.json()["data"]["state"] == "ready"
+            assert status.json()["data"]["coverage"]["omitted_units"] == 1
+            cursor = status.json()["data"]["cursor"]
+            pages = []
+            while cursor:
+                response = await client.post("/history/secure/transcript/page",
+                                             json={"cursor": cursor}, headers=headers)
+                assert response.status_code == 200
+                assert response.headers["cache-control"] == "no-store"
+                page = response.json()["data"]
+                assert len(page["redacted_text"]) <= 4000
+                pages.append(page["redacted_text"])
+                cursor = page["next_cursor"]
+            transcript = "".join(pages)
+            assert transcript.count("orbital-widget") == 700
+            assert "Final answer." in transcript
+            assert "secretvalue" not in transcript and "TOOL_CANARY" not in transcript
+    finally:
+        await service.stop()
 
 
 @pytest.mark.asyncio

@@ -117,6 +117,7 @@ _credential_reveal_limiter = RevealLimiter()
 _credential_agent_search_times: deque[float] = deque()
 _secure_history_fetch_slots = asyncio.Semaphore(1)
 _secure_history_fetch_times: deque[float] = deque()
+_secure_history_page_times: deque[float] = deque()
 _secure_history_analyze_slots = asyncio.Semaphore(1)
 _secure_history_analyze_times: deque[float] = deque()
 _secure_history_job_poll_times: deque[float] = deque()
@@ -1688,6 +1689,14 @@ class SecureHistoryFetchRequest(BaseModel):
     max_chars: int = 3000
 
 
+class SecureProjectionStartRequest(BaseModel):
+    capability: str
+
+
+class SecureProjectionPageRequest(BaseModel):
+    cursor: str
+
+
 class SecureHistoryAnalyzeRequest(BaseModel):
     capability: str
     allow_remote: bool = False
@@ -1815,6 +1824,53 @@ async def secure_history_fetch_endpoint(req: SecureHistoryFetchRequest):
         return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
     finally:
         _secure_history_fetch_slots.release()
+
+
+def _check_secure_page_rate() -> None:
+    now = time.monotonic()
+    while _secure_history_page_times and now - _secure_history_page_times[0] > 60:
+        _secure_history_page_times.popleft()
+    if len(_secure_history_page_times) >= 120:
+        raise HTTPException(status_code=429, detail="Transcript page rate limit reached", headers=NO_STORE)
+    _secure_history_page_times.append(now)
+
+
+@app.post("/history/secure/transcript/start", dependencies=[Depends(verify_main_local_token)])
+async def secure_transcript_start_endpoint(req: SecureProjectionStartRequest):
+    """Queue CPU-only, encrypted transcript projection without blocking on its size."""
+    _check_secure_page_rate()
+    try:
+        data = await asyncio.to_thread(_require_history().secure_projection_start, req.capability)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid transcript capability", headers=NO_STORE) from exc
+    except (VaultIntegrityError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Transcript projection unavailable", headers=NO_STORE) from exc
+    return JSONResponse({"success": True, "data": data},
+                        status_code=202 if data.get("state") == "pending" else 200, headers=NO_STORE)
+
+
+@app.post("/history/secure/transcript/poll", dependencies=[Depends(verify_main_local_token)])
+async def secure_transcript_poll_endpoint(req: SecureProjectionStartRequest):
+    _check_secure_page_rate()
+    try:
+        data = await asyncio.to_thread(_require_history().secure_projection_poll, req.capability)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid transcript capability", headers=NO_STORE) from exc
+    except (VaultIntegrityError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Transcript projection unavailable", headers=NO_STORE) from exc
+    return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+
+
+@app.post("/history/secure/transcript/page", dependencies=[Depends(verify_main_local_token)])
+async def secure_transcript_page_endpoint(req: SecureProjectionPageRequest):
+    _check_secure_page_rate()
+    try:
+        data = await asyncio.to_thread(_require_history().secure_projection_page, req.cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid transcript cursor", headers=NO_STORE) from exc
+    except (VaultIntegrityError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Transcript page unavailable", headers=NO_STORE) from exc
+    return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
 
 
 @app.post("/history/secure/analyze", dependencies=[Depends(verify_main_local_token)])
