@@ -161,6 +161,16 @@ remains the short-span compatibility path. Projection runs on CPU on demand and
 does not load an Ollama model or reserve VRAM.
 After deploying these routes, add `--transcript-pages 3` to the live search
 probe above to check actual continuation pages without printing their text.
+Before a service restart, the checked-out code can be tested directly against
+your configured encrypted archive:
+
+```bash
+python -m scripts.smoke_secure_projection_archive --query "a nonsecret term" --max-size-kib 10240 --pages 2
+```
+
+This uses the local
+archive unlock, may create an encrypted derived projection for one real hit,
+and prints only provider, size, timing, coverage counts, and page lengths.
 Optional `--analyze local` or `--analyze remote` exercises a model route without
 printing its analysis. The remote option sends the authenticated raw hit window
 to the configured ZDR OpenRouter route only when local consent and budget checks

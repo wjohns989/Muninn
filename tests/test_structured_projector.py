@@ -54,6 +54,13 @@ def test_codex_response_blocks_require_text_type(tmp_path):
     assert "Visible answer" in output and "TOOL_CANARY" not in output
 
 
+def test_long_unknown_metadata_key_does_not_block_supported_message(tmp_path):
+    row = {"x" * (1024 * 1024): "SECRET_METADATA_CANARY", "type": "event_msg",
+           "payload": {"type": "user_message", "message": "Visible request"}}
+    output, _ = _project(tmp_path, "codex", [row])
+    assert "Visible request" in output and "SECRET_METADATA_CANARY" not in output
+
+
 def test_codex_non_user_visible_analysis_channel_is_omitted(tmp_path):
     output, _ = _project(tmp_path, "codex", [
         {"type": "response_item", "payload": {"type": "message", "role": "assistant",

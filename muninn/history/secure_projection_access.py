@@ -16,13 +16,15 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from muninn.history.blind_index import SecureHistoryBlindIndex
+from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.secure_projection_store import (
     FORMAT,
     PARSER_REDACTOR,
     ProjectionIntegrityError,
     SecureProjectionStore,
 )
-from muninn.history.structured_projector import UnsupportedTranscript, build_transcript_projection
+from muninn.history.streaming_jsonl import StreamingJSONError
+from muninn.history.structured_projector import ProjectionCancelled, UnsupportedTranscript, build_transcript_projection
 
 _TTL = 600
 _MAX_JOBS = 8
@@ -125,21 +127,33 @@ class ProjectionAccess:
                 "pages": count, "redaction": "strict-best-effort", "coverage": stats,
                 "scope": "supported_user_assistant_text_only"}
 
-    def _job_state(self, key: tuple[str, str, int]) -> str:
+    def _job_state(self, key: tuple[str, str, int]) -> tuple[str, str | None]:
         with self._lock:
             future = self._jobs.get(key)
             if future is None:
-                return "not_started"
+                return "not_started", None
             if not future.done():
-                return "pending"
+                return "pending", None
             del self._jobs[key]
         try:
             future.result()
         except UnsupportedTranscript:
-            return "unsupported"
+            return "unsupported", None
+        except ProjectionCancelled:
+            return "cancelled", None
+        except StreamingJSONError:
+            return "unavailable", "malformed_json"
+        except VaultIntegrityError:
+            return "unavailable", "archive_integrity"
+        except ProjectionIntegrityError:
+            return "unavailable", "projection_integrity"
+        except OSError:
+            return "unavailable", "io"
+        except MemoryError:
+            return "unavailable", "resources"
         except Exception:
-            return "unavailable"
-        return "finished"
+            return "unavailable", "other"
+        return "finished", None
 
     def start(self, capability: str) -> dict[str, Any]:
         entry, version, data = self.index._entry_for_capability(capability)
@@ -147,11 +161,11 @@ class ProjectionAccess:
         if complete is not None:
             return self._ready(entry, version, data["term"], complete)
         key = self._job_key(entry, version)
-        state = self._job_state(key)
+        state, reason = self._job_state(key)
         if state == "pending":
             return {"state": "pending"}
         if state in {"unsupported", "unavailable"}:
-            return {"state": state}
+            return {"state": state, **({"reason": reason} if reason else {})}
         with self._lock:
             if key in self._jobs:
                 return {"state": "pending"}
@@ -170,8 +184,9 @@ class ProjectionAccess:
         complete = self._find_complete(entry, version)
         if complete is not None:
             return self._ready(entry, version, data["term"], complete)
-        state = self._job_state(self._job_key(entry, version))
-        return {"state": "unavailable" if state == "finished" else state}
+        state, reason = self._job_state(self._job_key(entry, version))
+        return {"state": "unavailable" if state == "finished" else state,
+                **({"reason": reason} if reason else {})}
 
     def page(self, cursor: str) -> dict[str, Any]:
         data = self._decode_cursor(cursor)

@@ -22,6 +22,7 @@ _NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z")
 _HEX = frozenset("0123456789abcdefABCDEF")
 _ESCAPES = {"\"": "\"", "\\": "\\", "/": "/", "b": "\b", "f": "\f",
             "n": "\n", "r": "\r", "t": "\t"}
+_OVERSIZED_KEY = "\0oversized-json-key"
 
 
 def tokens(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
@@ -161,6 +162,7 @@ def events(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
     string_mode: str | None = None
     key_parts: list[str] = []
     key_chars = 0
+    key_overflow = False
     value_path: tuple[str | int, ...] = ()
 
     def start_value() -> tuple[str | int, ...]:
@@ -199,16 +201,20 @@ def events(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
                 string_mode = "key"
                 key_parts = []
                 key_chars = 0
+                key_overflow = False
             else:
                 value_path = start_value()
                 string_mode = "value"
                 yield "value_start", value_path, "string"
         elif kind == "string_chunk":
             if string_mode == "key":
-                key_chars += len(value)
-                if key_chars > 128:
-                    raise StreamingJSONError("JSON object key exceeds schema bound")
-                key_parts.append(value)
+                if not key_overflow:
+                    key_chars += len(value)
+                    if key_chars > 128:
+                        key_overflow = True
+                        key_parts.clear()
+                    else:
+                        key_parts.append(value)
             elif string_mode == "value":
                 yield "value_chunk", value_path, value
             else:
@@ -216,7 +222,7 @@ def events(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
         elif kind == "end_string":
             if string_mode == "key":
                 frame = stack[-1]
-                frame.key = "".join(key_parts)
+                frame.key = _OVERSIZED_KEY if key_overflow else "".join(key_parts)
                 frame.state = "colon"
             elif string_mode == "value":
                 yield "value_end", value_path, ""

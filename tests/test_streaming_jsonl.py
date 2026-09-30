@@ -53,6 +53,15 @@ def test_events_track_only_bounded_string_fragments_with_paths() -> None:
     assert seen[-1] == ("record_end", (), "")
 
 
+def test_oversized_unknown_object_key_is_consumed_without_leaking_its_value() -> None:
+    raw = b'{"' + b'x' * (1024 * 1024) + b'":"SECRET_TOOL_CANARY","payload":{"message":"safe"}}\n'
+    seen = list(events(_pieces(raw, 113), string_chunk_chars=512))
+    assert ("value_chunk", ("payload", "message"), "safe") in seen
+    assert not any(path == ("payload", "message") and value == "SECRET_TOOL_CANARY"
+                   for kind, path, value in seen if kind == "value_chunk")
+    assert seen[-1] == ("record_end", (), "")
+
+
 @pytest.mark.parametrize("raw", [
     b'{"a":1,}\n', b'{"a":}\n', b'{"a" 1}\n', b'{"a":1 "b":2}\n',
     b'[1,]\n', b'{"a":1}{"b":2}\n', b'{"a":\n1}\n',
