@@ -54,6 +54,8 @@ def parse_args(argv=None):
     parser.add_argument("--port", type=int, default=42069)
     parser.add_argument("--restart", action="store_true", help="Requires explicit operator authorization")
     parser.add_argument("--enable-capture-auto", action="store_true", help="Enable local-only new-capture processing")
+    parser.add_argument("--preserve-capture-auto", action="store_true",
+                        help="Reload already enabled local capture without changing settings or queued work")
     parser.add_argument("--expected-revision", help="Approved, tested Git commit hash")
     parser.add_argument("--finalize-capture-auto", action="store_true",
                         help="Persist an already running approved local activation; never restart")
@@ -63,6 +65,8 @@ def parse_args(argv=None):
         parser.error("invalid local port")
     if args.enable_capture_auto and not args.restart:
         parser.error("capture activation requires an explicitly authorized restart")
+    if args.preserve_capture_auto and (not args.restart or args.enable_capture_auto or args.finalize_capture_auto):
+        parser.error("capture preservation requires restart and cannot activate or finalize")
     if args.restart and not args.expected_revision:
         parser.error("restart requires an approved --expected-revision")
     if args.finalize_capture_auto and (args.restart or args.enable_capture_auto
@@ -154,13 +158,18 @@ def mode_matches(report, *, enable):
     return state.get("capture_enabled") is False
 
 
-def pre_reload_mode_matches(report, environment):
+def pre_reload_mode_matches(report, environment, *, preserve_capture_auto=False):
     """Old servers lack the mode field; require owned process flags off.
 
     Absence of an HTTP status field alone never authorizes a reload. The
     environment is from the already verified owned process and stays private.
     Post-reload mode verification still requires the modern effective report.
     """
+    if preserve_capture_auto:
+        return (mode_matches(report, enable=True)
+                and all(isinstance(environment.get(name), str)
+                        and environment[name].strip().lower() in {"1", "true", "yes", "on"}
+                        for name in CAPTURE_FLAGS))
     for name in CAPTURE_FLAGS:
         value = environment.get(name)
         try:
@@ -179,8 +188,11 @@ def queue_states(db):
     return {table: dict(db.execute(f"SELECT state,COUNT(*) FROM {table} GROUP BY state")) for table in TABLES}
 
 
-def queues_idle(queues):
-    return not any(queues[table].get(state, 0) for table in TABLES for state in ACTIVE[table])
+def queues_idle(queues, *, preserve_queued=False):
+    """Preserve-mode stops no claimed worker and leaves durable queued work intact."""
+    excluded = {"pending", "retry"} if preserve_queued else set()
+    return not any(queues[table].get(state, 0)
+                   for table in TABLES for state in ACTIVE[table] - excluded)
 
 
 def prepare_preimage_destination(archive):
@@ -335,11 +347,12 @@ def run(args):
     if not args.restart:
         return
     require(os.name == "nt", "Owned forced reload is supported only on Windows")
-    require(queues_idle(initial), "Durable queues are not idle")
-    require(pre_reload_mode_matches(before, environment),
-            "This procedure requires capture automation off before reload")
+    require(queues_idle(initial, preserve_queued=args.preserve_capture_auto), "Durable workers are not idle")
+    require(pre_reload_mode_matches(before, environment, preserve_capture_auto=args.preserve_capture_auto),
+            "Existing capture mode differs from the requested reload procedure")
     verify_candidate(repo, args.expected_revision)
     launching = launch_environment(environment, enable_capture_auto=args.enable_capture_auto)
+    expected_auto = args.enable_capture_auto or args.preserve_capture_auto
     user_before = None
     if args.enable_capture_auto:
         SmallCaptureCadence(quiet_seconds=float(launching.get("MUNINN_CAPTURE_QUIET_SECONDS", "300")),
@@ -374,7 +387,8 @@ def run(args):
     verify_candidate(repo, args.expected_revision)
     with sqlite3.connect(journal.as_uri() + "?mode=rw", uri=True, timeout=2) as fence:
         fence.execute("BEGIN IMMEDIATE")
-        require(queues_idle(queue_states(fence)), "Queue changed before owned stop")
+        require(queues_idle(queue_states(fence), preserve_queued=args.preserve_capture_auto),
+                "Queue changed before owned stop")
         verify_stop_ownership(process, identity, repo=repo, port=args.port)
         print(json.dumps({"stage": "preimage_validated", "databases": len(databases), "inflight_jobs": 0,
                           "stop_method": "owned_windows_forced_termination"}), flush=True)
@@ -395,7 +409,7 @@ def run(args):
                 if startup_mode_pending(report):
                     time.sleep(1)
                     continue
-                require(mode_matches(report, enable=args.enable_capture_auto), "Requested capture mode is not effective")
+                require(mode_matches(report, enable=expected_auto), "Requested capture mode is not effective")
                 with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
                     columns = {row[1] for row in db.execute("PRAGMA table_info(history_analysis_jobs)")}
                 require({"sealed_window", "sealed_extraction", "extraction_id", "sealed_receipt",
@@ -404,7 +418,7 @@ def run(args):
                 if user_before is not None:
                     persist_capture_flags(user_before)
                 print(json.dumps({"stage": "restarted_verified", "port": args.port, "process_count": 1,
-                                  "strict_archive_ready": True, "automatic_local_capture": args.enable_capture_auto,
+                                  "strict_archive_ready": True, "automatic_local_capture": expected_auto,
                                   "capture_settings_persisted": user_before is not None}), flush=True)
                 return
         except (httpx.HTTPError, ConnectionError):

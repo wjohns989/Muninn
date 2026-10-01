@@ -135,8 +135,17 @@ For an already running Windows installation, `python scripts/reload_shared_local
 is read-only by default. An explicitly authorized reload requires `--restart`
 and `--expected-revision` with the tested Git commit hash. Use the same Python
 interpreter as the service; `--repo` and `--port` support other checkout locations
-and ports. This procedure currently requires capture enrichment to be off and
+and ports. By default this procedure requires capture enrichment to be off and
 the durable queues to be idle; it is not an unattended upgrade mechanism.
+
+For an already enabled, local-only installation, add `--preserve-capture-auto`
+to an explicitly authorized reload. This requires both the authenticated
+effective mode and owned-process flags to confirm automatic local capture.
+It copies the existing launch environment without reading or writing the User
+capture flags. Pending/retry jobs remain intact and resume after restart; active
+capture, search, analysis or publication work blocks the stop. A journal writer
+fence rechecks worker state through owned-process termination. Preservation
+cannot be combined with activation or activation finalization.
 
 Adding `--enable-capture-auto` opts in to automatic, local-only processing of
 **new** captures. The helper preserves all other service settings, saves encrypted

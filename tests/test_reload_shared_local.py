@@ -15,6 +15,109 @@ def test_default_is_read_only_and_enable_requires_restart():
         reload.parse_args(["--enable-capture-auto"])
 
 
+def test_preserve_mode_requires_restart_and_cannot_activate_or_finalize():
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--preserve-capture-auto"])
+    for conflicting in ("--enable-capture-auto", "--finalize-capture-auto"):
+        with pytest.raises(SystemExit):
+            reload.parse_args(["--restart", "--preserve-capture-auto", conflicting,
+                               "--expected-revision", "abcdef0"])
+    args = reload.parse_args(["--restart", "--preserve-capture-auto",
+                              "--expected-revision", "abcdef0"])
+    assert args.preserve_capture_auto and not args.enable_capture_auto
+
+
+@pytest.mark.parametrize("bad", ["missing_report", "remote", "flag_missing", "flag_false", "flag_invalid"])
+def test_preserve_preflight_requires_modern_local_mode_and_owned_true_flags(bad):
+    report = {"capture_enrichment": {"capture_enabled": True,
+        "automatic_analysis_enabled": True, "automatic_remote_enabled": False}}
+    environment = {name: "1" for name in reload.CAPTURE_FLAGS}
+    assert reload.pre_reload_mode_matches(report, environment, preserve_capture_auto=True)
+    if bad == "missing_report":
+        report = {}
+    elif bad == "remote":
+        report["capture_enrichment"]["automatic_remote_enabled"] = True
+    else:
+        environment[reload.CAPTURE_FLAGS[0]] = {
+            "flag_missing": None, "flag_false": "0", "flag_invalid": "not-a-boolean"}[bad]
+    assert not reload.pre_reload_mode_matches(report, environment, preserve_capture_auto=True)
+
+
+def test_preserve_queues_allow_only_unclaimed_durable_work():
+    queued = {table: {"pending": 2, "retry": 1} for table in reload.TABLES}
+    assert not reload.queues_idle(queued)
+    assert reload.queues_idle(queued, preserve_queued=True)
+    for table, states in reload.ACTIVE.items():
+        for state in states - {"pending", "retry"}:
+            assert not reload.queues_idle({**queued, table: {state: 1}}, preserve_queued=True)
+
+
+@pytest.mark.skipif(reload.os.name != "nt", reason="Windows owned reload procedure")
+@pytest.mark.parametrize("claim_race", [False, True])
+def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(tmp_path, monkeypatch, claim_race):
+    report, process = isolated_installation(tmp_path, monkeypatch)
+    report["capture_enrichment"] = {"capture_enabled": True,
+        "automatic_analysis_enabled": True, "automatic_remote_enabled": False}
+    original = process.environ()
+    environment = {**original, **{name: "1" for name in reload.CAPTURE_FLAGS}}
+    process.environ = lambda: dict(environment)
+    journal = tmp_path / "history_secure_archive" / "capture-jobs.db"
+    with sqlite3.connect(journal) as db:
+        for table in reload.TABLES:
+            db.execute(f"INSERT INTO {table}(state) VALUES('pending')")
+        # Candidate startup also checks these schema fields; no private content.
+        for column in ("sealed_window", "sealed_extraction", "extraction_id", "sealed_receipt",
+                       "sealed_reuse", "cancel_requested", "publication_started"):
+            db.execute(f"ALTER TABLE history_analysis_jobs ADD COLUMN {column}")
+    stopped, launched = [], []
+    def stop():
+        # An independent claim writer cannot pass the held stop fence.
+        with sqlite3.connect(journal, timeout=0) as competing:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                competing.execute("UPDATE jobs SET state='capturing'")
+        stopped.append(True)
+
+    process.terminate = stop
+    process.wait = lambda **kwargs: None
+    child = SimpleNamespace(pid=456, poll=lambda: None)
+
+    def start(command, **kwargs):
+        launched.append(kwargs["env"])
+        report["listener_owners"] = [456]
+        report["muninn_processes"] = [{"pid": 456}]
+        return child
+
+    monkeypatch.setattr(reload.subprocess, "Popen", start)
+    monkeypatch.setattr(reload, "verify_private", lambda *args: None)
+    monkeypatch.setattr(reload, "verify_stop_ownership", lambda *args, **kwargs: None)
+    candidate_checks = []
+
+    def candidate(*args):
+        candidate_checks.append(True)
+        if claim_race and len(candidate_checks) == 2:
+            with sqlite3.connect(journal) as db:
+                db.execute("UPDATE history_analysis_jobs SET state='running'")
+
+    monkeypatch.setattr(reload, "verify_candidate", candidate)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Preservation must not read or write registry settings")
+
+    monkeypatch.setattr(reload, "read_user_flag", forbidden)
+    monkeypatch.setattr(reload, "persist_capture_flags", forbidden)
+    args = reload.parse_args(["--repo", str(tmp_path), "--restart", "--preserve-capture-auto",
+                              "--expected-revision", "abcdef0"])
+    if claim_race:
+        with pytest.raises(RuntimeError, match="Queue changed"):
+            reload.run(args)
+        assert stopped == launched == []
+    else:
+        reload.run(args)
+        assert stopped == [True] and launched == [environment]
+        with sqlite3.connect(journal) as db:
+            assert reload.queue_states(db) == {table: {"pending": 1} for table in reload.TABLES}
+
+
 def test_enable_changes_only_two_copied_environment_flags():
     original = {"MUNINN_AUTH_TOKEN": "test-only-auth", "MUNINN_PORT": "42069",
                 "MUNINN_CAPTURE_ENRICHMENT": "0", "MUNINN_CAPTURE_AUTO_ANALYSIS": "0",
