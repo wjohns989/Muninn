@@ -780,9 +780,15 @@ durable publication. Automatic jobs are currently local-only and excluded by
 existing worker consumers; no automatic capture-processing timer is activated.
 Completed and no-context sources leave pending selectors without deleting their
 encrypted receipts. Sealed scheduler totals and per-source plans detect inconsistent
-exclusion hints. Existing manifest metadata is still loaded in full; cross-version
-growth deduplication, responsive cadence and backlog scaling remain activation
-prerequisites. This internal integration is not automatic historical backfill.
+exclusion hints. New strictly appended snapshots can carry an encrypted,
+authenticated same-source byte-prefix certificate. A private window matcher
+requires an existing parent plan, unchanged input/partition and exact source-unit
+provenance; it never deduplicates by text across occurrences or marks analysis
+complete. The interpretation-contract identity is independently recomputable
+and includes prompt/schema/version/model weights. Durable cross-version reuse
+acknowledgments, responsive cadence and backlog scaling remain activation
+prerequisites. Existing manifest metadata is still loaded in full. This internal
+integration is not automatic historical backfill.
 No model directory, drive letter or user home is assumed by this component.
 
 Its first publication API verifies the whole event chain; large background

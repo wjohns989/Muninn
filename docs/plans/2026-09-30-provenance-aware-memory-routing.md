@@ -149,6 +149,45 @@ Partial changed windows must stay dirty. Then measure actual local catalog/ledge
 cost and establish bounded planner/model cadence plus failure visibility. No
 automatic scheduler loop or new live model dispatch was activated by this stage.
 
+**Reviewed next growth primitive:** during the existing encrypted capture byte
+pass, hash the prefix of the previous same-path/provider/kind snapshot's length.
+An optional manifest-authenticated `prefix_of` link is admissible only for a
+strictly longer capture with an exact old-prefix SHA and stable source identity
+through EOF. It certifies preserved bytes, not interpretation coverage; rewrites
+and legacy entries acquire no invented certificate. JSONL append can use this
+boundary; rewritten JSON still needs stronger occurrence evidence or no reuse.
+
+Later reuse needs an explicit encrypted coverage record for the new plan ordinal,
+not reuse of the old job's uniquely bound mapping or re-publication of old quotes
+as new coordinates. Verify a prior durable publication ACK and same-origin/unit/
+window/input evidence. Also require the *current* analysis contract and model
+identity: `secure_analysis._cited_outcome` already hashes `_CITED_VERSION`, schema,
+full prompt, provider/model and local weights digest into the staged identity.
+Recompute that current identity, require equality with the acknowledged stage,
+and invalidate/bump the contract on classifier-semantic changes. Prompt/schema/
+classifier/weights mutation tests must reject reuse; unrelated docs are not an
+invalidation. Cloud alias reuse is not admitted in the initial local-only lane.
+
+**Growth prerequisites implemented (source-only, 2026-10-01):** new capture hashes
+the previous-size prefix during its existing encryption pass, with no old blob
+decryption or extra source pass. Strictly longer same-path/provider/kind captures
+with stable open/path identity and size/mtime may carry `prefix_of`; rewritten,
+shorter, changed-origin and legacy snapshots acquire no invented link. Full blob
+authentication checks certified prefix bytes; full archive verification/portable
+restore also check the immediate same-origin parent. Equal unchanged bytes no
+longer conceal a provider/kind change.
+
+`preserved_parent_window` requires the authenticated exact source, an existing
+parent plan, matching partition/parser/input and complete sealed unit provenance
+(including native ID, physical line, ordinal, cwd and timestamps). It reopens
+both windows and returns no match when proof is missing or the window changed.
+It builds no parent plan and grants no publication/coverage authority. The shared
+`_cited_model_identity` preserves the existing staged hash formula and enables a
+fresh contract comparison without inference. Contract/schema/prompt/weights and
+input mutation checks verify invalidation. These primitives do not yet implement
+cross-version coverage records or activate a worker. Parent-plan matching still
+loads manifest metadata; amortized batch cost remains a measured admission gate.
+
 Reuse sealed source-unit streaming, encrypted staging, model-origin provisional
 publication and existing crash recovery. Record window-level coverage and
 unsupported/no-context/integrity/deferred states explicitly. Search work has

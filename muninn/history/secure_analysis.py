@@ -189,6 +189,19 @@ def _weights_digest(base, model):
     return digest
 
 
+def _cited_model_identity(window, provider, model, digest=None):
+    """Recompute the staged interpretation contract without dispatching inference.
+
+    Keep this identical for admission and new results. Classifier-semantic
+    changes must bump _CITED_VERSION; local reuse also requires a freshly read
+    immutable weights digest and separate same-occurrence/publication proof.
+    This hash alone does not certify coverage or permit cloud-alias reuse.
+    """
+    return hashlib.sha256(json.dumps({"version": _CITED_VERSION,
+        "schema": _CITED_SCHEMA, "messages": _cited_prompt(window), "provider": provider,
+        "model": model, "weights_digest": digest}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
 def _cited_outcome(content, source, descriptor, provider, model, digest=None):
     window = source.reopen(descriptor)
     code = "json"
@@ -220,9 +233,7 @@ def _cited_outcome(content, source, descriptor, provider, model, digest=None):
         raise ModelOutputInvalid("Model cited output is invalid", code=code) from exc
     result = {"status": "ok", "provider": provider, "model": model, "analysis": _clean_result(
         json.dumps({key: parsed[key] for key in _SCHEMA["required"]}), source_span=window["text"])}
-    identity = hashlib.sha256(json.dumps({"version": _CITED_VERSION,
-        "schema": _CITED_SCHEMA, "messages": _cited_prompt(window), "provider": provider,
-        "model": model, "weights_digest": digest}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    identity = _cited_model_identity(window, provider, model, digest)
     return {**result, "extraction": {"format": 1, "window": descriptor,
         "proposals": parsed["proposals"], "model_identity": identity, "result": result}}
 

@@ -607,3 +607,43 @@ batch boundary and leaving legacy publication independent of capture counters,
 the final affected queue/outbox/publication/archive/recovery suites passed
 **95 checks in 67.53 seconds**. Independent examination cleared the actual final
 source diff for integration/push only; it did not clear live scheduler activation.
+
+**Exact-candidate CI result:** `2c9d642` passed all five checks. Full locked suite
+run `36816691630`, job `110223191280`: **2,497 passed / 13 skipped**, two warnings,
+171.58 seconds. Privacy, clean imports, replay and benchmark dry run also passed.
+This closes this source-only window-job integration check, not activation or the
+full local-installation goal. This receipt accompanies the next code batch rather
+than rerunning identical CI solely for documentation.
+
+### 2026-10-01 growth preservation prerequisites (source-only)
+
+Changed dependencies: secure archive prefix creation/authentication, private
+same-occurrence window matching, and shared cited interpretation-contract hash.
+No shared-service reload, model call, policy change or automatic activation.
+
+- Red-first prefix tests: 15 failed / 8 passed against the preimplementation.
+  Focused prefix plus original archive: 36 passed in 24.67 seconds. Added checks
+  prove one source read pass, no old blob decryption and open-inode protection
+  without an explicit expected path. Prefix/outbox/source-evidence/plans: 72
+  passed in 44.87 seconds. Portable recovery checks valid, malformed and false
+  byte-prefix relations; legacy absence is preserved.
+- Recomputable interpretation identity: 13 tests failed before helper extraction;
+  helper plus existing cited transport/recovery: 40 passed in 16.34 seconds.
+  Existing staged hash formula is unchanged. Schema, prompt, classifier version,
+  model/weights, text, role, timestamps and range mutations invalidate identity.
+  Classifier-semantic changes still require a contract-version bump.
+- Same-occurrence matcher: 10 tests failed before implementation, then 10 passed
+  in 8.33 seconds. Tests use actual isolated encrypted archive/parser/window
+  plans. Earlier windows match; new occurrences, rewrites, geometry changes,
+  missing prior plans and differing native/physical coordinates do not. Corrupt
+  prior plans fail closed. Matching creates no job/ACK and dispatches no model.
+- Affected matcher/plan/identity/transport/capture-job/publication integration:
+  **108 passed in 73.30 seconds**. Parent diff/whitespace checks passed;
+  independent examination cleared the actual prefix, matcher and identity helper
+  for source integration, with coverage/cadence/runtime claims explicitly excluded.
+
+These are component proofs, not extraction quality or live growth processing.
+Durable encrypted reuse coverage referencing a prior publication ACK, current
+local model identity, bounded automatic cadence and measured scaling remain the
+next activation dependencies. No old quote is re-published as a new citation by
+this stage; cloud alias reuse is not admitted.

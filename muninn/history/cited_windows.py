@@ -134,6 +134,45 @@ class CitedWindowPlanStore(SecureProjectionStore):
         self.source.reopen(descriptor)
         return descriptor
 
+    def preserved_parent_window(self, entry, version, attempt, ordinal):
+        """Match one earlier occurrence, NOT an analysis/coverage receipt.
+
+        Requires an authenticated same-origin byte-prefix link, an already
+        sealed parent plan, unchanged partition/input and exact source-unit
+        provenance. No prior plan is built, model dispatched, job acknowledged
+        or old quote re-published. A caller must separately prove a durable ACK
+        and the current interpretation contract before admitting any reuse.
+        """
+        if (not isinstance(entry, dict) or type(version) is not int or version < 0
+                or type(ordinal) is not int or ordinal < 0
+                or self.source.ledger._entries.get((entry.get("blob"), version)) != entry):
+            raise ProjectionIntegrityError("Preserved window source is not authenticated")
+        descriptor = self.window_at(entry, version, attempt, ordinal)
+        # Resolve within one authenticated source's version list, never by text
+        # or native ID across projects. Manifest loading remains catalog-sized.
+        versions = next((items for items in self.archive._load_manifest()["files"].values()
+                         if len(items) > version and items[version] == entry), None)
+        if versions is None:
+            raise ProjectionIntegrityError("Preserved window origin is unavailable")
+        parent = self.archive._prefix_parent(versions, version)
+        if parent is None:
+            return None
+        parent_attempt = self.find_snapshot(parent, version - 1)
+        if parent_attempt is None or ordinal >= self.count_pages(parent, version - 1, parent_attempt):
+            return None
+        earlier = self.window_at(parent, version - 1, parent_attempt, ordinal)
+        coordinates = ("format", "page", "offset", "length", "parser_version", "boundary_hit", "prefix")
+        if (any(descriptor[key] != earlier[key] for key in coordinates)
+                or descriptor["input_sha256"] != earlier["input_sha256"]):
+            return None
+        _, page, current_input = self.source._window(descriptor)
+        _, earlier_page, earlier_input = self.source._window(earlier)
+        if (page["unit"] != earlier_page["unit"]
+                or page["fragment"] != earlier_page["fragment"]
+                or current_input != earlier_input):
+            return None
+        return earlier
+
     def verify_all(self):
         entries = self.source.ledger._entries
         report = {"snapshots": 0, "windows": 0}

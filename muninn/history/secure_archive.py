@@ -325,11 +325,16 @@ class SecureHistoryArchive:
         before = source.stat()
 
         def assert_open_identity(handle: BinaryIO) -> None:
-            if expected_source is None:
-                return
             opened = os.fstat(handle.fileno())
-            if (source.resolve(strict=True) != Path(expected_source)
+            if (source.resolve(strict=True) != source
+                    or (expected_source is not None and source != Path(expected_source))
                     or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+                raise ValueError("History source identity changed after authorization")
+
+        def assert_path_identity(current: os.stat_result) -> None:
+            if (source.resolve(strict=True) != source
+                    or (expected_source is not None and source != Path(expected_source))
+                    or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)):
                 raise ValueError("History source identity changed after authorization")
 
         if prior and prior[-1]["size"] == before.st_size and prior[-1]["mtime_ns"] == before.st_mtime_ns:
@@ -338,11 +343,11 @@ class SecureHistoryArchive:
                 assert_open_identity(current)
                 for block in iter(lambda: current.read(_CHUNK), b""):
                     unchanged_digest.update(block)
+                assert_open_identity(current)
             after_check = source.stat()
-            if (expected_source is not None and (source.resolve(strict=True) != Path(expected_source)
-                    or (after_check.st_dev, after_check.st_ino) != (before.st_dev, before.st_ino))):
-                raise ValueError("History source identity changed after authorization")
-            if ((before.st_size, before.st_mtime_ns) == (after_check.st_size, after_check.st_mtime_ns)
+            assert_path_identity(after_check)
+            if (prior[-1]["provider"] == provider and prior[-1]["kind"] == kind
+                    and (before.st_size, before.st_mtime_ns) == (after_check.st_size, after_check.st_mtime_ns)
                     and unchanged_digest.hexdigest() == prior[-1]["sha256"]):
                 return {"status": "unchanged", "versions": len(prior)}
         blob_id = uuid.uuid4().hex
@@ -351,6 +356,14 @@ class SecureHistoryArchive:
         staging = self._blobs / f"{blob_id}.tmp"
         create_private_file(staging)
         digest = hashlib.sha256()
+        # This second digest shares the encrypted capture pass. It proves only
+        # byte preservation at the same origin, not prior analysis coverage.
+        previous = prior[-1] if prior else None
+        prefix_size = (previous["size"] if previous is not None
+                       and previous["provider"] == provider and previous["kind"] == kind
+                       and type(previous["size"]) is int and 0 <= previous["size"] < before.st_size
+                       else None)
+        prefix_digest = hashlib.sha256()
         count = 0
         size = 0
         with source.open("rb") as src, staging.open("wb") as dst:
@@ -361,6 +374,8 @@ class SecureHistoryArchive:
                 if not chunk:
                     break
                 digest.update(chunk)
+                if prefix_size is not None and size < prefix_size:
+                    prefix_digest.update(chunk[:min(len(chunk), prefix_size - size)])
                 size += len(chunk)
                 self._write_chunk(dst, nonce_prefix, blob_id, count, chunk, False)
                 count += 1
@@ -370,10 +385,9 @@ class SecureHistoryArchive:
                               _json_bytes({"size": size, "sha256": digest.hexdigest(), "chunks": count}), True)
             dst.flush()
             os.fsync(dst.fileno())
+            assert_open_identity(src)
         after = source.stat()
-        if (expected_source is not None and (source.resolve(strict=True) != Path(expected_source)
-                or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino))):
-            raise ValueError("History source identity changed after authorization")
+        assert_path_identity(after)
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or size != before.st_size:
             raise RuntimeError("History source changed during encrypted capture; retry later")
         os.replace(staging, blob)
@@ -382,6 +396,9 @@ class SecureHistoryArchive:
                  "size": size, "mtime_ns": before.st_mtime_ns,
                  "sha256": digest.hexdigest(), "chunks": count, "captured_at": time.time(),
                  "commit_generation": manifest["generation"] + 1}
+        if prefix_size is not None and prefix_digest.hexdigest() == previous["sha256"]:
+            entry["prefix_of"] = {"blob": previous["blob"], "sha256": previous["sha256"],
+                                  "size": prefix_size, "version": len(prior) - 1}
         manifest["files"][str(source)] = [*prior, entry]
         return {"status": "captured", "versions": len(manifest["files"][str(source)]), "size": size}
 
@@ -418,6 +435,50 @@ class SecureHistoryArchive:
                     raise VaultIntegrityError("History blob authentication failed") from exc
         return bytes(output) if output is not None else None
 
+    @staticmethod
+    def _prefix_certificate(entry: dict[str, Any]) -> dict[str, Any] | None:
+        """Validate a certificate's shape; absent legacy evidence stays absent."""
+        if "prefix_of" not in entry:
+            return None
+        certificate = entry["prefix_of"]
+        if (not isinstance(certificate, dict)
+                or set(certificate) != {"blob", "sha256", "size", "version"}
+                or type(certificate["size"]) is not int
+                or type(certificate["version"]) is not int
+                or certificate["version"] < 0
+                or type(entry.get("size")) is not int
+                or not 0 <= certificate["size"] < entry["size"]
+                or not isinstance(certificate["blob"], str)
+                or len(certificate["blob"]) != 32
+                or any(c not in "0123456789abcdef" for c in certificate["blob"])
+                or not isinstance(certificate["sha256"], str)
+                or len(certificate["sha256"]) != 64
+                or any(c not in "0123456789abcdef" for c in certificate["sha256"])):
+            raise VaultIntegrityError("History prefix certificate is invalid")
+        return certificate
+
+    @classmethod
+    def _prefix_parent(cls, entries: list[dict[str, Any]], version: int) -> dict[str, Any] | None:
+        """Resolve an authenticated immediate same-origin parent, never text dedup.
+
+        Callers supply one source's authenticated manifest version list. This
+        relationship is not a substitute for full source-byte authentication.
+        """
+        if type(version) is not int or not 0 <= version < len(entries):
+            raise VaultIntegrityError("History prefix version is invalid")
+        entry = entries[version]
+        certificate = cls._prefix_certificate(entry)
+        if certificate is None:
+            return None
+        if version == 0 or certificate["version"] != version - 1:
+            raise VaultIntegrityError("History prefix parent version is invalid")
+        parent = entries[version - 1]
+        if (any(certificate[key] != parent.get(key) for key in ("blob", "sha256", "size"))
+                or type(parent.get("size")) is not int
+                or any(entry.get(key) != parent.get(key) for key in ("provider", "kind"))):
+            raise VaultIntegrityError("History prefix parent origin is invalid")
+        return parent
+
     def _iter_verified_entry(self, entry: dict[str, Any]) -> Iterator[bytes]:
         """Yield bounded decrypted chunks; normal exhaustion is the integrity gate.
 
@@ -431,6 +492,8 @@ class SecureHistoryArchive:
         blob = self._blobs / f"{blob_id}.enc"
         verify_private(blob)
         digest = hashlib.sha256()
+        certificate = self._prefix_certificate(entry)
+        prefix_digest = hashlib.sha256()
         size = 0
         with blob.open("rb") as handle:
             prefix = handle.read(len(_MAGIC) + 8)
@@ -462,6 +525,8 @@ class SecureHistoryArchive:
                                 or inflater.unused_data or inflater.unconsumed_tail
                                 or inflater.flush(1)):
                             raise ValueError
+                        if certificate is not None and size < certificate["size"]:
+                            prefix_digest.update(chunk[:min(len(chunk), certificate["size"] - size)])
                         size += len(chunk)
                         digest.update(chunk)
                         yield chunk
@@ -473,6 +538,8 @@ class SecureHistoryArchive:
                 or trailer != {"size": entry["size"], "sha256": entry["sha256"],
                                "chunks": entry["chunks"]}):
             raise VaultIntegrityError("History blob does not match its authenticated manifest")
+        if certificate is not None and prefix_digest.hexdigest() != certificate["sha256"]:
+            raise VaultIntegrityError("History prefix bytes do not match their authenticated certificate")
 
     def verify_all(self) -> dict[str, int]:
         """Stream every archived snapshot through authentication without retaining plaintext."""
@@ -480,7 +547,8 @@ class SecureHistoryArchive:
         snapshots = 0
         total_bytes = 0
         for entries in manifest["files"].values():
-            for entry in entries:
+            for version, entry in enumerate(entries):
+                self._prefix_parent(entries, version)
                 self._verify_entry(entry, collect=False)
                 snapshots += 1
                 total_bytes += entry["size"]
