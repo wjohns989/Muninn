@@ -81,16 +81,29 @@ def _user_token() -> str:
 def _private_case(query: str) -> str:
     headers = {"Authorization": f"Bearer {_user_token()}"}
     base = "http://127.0.0.1:42069"
-    with httpx.Client(timeout=90.0, trust_env=False) as client:
+    with httpx.Client(timeout=30.0, trust_env=False) as client:
         search = client.post(f"{base}/history/secure/search", headers=headers,
                              json={"query": query, "limit": 1})
         search.raise_for_status()
         matches = search.json()["data"]["matches"]
         if not matches:
             raise RuntimeError("No local encrypted-history match")
-        response = client.post(f"{base}/history/secure/fetch", headers=headers,
-                               json={"capability": matches[0]["fetch_capability"],
-                                     "max_chars": 3000})
+        capability = matches[0]["fetch_capability"]
+        response = client.post(f"{base}/history/secure/transcript/start", headers=headers,
+                               json={"capability": capability})
+        response.raise_for_status()
+        projection = response.json()["data"]
+        deadline = time.monotonic() + 300
+        while projection["state"] == "pending" and time.monotonic() < deadline:
+            time.sleep(2)
+            response = client.post(f"{base}/history/secure/transcript/poll", headers=headers,
+                                   json={"capability": capability})
+            response.raise_for_status()
+            projection = response.json()["data"]
+        if projection["state"] != "ready":
+            raise RuntimeError("Transcript projection unavailable for model comparison")
+        response = client.post(f"{base}/history/secure/transcript/page", headers=headers,
+                               json={"cursor": projection["cursor"]})
         response.raise_for_status()
         span = response.json()["data"]["redacted_text"]
     # The second pass is defense in depth. This remains local-only; it must not
@@ -187,10 +200,17 @@ async def main() -> int:
     args = parser.parse_args()
     if args.openrouter and args.archive_query and not args.allow_private_openrouter:
         parser.error("Private history requires --allow-private-openrouter")
-    prompt = _private_case(args.archive_query) if args.archive_query else _public_case()
+    try:
+        prompt = _private_case(args.archive_query) if args.archive_query else _public_case()
+    except (httpx.HTTPError, RuntimeError, ValueError, KeyError) as exc:
+        print(json.dumps({"state": "input_unavailable", "error_type": type(exc).__name__,
+                          "inference_sent": False}))
+        return 2
     if args.openrouter and args.archive_query:
         _check_private_egress(prompt)
     base = os.environ.get("MUNINN_OLLAMA_URL", "http://localhost:11434").rstrip("/")
+    local_failed = False
+    local_skipped = False
     for model in args.models:
         gpu = probe_gpu()
         installed, loaded = probe_ollama(base)
@@ -199,6 +219,7 @@ async def main() -> int:
         route = choose_route(gpu, installed, model_hints=(model,))
         if route.provider != "ollama" or route.model != model:
             print(json.dumps({"model": model, "skipped": route.reason}))
+            local_skipped = True
             continue
         try:
             provider = Provider("ollama", f"{base}/v1", [model])
@@ -207,7 +228,11 @@ async def main() -> int:
             report["resident_after"] = model in resident
             print(json.dumps(report, ensure_ascii=False))
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError) as exc:
-            print(json.dumps({"model": model, "error_type": type(exc).__name__}))
+            local_failed = True
+            report = {"model": model, "error_type": type(exc).__name__}
+            if isinstance(exc, httpx.HTTPStatusError):
+                report["http_status"] = exc.response.status_code
+            print(json.dumps(report))
     if args.openrouter:
         if llm_settings.key_source() not in {
             "environment (MUNINN_OPENROUTER_API_KEY)",
@@ -227,7 +252,7 @@ async def main() -> int:
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError) as exc:
             print(json.dumps({"provider": "openrouter", "error_type": type(exc).__name__}))
             return 1
-    return 0
+    return 1 if local_failed else 2 if local_skipped else 0
 
 
 if __name__ == "__main__":
