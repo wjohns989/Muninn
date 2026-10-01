@@ -2047,6 +2047,18 @@ async def secure_local_resource_status_endpoint():
     return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
 
 
+@app.get("/history/secure/remote-policy/accounting", dependencies=[Depends(verify_main_local_token)])
+async def secure_remote_accounting_endpoint():
+    """Local authenticated cost floors/counts; never credential or request values."""
+    from muninn.history.remote_accounting import AdmissionError, status
+    try:
+        result = await asyncio.to_thread(status, _remote_policy_root())
+    except AdmissionError:
+        raise HTTPException(status_code=503, detail="Remote accounting unavailable",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
+
+
 @app.post("/history/secure/remote-policy", dependencies=[Depends(verify_main_local_token)])
 async def update_secure_remote_policy_endpoint(req: RemotePolicyUpdateRequest, request: Request):
     from muninn.history.auto_routing import _legacy_remote_policy

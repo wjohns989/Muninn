@@ -28,6 +28,9 @@ from muninn.history.auto_routing import (
     remote_policy_snapshot,
 )
 from muninn.history.insights import Provider
+from muninn.history.auto_routing import openrouter_key_status
+from muninn.history.remote_accounting import AdmissionError, reserve
+from decimal import Decimal
 from muninn.history.memory_ledger import MemoryLedger, TYPES
 from muninn.history.safe_span import sanitize_agent_span
 
@@ -423,22 +426,23 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
         "name": "secure_excerpt_analysis", "strict": True, "schema": _CITED_SCHEMA if cited else _SCHEMA}}
     if not _request_safe(body):
         return {"status": "deferred", "provider": None, "model": None, "reason": "source_not_remote_safe"}
-    budget_available = (await asyncio.to_thread(guarded_openrouter_available)
-                        if policy_root is None else await asyncio.to_thread(
-                            guarded_openrouter_available, policy_root=policy_root))
-    if not budget_available:
+    try:
+        admission = await _reserve_remote_admission(policy_root, expected_remote_generation)
+    except AdmissionError as exc:
         return {"status": "deferred", "provider": None, "model": None,
-                "reason": "daily_zdr_cap_unverified"}
-    ensure_active()
-    if not _remote_eligible(span, allow_remote=allow_remote, policy_root=policy_root,
-                            expected_generation=expected_remote_generation):
-        return {"status": "deferred", "provider": None, "model": None,
-                "reason": "remote_consent_revoked"}
-    if before_remote is not None and not await before_remote():
-        raise RuntimeError("Secure analysis lease unavailable")
-    post_started = False
+                "reason": exc.code}
+    post_started = marker_attempted = False
     try:
         ensure_active()
+        if not _remote_eligible(span, allow_remote=allow_remote, policy_root=policy_root,
+                                expected_generation=expected_remote_generation):
+            return {"status": "deferred", "provider": None, "model": None,
+                    "reason": "remote_consent_revoked"}
+        if before_remote is not None:
+            marker_attempted = True
+            if not await before_remote():
+                raise RuntimeError("Secure analysis lease unavailable")
+        ensure_active()  # Preserve cancellation before any remote-client construction.
         async with httpx.AsyncClient(timeout=_MODEL_TIMEOUT, trust_env=False) as client:
             ensure_active()
             # Client setup and the durable queue marker can both await. The
@@ -450,19 +454,28 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
             if not _request_safe(body):
                 return {"status": "deferred", "provider": None, "model": None,
                         "reason": "source_not_remote_safe"}
+            admission.mark_unknown()  # Durable BEFORE POST, no await/cancellation race.
+            ensure_active()
             post_started = True
             response = await client.post(
                 f"{llm_settings.OPENROUTER_API}/chat/completions", json=body,
                 headers={"Authorization": f"Bearer {provider.api_key}"},
             )
+            # Billing may be valid even if the model output/HTTP status fails.
+            data = response.json(parse_float=Decimal)
+            admission.settle_response(data)
             response.raise_for_status()
+    except AdmissionError as exc:
+        return {"status": "deferred", "provider": None, "model": None, "reason": exc.code}
     finally:
         # Before post_started, every exit is proven unsent. After that point an
         # interruption may have reached the provider, so retain unknown status.
-        if before_remote is not None and not post_started and remote_not_sent is not None:
-            if not await remote_not_sent():
-                raise RuntimeError("Secure analysis lease unavailable")
-    data = response.json()
+        if not post_started:
+            proven_unsent = not marker_attempted
+            if marker_attempted and remote_not_sent is not None:
+                proven_unsent = await remote_not_sent()
+            if proven_unsent:
+                admission.release_unsent()
     content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     if cited:
         actual_model = data.get("model")
@@ -471,3 +484,11 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
         return _cited_outcome(content, source, descriptor, "openrouter", actual_model)
     return {"status": "ok", "provider": "openrouter", "model": data.get("model") or provider.models[0],
             "analysis": _clean_result(content, source_span=span)}
+
+
+async def _reserve_remote_admission(policy_root, generation):
+    if policy_root is None:
+        raise AdmissionError("remote_accounting_unconfigured")
+    status = await asyncio.to_thread(openrouter_key_status, policy_root=policy_root)
+    # Only the provider GET awaits; no durable writer survives cancellation.
+    return reserve(policy_root, generation, status)

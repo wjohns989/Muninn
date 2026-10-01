@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
+pytestmark = pytest.mark.usefixtures("fake_strict_remote_admission")
+
 from muninn.history import secure_analysis as analysis
 
 
@@ -111,7 +113,7 @@ async def test_local_route_uses_capability_and_unloads_model(monkeypatch, short)
         def raise_for_status(self):
             pass
 
-        def json(self):
+        def json(self, **kwargs):
             return {"message": {"content": json.dumps({
                 "summary": "SQLite remains the project cache.",
                 "decisions": ["Keep SQLite."], "open_items": [],
@@ -195,7 +197,7 @@ async def test_local_invalid_model_output_defers_without_remote_allowance(monkey
         def raise_for_status(self):
             pass
 
-        def json(self):
+        def json(self, **kwargs):
             return {"message": {"content": "not json"}}
 
     class Client:
@@ -241,7 +243,7 @@ async def test_local_invalid_model_output_uses_explicit_zdr_fallback(monkeypatch
         def raise_for_status(self):
             pass
 
-        def json(self):
+        def json(self, **kwargs):
             if not self.remote:
                 return {"message": {"content": "not json"}}
             return {"model": "test-zdr-model", "choices": [{"message": {"content": json.dumps({
@@ -312,7 +314,7 @@ async def test_invalid_authenticated_input_does_not_fall_through_to_remote(monke
                 def raise_for_status(self):
                     pass
 
-                def json(self):
+                def json(self, **kwargs):
                     return {"message": {"content": json.dumps(valid)}}
 
             return Response()
@@ -339,7 +341,7 @@ async def test_explicit_remote_route_requires_both_opt_ins_and_zdr(monkeypatch):
         def raise_for_status(self):
             pass
 
-        def json(self):
+        def json(self, **kwargs):
             return {"model": "test-zdr-model", "choices": [{"message": {"content": json.dumps({
                 "summary": "SQLite was selected for caching.",
                 "decisions": ["Keep SQLite."], "open_items": [],

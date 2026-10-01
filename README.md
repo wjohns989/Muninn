@@ -644,7 +644,7 @@ OpenRouter API keys have one provider-enforced reset period (daily or monthly).
 Muninn checks that finite key limit against the matching local admission
 threshold and checks provider-reported usage for the other period before each
 request. Application thresholds are **not hard spending caps**: an individual
-request or overlapping requests can cross one. Changing Muninn's local threshold
+request or other clients sharing the key can cross one. Changing Muninn's local threshold
 does not raise the API key's own limit. Do not treat provider-side limits as proof
 of zero overshoot: OpenRouter documents that already-dispatched requests can
 finish past a workspace budget. Its multiple-interval workspace budgets are an
@@ -656,6 +656,40 @@ fallback remains disabled until that separate accounting boundary is closed.
 The dashboard shows the provider-enforced key limit, reset period, remaining
 amount, and current route eligibility when remote use is enabled. This status
 requires the main local token and does not expose the API key or key label.
+
+Strict ZDR analysis additionally uses a private durable admission journal in
+the managed policy database. One unresolved request blocks all further strict
+paid admissions for that data directory, even across process restarts or UTC
+rollovers. Complete responses settle their reported `usage.cost`, rounded upward
+to micro-USD without first converting its JSON decimal to a binary float, before
+model output validation. The daily/monthly admission floor is the greater of
+reported key usage and this journal's settled cost, not their sum. Calls crossing
+a day/month boundary count conservatively in both periods. Proven-unsent calls
+release their admission; timeout, cancellation after POST, missing billing data
+or ambiguous dispatch markers remain blocking, never assumed free. Revocation
+stops new admissions but does not prevent settlement or proven-unsent cleanup.
+This is not a verified per-request upper cost reservation, does not cover legacy
+analysis/direct external clients, and does not activate paid capture fallback.
+Missing established accounting markers/tables fail closed rather than resetting
+spend. Preserve the complete `remote_policy` directory and a SQLite-consistent
+policy database backup, not a copied live database file or just its marker.
+
+The authenticated local `GET /history/secure/remote-policy/accounting` returns
+only cost floors and unresolved counts, without a key, transcript or admission
+identifier. For operator reconciliation, these local commands reveal only
+nonsecret accounting metadata:
+
+```powershell
+python -m muninn.history.remote_accounting status --root '<your-private-data-dir>'
+python -m muninn.history.remote_accounting reconcile --root '<your-private-data-dir>' --admission '<id-from-local-status>' --cost-usd '<verified-actual-cost>' --confirm-outcome-reviewed
+```
+
+Reconcile only after confirming that the call is no longer in flight and checking
+its actual charge (zero only when verified unbilled). Do not delete the journal,
+blindly retry the model or reconcile an active request to clear a warning. The
+confirmation changes the cost ledger only; it neither changes consent/budgets
+nor sends an inference request. OpenRouter describes `usage.cost` as the total
+account charge in its [usage-accounting documentation](https://openrouter.ai/docs/cookbook/administration/usage-accounting).
 
 Open the localhost dashboard's Encrypted History tab with the main local token
 to save or revoke ZDR fallback and adjust daily/monthly thresholds without

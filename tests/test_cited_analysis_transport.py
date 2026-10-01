@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("fake_strict_remote_admission")
+
 from muninn.history import secure_analysis as analysis
 from muninn.history.cited_analysis_source import CitedAnalysisSource
 from muninn.history.blind_index import SecureHistoryBlindIndex
@@ -23,7 +25,7 @@ def transport(monkeypatch, source, stage, *, local=True, output=None, digest_cha
     class Response:
         def raise_for_status(self):
             pass
-        def json(self):
+        def json(self, **kwargs):
             return {"message": {"content": content}, "model": "fixture-model",
                     "choices": [{"message": {"content": content}}]}
     class Client:

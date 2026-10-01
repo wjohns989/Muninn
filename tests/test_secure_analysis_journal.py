@@ -3,6 +3,8 @@ import threading
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("fake_strict_remote_admission")
+
 from muninn.history.capture_journal import CaptureJournal, SearchJobError
 from muninn.history.secure_archive import SecureHistoryArchive
 
