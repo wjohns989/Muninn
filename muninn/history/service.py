@@ -979,12 +979,32 @@ class HistoryService:
                                   and remote_policy.generation == job.remote_policy_generation)
                 remote_generation = remote_policy.generation
 
+            reuse_kwargs = {}
+            if job.lane == 1 and job.target["version"] > 0:
+                async def reuse_completed(model, digest, options, base):
+                    from muninn.history.secure_analysis import _weights_digest
+                    def identity_guard():
+                        return (not cancelled.is_set() and _weights_digest(base, model) == digest
+                                and not cancelled.is_set())
+                    in_flight = asyncio.create_task(asyncio.to_thread(
+                        journal.acknowledge_capture_reuse, job.job_id, job.lease_token,
+                        model=model, weights_digest=digest, request_options=options,
+                        identity_guard=identity_guard))
+                    try:
+                        return await asyncio.shield(in_flight)
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        await asyncio.gather(in_flight, return_exceptions=True)
+                        raise
+                reuse_kwargs["reuse_completed"] = reuse_completed
             outcome = await analyze_cited_window(
                 self, source, descriptor, allow_remote=remote_enabled, should_cancel=cancelled.is_set,
                 before_remote=before_remote, remote_not_sent=remote_not_sent,
-                expected_remote_generation=remote_generation,
+                expected_remote_generation=remote_generation, **reuse_kwargs,
             )
-            if outcome["status"] == "ok":
+            if outcome["status"] == "reused":
+                return True  # Already ACKed; retain original refs/citations.
+            elif outcome["status"] == "ok":
                 stage = outcome["extraction"]
                 if not await asyncio.to_thread(journal.stage_analysis, job.job_id, job.lease_token, stage):
                     return True

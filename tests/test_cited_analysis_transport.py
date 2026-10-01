@@ -78,6 +78,20 @@ async def test_changed_local_weights_cannot_acquire_false_identity(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_reuse_miss_rechecks_weights_before_any_model_post(tmp_path, monkeypatch):
+    journal, archive, job, stage, source = queued(tmp_path)
+    seen, window = transport(monkeypatch, source, stage, digest_changes=True)
+    observed = []
+    async def miss(model, digest, options, base):
+        observed.append((model, digest, options, base))
+        return False
+    with pytest.raises(RuntimeError, match="before inference"):
+        await analysis.analyze_cited_window(object(), source, stage["window"], reuse_completed=miss)
+    assert observed[0][2] == {"temperature": 0.1}
+    assert seen == [] and source.ledger.verify_all()["candidates"] == 0
+
+
+@pytest.mark.asyncio
 async def test_bad_citation_does_not_return_private_stage(tmp_path, monkeypatch):
     journal, archive, job, stage, source = queued(tmp_path)
     output = json.dumps({**stage["result"]["analysis"], "proposals": [{

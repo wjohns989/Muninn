@@ -12,6 +12,7 @@ import re
 import time
 
 from muninn.history.credential_crypto import VaultIntegrityError
+from muninn.history.capture_window_reuse import CaptureWindowReuseMixin
 
 _ACTIVE = "('pending','running','retry','publishing','publication_pending')"
 _TARGET_FIELDS = {"kind", "vault_id", "blob", "sha256", "version", "work_id",
@@ -21,7 +22,7 @@ _PLANNING_CODES = {"io", "cancelled", "unsupported_source", "source_integrity", 
 _PLANNING_BLOCKED = {"unsupported_source", "source_integrity", "preparation_error"}
 
 
-class CaptureWindowJobsMixin:
+class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
     def _init_capture_window_jobs(self, db):
         if not db.in_transaction:
             db.execute("BEGIN IMMEDIATE")
@@ -372,8 +373,13 @@ class CaptureWindowJobsMixin:
             counts = dict(db.execute("SELECT j.state,COUNT(*) FROM capture_enrichment_windows w "
                                      "JOIN history_analysis_jobs j ON w.job_id=j.job_id WHERE w.work_id=? GROUP BY j.state",
                                      (row["work_id"],)))
-            if sum(counts.values()) != state["next_ordinal"] or counts.get("succeeded", 0) != state["acknowledged"]:
+            if (sum(counts.values()) != state["next_ordinal"]
+                    or counts.get("succeeded", 0) + counts.get("reused", 0) != state["acknowledged"]):
                 raise VaultIntegrityError("Capture window coverage records are inconsistent")
+            for job in db.execute("SELECT j.* FROM capture_enrichment_windows w "
+                                  "JOIN history_analysis_jobs j ON w.job_id=j.job_id WHERE w.work_id=?",
+                                  (row["work_id"],)):
+                self._read_capture_reuse(job)
         outcome = ("no_context" if not state["count"] else "completed" if state["acknowledged"] == state["count"]
                    else "failed" if any(counts.get(k) for k in ("failed", "cancelled", "outcome_unknown"))
                    else "deferred" if counts.get("retry") else "processing")
@@ -409,6 +415,9 @@ class CaptureWindowJobsMixin:
                 if job["state"] == "succeeded":
                     if self._read_publication_receipt(job) is None:
                         raise VaultIntegrityError("Capture window completion lacks publication ACK")
+                    acknowledged += 1
+                reuse = self._read_capture_reuse(job)
+                if reuse is not None:
                     acknowledged += 1
             if acknowledged != state["acknowledged"]:
                 raise VaultIntegrityError("Capture window completion counter is invalid")

@@ -44,6 +44,7 @@ _ANALYSIS_RESULT_TTL = 86400.0
 _ANALYSIS_ACTIVE = {"pending", "running", "retry", "publishing", "publication_pending"}
 _ANALYSIS_STATES = _ANALYSIS_ACTIVE | {
     "succeeded",
+    "reused",
     "failed",
     "cancelled",
     "not_queued",
@@ -187,6 +188,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
             columns = {row[1] for row in db.execute("PRAGMA table_info(history_analysis_jobs)")}
             for column, definition in (("sealed_window", "BLOB"), ("sealed_extraction", "BLOB"),
                                        ("extraction_id", "TEXT"), ("sealed_receipt", "BLOB"),
+                                       ("sealed_reuse", "BLOB"),
                                        ("cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
                                        ("publication_started", "INTEGER NOT NULL DEFAULT 0"),
                                        ("lane", "INTEGER NOT NULL DEFAULT 0")):
@@ -448,6 +450,10 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                 self._read_analysis_window(row)
                 self._read_extraction(row)
                 self._read_publication_receipt(row)
+                # Mapped capture reuse was fully checked above. Cheap state
+                # validation also rejects stray reuse seals/search-lane reuse,
+                # without repeating every source/ledger proof a second time.
+                self._capture_reuse_state(row)
             return count
 
     def _search_key(self, job_id: str) -> bytes:
@@ -1139,6 +1145,10 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
         receipt = self._read_publication_receipt(row)
         if receipt is not None:
             response["memory_refs"] = list(receipt["refs"])
+        reuse = self._read_capture_reuse(row)
+        if reuse is not None:
+            response["memory_refs"] = list(reuse["refs"])
+            response["coverage_basis"] = "preserved_parent_analysis"
         return response
 
     def fail_search(self, job_id: str, lease_token: str, error_code: str = "unknown") -> bool:

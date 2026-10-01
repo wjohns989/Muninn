@@ -73,6 +73,10 @@ def main() -> int:
     env = os.environ.copy()
     env.pop("MUNINN_AUTH_TOKEN", None)
     env.pop("MUNINN_SERVER_URL", None)
+    if args.verify_installed_profiles:
+        # All verified profiles explicitly request core; reproduce their
+        # environment rather than probing the unconfigured CLI's default set.
+        env["MUNINN_MCP_TOOLSET"] = "core"
     started = time.monotonic()
     responses: queue.Queue[dict | None] = queue.Queue()
     proc = subprocess.Popen(

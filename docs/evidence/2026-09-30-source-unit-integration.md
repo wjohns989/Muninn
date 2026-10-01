@@ -730,3 +730,63 @@ The one derived screening record was written encrypted to the existing local
 archive. No original transcript, model setting, credential vault, service process
 or other application was changed. Durable parser restart/resume, growth-coverage
 reuse, automatic cadence, paid reservations and remaining UI work stay open.
+
+**Exact-candidate CI:** preparation/cache commit `1ed4279` passed all five checks.
+Full run `36830522432`, job `110265830334`: **2,583 passed / 13 skipped**, two
+warnings, 195.63 seconds. Imports, privacy, replay and benchmark dry run passed
+too. This evidence covers that pushed candidate, not the subsequent reuse slice.
+
+### 2026-10-01 direct-parent analysis reuse (source integration)
+
+Changed dependencies: local generation-contract identity, additive encrypted
+reuse receipts, capture coverage/status and the optional private worker callback.
+No capture timer, live journal migration, service reload or paid/model dispatch.
+
+Review identified omitted generation options in the earlier identity helper.
+Two new checks failed first. New local identities now include effective options;
+actual outcomes use the options from the body sent, not defaults reread afterward.
+Existing staged identities/receipts remain historical and are not rewritten;
+they do not acquire new reuse authority. Remote identities remain unchanged.
+Identity plus prior transport/publication checks: 64 passed in 32.83 seconds.
+
+Eleven reuse cases failed before the private admission method existed, then
+passed in 18.80 seconds. Reuse has a distinct terminal state and required AEAD
+receipt bound to its current immutable target/window and a direct original local
+parent extraction/ACK. Expected original ledger refs, including explicit empty
+extractions, authenticate before admission. Source ACK and reuse receipt commit
+together after lease/cancellation and exact original/current binding rechecks.
+Reuse publishes no new event or quote and retains original citations. Restore
+does not compare historical coverage against today's installed models/options.
+
+Expanded storage/queue/publication/identity/transport checks: 105 passed in
+78.49 seconds. Added final-weights-guard and worker-no-POST cases both failed
+before wiring. The callback receives the actually selected local model, freshly
+read digest, exact body options and validated loopback base. It runs only for
+capture jobs with a nonzero source version, rechecks weights outside the writer
+and returns `reused` before HTTP client construction. A miss retains normal
+inference admission and rechecks weights before POST. Search, remote and original
+version-zero paths do not use it. Combined affected suite: **108 passed in
+88.77 seconds**.
+
+Additional checks prove cancelled workers drain the blocked reuse writer before
+shutdown and changed weights after a reuse miss prevent any POST. Final affected
+reuse/transport checks: **45 passed in 50.58 seconds**. Independent actual-diff
+and final-results review was CLEAR for source integration/push, not activation.
+These are isolated encrypted-store plumbing tests, not synthetic responses
+presented as live local model quality or installed scheduler behavior.
+
+Direct-parent-only admission intentionally misses when the parent itself reused
+analysis. Multi-growth amortization remains open. Resource telemetry/GPU-busy
+rules still govern route admission; this slice does not bypass them to load a
+model. Automatic capture cadence, durable parser restart/resume, paid reservations,
+full backlog scaling, credential review and UI completion remain open goal work.
+
+Actual configured Codex stdio launch recheck: 20 core tools, three cited-memory
+tools present, a real saved provisional memory retrieved, zero model calls and
+no settings changed. Four saved client profiles matched the authenticated bridge.
+The generic profile smoke initially launched without their explicit `core`
+environment and listed the default 58-tool set; its verified-profile mode now
+reproduces that setting instead of implying the generic launch was a configured
+client test. The corrected live smoke reports 20 tools and successful context
+retrieval. Existing running clients may retain an earlier tool catalog until
+reconnection; these checks do not assert a client app was restarted.

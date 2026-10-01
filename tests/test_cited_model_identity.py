@@ -20,12 +20,21 @@ def identity(window, model="fixture-model", digest="a" * 64):
     return analysis._cited_model_identity(window, "ollama", model, digest)
 
 
-def test_current_identity_preserves_existing_staged_hash_contract(window):
+def test_current_local_identity_binds_effective_generation_contract(window):
     expected = hashlib.sha256(json.dumps({"version": analysis._CITED_VERSION,
         "schema": analysis._CITED_SCHEMA, "messages": analysis._cited_prompt(window),
-        "provider": "ollama", "model": "fixture-model", "weights_digest": "a" * 64},
+        "provider": "ollama", "model": "fixture-model", "weights_digest": "a" * 64,
+        "request_options": {"temperature": 0.1}},
         sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     assert identity(window) == expected
+
+
+def test_remote_identity_stays_unchanged_and_is_not_local_reuse_authority(window):
+    expected = hashlib.sha256(json.dumps({"version": analysis._CITED_VERSION,
+        "schema": analysis._CITED_SCHEMA, "messages": analysis._cited_prompt(window),
+        "provider": "openrouter", "model": "fixture-remote", "weights_digest": None},
+        sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    assert analysis._cited_model_identity(window, "openrouter", "fixture-remote") == expected
 
 
 @pytest.mark.parametrize("change", ["classifier", "schema", "prompt", "weights", "model",
@@ -70,3 +79,37 @@ def test_new_extraction_uses_the_same_recomputable_identity(window):
     outcome = analysis._cited_outcome(content, Source(), {"fixture": True},
                                       "ollama", "fixture-model", "a" * 64)
     assert outcome["extraction"]["model_identity"] == identity(window)
+
+
+def test_actual_generation_options_invalidate_prior_identity(window):
+    original = identity(window)
+    changed = analysis._cited_model_identity(window, "ollama", "fixture-model", "a" * 64,
+                                             request_options={"temperature": 0.9})
+    assert changed != original
+
+
+def test_changed_default_provider_options_invalidate_current_contract(window, monkeypatch):
+    original = identity(window)
+    request_body = analysis.Provider.request_body
+    def changed(provider, messages):
+        body = request_body(provider, messages)
+        body["options"] = {"temperature": 0.9}
+        return body
+    monkeypatch.setattr(analysis.Provider, "request_body", changed)
+    assert identity(window) != original
+
+
+def test_outcome_binds_sent_options_not_current_defaults(window):
+    class Source:
+        def reopen(self, descriptor):
+            return window
+        def validated_proposals(self, descriptor, proposals):
+            assert proposals == []
+    content = json.dumps({"summary": "Preserve citations.", "decisions": [], "open_items": [],
+                          "uncertainty": "No broader context.", "proposals": []})
+    sent = {"temperature": 0.9, "num_predict": 2048}
+    outcome = analysis._cited_outcome(content, Source(), {"fixture": True}, "ollama",
+        "fixture-model", "a" * 64, request_options=sent)
+    assert outcome["extraction"]["model_identity"] == analysis._cited_model_identity(
+        window, "ollama", "fixture-model", "a" * 64, request_options=sent)
+    assert outcome["extraction"]["model_identity"] != identity(window)

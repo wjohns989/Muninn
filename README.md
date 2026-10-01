@@ -810,6 +810,20 @@ stream instead of decrypting the original archive a third time. Publication
 still requires the complete pinned fragment sequence and matching coverage
 metadata. This inherits the original raw EOF proof, not a fresh raw-file check.
 
+The internal capture worker can acknowledge an unchanged window as `reused`
+instead of calling Ollama again. Admission requires the direct parent to have an
+original completed local analysis, an authenticated publication ACK and matching
+durable memory refs. Source occurrence, window partition, selected model weights,
+prompt/schema and actual generation options must match. The job keeps its current
+source target but exposes the original memory refs/citations, creates no duplicate
+ledger events and reports reuse separately from new inference. It rechecks model
+weights after source/ledger proof and commits its receipt/coverage together under
+the current lease. Interrupted, rewritten, changed-model, cloud or already-reused
+parents do not qualify. Portable verification revalidates the original evidence;
+later model settings do not invalidate historically admitted coverage. This
+default-off capture lane still needs cadence, multi-growth reuse and measured
+backlog scaling before automatic activation; these are not new live-model tests.
+
 Its first publication API verifies the whole event chain; large background
 batches need measured amortization before activation. It detects event corruption
 and deletion, but cannot detect substitution of a valid older whole database.

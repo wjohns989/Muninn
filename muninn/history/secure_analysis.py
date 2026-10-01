@@ -189,7 +189,7 @@ def _weights_digest(base, model):
     return digest
 
 
-def _cited_model_identity(window, provider, model, digest=None):
+def _cited_model_identity(window, provider, model, digest=None, *, request_options=None):
     """Recompute the staged interpretation contract without dispatching inference.
 
     Keep this identical for admission and new results. Classifier-semantic
@@ -197,12 +197,23 @@ def _cited_model_identity(window, provider, model, digest=None):
     immutable weights digest and separate same-occurrence/publication proof.
     This hash alone does not certify coverage or permit cloud-alias reuse.
     """
-    return hashlib.sha256(json.dumps({"version": _CITED_VERSION,
+    contract = {"version": _CITED_VERSION,
         "schema": _CITED_SCHEMA, "messages": _cited_prompt(window), "provider": provider,
-        "model": model, "weights_digest": digest}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        "model": model, "weights_digest": digest}
+    if provider == "ollama":
+        # Admission uses today's effective options; new outcomes bind the
+        # options actually sent, not defaults reread after asynchronous HTTP.
+        # Existing staged IDs remain historical; no legacy reuse is invented.
+        if request_options is None:
+            request_options = Provider("ollama", "http://127.0.0.1:11434/v1", [model]).request_body([]).get("options", {})
+        if not isinstance(request_options, dict):
+            raise ValueError("Invalid local generation contract")
+        contract["request_options"] = request_options
+    return hashlib.sha256(json.dumps(contract, sort_keys=True, ensure_ascii=False,
+                                     allow_nan=False).encode()).hexdigest()
 
 
-def _cited_outcome(content, source, descriptor, provider, model, digest=None):
+def _cited_outcome(content, source, descriptor, provider, model, digest=None, *, request_options=None):
     window = source.reopen(descriptor)
     code = "json"
     try:
@@ -233,7 +244,7 @@ def _cited_outcome(content, source, descriptor, provider, model, digest=None):
         raise ModelOutputInvalid("Model cited output is invalid", code=code) from exc
     result = {"status": "ok", "provider": provider, "model": model, "analysis": _clean_result(
         json.dumps({key: parsed[key] for key in _SCHEMA["required"]}), source_span=window["text"])}
-    identity = _cited_model_identity(window, provider, model, digest)
+    identity = _cited_model_identity(window, provider, model, digest, request_options=request_options)
     return {**result, "extraction": {"format": 1, "window": descriptor,
         "proposals": parsed["proposals"], "model_identity": identity, "result": result}}
 
@@ -326,7 +337,8 @@ async def analyze_cited_window(history, source, descriptor, **kwargs):
 
 async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=False,
                           should_cancel=None, before_remote=None, remote_not_sent=None,
-                          expected_remote_generation=None, source=None, descriptor=None, cited=False):
+                          expected_remote_generation=None, source=None, descriptor=None, cited=False,
+                          reuse_completed=None):
     if prefer_remote and not allow_remote:
         raise ValueError("A remote preference requires an explicit remote allowance")
     def ensure_active() -> None:
@@ -361,6 +373,15 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
                 # Strict on-demand analysis never keeps its model in VRAM, even if
                 # a different workload configured a nonzero global Ollama duration.
                 body["keep_alive"] = 0
+                if cited and reuse_completed is not None:
+                    ensure_active()
+                    if await reuse_completed(model, digest, body.get("options", {}), base):
+                        # The callback has already committed lease-fenced coverage;
+                        # it is not a new result and needs no model POST/publication.
+                        return {"status": "reused", "provider": "ollama", "model": model}
+                    ensure_active()
+                    if digest != await asyncio.to_thread(_weights_digest, base, model):
+                        raise RuntimeError("Local model identity changed before inference")
                 async with httpx.AsyncClient(timeout=_MODEL_TIMEOUT, trust_env=False) as client:
                     ensure_active()
                     response = await client.post(f"{base}/api/chat", json=body)
@@ -369,7 +390,8 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
                 if cited and digest != await asyncio.to_thread(_weights_digest, base, model):
                     raise RuntimeError("Local model identity changed during inference")
                 try:
-                    result = (_cited_outcome(content, source, descriptor, "ollama", model, digest)
+                    result = (_cited_outcome(content, source, descriptor, "ollama", model, digest,
+                                            request_options=body.get("options", {}))
                               if cited else _clean_result(content, source_span=span))
                 except ModelOutputInvalid as exc:
                     # Only a typed model-output failure may reach the separately
