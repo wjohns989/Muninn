@@ -278,6 +278,11 @@ remaining blockers before connecting model results to automatic filing:
    supplies no authenticated claim citation. Persist parser/schema/model
    identity and input digest; retry must reuse that window, not silently select
    a different excerpt. Cross-fragment coverage is separate resumable work.
+   **Component implemented:** `CitedAnalysisSource` produces/reopens a private
+   descriptor bound to snapshot, attempt, page coordinates, parser and canonical
+   input digest. Boundary hits retain authenticated adjacent-page context in a
+   bounded window; explicit single-page citation ranges reject cross-page
+   fabricated quotes. Queue binding and prompting remain to be connected.
 2. Add exact-quote proposals to the internal extraction contract. Check each
    against the persisted source window. Model-origin proposals stay explicitly
    provisional even when they echo a whole user message; quote equality is
@@ -299,6 +304,19 @@ remaining blockers before connecting model results to automatic filing:
    before marking extraction complete; recover ledger-commit/job-ack crashes
    by deterministic idempotency. Do not confuse a quota availability query
    with a spend reservation.
+   **Reviewed queue design:** short transactions bind the window, stage validated
+   encrypted extraction, and fence publication admission/acknowledgment.
+   Source authentication and ledger append run outside the journal writer lock,
+   so CPU capture and heartbeats are not blocked by a growing ledger scan.
+   A durable publication-only state replays the immutable stage without another
+   model call. Deterministic candidate refs recover a ledger-commit/job-ack crash.
+   Cancellation and publication admission are mutually exclusive; after
+   publication admission cancellation must report that it is too late, not
+   pretend already committed claims can be rolled back. Expired staged local
+   publication is retryable; possibly dispatched remote work with no durable
+   response remains outcome-unknown. Stage AAD binds job, target/window and
+   result identity. Prove cancel/admission races, stale-lease acknowledgment,
+   no duplicate inference after publication crash, and tampered stage rejection.
 5. The bounded `record_batch` component validates all citations before a single
    transaction and authenticates the prior ledger chain once for up to 64
    proposals. Single-record callers retain the same semantics. This amortizes

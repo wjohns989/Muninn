@@ -189,3 +189,32 @@ legacy/model portable-restore test (43 total intact cases). Reviewer examined
 the actual diff without provider, live vault or process access. Automatic source
 citation and complete remote-input screening remain unresolved integration
 dependencies; this change did not activate inference or restart Muninn.
+
+## Cited model-input component
+
+`CitedAnalysisSource` binds an authenticated immutable snapshot/version,
+source attempt/page, selected offsets/length, parser version and domain-separated
+canonical input digest. Preparation drains the complete source-page iterator;
+reopen rejects changed input, unavailable/unsealed pages and unsupported
+descriptors. Source location/native IDs are not included in model-facing data.
+Source role, event-time basis and opaque project evidence are retained.
+
+Independent review caught a split-query boundary bug. The fixed descriptor
+includes both authenticated adjacent pages from the same unit when necessary,
+within the 3,000-character total window. Explicit citation ranges retain the
+query hit and prohibit invented quotes spanning those ranges. A future model
+prompt must honor these ranges. All model proposals are validated before an
+atomic model-only ledger batch; late invalid quotes publish nothing. Whole-unit
+credential screening denies remote eligibility without altering authorized
+local input. This is an input component, not complete-request remote admission.
+
+Validation: 20 focused cited-input tests passed; combined cited-input, ledger
+and archive checks passed 76 tests. Actual-diff independent review was CLEAR
+after the boundary fix. A bounded real local archive preview reopened an
+89-character Claude Code window from a 13,210-byte source, with query retained,
+event time/project evidence present and remote eligibility true. It dispatched
+no model, added zero candidates and changed no historical source. No raw text,
+source path, IDs or credentials were printed. The preceding `85b96be` head had
+all five CI checks passing. Automatic worker/staged replay and complete remote
+request screening are subsequent integration dependencies, not verified by
+this preview.

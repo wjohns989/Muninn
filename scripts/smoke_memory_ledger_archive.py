@@ -13,11 +13,15 @@ from pathlib import Path
 from muninn.history.memory_ledger import MemoryLedger
 from muninn.history.secure_archive import SecureHistoryArchive
 from muninn.history.source_evidence import SourceEvidenceStore
+from muninn.history.blind_index import SecureHistoryBlindIndex, _terms
+from muninn.history.cited_analysis_source import CitedAnalysisSource
 
 
-def run(root: Path, *, apply=False, max_snapshots=8):
+def run(root: Path, *, apply=False, max_snapshots=8, cited_preview=False):
     if not 1 <= max_snapshots <= 8:
         raise ValueError("Invalid bounded source proof")
+    if cited_preview and apply:
+        raise ValueError("Cited input preview does not publish memories")
     archive = SecureHistoryArchive(root)
     units = SourceEvidenceStore(archive)
     manifest = archive._load_manifest()
@@ -52,6 +56,27 @@ def run(root: Path, *, apply=False, max_snapshots=8):
             if ledger.remote_input(entry, version, attempt, page) is None:
                 counts["screen_denied"] += 1
                 continue
+            if cited_preview:
+                terms = _terms(data["text"][:3000])
+                if not terms:
+                    continue
+                term = max(terms, key=len)
+                before = ledger.verify_all()
+                cited = CitedAnalysisSource(archive)
+                descriptor = cited.prepare(SecureHistoryBlindIndex(archive)._capability(entry, version, term))
+                if descriptor is None:
+                    continue
+                window = CitedAnalysisSource(archive).reopen(descriptor)
+                return {"state": "ok", "snapshots_examined": examined,
+                        "provider": entry["provider"], "source_bytes": entry["size"],
+                        "window_characters": len(window["text"]),
+                        "query_term_retained": term in window["text"].casefold(),
+                        "citation_ranges": len(window["citation_ranges"]),
+                        "event_time_present": window["event_at"] is not None,
+                        "project_reference_present": bool(window["project_ref"]),
+                        "remote_eligible": cited.remote_input(descriptor) is not None,
+                        "candidate_delta": ledger.verify_all()["candidates"] - before["candidates"],
+                        "model_dispatched": False, "applied": False}
             if not apply:
                 return {"state": "eligible_real_source", "snapshots_examined": examined,
                         "provider": entry["provider"], "source_bytes": entry["size"],
@@ -82,9 +107,12 @@ if __name__ == "__main__":
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--max-snapshots", type=int, default=8)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--cited-preview", action="store_true",
+                        help="Reopen one real cited model input; no inference or memory publication")
     args = parser.parse_args()
     try:
-        report = run(args.root, apply=args.apply, max_snapshots=args.max_snapshots)
+        report = run(args.root, apply=args.apply, max_snapshots=args.max_snapshots,
+                     cited_preview=args.cited_preview)
     except Exception as exc:
         report = {"state": "failed", "error_category": type(exc).__name__}
     print(json.dumps(report, sort_keys=True))
