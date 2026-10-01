@@ -581,6 +581,92 @@ async def test_async_periodic_ingestion_control_payloads():
         assert stopped["stopped"] is True
 
 
+def test_sync_export_handoff_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/handoff/export"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "HANDOFF_EXPORT_COMPLETED", "bundle": {}}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.export_handoff(project="my_project", limit=10)
+
+    assert result["event"] == "HANDOFF_EXPORT_COMPLETED"
+    payload = stub.calls[0]["json"]
+    assert payload["project"] == "my_project"
+    assert payload["limit"] == 10
+    assert payload["user_id"] == "global_user"
+    assert payload["namespace"] == "global"
+
+
+def test_sync_import_handoff_payload():
+    stub = _StubSession(
+        {
+            ("POST", "/handoff/import"): _requests_response(
+                200,
+                {"success": True, "data": {"event": "HANDOFF_IMPORT_COMPLETED"}},
+            )
+        }
+    )
+    client = MuninnClient(base_url="http://localhost:42069", session=stub)
+    result = client.import_handoff(bundle={"some": "data"}, project="my_project")
+
+    assert result["event"] == "HANDOFF_IMPORT_COMPLETED"
+    payload = stub.calls[0]["json"]
+    assert payload["bundle"] == {"some": "data"}
+    assert payload["project"] == "my_project"
+    assert payload["source"] == "handoff_import"
+    assert payload["user_id"] == "global_user"
+    assert payload["namespace"] == "global"
+
+
+@pytest.mark.asyncio
+async def test_async_export_handoff_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/handoff/export"
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["project"] == "my_project"
+        assert body["limit"] == 15
+        assert body["user_id"] == "global_user"
+        assert body["namespace"] == "global"
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"event": "HANDOFF_EXPORT_COMPLETED"}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.export_handoff(project="my_project", limit=15)
+        assert result["event"] == "HANDOFF_EXPORT_COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_async_import_handoff_payload():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/handoff/import"
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["bundle"] == {"key": "val"}
+        assert body["project"] == "my_project"
+        assert body["source"] == "handoff_import"
+        assert body["user_id"] == "global_user"
+        assert body["namespace"] == "global"
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"event": "HANDOFF_IMPORT_COMPLETED"}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = AsyncMuninnClient(base_url="http://localhost:42069", http_client=http_client)
+        result = await client.import_handoff(bundle={"key": "val"}, project="my_project")
+        assert result["event"] == "HANDOFF_IMPORT_COMPLETED"
+
+
 def test_mem0_style_alias_exports():
     assert issubclass(Memory, MuninnClient)
     assert issubclass(AsyncMemory, AsyncMuninnClient)
