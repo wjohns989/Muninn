@@ -145,6 +145,27 @@ def mode_matches(report, *, enable):
     return state.get("capture_enabled") is False
 
 
+def pre_reload_mode_matches(report, environment):
+    """Old servers lack the mode field; require owned process flags off.
+
+    Absence of an HTTP status field alone never authorizes a reload. The
+    environment is from the already verified owned process and stays private.
+    Post-reload mode verification still requires the modern effective report.
+    """
+    for name in CAPTURE_FLAGS:
+        value = environment.get(name)
+        try:
+            validate_flag_value(value)
+        except ValueError:
+            return False
+        if value is not None and value.strip().lower() not in {"0", "false", "no", "off"}:
+            return False
+    state = report.get("capture_enrichment")
+    if state is None:
+        return True
+    return mode_matches(report, enable=False)
+
+
 def queue_states(db):
     return {table: dict(db.execute(f"SELECT state,COUNT(*) FROM {table} GROUP BY state")) for table in TABLES}
 
@@ -245,7 +266,8 @@ def run(args):
         return
     require(os.name == "nt", "Owned forced reload is supported only on Windows")
     require(queues_idle(initial), "Durable queues are not idle")
-    require(mode_matches(before, enable=False), "This procedure requires capture automation off before reload")
+    require(pre_reload_mode_matches(before, environment),
+            "This procedure requires capture automation off before reload")
     verify_candidate(repo, args.expected_revision)
     launching = launch_environment(environment, enable_capture_auto=args.enable_capture_auto)
     user_before = None

@@ -114,6 +114,24 @@ def test_idle_queue_rejects_active_or_claimable_jobs():
     assert not reload.queues_idle({**idle, "jobs": {"retry": 1}})
 
 
+@pytest.mark.parametrize("report", [{}, {"capture_enrichment": None}])
+def test_legacy_status_requires_owned_process_flags_off(report):
+    assert not reload.mode_matches(report, enable=False)
+    assert reload.pre_reload_mode_matches(report, {})
+    assert reload.pre_reload_mode_matches(report, {name: "false" for name in reload.CAPTURE_FLAGS})
+    for name in reload.CAPTURE_FLAGS:
+        for value in ("1", "true", "banana", "private-nonboolean", 0):
+            assert not reload.pre_reload_mode_matches(report, {name: value})
+
+
+def test_legacy_mode_does_not_relax_post_reload_verification():
+    assert not reload.mode_matches({"capture_enrichment": None}, enable=True)
+    assert not reload.pre_reload_mode_matches({"capture_enrichment": []}, {})
+    assert not reload.pre_reload_mode_matches({"capture_enrichment": {"capture_enabled": True}}, {})
+    assert not reload.pre_reload_mode_matches({"capture_enrichment": {"capture_enabled": False}},
+                                            {reload.CAPTURE_FLAGS[0]: "1"})
+
+
 def isolated_installation(tmp_path, monkeypatch):
     archive = tmp_path / "history_secure_archive"
     archive.mkdir()
