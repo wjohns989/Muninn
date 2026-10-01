@@ -518,6 +518,7 @@ class SecureHistoryArchive:
             copy_sealed(journal, destination / journal.name)
         for evidence_name, db_name in (("source-evidence", "projections.sqlite3"),
                                       ("credential-context", "projections.sqlite3"),
+                                      ("cited-windows", "projections.sqlite3"),
                                       ("memory-ledger", "ledger.sqlite3")):
             evidence = source_root / evidence_name
             if not (evidence.exists() or _is_link(evidence)):
@@ -563,6 +564,10 @@ class SecureHistoryArchive:
             from muninn.history.memory_ledger import MemoryLedger
 
             MemoryLedger(restored).verify_all()
+        if (destination / "cited-windows").exists():
+            from muninn.history.cited_windows import CitedWindowPlanStore
+
+            CitedWindowPlanStore(restored).verify_all()
         return restored
 
     def backup_to(self, destination: Path) -> dict[str, int]:
@@ -592,6 +597,10 @@ class SecureHistoryArchive:
                 from muninn.history.memory_ledger import MemoryLedger
 
                 report["memory_candidates_verified"] = MemoryLedger(backup).verify_all()["candidates"]
+            if (destination / "cited-windows").exists():
+                from muninn.history.cited_windows import CitedWindowPlanStore
+
+                report["cited_windows_verified"] = CitedWindowPlanStore(backup).verify_all()["windows"]
             return report
 
     def metadata_catalog(self, *, provider: str | None = None, offset: int = 0,

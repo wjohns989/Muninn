@@ -52,6 +52,18 @@ requires its own scoped authority and idle-queue/recovery checks.
 
 ### Next bounded automatic-coverage slice
 
+**Query-independent plan component implemented:** `CitedWindowPlanStore` seals
+descriptor-only encrypted pages after archive and source-evidence EOF. It
+partitions supported user/assistant body fragments into bounded windows without
+search terms or a total-message cutoff; generated role labels are not model
+work. Cached lookup/seals bind the exact evidence attempt, parser/plan algorithm
+and window width. Supported old geometry can still be verified; an unknown
+future algorithm fails closed pending explicit migration. Cancellation/late
+integrity failure cannot expose a partial plan, including after staging commits.
+Portable archive copy/backup/restore now includes this derived store. A sealed
+plan proves selected source-window coverage, not that inference/classification
+has run. Capture-triggered queuing and processing coverage are still next.
+
 Read-only independent examination confirmed that search targeting cannot serve
 as automatic capture coverage: its target requires query terms and selects a
 matching window. Do not fabricate a search query or count one such hit as a

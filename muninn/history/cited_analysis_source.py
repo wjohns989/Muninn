@@ -127,8 +127,6 @@ class CitedAnalysisSource:
             offset, length = descriptor["offset"], descriptor["length"]
             if offset + length > len(page["text"]):
                 raise CitedSourceError("Cited source window is unavailable")
-            project = (hmac.new(self.ledger._key, b"project\0" + unit.cwd.encode("utf-8"),
-                                hashlib.sha256).hexdigest() if unit.cwd else None)
             text, ranges = page["text"][offset:offset + length], [{"start": 0, "length": length}]
             prefix = descriptor["prefix"]
             if prefix is not None:
@@ -139,14 +137,23 @@ class CitedAnalysisSource:
                 text = earlier_page["text"][prefix["offset"]:] + text
                 ranges = [{"start": 0, "length": prefix["length"]},
                           {"start": prefix["length"], "length": length}]
-            window = {"text": text, "provider": unit.provider,
-                      "role": unit.role.casefold() if unit.role else None,
-                      "event_at": unit.event_at, "time_basis": unit.time_basis,
-                      "project_ref": project, "project_basis": unit.project_basis,
-                      "boundary_hit": descriptor["boundary_hit"], "citation_ranges": ranges}
+            window = self.content_window(unit, text, boundary_hit=descriptor["boundary_hit"],
+                                         citation_ranges=ranges)
             return entry, page, window
         except (KeyError, TypeError, MemoryLedgerIntegrityError, ProjectionIntegrityError) as exc:
             raise CitedSourceError("Cited source authentication failed") from exc
+
+    def content_window(self, unit, text, *, boundary_hit=False, citation_ranges=None):
+        """Canonical private window encoding, shared by search and coverage plans."""
+        project = (hmac.new(self.ledger._key, b"project\0" + unit.cwd.encode("utf-8"),
+                            hashlib.sha256).hexdigest() if unit.cwd else None)
+        return {"text": text, "provider": unit.provider,
+                "role": unit.role.casefold() if unit.role else None,
+                "event_at": unit.event_at, "time_basis": unit.time_basis,
+                "project_ref": project, "project_basis": unit.project_basis,
+                "boundary_hit": boundary_hit,
+                "citation_ranges": citation_ranges if citation_ranges is not None
+                                   else [{"start": 0, "length": len(text)}]}
 
     def reopen(self, descriptor):
         self.validate_descriptor(descriptor)
