@@ -267,27 +267,31 @@ class MemoryLedger:
                         and self._screen(body)) else None
 
     def record(self, entry, version, attempt, page, proposal, *, model_identity):
+        """Trusted direct-source rule API; model jobs must use record_batch."""
         ident, payload = self._prepare_record(entry, version, attempt, page, proposal,
-                                             model_identity=model_identity)
+                                             model_identity=model_identity, proposal_origin="source_rule")
         self._append(ident, payload, idempotent=True)
         return ident
 
     def record_batch(self, entry, version, attempt, items, *, model_identity):
-        """Authenticate all proposals before one bounded, all-or-none commit.
+        """Authenticate MODEL proposals before one bounded, all-or-none commit.
 
         This API does not dispatch inference or activate automatic backfill.
         No source-read transaction survives into the ledger write transaction.
+        Callers cannot opt into source-rule filing authority through this API.
         """
         if (not isinstance(items, list) or not 1 <= len(items) <= 64
                 or any(not isinstance(item, dict) or set(item) != {"page", "proposal"}
                        or type(item["page"]) is not int or item["page"] < 0 for item in items)):
             raise ValueError("Invalid bounded memory batch")
         events = [self._prepare_record(entry, version, attempt, item["page"], item["proposal"],
-                                      model_identity=model_identity) for item in items]
+                                      model_identity=model_identity, proposal_origin="model") for item in items]
         self._append_batch(events, idempotent=True)
         return [ref for ref, _payload in events]
 
-    def _prepare_record(self, entry, version, attempt, page, proposal, *, model_identity):
+    def _prepare_record(self, entry, version, attempt, page, proposal, *, model_identity, proposal_origin):
+        if proposal_origin not in ("source_rule", "model"):
+            raise ValueError("Invalid memory proposal origin")
         if (not isinstance(proposal, dict) or set(proposal) != {"type", "text", "quote", "start"}
                 or proposal["type"] not in TYPES or not self._hex(model_identity)
                 or any(not isinstance(proposal[k], str) or not 1 <= len(proposal[k]) <= 2048
@@ -308,14 +312,21 @@ class MemoryLedger:
                            and body_digest == hashlib.sha256(quote.encode("utf-8")).digest())
         excerpt = bool(not observation and unit.role and unit.role.casefold() == "user"
                        and proposal["text"] == quote)
-        filed = (observation and proposal["type"] == "observation" and not credential_risk
+        filed = (proposal_origin == "source_rule" and observation
+                 and proposal["type"] == "observation" and not credential_risk
                  and project_ref is not None and unit.project_basis != "unknown"
                  and unit.event_at is not None and unit.time_basis == "provider_record")
-        ident = hmac.new(self._key, b"candidate\0" + _json({
+        identity = {
             "blob": entry["blob"], "sha": entry["sha256"], "version": version,
             "unit": unit.ordinal, "fragment": data["fragment"], "proposal": proposal,
-            "policy": POLICY, "model": model_identity}), hashlib.sha256).hexdigest()
+            "policy": POLICY, "model": model_identity}
+        # Preserve existing trusted source-rule IDs. Model candidates use a
+        # separate domain so they cannot alias a prior filed observation.
+        if proposal_origin == "model":
+            identity["proposal_origin"] = proposal_origin
+        ident = hmac.new(self._key, b"candidate\0" + _json(identity), hashlib.sha256).hexdigest()
         payload = {"event": "candidate", "policy": POLICY, "model_identity": model_identity,
+                   "proposal_origin": proposal_origin,
                    "type": "possible_credential" if credential_risk else proposal["type"],
                    "state": "pending" if credential_risk else "filed" if filed else "provisional",
                    "epistemic_kind": "source_observation" if observation else "source_excerpt" if excerpt else "model_interpretation",
@@ -370,6 +381,7 @@ class MemoryLedger:
                   "event_at", "time_basis", "project_ref", "project_basis")}
         public.update(id=ident, state=state, source_ref=hmac.new(
             self._key, b"citation\0" + _json(candidate["citation"]), hashlib.sha256).hexdigest())
+        public["proposal_origin"] = candidate.get("proposal_origin", "legacy_unrecorded")
         if not candidate["credential_risk"] and candidate["screening"] == "complete_unit":
             public.update(text=sanitize_agent_span(candidate["text"], max_chars=2048),
                           quote=sanitize_agent_span(candidate["quote"], max_chars=2048))

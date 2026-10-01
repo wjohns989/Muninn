@@ -283,6 +283,13 @@ remaining blockers before connecting model results to automatic filing:
    provisional even when they echo a whole user message; quote equality is
    source support, not approval of the proposed type, scope or truth. Preserve
    the public four-field analysis response until agent contracts are updated.
+   **Component implemented:** the model-only batch API fixes proposal origin
+   to `model` and cannot accept a caller's source-rule override. Those candidates
+   remain provisional even for whole-message exact echoes. Trusted direct-source
+   rule callers retain the single-record API and historical ref derivation.
+   Model refs bind their origin separately; older records report
+   `legacy_unrecorded`, not an invented origin. Portable recovery retains this
+   distinction. The automatic worker has not yet been connected to the API.
 3. Screen the complete actual serialized remote request, not merely the claim
    or response. Credential-bearing or unknown inputs stay in the local lane;
    consent, budget, lease and ZDR settings do not override that boundary.

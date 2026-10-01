@@ -313,3 +313,76 @@ def test_batch_enforces_bounded_explicit_shape_without_publication(tmp_path, ite
     with pytest.raises(ValueError):
         ledger.record_batch(entry, 0, attempt, items, model_identity=MODEL)
     assert ledger.verify_all() == {"events": 0, "candidates": 0, "decisions": 0}
+
+
+def test_model_origin_cannot_alias_or_promote_a_direct_source_observation(tmp_path):
+    text = "I want source citations kept."
+    archive, entry, attempt, page = fixture(tmp_path, text=text)
+    ledger = MemoryLedger(archive)
+    direct = record(ledger, entry, attempt, page)
+    proposal = {"type": "observation", "text": text, "quote": text, "start": 0}
+    refs = ledger.record_batch(entry, 0, attempt, [{"page": page, "proposal": proposal}],
+                               model_identity=MODEL)
+    assert refs[0] != direct
+    model = MemoryLedger(archive).get(refs[0])
+    assert model["state"] == "provisional" and model["proposal_origin"] == "model"
+    assert model["epistemic_kind"] == "source_observation"
+    assert model["truth_status"] == "unverified_assertion"
+    assert ledger.get(direct)["state"] == "filed"
+    assert ledger.get(direct)["proposal_origin"] == "source_rule"
+    with pytest.raises(TypeError):
+        ledger.record_batch(entry, 0, attempt, [{"page": page, "proposal": proposal}],
+                            model_identity=MODEL, proposal_origin="source_rule")
+    assert ledger.verify_all()["candidates"] == 2
+
+
+def test_source_rule_identity_stays_compatible_with_existing_ledger(tmp_path):
+    import hashlib
+    import hmac
+    from muninn.history.memory_ledger import POLICY, _json
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    unit, data = ledger._source(entry, 0, attempt, page)
+    proposal = {"type": "observation", "text": "I want source citations kept.",
+                "quote": "I want source citations kept.", "start": 0}
+    old_ref = hmac.new(ledger._key, b"candidate\0" + _json({
+        "blob": entry["blob"], "sha": entry["sha256"], "version": 0,
+        "unit": unit.ordinal, "fragment": data["fragment"], "proposal": proposal,
+        "policy": POLICY, "model": MODEL}), hashlib.sha256).hexdigest()
+    assert record(ledger, entry, attempt, page) == old_ref
+
+
+def test_legacy_origin_is_unknown_and_model_origin_survives_portable_restore(tmp_path):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    proposal = {"type": "observation", "text": "I want source citations kept.",
+                "quote": "I want source citations kept.", "start": 0}
+    old_ref, old_payload = ledger._prepare_record(entry, 0, attempt, page, proposal,
+                                                  model_identity=MODEL, proposal_origin="source_rule")
+    old_payload.pop("proposal_origin")
+    ledger._append(old_ref, old_payload, idempotent=True)
+    assert ledger.get(old_ref)["proposal_origin"] == "legacy_unrecorded"
+    assert record(ledger, entry, attempt, page) == old_ref
+    assert ledger.get(old_ref)["proposal_origin"] == "legacy_unrecorded"
+    refs = ledger.record_batch(entry, 0, attempt, [{"page": page, "proposal": proposal}],
+                               model_identity=MODEL)
+    restored = SecureHistoryArchive.restore_from_backup(archive.root, tmp_path / "restored", PHRASE)
+    reopened = MemoryLedger(restored)
+    assert reopened.get(old_ref)["proposal_origin"] == "legacy_unrecorded"
+    assert reopened.get(refs[0])["proposal_origin"] == "model"
+    assert reopened.get(refs[0])["state"] == "provisional"
+    assert reopened.verify_all()["candidates"] == 2
+
+
+@pytest.mark.parametrize("origin", [None, "source_rule", "agent_approved", "user", 1])
+def test_callers_cannot_override_proposal_origin(tmp_path, origin):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    proposal = {"type": "observation", "text": "I want source citations kept.",
+                "quote": "I want source citations kept.", "start": 0}
+    with pytest.raises(TypeError):
+        ledger.record(entry, 0, attempt, page, proposal, model_identity=MODEL, proposal_origin=origin)
+    with pytest.raises(TypeError):
+        ledger.record_batch(entry, 0, attempt, [{"page": page, "proposal": proposal}],
+                            model_identity=MODEL, proposal_origin=origin)
+    assert ledger.verify_all()["events"] == 0

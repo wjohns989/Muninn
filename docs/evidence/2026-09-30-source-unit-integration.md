@@ -173,3 +173,19 @@ model-job integration remained FLAG for missing source citations, whole-input
 remote credential screening, explicit model-proposal provisional status and
 unreserved spend admission. These are recorded in the routing plan, not
 treated as resolved by batch tests. No live activation or restart occurred.
+
+## Model proposal origin boundary
+
+A red-first whole-user-message test demonstrated that the original batch API
+could alias an already-filed direct source observation. Batch proposals now
+have fixed model origin, remain provisional, and use distinct HMAC refs. The
+trusted single-source rule API retains its existing identity derivation. Neither
+public component API accepts a caller-supplied origin label; independent review
+FLAGged that proposed override and was CLEAR after its removal. Old encrypted
+records without an origin remain explicitly `legacy_unrecorded`; retries do not
+retroactively invent one. Portable restore retains both old and model-origin
+labels and states. Validation: 42 ledger tests passed, followed by the one new
+legacy/model portable-restore test (43 total intact cases). Reviewer examined
+the actual diff without provider, live vault or process access. Automatic source
+citation and complete remote-input screening remain unresolved integration
+dependencies; this change did not activate inference or restart Muninn.
