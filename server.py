@@ -1825,7 +1825,14 @@ async def secure_history_search_job_endpoint(job_id: str):
     _check_search_job_poll(job_id)
     try:
         status = _require_history().secure_search_job_status(job_id)
-    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+    except sqlite3.OperationalError as exc:
+        code = getattr(exc, "sqlite_errorcode", None)
+        if code is not None and code & 0xff == sqlite3.SQLITE_BUSY:
+            raise HTTPException(status_code=503, detail="Encrypted history search busy; retry polling",
+                                headers={**NO_STORE, "Retry-After": "1"}) from None
+        raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
+                            headers=NO_STORE) from None
+    except (VaultIntegrityError, RuntimeError, OSError):
         raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
                             headers=NO_STORE) from None
     if status is None:
@@ -1852,7 +1859,14 @@ async def secure_history_analysis_job_endpoint(job_id: str):
     _check_search_job_poll(job_id)
     try:
         status = _require_history().secure_analysis_job_status(job_id)
-    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+    except sqlite3.OperationalError as exc:
+        code = getattr(exc, "sqlite_errorcode", None)
+        if code is not None and code & 0xff == sqlite3.SQLITE_BUSY:
+            raise HTTPException(status_code=503, detail="Encrypted history analysis busy; retry polling",
+                                headers={**NO_STORE, "Retry-After": "1"}) from None
+        raise HTTPException(status_code=503, detail="Encrypted history analysis unavailable",
+                            headers=NO_STORE) from None
+    except (VaultIntegrityError, RuntimeError, OSError):
         raise HTTPException(status_code=503, detail="Encrypted history analysis unavailable",
                             headers=NO_STORE) from None
     if status is None:

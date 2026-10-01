@@ -1,5 +1,24 @@
 # Source-unit integration: bounded evidence, not goal completion
 
+### 2026-10-01 CI contention counterexample
+
+The full locked-dependency run for `01d6f1d` passed 2,604 tests but failed the
+direct-service search polling test: a concurrent SQLite writer exceeded the
+existing 100 ms read wait. The HTTP boundary already returned sanitized no-store
+503; the direct test bypassed that boundary and treated transient SQLITE_BUSY
+as fatal. No model failure or lost data was demonstrated.
+
+The correction retries only primary SQLITE_BUSY in that direct test under the
+unchanged five-second deadline. Both authenticated poll endpoints now advertise
+`Retry-After: 1` only for SQLITE_BUSY, preserving all other errors and durable
+states. Real isolated SQLite EXCLUSIVE-lock checks prove busy 503, authentication,
+no-store and nonsecret output, followed by the same pending job after release;
+nonbusy SQL errors do not advertise retry. Four affected suites passed 18 tests
+in 12.38 seconds (including a temporary, subsequently removed within-budget
+probe that also passed the preimage). The prior failing full CI run is retained
+as the original counterexample, not relabeled green. Replacement full CI and
+live activation remain separate checks.
+
 ## Verified locally on 2026-09-30
 
 - User-approved existing service start: one expected Miniconda process and

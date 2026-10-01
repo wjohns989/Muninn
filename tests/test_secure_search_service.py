@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 
 import pytest
@@ -36,7 +37,17 @@ async def test_secure_search_job_reaches_result_and_preserves_capability(
         assert isinstance(job_id, str) and len(job_id) >= 32
         async def completed():
             while True:
-                state = service.secure_search_job_status(job_id)
+                try:
+                    state = service.secure_search_job_status(job_id)
+                except sqlite3.OperationalError as exc:
+                    # The HTTP poll boundary exposes SQLITE_BUSY as retryable
+                    # 503. This direct service test follows the same contract,
+                    # within the original five-second completion deadline.
+                    code = getattr(exc, "sqlite_errorcode", None)
+                    if code is None or code & 0xff != sqlite3.SQLITE_BUSY:
+                        raise
+                    await asyncio.sleep(0.02)
+                    continue
                 if state["state"] == "succeeded":
                     return state
                 await asyncio.sleep(0.02)

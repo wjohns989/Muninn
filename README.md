@@ -146,6 +146,9 @@ environment), reports enqueue/search timing and safe match counts, and verifies
 one redacted fetch when a match exists. It never prints the query, capability,
 or fetched span. Search jobs are available through
 `POST /history/secure/search/jobs` and authenticated poll/cancel endpoints.
+Polls that encounter a transient SQLite writer return no-store HTTP 503 with
+`Retry-After: 1`; retry polling within your existing deadline. This is not a
+new durable job state, a lost result, or permission to replay a model request.
 For more context, `start_secure_history_transcript` queues a CPU-only encrypted
 projection of the selected snapshot. Repeat that call while pending (or use
 `poll_secure_history_transcript` in the full tool profile),
