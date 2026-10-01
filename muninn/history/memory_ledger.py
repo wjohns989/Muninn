@@ -355,7 +355,7 @@ class MemoryLedger:
         except (KeyError, ValueError, TypeError) as exc:
             raise MemoryLedgerIntegrityError("Ledger citation is not authenticated") from exc
 
-    def get(self, ident):
+    def _read_candidate(self, ident):
         if not self._hex(ident):
             raise ValueError("Invalid memory reference")
         candidate, state = None, None
@@ -375,17 +375,107 @@ class MemoryLedger:
                     state = payload["state"]
                 else:
                     raise MemoryLedgerIntegrityError("Memory review has no candidate")
-        if candidate is None:
-            return None
+        return candidate, state
+
+    def _public_candidate(self, ident, candidate, state):
+        if candidate is None: return None
         public = {k: candidate[k] for k in ("type", "epistemic_kind", "truth_status",
                   "event_at", "time_basis", "project_ref", "project_basis")}
         public.update(id=ident, state=state, source_ref=hmac.new(
             self._key, b"citation\0" + _json(candidate["citation"]), hashlib.sha256).hexdigest())
         public["proposal_origin"] = candidate.get("proposal_origin", "legacy_unrecorded")
-        if not candidate["credential_risk"] and candidate["screening"] == "complete_unit":
+        if self._public_text_safe(candidate):
             public.update(text=sanitize_agent_span(candidate["text"], max_chars=2048),
                           quote=sanitize_agent_span(candidate["quote"], max_chars=2048))
         return public
+
+    def _public_text_safe(self, candidate):
+        if candidate["credential_risk"] or candidate["screening"] != "complete_unit":
+            return False
+        cite = candidate["citation"]
+        entry = self._entries[(cite["blob"], cite["version"])]
+        unit, data = self._source(entry, cite["version"], cite["attempt"], cite["page"])
+        return (self._unit_info(entry, cite["version"], cite["attempt"], unit)[0]
+                and self._screen({"window": data["text"], "claim": candidate["text"],
+                                  "quote": candidate["quote"]}))
+
+    def get(self, ident):
+        self._screen_cache.clear()  # no stale source-safety proof across public reads
+        candidate, state = self._read_candidate(ident)
+        return self._public_candidate(ident, candidate, state)
+
+    def search(self, query, *, limit=10):
+        """One authenticated chain scan; no plaintext index or inference."""
+        from muninn.history.blind_index import _terms
+        self._screen_cache.clear()
+        if (not isinstance(query, str) or not 1 <= len(query.encode('utf-8')) <= 512
+                or type(limit) is not int or not 1 <= limit <= 20
+                or not self._screen({"query": query})):
+            raise ValueError("Invalid cited memory query")
+        terms = list(dict.fromkeys(_terms(query)))
+        if not 1 <= len(terms) <= 8:
+            raise ValueError("Invalid cited memory query")
+        selected, total = OrderedDict(), 0
+        with self._connect() as db:
+            db.execute("BEGIN")
+            for ref, payload in self._walk(db):
+                if payload.get("event") == "candidate":
+                    # Never match private credential text, even if the caller
+                    # happens to know it. Exact refs use metadata-only get.
+                    if payload["credential_risk"] or payload["screening"] != "complete_unit":
+                        continue
+                    safe_text = sanitize_agent_span(payload["text"], max_chars=2048)
+                    searchable = (safe_text + ' ' + payload["type"]).casefold()
+                    if not all(term in searchable for term in terms): continue
+                    self._check_candidate(payload)
+                    public = self._public_candidate(ref, payload, payload["state"])
+                    if "text" not in public: continue
+                    if ref in selected:
+                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
+                    total += 1
+                    selected[ref] = public
+                    if len(selected) > limit: selected.popitem(last=False)
+                elif payload.get("event") == "decision":
+                    if payload.get("state") != "needs_user":
+                        raise MemoryLedgerIntegrityError("Invalid memory review decision")
+                    if ref in selected: selected[ref]["state"] = "needs_user"
+                else:
+                    raise MemoryLedgerIntegrityError("Invalid memory event sequence")
+        return {"matches": list(reversed(selected.values())), "total_matches": total,
+                "truncated": total > limit, "ordering": "newest_publication_first"}
+
+    def source(self, ident, *, max_chars=3000):
+        """Follow an exact citation; unsafe units have metadata, not raw context.
+
+        The returned expiring bearer only grants the existing redacted transcript
+        projection, never a raw original or credential reveal. Its readable
+        payload contains a fixed public term rather than any source quote.
+        """
+        from muninn.history.blind_index import SecureHistoryBlindIndex
+        self._screen_cache.clear()
+        if type(max_chars) is not int or not 1 <= max_chars <= 4000:
+            raise ValueError("Invalid cited source context bound")
+        candidate, state = self._read_candidate(ident)
+        if candidate is None: return None
+        cite = candidate["citation"]
+        entry = self._entries[(cite["blob"], cite["version"])]
+        unit, data = self._source(entry, cite["version"], cite["attempt"], cite["page"])
+        public = self._public_candidate(ident, candidate, state)
+        result = {"memory": public, "provider": unit.provider,
+                  "context_state": "withheld", "redaction": "strict-best-effort",
+                  "citation": {"version": cite["version"], "unit": cite["unit"],
+                      "fragment": cite["fragment"], "quote_start": cite["start"],
+                      "quote_length": cite["length"], "parser_version": cite["parser_version"]},
+                  "transcript_capability": SecureHistoryBlindIndex(self.archive)._capability(
+                      entry, cite["version"], "transcript"),
+                  "transcript_tool": "start_secure_history_transcript"}
+        if "text" in public:
+            start = max(0, cite["start"] - min(500, max_chars // 4))
+            result.update(context=sanitize_agent_span(data["text"][start:start+max_chars],
+                                                     max_chars=max_chars),
+                          context_state="available", context_fragment_start=start,
+                          context_truncated=start > 0 or start+max_chars < len(data["text"]))
+        return result
 
     def mark_needs_user(self, ident, *, reason):
         if reason not in {"possible_contradiction", "ambiguous_scope", "missing_evidence"}:

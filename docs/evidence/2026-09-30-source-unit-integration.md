@@ -333,3 +333,36 @@ full locked suite (2m53s). This closes the bounded live local publication gate,
 not historical classification accuracy, agent lookup of new ledger refs, paid
 backfill budget reservation, or UI completion. Those remain explicit acceptance
 gaps rather than grounds for widening this activation test.
+
+### Cited-memory agent reads and source follow-up
+
+Added dedicated authenticated, loopback-only API/MCP operations for safe lexical
+candidate search, exact ref lookup, and source follow-up. They do not infer,
+publish, promote provisional claims, reveal credentials, or build plaintext
+indexes. Search authenticates the chain once and keeps at most 20 results.
+Private queries are rejected without echoing input. Reads freshly screen the
+complete cited unit; a stale screen from a prior read cannot hide later fragment
+tampering. Unsafe units have metadata and access to the existing redacted
+projection, not raw context. Source grants carry a fixed public term, never a
+quote or path, and expire under the existing capability policy.
+
+The shared single CPU-reader slot survives client cancellation until the actual
+thread finishes. The 60/minute admission check runs again after slot acquisition
+to avoid concurrent last-allowance overshoot. Invalid request fields, private
+MCP failures, and task failures do not echo private values or exception traces.
+
+Evidence: the initial three regression cases failed for missing search/source
+operations and stale public screening. The affected ledger/API suite passed
+95 cases in 40.48 seconds. Five subsequent validation/error cases passed in
+6.19 seconds, and the concurrent last-allowance case passed separately. These
+focused results overlap and are not summed as distinct tests. An initial test
+collection import error was corrected before any tests ran.
+
+Actual-data read proof reopened all five candidates from the preceding live
+model job, preserving model-origin/provisional labels. The new local search
+found a published candidate and returned 1,362 characters of safe source context.
+Its grant followed the source through the existing live authenticated transcript
+API: one redacted page, 1,443 characters, with no ledger change or model call.
+This read proof took 1.58 seconds. New API/MCP definitions have not yet been
+loaded by the running service; activation and a live MCP round trip remain a
+separate gate. No PID, query, source text, grant, ref, or credential is saved here.

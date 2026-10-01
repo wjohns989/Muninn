@@ -560,6 +560,24 @@ class HistoryService:
         archive = self._require_secure_archive()
         return SecureHistoryBlindIndex(archive).fetch_span(capability, max_chars=max_chars)
 
+    def search_cited_memories(self, query: str, *, limit: int = 10) -> Dict[str, Any]:
+        if not strict_history_mode():
+            raise RuntimeError("Cited memory access requires strict history mode")
+        from muninn.history.memory_ledger import MemoryLedger
+        return MemoryLedger(self._require_secure_archive()).search(query, limit=limit)
+
+    def get_cited_memory(self, memory_ref: str) -> Dict[str, Any] | None:
+        if not strict_history_mode():
+            raise RuntimeError("Cited memory access requires strict history mode")
+        from muninn.history.memory_ledger import MemoryLedger
+        return MemoryLedger(self._require_secure_archive()).get(memory_ref)
+
+    def get_cited_memory_source(self, memory_ref: str, *, max_chars: int = 3000) -> Dict[str, Any] | None:
+        if not strict_history_mode():
+            raise RuntimeError("Cited memory access requires strict history mode")
+        from muninn.history.memory_ledger import MemoryLedger
+        return MemoryLedger(self._require_secure_archive()).source(memory_ref, max_chars=max_chars)
+
     def _require_projection_access(self):
         if not strict_history_mode():
             raise RuntimeError("Secure transcript pages require strict history mode")

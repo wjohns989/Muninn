@@ -66,6 +66,7 @@ async def test_history_search_fetch_requires_auth_and_never_returns_secret(tmp_p
 
 
 def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
+    assert {"search_cited_memories","get_cited_memory","get_cited_memory_source"} <= set(TOOLSETS["core"])
     assert "search_secure_history" in TOOLSETS["core"]
     assert "start_secure_history_search" in TOOLSETS["core"]
     assert "poll_secure_history_search" in TOOLSETS["core"]
@@ -79,6 +80,9 @@ def test_core_mcp_toolset_exposes_search_and_fetch_without_reveal():
 
 
 @pytest.mark.parametrize(("name", "arguments", "data", "marker"), [
+    ("search_cited_memories", {"query":"citations"}, {"matches":[{"id":"a"*64}]}, "a"*64),
+    ("get_cited_memory", {"memory_ref":"a"*64}, {"state":"provisional","text":"SAFE_CLAIM"}, "SAFE_CLAIM"),
+    ("get_cited_memory_source", {"memory_ref":"a"*64}, {"transcript_capability":"SAFE_SOURCE_CAP"}, "SAFE_SOURCE_CAP"),
     ("search_secure_history", {"query": "parser"},
      {"matches": [{"fetch_capability": "SAFE_CAPABILITY_MARKER"}]}, "SAFE_CAPABILITY_MARKER"),
     ("start_secure_history_search", {"query": "parser"},
@@ -129,6 +133,20 @@ def test_private_mcp_result_preserves_required_fields(monkeypatch, name, argumen
     assert marker in received[0]["content"][0]["text"]
 
 
+@pytest.mark.parametrize("name",["search_cited_memories","get_cited_memory","get_cited_memory_source"])
+def test_cited_mcp_errors_and_logs_never_echo_private_exception(monkeypatch,caplog,name):
+    from muninn.mcp import handlers
+    monkeypatch.setenv("MUNINN_MCP_AUTOSTART_SERVER","0")
+    monkeypatch.setattr(handlers,"active_toolset",lambda:"core")
+    def fail(*a,**kw): raise RuntimeError("PRIVATE_EXCEPTION_CANARY")
+    monkeypatch.setattr(handlers,"make_request_with_retry",fail)
+    received=[]
+    handlers.handle_call_tool(1,{"name":name,"arguments":{"query":"citations","memory_ref":"a"*64}},
+                             lambda *a:pytest.fail("unexpected RPC error"),lambda i,r:received.append(r))
+    assert received[0]["isError"] is True
+    assert "PRIVATE_EXCEPTION_CANARY" not in str(received)+caplog.text
+
+
 @pytest.mark.asyncio
 async def test_secure_analysis_endpoint_is_local_and_auth_only(monkeypatch):
     from muninn.history import secure_analysis
@@ -165,6 +183,7 @@ async def test_secure_analysis_endpoint_is_local_and_auth_only(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool_name", [
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
     "search_credential_metadata", "search_secure_history", "start_secure_history_search",
     "poll_secure_history_search", "cancel_secure_history_search",
     "poll_secure_history_analysis", "cancel_secure_history_analysis",

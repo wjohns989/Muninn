@@ -15,7 +15,7 @@ from muninn.version import __version__ as _MUNINN_VERSION
 from .state import _SESSION_STATE
 from .definitions import (
     SUPPORTED_PROTOCOL_VERSIONS, TOOLS_SCHEMAS, JSON_SCHEMA_2020_12,
-    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS, OPEN_WORLD_TOOLS,
+    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS, OPEN_WORLD_TOOLS, PRIVATE_MAIN_TOKEN_TOOLS,
     SUPPORTED_MODEL_PROFILES, MIMIR_TOOLS, TOOLSETS, resolve_toolset, toolset_schemas, tool_title,
 )
 from .tasks import (
@@ -255,8 +255,13 @@ def _run_tool_call_task_worker(session_id: str, task_id: str, name: str, argumen
         else:
              set_task_state_locked(task, status="completed", result=res)
     except Exception as e:
-        logger.exception("Task execution failed: %s", task_id)
-        set_task_state_locked(task, status="failed", error={"code": -32603, "message": str(e)})
+        if name in PRIVATE_MAIN_TOKEN_TOOLS:
+            logger.warning("Private task execution failed: tool=%s", name)
+            message = "Private memory operation unavailable"
+        else:
+            logger.exception("Task execution failed: %s", task_id)
+            message = str(e)
+        set_task_state_locked(task, status="failed", error={"code": -32603, "message": message})
     finally:
         emit_task_status_notification(task, send_notification_fn)
 
@@ -439,11 +444,16 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
         tool_metrics["response_bytes_max"] = max(tool_metrics["response_bytes_max"], len(truncated_text))
 
     except Exception as e:
-        logger.exception("Tool execution failed: %s", name)
+        if name in PRIVATE_MAIN_TOKEN_TOOLS:
+            logger.warning("Private tool execution failed: tool=%s", name)
+            message = "Private memory operation unavailable"
+        else:
+            logger.exception("Tool execution failed: %s", name)
+            message = str(e) or type(e).__name__
         tool_metrics["saw_error"] = True
         # MCP 2025-11-25: execution and input-validation failures are tool
         # results with isError so the model can read them and self-correct.
-        send_result_fn(msg_id, tool_error_result(str(e) or type(e).__name__))
+        send_result_fn(msg_id, tool_error_result(message))
     finally:
         # Telemetry logging matching the original wrapper
         elapsed_ms = (time.monotonic() - tool_call_started_monotonic) * 1000.0
@@ -474,6 +484,9 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "poll_secure_history_search": _do_poll_secure_history_search,
         "cancel_secure_history_search": _do_cancel_secure_history_search,
         "poll_secure_history_analysis": _do_poll_secure_history_analysis,
+        "search_cited_memories": _do_search_cited_memories,
+        "get_cited_memory": _do_get_cited_memory,
+        "get_cited_memory_source": _do_get_cited_memory_source,
         "cancel_secure_history_analysis": _do_cancel_secure_history_analysis,
         "fetch_secure_history": _do_fetch_secure_history,
         "start_secure_history_transcript": _do_start_secure_history_transcript,
@@ -750,6 +763,24 @@ def _do_poll_secure_history_analysis(args: Dict[str, Any], deadline: Optional[fl
         deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
     )
     return response.json()
+
+
+def _do_search_cited_memories(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    return make_request_with_retry("POST", f"{SERVER_URL}/history/secure/memories/search",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+        json={"query": args.get("query"), "limit": args.get("limit", 10)}).json()
+
+
+def _do_get_cited_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    return make_request_with_retry("POST", f"{SERVER_URL}/history/secure/memories/get",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+        json={"memory_ref": args.get("memory_ref")}).json()
+
+
+def _do_get_cited_memory_source(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    return make_request_with_retry("POST", f"{SERVER_URL}/history/secure/memories/source",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+        json={"memory_ref": args.get("memory_ref"), "max_chars": args.get("max_chars", 3000)}).json()
 
 
 def _do_cancel_secure_history_analysis(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -1249,6 +1280,7 @@ CHATGPT_SEARCH_LIMIT = 10
 STRUCTURED_TOOLS = {"search", "fetch"}
 # Nested briefings and handoffs are returned whole rather than preview-compacted.
 EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
     "import_agent_history", "search_secure_history", "start_secure_history_search",
     "poll_secure_history_search", "cancel_secure_history_search", "fetch_secure_history",

@@ -1706,6 +1706,78 @@ class SecureHistoryAnalyzeRequest(BaseModel):
     prefer_remote: bool = False
 
 
+class CitedMemoryRequest(BaseModel):
+    memory_ref: str
+    max_chars: int = 3000
+
+
+_cited_memory_read_times: deque = deque()
+
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+
+
+@app.exception_handler(RequestValidationError)
+async def _private_cited_validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/history/secure/memories/"):
+        # Pydantic's normal error includes the submitted input, which might
+        # itself contain a credential. Do not echo private request fields.
+        return JSONResponse({"detail": "Invalid cited memory request"}, status_code=422, headers=NO_STORE)
+    return await request_validation_exception_handler(request, exc)
+
+
+async def _cited_memory_read(operation):
+    """Share one bounded CPU reader with transcript fetches; never infer."""
+    now = time.monotonic()
+    while _cited_memory_read_times and now - _cited_memory_read_times[0] > 60:
+        _cited_memory_read_times.popleft()
+    if len(_cited_memory_read_times) >= 60:
+        raise HTTPException(status_code=429, detail="Cited memory read limit reached", headers=NO_STORE)
+    try:
+        await asyncio.wait_for(_secure_history_fetch_slots.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=429, detail="Private source reader busy", headers=NO_STORE) from None
+    # Admission check must be repeated after the await: another reader may
+    # have consumed the last allowance while this request waited for its slot.
+    now = time.monotonic()
+    while _cited_memory_read_times and now - _cited_memory_read_times[0] > 60:
+        _cited_memory_read_times.popleft()
+    if len(_cited_memory_read_times) >= 60:
+        _secure_history_fetch_slots.release()
+        raise HTTPException(status_code=429, detail="Cited memory read limit reached", headers=NO_STORE)
+    _cited_memory_read_times.append(now)
+    # A disconnected client must not release the slot while its thread still
+    # reads. Completion owns release, including error/cancellation paths.
+    work = asyncio.create_task(asyncio.to_thread(operation))
+    work.add_done_callback(lambda future: (_secure_history_fetch_slots.release(),
+                                          future.exception() if not future.cancelled() else None))
+    try:
+        data = await asyncio.shield(work)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cited memory request", headers=NO_STORE) from None
+    except (RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Cited memory unavailable", headers=NO_STORE) from None
+    if data is None:
+        raise HTTPException(status_code=404, detail="Cited memory unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+
+
+@app.post("/history/secure/memories/search", dependencies=[Depends(verify_main_local_token)])
+async def search_cited_memories_endpoint(req: SecureHistorySearchRequest):
+    return await _cited_memory_read(lambda: _require_history().search_cited_memories(req.query, limit=req.limit))
+
+
+@app.post("/history/secure/memories/get", dependencies=[Depends(verify_main_local_token)])
+async def get_cited_memory_endpoint(req: CitedMemoryRequest):
+    return await _cited_memory_read(lambda: _require_history().get_cited_memory(req.memory_ref))
+
+
+@app.post("/history/secure/memories/source", dependencies=[Depends(verify_main_local_token)])
+async def get_cited_memory_source_endpoint(req: CitedMemoryRequest):
+    return await _cited_memory_read(lambda: _require_history().get_cited_memory_source(req.memory_ref, max_chars=req.max_chars))
+
+
 @app.post("/history/secure/search", dependencies=[Depends(verify_main_local_token)])
 async def secure_history_search_endpoint(req: SecureHistorySearchRequest):
     """Local encrypted-index lookup; return metadata and expiring fetch capability."""

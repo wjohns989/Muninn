@@ -282,6 +282,8 @@ Generic MCP client (`claude_desktop_config.json` or equivalent):
 | `search_memory` | Hybrid 5-signal search with `media_type` filtering and recall traces |
 | `search_secure_history` | Search an owner-only encrypted lexical index for archived transcript references and short-lived fetch grants |
 | `fetch_secure_history` | Retrieve one authenticated, bounded, best-effort redacted transcript span from a search grant |
+| `search_cited_memories`, `get_cited_memory` | CPU-only lookup of encrypted source-cited candidates; retain provisional/review and truth labels, never credential values |
+| `get_cited_memory_source` | Follow a memory ref to exact source coordinates and safe bounded context, then use its expiring grant to page through the credential-redacted transcript |
 | `start_secure_history_transcript`, `poll_secure_history_transcript`, `read_secure_history_transcript_page` | Queue a CPU-only encrypted conversational projection and continue through signed, bounded, redacted pages |
 | `search_credential_metadata` | Opt-in lookup of vault record existence and project-relative `.env` location; never a secret value |
 | `get_all_memories` | Paginated memory listing with filters |
@@ -746,8 +748,21 @@ and ZDR requests require persisted consent, budget admission, whole-unit privacy
 screening, and final request screening. Existing running services must load the
 updated code before this behavior is active.
 
-This is a tested persistence/evidence component, **not yet automatic historical
-fact/task/conflict enrichment, agent search federation, or a ledger review UI**.
+Agents can pass an ID from `poll_secure_history_analysis.memory_refs` to
+`get_cited_memory`, or discover safe claims with `search_cited_memories`.
+For evidence beyond the claim, call `get_cited_memory_source`; it returns exact
+source-version/unit/fragment coordinates and bounded context when the complete
+unit passes the privacy check. Use its short-lived `transcript_capability` with
+`start_secure_history_transcript`, then follow page cursors until exhausted.
+An unsafe unit returns metadata and access to the redacted projection, not raw
+context. These tools require the main local token, stay loopback-only, use no
+model, and do not change a provisional claim into verified truth. Keep private
+context and capabilities out of logs/publication. Search is lexical over safe
+candidate text/type, not a plaintext index or a full historical claim backfill.
+
+Dedicated authenticated agent search and source-following tools are available;
+they are not yet federated into ordinary `search_memory`. **Automatic historical
+fact/task/conflict enrichment and the ledger review UI remain incomplete**.
 Its first publication API verifies the whole event chain; large background
 batches need measured amortization before activation. It detects event corruption
 and deletion, but cannot detect substitution of a valid older whole database.

@@ -337,6 +337,28 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "search_cited_memories",
+        "description": "Search encrypted source-cited memories locally without inference. Returns bounded safe text, provenance and uncertainty labels; provisional memories are not verified facts. Credential values are never searched or returned. Private context, not safe for publication.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string", "maxLength": 512},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10}},
+            "required": ["query"]},
+    },
+    {
+        "name": "get_cited_memory",
+        "description": "Retrieve one encrypted cited memory by memory_ref from search_cited_memories or poll_secure_history_analysis.memory_refs. Preserves provisional/review and truth labels. Credential-risk records return metadata only. Private context.",
+        "inputSchema": {"type": "object", "properties": {
+            "memory_ref": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}, "required": ["memory_ref"]},
+    },
+    {
+        "name": "get_cited_memory_source",
+        "description": "Follow a cited memory to exact source coordinates and bounded safe context. Unsafe units have metadata only. Use transcript_capability with start_secure_history_transcript, then read_secure_history_transcript_page for the full credential-redacted transcript; never raw originals or credential values. Do not log/publish the expiring capability or private context.",
+        "inputSchema": {"type": "object", "properties": {
+            "memory_ref": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 4000, "default": 3000}},
+            "required": ["memory_ref"]},
+    },
+    {
         "name": "poll_secure_history_analysis",
         "description": (
             "Check automatic interpretation linked from a completed secure history search. "
@@ -985,6 +1007,7 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
     "get_project_context", "get_thread",
     "search_memory", "search_secure_history", "poll_secure_history_search",
     "poll_secure_history_analysis", "fetch_secure_history",
@@ -1083,6 +1106,7 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 # Tool profiles let a client load only what it needs: Cursor caps active tools
 # at 40 across all servers, and every schema costs context on each request.
 CORE_TOOLS = (
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff",
     "add_memory", "search_memory", "search_secure_history", "start_secure_history_search",
     "poll_secure_history_search", "fetch_secure_history",
@@ -1101,6 +1125,7 @@ TOOLSETS: Dict[str, Tuple[str, ...]] = {
     "chatgpt": ("search", "fetch"),
 }
 PRIVATE_MAIN_TOKEN_TOOLS = frozenset({
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
     "search_secure_history", "start_secure_history_search", "poll_secure_history_search",
     "cancel_secure_history_search", "poll_secure_history_analysis",
     "cancel_secure_history_analysis", "fetch_secure_history", "analyze_secure_history",

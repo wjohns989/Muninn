@@ -386,3 +386,101 @@ def test_callers_cannot_override_proposal_origin(tmp_path, origin):
         ledger.record_batch(entry, 0, attempt, [{"page": page, "proposal": proposal}],
                             model_identity=MODEL, proposal_origin=origin)
     assert ledger.verify_all()["events"] == 0
+
+
+def test_agent_search_walks_chain_once_keeps_review_and_provisional_state(tmp_path, monkeypatch):
+    archive, entry, attempt, page = fixture(tmp_path, text="Keep citations. Drop citations.")
+    ledger = MemoryLedger(archive)
+    items = [{"page": page, "proposal": {"type": "preference", "text": quote,
+              "quote": quote, "start": start}} for quote, start in [("Keep citations.",0),("Drop citations.",16)]]
+    refs = ledger.record_batch(entry, 0, attempt, items, model_identity=MODEL)
+    ledger.mark_needs_user(refs[0], reason="possible_contradiction")
+    walks=[]
+    original=ledger._walk
+    def walk(db):
+        walks.append(True)
+        yield from original(db)
+    monkeypatch.setattr(ledger, "_walk", walk)
+    result=ledger.search("citations",limit=2)
+    assert len(walks)==1 and {m["id"] for m in result["matches"]}==set(refs)
+    assert {m["state"] for m in result["matches"]}=={"provisional","needs_user"}
+    assert all(m["proposal_origin"]=="model" and m["truth_status"]!="verified" for m in result["matches"])
+    assert "synthetic-project" not in json.dumps(result)
+
+
+def test_agent_source_follow_is_exact_version_with_safe_context_and_redacted_projection_grant(tmp_path):
+    import base64
+    from muninn.history.blind_index import SecureHistoryBlindIndex
+    archive, entry, attempt, page=fixture(tmp_path)
+    ledger=MemoryLedger(archive)
+    ident=record(ledger,entry,attempt,page)
+    source=ledger.source(ident,max_chars=100)
+    assert source["context"]=="I want source citations kept."
+    assert source["citation"]["quote_start"]==0
+    assert source["citation"]["quote_length"]==len(source["context"])
+    assert source["citation"]["unit"]>=0 and source["citation"]["version"]==0
+    assert source["provider"]=="codex" and source["context_state"]=="available"
+    actual,version,_=SecureHistoryBlindIndex(archive)._entry_for_capability(source["transcript_capability"])
+    assert actual==entry and version==0
+    cap=source["transcript_capability"]
+    decoded=json.loads(base64.urlsafe_b64decode(cap+'='*(-len(cap)%4))[:-32])
+    assert decoded["term"]=="transcript"  # the bearer must not contain the source quote
+    assert "synthetic-project" not in json.dumps(source)
+
+
+def test_agent_search_and_source_never_release_or_match_credential_values(tmp_path):
+    text="Keep citations. SERVICE_API_KEY=synthetic$hiddenvalue"
+    archive,entry,attempt,page=fixture(tmp_path,text=text)
+    ledger=MemoryLedger(archive)
+    ident=record(ledger,entry,attempt,page,text="Keep citations.")
+    assert ledger.search("hiddenvalue")["matches"]==[]
+    source=ledger.source(ident)
+    assert source["context_state"]=="withheld" and "context" not in source
+    assert "hiddenvalue" not in json.dumps(source)
+    assert source["transcript_capability"]
+
+
+def test_agent_search_authenticates_late_tail_even_after_limit(tmp_path):
+    archive,entry,attempt,page=fixture(tmp_path,text="Keep citations. Drop citations.")
+    ledger=MemoryLedger(archive)
+    record(ledger,entry,attempt,page,text="Keep citations.")
+    record(ledger,entry,attempt,page,text="Drop citations.",start=16)
+    with ledger._connect() as db:
+        db.execute("UPDATE events SET ciphertext=zeroblob(length(ciphertext)) WHERE seq=2")
+    with pytest.raises(MemoryLedgerIntegrityError): ledger.search("citations",limit=1)
+
+
+def test_agent_source_rechecks_whole_unit_privacy_not_only_stored_screen_flag(tmp_path, monkeypatch):
+    archive,entry,attempt,page=fixture(tmp_path)
+    ledger=MemoryLedger(archive)
+    ident=record(ledger,entry,attempt,page)
+    monkeypatch.setattr(ledger,"_unit_info",lambda *a:(False,0,b""))
+    assert "text" not in ledger.get(ident)
+    assert ledger.search("citations")["matches"]==[]
+    assert ledger.source(ident)["context_state"]=="withheld"
+
+
+@pytest.mark.parametrize("query,limit",[("",10),("x"*513,10),("one two three four five six seven eight nine",10),("citations",0),("citations",21),("citations",True)])
+def test_agent_search_bounds_inputs(tmp_path,query,limit):
+    archive,entry,attempt,page=fixture(tmp_path)
+    ledger=MemoryLedger(archive)
+    with pytest.raises(ValueError): ledger.search(query,limit=limit)
+
+
+@pytest.mark.parametrize("query",["SERVICE_API_KEY=synthetic$secret",r"C:\Users\synthetic\secret.env"])
+def test_agent_search_rejects_sensitive_queries_without_echoing(tmp_path,query):
+    archive,entry,attempt,page=fixture(tmp_path)
+    ledger=MemoryLedger(archive)
+    with pytest.raises(ValueError) as error: ledger.search(query)
+    assert query not in str(error.value)
+
+
+def test_agent_read_does_not_reuse_whole_unit_screen_after_late_fragment_tamper(tmp_path):
+    archive,entry,attempt,page=fixture(tmp_path,text="Keep citations. "+"ordinary words "*1000)
+    ledger=MemoryLedger(archive)
+    ident=record(ledger,entry,attempt,page,text="Keep citations.")
+    assert ledger.get(ident)["text"]=="Keep citations."
+    with ledger.units._connect() as db:
+        db.execute("UPDATE pages SET ciphertext=zeroblob(length(ciphertext)) WHERE attempt=? AND ordinal=?",
+                   (attempt,page+1))
+    with pytest.raises(MemoryLedgerIntegrityError): ledger.get(ident)
