@@ -28,6 +28,7 @@ from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.private_acl import create_private_file, verify_private
 from muninn.history.secure_archive import SecureHistoryArchive
 from muninn.history.capture_enrichment import CaptureEnrichmentMixin
+from muninn.history.capture_window_jobs import CaptureWindowJobsMixin
 
 _SESSION_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
 _ERROR_CODES = {"missing", "changed", "permission", "disk", "archive", "locked", "unknown"}
@@ -108,6 +109,7 @@ class AnalysisJob:
     remote_policy_generation: int = -1
     window: dict[str, Any] | None = field(default=None, repr=False)
     extraction: dict[str, Any] | None = field(default=None, repr=False)
+    lane: int = 0
 
     def __repr__(self) -> str:
         return (
@@ -117,7 +119,7 @@ class AnalysisJob:
         )
 
 
-class CaptureJournal(CaptureEnrichmentMixin):
+class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
     def __init__(self, archive: SecureHistoryArchive, *, recover: bool = True):
         self.archive = archive
         # SQLite URI connections require an absolute path even when the archive
@@ -186,7 +188,8 @@ class CaptureJournal(CaptureEnrichmentMixin):
             for column, definition in (("sealed_window", "BLOB"), ("sealed_extraction", "BLOB"),
                                        ("extraction_id", "TEXT"), ("sealed_receipt", "BLOB"),
                                        ("cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
-                                       ("publication_started", "INTEGER NOT NULL DEFAULT 0")):
+                                       ("publication_started", "INTEGER NOT NULL DEFAULT 0"),
+                                       ("lane", "INTEGER NOT NULL DEFAULT 0")):
                 if column not in columns:
                     db.execute(f"ALTER TABLE history_analysis_jobs ADD COLUMN {column} {definition}")
             for column, definition in (("analysis_job_id", "TEXT"), ("analysis_state", "TEXT")):
@@ -210,6 +213,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
             if recover:
                 db.execute("UPDATE jobs SET state='pending', due_at=0 WHERE state='capturing'")
             self._init_enrichment(db)
+            self._init_capture_window_jobs(db)
 
     @contextmanager
     def _connect(self, *, initialize: bool = False) -> Iterator[sqlite3.Connection]:
@@ -418,6 +422,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
             if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise VaultIntegrityError("Capture journal integrity check failed")
             self._verify_enrichment(db)
+            self._verify_capture_window_jobs(db)
             count = 0
             for row in db.execute("SELECT source_key, sealed_locator, provider FROM jobs"):
                 path = self._open(row["sealed_locator"], row["provider"])
@@ -435,14 +440,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
             for row in db.execute("SELECT * FROM history_analysis_jobs"):
                 if row["vault_id"] != self.archive.vault_id or not re.fullmatch(r"[0-9a-f]{32}", row["job_id"]):
                     raise VaultIntegrityError("Analysis journal identity is invalid")
-                target = self._open_search(row["sealed_target"], row["job_id"], "analysis-target")
-                if (
-                    self._analysis_target(
-                        target, target.get("terms", []) if isinstance(target, dict) else [], self.archive.vault_id
-                    )
-                    is None
-                ):
-                    raise VaultIntegrityError("Analysis target format is invalid")
+                self._validated_analysis_target(row, db)
                 if row["sealed_result"] is not None:
                     self._allow_analysis_result(
                         self._open_search(row["sealed_result"], row["job_id"], "analysis-result")
@@ -755,14 +753,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
     def _analysis_row(self, row: sqlite3.Row) -> AnalysisJob:
         if row["vault_id"] != self.archive.vault_id or row["state"] not in _ANALYSIS_STATES:
             raise VaultIntegrityError("Analysis journal identity is invalid")
-        target = self._open_search(row["sealed_target"], row["job_id"], "analysis-target")
-        if (
-            self._analysis_target(
-                target, target.get("terms", []) if isinstance(target, dict) else [], self.archive.vault_id
-            )
-            is None
-        ):
-            raise VaultIntegrityError("Analysis target format is invalid")
+        target = self._validated_analysis_target(row)
         return AnalysisJob(
             row["job_id"],
             row["vault_id"],
@@ -778,6 +769,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
             row["remote_policy_generation"],
             self._read_analysis_window(row),
             self._read_extraction(row),
+            row["lane"],
         )
 
     @staticmethod
@@ -786,7 +778,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
                           ensure_ascii=False, allow_nan=False).encode("utf-8")
 
     def _window_purpose(self, row):
-        target = self._open_search(row["sealed_target"], row["job_id"], "analysis-target")
+        target = self._validated_analysis_target(row)
         return "analysis-window-v1:" + hashlib.sha256(self._stage_json(target)).hexdigest()
 
     def _read_analysis_window(self, row):
@@ -794,8 +786,10 @@ class CaptureJournal(CaptureEnrichmentMixin):
             return None
         from muninn.history.cited_analysis_source import CitedAnalysisSource
         try:
-            return CitedAnalysisSource.validate_descriptor(self._open_search(
+            window = CitedAnalysisSource.validate_descriptor(self._open_search(
                 row["sealed_window"], row["job_id"], self._window_purpose(row)))
+            self._assert_capture_window(row, window)
+            return window
         except ValueError as exc:
             raise VaultIntegrityError("Analysis window authentication failed") from exc
 
@@ -849,6 +843,8 @@ class CaptureJournal(CaptureEnrichmentMixin):
                                 hashlib.sha256).hexdigest()
             if stage["window"] != window or not hmac.compare_digest(expected, row["extraction_id"]):
                 raise ValueError
+            if row["lane"] == 1 and stage["result"]["provider"] != "ollama":
+                raise ValueError
             return stage
         except (SearchJobError, ValueError, TypeError) as exc:
             raise VaultIntegrityError("Analysis extraction authentication failed") from exc
@@ -868,6 +864,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
             if row is None:
                 return False
             target = self._analysis_row(row).target
+            self._assert_capture_window(row, window)
             if any(window[k] != target[k] for k in ("blob", "sha256", "version")):
                 raise SearchJobError("Cited window does not match the queued target")
             old = self._read_analysis_window(row)
@@ -890,6 +887,8 @@ class CaptureJournal(CaptureEnrichmentMixin):
                 return False
             if self._read_analysis_window(row) != stage["window"]:
                 raise SearchJobError("Extraction does not match the queued window")
+            if row["lane"] == 1 and stage["result"]["provider"] != "ollama":
+                raise SearchJobError("Automatic window lane is local-only")
             existing = self._read_extraction(row)
             if existing is not None:
                 if existing != stage:
@@ -946,6 +945,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
             result = stage["result"]
             now = time.time()
             receipt = {"extraction_id": row["extraction_id"], "refs": refs}
+            self._ack_capture_window(db, row)
             db.execute("UPDATE history_analysis_jobs SET state='succeeded',sealed_result=?,sealed_receipt=?,"
                        "result_expires_at=?,provider=?,model=?,error_code='',lease_token=NULL,lease_until=NULL,updated_at=? "
                        "WHERE job_id=?", (self._seal_search(result, job_id, "analysis-result"),
@@ -1008,17 +1008,24 @@ class CaptureJournal(CaptureEnrichmentMixin):
                    "lease_token=NULL,lease_until=NULL,due_at=0,updated_at=? "
                    "WHERE state IN ('running','publishing') AND lease_until IS NOT NULL AND lease_until<=?", (now, now))
 
-    def claim_analysis(self) -> AnalysisJob | None:
+    def claim_analysis(self, *, include_capture: bool = False) -> AnalysisJob | None:
+        if type(include_capture) is not bool:
+            raise ValueError("Invalid capture lane admission")
         now = time.time()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self._recover_analysis(db, now)
+            foreground = db.execute("SELECT 1 FROM history_search_jobs WHERE state='running' "
+                                    "OR (state IN ('pending','retry') AND due_at<=?) LIMIT 1", (now,)).fetchone()
+            maximum_lane = 1 if include_capture and foreground is None else 0
             row = db.execute(
-                "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry','publication_pending') AND due_at<=? ORDER BY due_at,created_at LIMIT 1",
-                (now,),
+                "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry','publication_pending') "
+                "AND due_at<=? AND lane<=? ORDER BY lane,due_at,created_at LIMIT 1",
+                (now, maximum_lane),
             ).fetchone()
             if not row:
                 return None
+            self._validated_analysis_target(row, db)
             token = os.urandom(16).hex()
             db.execute(
                 "UPDATE history_analysis_jobs SET state=CASE WHEN publication_started=1 THEN 'publishing' ELSE 'running' END,attempt=attempt+1,lease_token=?,lease_until=?,updated_at=? WHERE job_id=?",
@@ -1038,7 +1045,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
     def mark_remote_dispatched(self, job_id: str, lease_token: str) -> bool:
         with self._connect() as db:
             cur = db.execute(
-                "UPDATE history_analysis_jobs SET remote_dispatched=1,updated_at=? WHERE job_id=? AND state='running' AND remote_dispatched=0 AND cancel_requested=0 AND lease_token=? AND lease_until>?",
+                "UPDATE history_analysis_jobs SET remote_dispatched=1,updated_at=? WHERE job_id=? AND lane=0 AND state='running' AND remote_dispatched=0 AND cancel_requested=0 AND lease_token=? AND lease_until>?",
                 (time.time(), job_id, lease_token, time.time()),
             )
             return cur.rowcount == 1
@@ -1060,7 +1067,7 @@ class CaptureJournal(CaptureEnrichmentMixin):
         with self._connect() as db:
             sealed = self._seal_search(result, job_id, "analysis-result")
             cur = db.execute(
-                "UPDATE history_analysis_jobs SET state='succeeded',sealed_result=?,result_expires_at=?,provider=?,model=?,error_code='',lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                "UPDATE history_analysis_jobs SET state='succeeded',sealed_result=?,result_expires_at=?,provider=?,model=?,error_code='',lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND lane=0 AND state='running' AND lease_token=? AND lease_until>?",
                 (sealed, now + _ANALYSIS_RESULT_TTL, result["provider"], result["model"], now, job_id, lease_token, now),
             )
             return cur.rowcount == 1

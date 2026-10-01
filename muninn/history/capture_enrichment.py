@@ -83,7 +83,9 @@ class CaptureEnrichmentMixin:
         if db.execute("SELECT 1 FROM capture_enrichment_sources WHERE work_id=?", (ident,)).fetchone():
             return "existing"
         sealed = self._seal_search(receipt, ident, "capture-enrichment-receipt-v1")
-        db.execute("INSERT INTO capture_enrichment_sources VALUES(?,?,?)", (ident, sealed, time.time()))
+        db.execute("INSERT INTO capture_enrichment_sources(work_id,sealed_receipt,created_at) VALUES(?,?,?)",
+                   (ident, sealed, time.time()))
+        self._adjust_capture_schedule(db, pending=1, planning=1)
         return "queued"
 
     def enqueue_enrichment_receipt(self, receipt):
@@ -92,6 +94,7 @@ class CaptureEnrichmentMixin:
             baseline = self._enrichment_baseline(db)
             if baseline is None:
                 return "disabled"
+            self._capture_schedule(db)
             return self._store_enrichment_receipt(db, receipt, baseline)
 
     def _enrichment_progress(self, db, baseline):
@@ -172,6 +175,7 @@ class CaptureEnrichmentMixin:
             # overwrite its progress; its receipts committed in the same txn.
             if self._enrichment_progress(db, baseline)[0] != previous_seal:
                 return 0
+            self._capture_schedule(db)
             for receipt in pending:
                 queued += self._store_enrichment_receipt(db, receipt, baseline) == "queued"
             db.execute("UPDATE capture_enrichment_progress SET sealed_cursor=? WHERE id=1", (
@@ -192,14 +196,18 @@ class CaptureEnrichmentMixin:
         self._enrichment_limit(limit)
         with self._connect() as db:
             baseline = self._enrichment_baseline(db)
-            return [self._read_enrichment_receipt(row, baseline) for row in db.execute(
-                "SELECT work_id,sealed_receipt FROM capture_enrichment_sources ORDER BY created_at,work_id LIMIT ?",
-                (limit,))]
+            self._capture_schedule(db)
+            result = []
+            for row in db.execute("SELECT * FROM capture_enrichment_sources WHERE resolved=0 "
+                                  "ORDER BY created_at,work_id LIMIT ?", (limit,)):
+                self._capture_plan_state(row)
+                result.append(self._read_enrichment_receipt(row[:2], baseline))
+            return result
 
     def enrichment_status(self):
         with self._connect() as db:
             baseline = self._enrichment_baseline(db)
-            count = db.execute("SELECT COUNT(*) FROM capture_enrichment_sources").fetchone()[0]
+            count = self._capture_schedule(db)["pending"]
         return {"configured": baseline is not None, "pending_sources": count}
 
     def _verify_enrichment(self, db):

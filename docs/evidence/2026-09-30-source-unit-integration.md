@@ -544,3 +544,66 @@ to activate this source-only stage, and the installation goal remains active.
 Independent examination of the actual corrected source diff and focused results
 was CLEAR for this default-off outbox stage only; it did not clear scheduler or
 backfill activation.
+
+**Post-push result (2026-10-01):** candidate `428474f` passed all five PR checks:
+locked full suite, clean imports, privacy, replay and benchmark dry run. Exact
+full-suite run: `36813299319`, job `110212844556`. This is source verification,
+not live activation or completion of the installation goal. This status-only
+receipt can accompany the next code batch instead of triggering identical CI.
+
+### Typed capture-window jobs and acknowledged coverage (2026-10-01)
+
+The trusted outbox path now derives query-independent capture-window targets;
+ordinary search completion cannot manufacture this lane. Authenticated targets
+bind source/version, plan attempt, ordinal and canonical descriptor hash. Lane,
+target, outbox mapping and local-only policy are checked on claim and through
+window bind/stage/publication. An altered routing lane or a different window of
+the same snapshot cannot be admitted. Capture jobs cannot set the remote-dispatch
+marker or use the legacy result-only completion path. The worker reopens the
+exact plan window without search terms and forces local-only routing without
+consulting general remote policy. Existing background consumers do not include
+the capture lane unless explicitly requested internally; no new timer or live
+activation occurred.
+
+Source plan/cursor state is encrypted. Jobs, authenticated ordinal mappings and
+cursor advance commit together, compare the expected sealed plan on races, and
+consume no ordinal on saturation. Automatic jobs occupy at most 24 of 32 active
+slots; foreground search analysis has claim priority. Pending/due/running source
+searches suppress automatic claims. The indexed source planner rotates fairly
+across large sources instead of always restarting at the first receipt.
+Coverage advances atomically only after the existing stage/actual-ledger receipt
+validation and publication ACK. Valid zero-proposal analysis still acknowledges
+its analyzed window. A zero-window plan is `no_context`, not completed analysis.
+Failure, cancellation and resource deferral are not successful coverage.
+
+Review identified two status/index contradictions before activation: retained
+completed receipts were still counted as pending; later, a corrupted exclusion
+hint could hide unfinished work before selected-row authentication. Both were
+corrected. Pending/plannable totals are sealed and checked against index counts
+before selectors/status; all relevant source insert/plan/ACK mutations update
+them transactionally. Full verification also authenticates every mapping and
+checks exact sealed plan EOF/ordinal coverage. Two exclusion checks failed before
+the aggregate correction, then passed. Extra cases cover missing/corrupted
+totals, source deletion and a balanced planning-hint swap.
+
+Eight initial admission checks failed before the capability existed. Core queue
+checks passed, and an integrated suite later passed 79 checks in 54.33 seconds.
+After the index correction, the expanded queue, outbox, strict service, analysis,
+publication and recovery suites passed **103 checks** in **71.64 seconds**, with
+one unrelated installed-library deprecation warning. The worker fixture reopens
+all actual fixture windows, verifies local-only/no-search behavior, persists ACKs
+and restores completed coverage. It mocks model inference: it is plumbing proof,
+not a new live model-quality or complete-installation claim. Earlier integration
+failures included an unnamed INSERT invalidated by a new column and a lazy-import
+test patch leaking into a later test; both were fixed without relaxing guards.
+
+Remaining activation gates are unchanged: cross-version/partial-growth occurrence
+deduplication, measured catalog/ledger cost, responsive bounded cadence and scoped
+live activation. Paid automatic fallback also still needs durable reservations
+and output-cost/reconciliation bounds. No original history, credential value,
+service process, model or client settings were changed by these isolated checks.
+After moving aggregate validation out of the per-receipt loop into the admission
+batch boundary and leaving legacy publication independent of capture counters,
+the final affected queue/outbox/publication/archive/recovery suites passed
+**95 checks in 67.53 seconds**. Independent examination cleared the actual final
+source diff for integration/push only; it did not clear live scheduler activation.

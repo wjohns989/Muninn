@@ -774,8 +774,15 @@ the starting watermark and a pinned-generation resume checkpoint are encrypted
 inside the portable archive journal. Reconciliation examines at most 128 entries
 per batch; old/unsupported entries also consume that examination bound. It does
 not invoke models or prove processing coverage, and a zero-insert batch is not
-necessarily complete. Existing manifest metadata is still loaded in full; typed
-window jobs, responsive cadence and backlog scaling remain activation prerequisites.
+necessarily complete. Its internal typed-window queue authenticates exact plan
+ordinals, reserves foreground search capacity and acknowledges coverage only after
+durable publication. Automatic jobs are currently local-only and excluded by
+existing worker consumers; no automatic capture-processing timer is activated.
+Completed and no-context sources leave pending selectors without deleting their
+encrypted receipts. Sealed scheduler totals and per-source plans detect inconsistent
+exclusion hints. Existing manifest metadata is still loaded in full; cross-version
+growth deduplication, responsive cadence and backlog scaling remain activation
+prerequisites. This internal integration is not automatic historical backfill.
 No model directory, drive letter or user home is assumed by this component.
 
 Its first publication API verifies the whole event chain; large background

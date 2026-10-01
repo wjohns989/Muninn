@@ -857,10 +857,23 @@ class HistoryService:
                 cancelled.set()
                 return
 
-    async def _process_secure_analysis_once(self) -> bool:
-        """Interpret one pertinent immutable hit without occupying idle VRAM."""
+    async def _process_capture_plan_once(self, *, should_cancel=lambda: False) -> bool:
+        """Prepare one fair, bounded batch; no provider call or activation here."""
         journal = self._require_capture_journal()
-        job = await asyncio.to_thread(journal.claim_analysis)
+        receipt = await asyncio.to_thread(journal.next_capture_plan)
+        if receipt is None:
+            return False
+        await asyncio.to_thread(journal.queue_capture_windows, receipt, limit=4, should_cancel=should_cancel)
+        return True
+
+    async def _process_secure_analysis_once(self, *, include_capture: bool = False) -> bool:
+        """Interpret one immutable target without occupying idle VRAM.
+
+        Existing background consumers do not opt into capture-window work. Its
+        activation remains separate from outbox capture and search analysis.
+        """
+        journal = self._require_capture_journal()
+        job = await asyncio.to_thread(journal.claim_analysis, include_capture=include_capture)
         if job is None:
             return False
         cancelled = threading.Event()
@@ -885,10 +898,21 @@ class HistoryService:
                     stage["proposals"], model_identity=stage["model_identity"])
                 await asyncio.to_thread(journal.acknowledge_publication, job.job_id, job.lease_token, refs)
                 return True
-            index = SecureHistoryBlindIndex(source.archive)
-            capability = await asyncio.to_thread(index._analysis_capability, job.target)
-            descriptor = job.window or await asyncio.to_thread(source.prepare, capability,
-                                                               should_cancel=cancelled.is_set)
+            if job.lane == 1:
+                from muninn.history.cited_windows import CitedWindowPlanStore
+                plans = await asyncio.to_thread(CitedWindowPlanStore, source.archive)
+                entry = plans.source.ledger._entries.get((job.target["blob"], job.target["version"]))
+                if entry is None or entry["sha256"] != job.target["sha256"]:
+                    raise ValueError("Capture window snapshot is unavailable")
+                descriptor = await asyncio.to_thread(plans.window_at, entry, job.target["version"],
+                                                     job.target["plan_attempt"], job.target["ordinal"])
+                if job.window is not None and descriptor != job.window:
+                    raise VaultIntegrityError("Capture window binding changed")
+            else:
+                index = SecureHistoryBlindIndex(source.archive)
+                capability = await asyncio.to_thread(index._analysis_capability, job.target)
+                descriptor = job.window or await asyncio.to_thread(source.prepare, capability,
+                                                                   should_cancel=cancelled.is_set)
             if descriptor is None:
                 await asyncio.to_thread(journal.fail_analysis, job.job_id, job.lease_token, "insufficient_context")
                 return True
@@ -900,7 +924,7 @@ class HistoryService:
                 return True
 
             async def before_remote() -> bool:
-                if cancelled.is_set():
+                if cancelled.is_set() or job.lane == 1:
                     return False
                 # This durable marker precedes the HTTP request. After it is
                 # set, an interrupted run is outcome_unknown, never auto-retry.
@@ -916,14 +940,20 @@ class HistoryService:
             from muninn.history.auto_routing import remote_policy_snapshot
             from muninn.history.secure_analysis import analyze_cited_window
 
-            remote_policy = remote_policy_snapshot(self.data_dir)
-            remote_enabled = (remote_policy.enabled
-                              and remote_policy.generation == job.remote_policy_generation)
+            if job.lane == 1:
+                # Persisted general ZDR consent cannot override this lane's
+                # temporary cost gate. Do not read remote credentials/policy.
+                remote_enabled, remote_generation = False, -1
+            else:
+                remote_policy = remote_policy_snapshot(self.data_dir)
+                remote_enabled = (remote_policy.enabled
+                                  and remote_policy.generation == job.remote_policy_generation)
+                remote_generation = remote_policy.generation
 
             outcome = await analyze_cited_window(
                 self, source, descriptor, allow_remote=remote_enabled, should_cancel=cancelled.is_set,
                 before_remote=before_remote, remote_not_sent=remote_not_sent,
-                expected_remote_generation=remote_policy.generation,
+                expected_remote_generation=remote_generation,
             )
             if outcome["status"] == "ok":
                 stage = outcome["extraction"]

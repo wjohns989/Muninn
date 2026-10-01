@@ -104,6 +104,51 @@ have examined only old/ineligible entries. Existing manifest decryption/key-list
 loading is O(catalog size) per call; large-backlog cost and recovery latency remain
 explicit gates before activation/backfill, not a bounded-CPU claim.
 
+**Next typed-window admission boundary:** retain legacy term-targeted search
+jobs without a fabricated query for capture work. Automatic window targets must
+bind the authenticated plan attempt, ordinal and exact descriptor/source-evidence
+attempt. Derive the automatic lane only inside the trusted capture-outbox enqueue
+path; callers cannot supply it. Validate lane/target consistency again at claim
+and publication, not only insertion. Reserve foreground capacity and do not
+advance the outbox planning cursor when the job queue is full. Keep automatic
+jobs local-only until durable remote-cost reservation is complete, regardless
+of general saved ZDR consent. Before activation, close cross-version occurrence
+dedup/partial-growth, measured manifest cost and a short bounded recovery cadence
+(the existing 30-minute discovery scan is not sufficient worker cadence).
+The source is complete only after sealed plan EOF and acknowledged outcomes for
+all its windows; queued/planned/deferred/stale/unsupported are not completed.
+Independent review specifically requires proving that an ordinary search caller
+cannot manufacture an automatic job or cross its routing/coverage boundary.
+
+**Typed-window integration implemented (source-only, 2026-10-01):** the trusted
+outbox queue builds/authenticates a query-independent plan, seals exact ordinal
+targets and descriptor digests, and advances source scheduling in the same journal
+transaction as job/mapping insertion. Automatic capacity is 24 within the shared
+32-job cap; search jobs claim first and active/due foreground searches suppress
+automatic claims. Existing consumers default to `include_capture=False`. Explicit
+internal capture claims reopen the exact planned window and reuse encrypted stage,
+publication and ACK recovery, with remote use forced off irrespective of general
+saved consent. Result-only legacy completion cannot acknowledge an automatic window.
+Whole-source completion requires every sealed plan window's publication ACK;
+zero selected windows are `no_context`, not analyzed. Failed/cancelled/deferred
+windows stay unresolved. Completed/no-context receipts remain retained/verifiable
+but leave the pending/planning selectors.
+
+Scheduling mirrors are only hints. Sealed pending/plannable totals are checked
+before indexed exclusion; receipt insertion, plan advance and final ACK update
+those totals in the same transaction. Selected hints must agree with the source's
+sealed plan. Missing established totals fail closed rather than rebootstrap.
+Counts/selected-row checks do not replace full mapping/plan verification or prove
+constant cost: matching index counts and manifest loading still scale. Fairness
+timestamps select round-robin candidates, not eligibility/completion authority.
+
+**Next missing activation dependency:** certify same-origin append/prefix or
+stable-native-occurrence evidence before reusing prior acknowledged inputs across
+snapshot growth; never deduplicate by text alone across occurrences/projects.
+Partial changed windows must stay dirty. Then measure actual local catalog/ledger
+cost and establish bounded planner/model cadence plus failure visibility. No
+automatic scheduler loop or new live model dispatch was activated by this stage.
+
 Reuse sealed source-unit streaming, encrypted staging, model-origin provisional
 publication and existing crash recovery. Record window-level coverage and
 unsupported/no-context/integrity/deferred states explicitly. Search work has
