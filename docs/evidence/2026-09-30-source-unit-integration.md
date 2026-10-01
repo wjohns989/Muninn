@@ -405,3 +405,30 @@ pass is claimed. The preceding full run had 2,431 passed / 13 skipped and only
 the now-corrected core-count failure. Automatic historical enrichment, ambiguity
 resolution, paid-backfill reservation/scaling, and remaining UI work are still
 open; this evidence does not mark the installation goal complete.
+
+### Follow-up: journal connection contention
+
+Run 36806259226 later hit its 20-minute limit. The subsequent run 36807052477
+completed with 2,431 passed / 13 skipped and one failure: a concurrent status
+poll in `test_search_automatically_queues_and_completes_one_analysis` failed at
+the routine `PRAGMA journal_mode=DELETE` assignment with `database is locked`.
+This identifies the failed operation, not the cause of every previous stall.
+
+Journal initialization now establishes DELETE mode before schema setup. Runtime
+connections only read/validate that mode, rejecting drift rather than attempting
+a database-wide change. FULL synchronization and the 100-ms lock timeout remain
+unchanged. SQLite documents the distinction between the querying and assigning
+forms: <https://www.sqlite.org/pragma.html#pragma_journal_mode>.
+
+Two red-first checks demonstrated the old routine assignment and silent runtime
+conversion of WAL. The revised checks cover a real committed search-job status
+read while another connection holds a write transaction, and fail-closed mode
+drift. Capture/analysis suites passed 23 checks in 8.93 seconds; the strengthened
+writer regression plus affected search journal/service/API/cancellation checks
+passed 14, with one platform skip, in 8.47 seconds. All fixtures use isolated
+temporary archives; no credentials, models or live service were involved.
+
+The connection fix is source-only until a separately approved reload. Existing
+live cited-memory and configured-bridge proofs remain unchanged. A new exact-
+candidate Linux CI result is required before calling this regression resolved
+across platforms; no broader scheduling or paid backfill has been enabled.

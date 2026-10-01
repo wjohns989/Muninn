@@ -142,3 +142,37 @@ def test_modified_sealed_locator_fails_authentication_without_path_output(tmp_pa
     with pytest.raises(VaultIntegrityError, match="authentication failed") as caught:
         journal.verify_all()
     assert "private-session" not in str(caught.value)
+
+
+def test_status_read_does_not_reconfigure_journal_during_worker_transaction(tmp_path, monkeypatch):
+    journal, _archive = _journal(tmp_path)
+    job_id = journal.enqueue_search("orbital-widget")
+    statements = []
+    connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        db = connect(*args, **kwargs)
+        db.set_trace_callback(statements.append)
+        return db
+
+    with connect(journal.path) as worker:
+        worker.execute("BEGIN IMMEDIATE")
+        worker.execute("UPDATE scan_state SET seen=seen+1 WHERE id=1")
+        monkeypatch.setattr(sqlite3, "connect", traced_connect)
+        assert journal.get_search_job(job_id) == {
+            "job_id": job_id, "state": "pending", "result": None}
+        # A routine read must not attempt a database-wide mode transition.
+        assert not any("journal_mode=" in statement.lower().replace(" ", "")
+                       for statement in statements)
+        assert any(statement.lower().strip() == "pragma journal_mode" for statement in statements)
+        worker.rollback()
+
+
+def test_runtime_connection_rejects_changed_journal_mode_without_silently_converting(tmp_path):
+    journal, _archive = _journal(tmp_path)
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    with pytest.raises(VaultIntegrityError, match="journal mode"):
+        journal.get_search_job("not-present")
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

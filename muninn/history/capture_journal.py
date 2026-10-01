@@ -128,7 +128,7 @@ class CaptureJournal:
         verify_private(self.path)
         self._key = hmac.new(archive._key, b"muninn-capture-journal-key-v1", hashlib.sha256).digest()
         self._aad = b"muninn-capture-locator-v1\0" + archive.vault_id.encode("ascii")
-        with self._connect() as db:
+        with self._connect(initialize=True) as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS jobs ("
                 "source_key TEXT PRIMARY KEY, sealed_locator BLOB NOT NULL, "
@@ -210,13 +210,19 @@ class CaptureJournal:
                 db.execute("UPDATE jobs SET state='pending', due_at=0 WHERE state='capturing'")
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self, *, initialize: bool = False) -> Iterator[sqlite3.Connection]:
         verify_private(self.archive.root)
         verify_private(self.path)
         db = sqlite3.connect(f"{self.path.as_uri()}?mode=rw", uri=True, timeout=0.1)
         try:
             db.row_factory = sqlite3.Row
-            db.execute("PRAGMA journal_mode=DELETE")
+            # Changing database-wide journal mode during ordinary status reads
+            # contends with workers. Establish it only before schema setup;
+            # runtime connections inspect it without silently repairing drift.
+            mode = db.execute("PRAGMA journal_mode=DELETE" if initialize
+                              else "PRAGMA journal_mode").fetchone()
+            if mode is None or mode[0] != "delete":
+                raise VaultIntegrityError("Capture journal mode is unavailable")
             db.execute("PRAGMA synchronous=FULL")
             db.execute("PRAGMA busy_timeout=100")
             with db:
