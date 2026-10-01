@@ -83,8 +83,8 @@ class CaptureEnrichmentMixin:
         if db.execute("SELECT 1 FROM capture_enrichment_sources WHERE work_id=?", (ident,)).fetchone():
             return "existing"
         sealed = self._seal_search(receipt, ident, "capture-enrichment-receipt-v1")
-        db.execute("INSERT INTO capture_enrichment_sources(work_id,sealed_receipt,created_at) VALUES(?,?,?)",
-                   (ident, sealed, time.time()))
+        db.execute("INSERT INTO capture_enrichment_sources(work_id,sealed_receipt,created_at,sealed_planning_state) "
+                   "VALUES(?,?,?,?)", (ident, sealed, time.time(), self._new_capture_planning_state(ident)))
         self._adjust_capture_schedule(db, pending=1, planning=1)
         return "queued"
 

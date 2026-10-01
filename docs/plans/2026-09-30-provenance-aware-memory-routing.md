@@ -188,6 +188,28 @@ input mutation checks verify invalidation. These primitives do not yet implement
 cross-version coverage records or activate a worker. Parent-plan matching still
 loads manifest metadata; amortized batch cost remains a measured admission gate.
 
+**Planner fairness implemented (source-only, 2026-10-01):** every outbox source
+has authenticated zero/retry/blocked planning state; the scheduler's encrypted
+v1-to-v2 marker and all existing-row initialization commit in one transaction.
+Missing state under established v2 fails closed, not rebootstrap. Eligibility
+uses authenticated state, never SQL due/blocked exclusion. The ordered candidate
+scan is not a bounded-CPU claim. IO/cancellation defer with backoff; unsupported,
+integrity and unknown preparation failures stay unresolved and review-blocked.
+Errors use fixed categories, not source/exception prose. Transitions compare both
+observed plan and retry ciphertexts, so a stale failure cannot replace newer
+progress. Successful scheduling clears retry state. The worker drains its
+off-thread preparation on cancellation before acknowledging shutdown/deferral.
+Root totals/index mirrors and source plan/ACK status are read from one database
+snapshot, so a legitimate concurrent commit cannot masquerade as corruption.
+
+This closes source failure fairness, not durable large-source progress. Current
+projection staging is discarded on interruption; short repeated wall-time
+cancellation can restart the same large source forever. Preserve sustained
+in-process preparation with cooperative foreground/resource pauses, then design
+and verify portable parser/staging checkpoints before claiming restart-resumable
+bounded work. Do not expose source pages/window coverage before authenticated EOF.
+No automatic cadence, live schema migration or service reload occurs here.
+
 Reuse sealed source-unit streaming, encrypted staging, model-origin provisional
 publication and existing crash recovery. Record window-level coverage and
 unsupported/no-context/integrity/deferred states explicitly. Search work has

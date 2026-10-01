@@ -863,7 +863,36 @@ class HistoryService:
         receipt = await asyncio.to_thread(journal.next_capture_plan)
         if receipt is None:
             return False
-        await asyncio.to_thread(journal.queue_capture_windows, receipt, limit=4, should_cancel=should_cancel)
+        ticket = await asyncio.to_thread(journal.capture_planning_ticket, receipt)
+        cancelled = threading.Event()
+        from muninn.history.structured_projector import ProjectionCancelled, UnsupportedTranscript
+        from muninn.history.secure_projection_store import ProjectionIntegrityError
+        in_flight = asyncio.create_task(asyncio.to_thread(
+            journal.queue_capture_windows, receipt, limit=4,
+            should_cancel=lambda: cancelled.is_set() or should_cancel()))
+        try:
+            await asyncio.shield(in_flight)
+        except asyncio.CancelledError:
+            # to_thread cannot cancel the writer. Drain it before recording a
+            # cancellation or allowing shutdown to report completion.
+            cancelled.set()
+            await asyncio.gather(in_flight, return_exceptions=True)
+            await asyncio.to_thread(journal.defer_capture_plan, receipt, ticket, "cancelled")
+            raise
+        except UnsupportedTranscript:
+            await asyncio.to_thread(journal.defer_capture_plan, receipt, ticket, "unsupported_source")
+        except ProjectionCancelled:
+            await asyncio.to_thread(journal.defer_capture_plan, receipt, ticket, "cancelled")
+        except (VaultIntegrityError, ProjectionIntegrityError):
+            # The state transition itself authenticates planner state again;
+            # a bad planner seal cannot be repaired as an ordinary source error.
+            await asyncio.to_thread(journal.defer_capture_plan, receipt, ticket, "source_integrity")
+        except (OSError, sqlite3.Error):
+            await asyncio.to_thread(journal.defer_capture_plan, receipt, ticket, "io")
+        except Exception:
+            # Unknown deterministic preparation failures need visible review,
+            # not an endless hot retry or persistence of private error details.
+            await asyncio.to_thread(journal.defer_capture_plan, receipt, ticket, "preparation_error")
         return True
 
     async def _process_secure_analysis_once(self, *, include_capture: bool = False) -> bool:

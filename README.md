@@ -789,6 +789,14 @@ and includes prompt/schema/version/model weights. Durable cross-version reuse
 acknowledgments, responsive cadence and backlog scaling remain activation
 prerequisites. Existing manifest metadata is still loaded in full. This internal
 integration is not automatic historical backfill.
+Preparation failures have required encrypted per-source retry/blocked state,
+so a failed source can yield to healthy work without advancing its coverage.
+State changes compare the observed plan and retry seals; missing established
+state fails closed. The private source status distinguishes deferred, retry-ready
+and review-blocked preparation. This is scheduler fairness, not durable parser
+resumption: interrupting an incomplete large-source projection can still discard
+its staging. There is no source-size cutoff, but restart-cost/scaling remains
+an explicit activation gate.
 No model directory, drive letter or user home is assumed by this component.
 
 Its first publication API verifies the whole event chain; large background

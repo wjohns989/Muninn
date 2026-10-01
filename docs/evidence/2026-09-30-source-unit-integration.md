@@ -647,3 +647,36 @@ Durable encrypted reuse coverage referencing a prior publication ACK, current
 local model identity, bounded automatic cadence and measured scaling remain the
 next activation dependencies. No old quote is re-published as a new citation by
 this stage; cloud alias reuse is not admitted.
+
+**Exact-candidate CI:** pushed `8de07e4aa048c7973ea2380c5ecc7cc6beb77e28` passed
+all five checks. Full suite run `36819338643`, job `110231294669`: **2,546 passed /
+13 skipped**, two warnings, 203.90 seconds. Clean imports, privacy, replay and
+benchmark dry run also passed. This status receipt is held for the next code
+batch; no identical test rerun or status-only CI push is necessary.
+
+### 2026-10-01 planner failure fairness (source-only)
+
+Changed dependencies: encrypted outbox planning state, authenticated scheduler
+schema migration, source selection/deferral and worker cancellation/failure path.
+No inference, live schema migration, service reload or scheduler activation.
+
+- Nine planner-deferral tests failed against the preimplementation. Initial
+  deferral/window/outbox checks: 57 passed in 39.91 seconds.
+- Migration rollback (also `recover=False`), portable recovery, stale CAS,
+  missing/tampered established state and actual worker A-fails/B-proceeds checks
+  plus affected service/publication: 85 passed in 62.81 seconds.
+- Added malformed authenticated state and off-thread cancellation/drain checks:
+  targeted 19 passed in 10.36 seconds. Source-level failures do not advance
+  coverage; unknown preparation errors are sanitized, unresolved and blocked.
+- Independent examination cleared the actual persistence/fairness design and
+  integration. Large-source durable parser resume remains specifically unproved;
+  queueing four windows does not bound source preparation, and restart can still
+  discard incomplete staging. This is not a live readiness/activation claim.
+- Expanded migration/worker/original capture/archive checks: **114 passed in
+  80.97 seconds**. A concurrent real-SQLite outbox writer then exposed a mixed
+  root-seal/count read (`VaultIntegrityError`) in a red-first regression. Status
+  and scheduling reads now pin one transaction; authentication is unchanged.
+  Final concurrency/deferral/window/outbox checks: **68 passed in 42.47 seconds**.
+  Independent review cleared the actual snapshot correction. The earlier broad
+  proof remains scoped before this final reader change; exact-candidate CI is
+  required for the integrated batch.

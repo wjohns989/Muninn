@@ -6,6 +6,7 @@ the completed counter. This module does not call providers or start workers.
 """
 import hashlib
 import hmac
+import math
 import os
 import re
 import time
@@ -16,13 +17,19 @@ _ACTIVE = "('pending','running','retry','publishing','publication_pending')"
 _TARGET_FIELDS = {"kind", "vault_id", "blob", "sha256", "version", "work_id",
                   "plan_attempt", "ordinal", "descriptor_sha256"}
 _SCHEDULE_ID = "0" * 32
+_PLANNING_CODES = {"io", "cancelled", "unsupported_source", "source_integrity", "preparation_error"}
+_PLANNING_BLOCKED = {"unsupported_source", "source_integrity", "preparation_error"}
 
 
 class CaptureWindowJobsMixin:
     def _init_capture_window_jobs(self, db):
+        if not db.in_transaction:
+            db.execute("BEGIN IMMEDIATE")
         columns = {row[1] for row in db.execute("PRAGMA table_info(capture_enrichment_sources)")}
         if "sealed_plan" not in columns:
             db.execute("ALTER TABLE capture_enrichment_sources ADD COLUMN sealed_plan BLOB")
+        if "sealed_planning_state" not in columns:
+            db.execute("ALTER TABLE capture_enrichment_sources ADD COLUMN sealed_planning_state BLOB")
         for column, definition in (("planning_complete", "INTEGER NOT NULL DEFAULT 0"),
                                    ("resolved", "INTEGER NOT NULL DEFAULT 0"),
                                    ("last_planned_at", "REAL NOT NULL DEFAULT 0")):
@@ -47,7 +54,78 @@ class CaptureWindowJobsMixin:
                 self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db))
                 self._capture_plan_state(row)
             pending, planning = self._capture_schedule_counts(db)
-            self._write_capture_schedule(db, {"format": 1, "pending": pending, "planning": planning})
+            self._write_capture_schedule(db, {"format": 2, "pending": pending, "planning": planning})
+            self._initialize_capture_planning(db)
+        else:
+            totals = self._capture_schedule(db, allow_legacy=True)
+            if totals["format"] == 1:
+                self._initialize_capture_planning(db)
+                self._write_capture_schedule(db, {**totals, "format": 2})
+            elif "sealed_planning_state" not in columns:
+                raise VaultIntegrityError("Established capture planning schema is missing")
+
+    def _initialize_capture_planning(self, db):
+        # Constructor owns one transaction: v1 absence is legitimate only here.
+        for row in db.execute("SELECT * FROM capture_enrichment_sources"):
+            self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db))
+            self._capture_plan_state(row)
+            if row["sealed_planning_state"] is not None:
+                raise VaultIntegrityError("Legacy capture planning state is inconsistent")
+            db.execute("UPDATE capture_enrichment_sources SET sealed_planning_state=? WHERE work_id=?", (
+                self._new_capture_planning_state(row["work_id"]), row["work_id"]))
+
+    def _new_capture_planning_state(self, ident):
+        return self._seal_search({"format": 1, "attempts": 0, "code": "", "due_at": 0.0,
+                                 "blocked": False}, ident, "capture-planning-state-v1")
+
+    def _capture_planning_state(self, row):
+        if row["sealed_planning_state"] is None:
+            raise VaultIntegrityError("Capture planning state is missing")
+        value = self._open_search(row["sealed_planning_state"], row["work_id"], "capture-planning-state-v1")
+        if (not isinstance(value, dict)
+                or set(value) != {"format", "attempts", "code", "due_at", "blocked"}
+                or type(value["format"]) is not int or value["format"] != 1
+                or type(value["attempts"]) is not int or not 0 <= value["attempts"] < 2**31
+                or type(value["blocked"]) is not bool
+                or type(value["due_at"]) not in (float, int)
+                or not math.isfinite(value["due_at"]) or value["due_at"] < 0
+                or not isinstance(value["code"], str)
+                or value["code"] not in _PLANNING_CODES | {""}
+                or (value["attempts"] == 0) != (value["code"] == "")
+                or value["blocked"] != (value["code"] in _PLANNING_BLOCKED)
+                or (not value["attempts"] or value["blocked"]) and value["due_at"] != 0
+                or value["attempts"] and not value["blocked"] and value["due_at"] <= 0):
+            raise VaultIntegrityError("Capture planning state is invalid")
+        return value
+
+    def capture_planning_ticket(self, receipt):
+        """Private observed state for compare-and-swap after preparation."""
+        with self._connect() as db:
+            row = self._capture_outbox_row(db, receipt)
+            self._capture_plan_state(row)
+            self._capture_planning_state(row)
+            return row["sealed_plan"], row["sealed_planning_state"]
+
+    def defer_capture_plan(self, receipt, ticket, code):
+        if not isinstance(code, str) or code not in _PLANNING_CODES:
+            raise ValueError("Invalid capture planning error category")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._capture_schedule(db)
+            row = self._capture_outbox_row(db, receipt)
+            self._capture_plan_state(row)
+            state = self._capture_planning_state(row)  # Never repair an invalid seal.
+            if ticket != (row["sealed_plan"], row["sealed_planning_state"]) or row["planning_complete"]:
+                return False
+            attempts = min(state["attempts"] + 1, 2**31 - 1)
+            blocked = code in _PLANNING_BLOCKED
+            now = time.time()
+            value = {"format": 1, "attempts": attempts, "code": code, "blocked": blocked,
+                     "due_at": 0.0 if blocked else now + min(300, 5 * 2**min(attempts - 1, 6))}
+            db.execute("UPDATE capture_enrichment_sources SET sealed_planning_state=?,last_planned_at=? "
+                       "WHERE work_id=?", (self._seal_search(value, row["work_id"], "capture-planning-state-v1"),
+                                           now, row["work_id"]))
+            return True
 
     @staticmethod
     def _capture_schedule_counts(db):
@@ -60,13 +138,18 @@ class CaptureWindowJobsMixin:
                    "ON CONFLICT(id) DO UPDATE SET sealed_totals=excluded.sealed_totals", (
             self._seal_search(value, _SCHEDULE_ID, "capture-schedule-totals-v1"),))
 
-    def _capture_schedule(self, db, *, check_mirrors=True):
+    def _capture_schedule(self, db, *, check_mirrors=True, allow_legacy=False):
+        if check_mirrors and not db.in_transaction:
+            # Root seal and index mirrors must describe the same committed
+            # snapshot, not straddle a legitimate concurrent source/ACK write.
+            db.execute("BEGIN")
         row = db.execute("SELECT sealed_totals FROM capture_enrichment_schedule WHERE id=1").fetchone()
         if row is None:
             raise VaultIntegrityError("Capture scheduling totals are missing")
         value = self._open_search(row[0], _SCHEDULE_ID, "capture-schedule-totals-v1")
         if (not isinstance(value, dict) or set(value) != {"format", "pending", "planning"}
-                or any(type(item) is not int for item in value.values()) or value["format"] != 1
+                or any(type(item) is not int for item in value.values())
+                or value["format"] not in ({1, 2} if allow_legacy else {2})
                 or not 0 <= value["planning"] <= value["pending"]):
             raise VaultIntegrityError("Capture scheduling totals are invalid")
         if check_mirrors and self._capture_schedule_counts(db) != (value["pending"], value["planning"]):
@@ -112,12 +195,17 @@ class CaptureWindowJobsMixin:
         """Indexed round-robin hint; authenticate the selected source before use."""
         with self._connect() as db:
             self._capture_schedule(db)
-            row = db.execute("SELECT * FROM capture_enrichment_sources WHERE planning_complete=0 "
-                             "ORDER BY last_planned_at,created_at,work_id LIMIT 1").fetchone()
-            if row is None:
-                return None
-            self._capture_plan_state(row)
-            return self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db))
+            baseline = self._enrichment_baseline(db)
+            # Do not exclude on unauthenticated due/blocked hints. This scan is
+            # deliberately not a bounded-CPU claim; preparation remains separate.
+            for row in db.execute("SELECT * FROM capture_enrichment_sources WHERE planning_complete=0 "
+                                  "ORDER BY last_planned_at,created_at,work_id"):
+                self._capture_plan_state(row)
+                state = self._capture_planning_state(row)
+                receipt = self._read_enrichment_receipt(row[:2], baseline)
+                if not state["blocked"] and state["due_at"] <= time.time():
+                    return receipt
+            return None
 
     def _capture_plan_source(self, receipt):
         from muninn.history.cited_windows import CitedWindowPlanStore
@@ -139,6 +227,9 @@ class CaptureWindowJobsMixin:
         with self._connect() as db:
             before = self._capture_outbox_row(db, receipt)
             state = self._capture_plan_state(before)
+            planning = self._capture_planning_state(before)
+            if planning["blocked"] or planning["due_at"] > time.time():
+                return {"state": "planning_deferred", "queued": 0}
         plans, entry = self._capture_plan_source(receipt)
         attempt = plans.build_snapshot(entry, receipt["version"], should_cancel=should_cancel)
         count = plans.count_pages(entry, receipt["version"], attempt)
@@ -163,7 +254,9 @@ class CaptureWindowJobsMixin:
             db.execute("BEGIN IMMEDIATE")
             self._capture_schedule(db)
             row = self._capture_outbox_row(db, receipt)
-            if row["sealed_plan"] != before["sealed_plan"]:
+            self._capture_planning_state(row)
+            if (row["sealed_plan"] != before["sealed_plan"]
+                    or row["sealed_planning_state"] != before["sealed_planning_state"]):
                 return {"state": "concurrent_advance", "queued": 0}
             capacity = self._capture_window_capacity(db)
             for ordinal, digest in descriptors[:capacity]:
@@ -184,10 +277,10 @@ class CaptureWindowJobsMixin:
                 state["next_ordinal"] = ordinal + 1
                 queued += 1
             db.execute("UPDATE capture_enrichment_sources SET sealed_plan=?,planning_complete=?,resolved=?,"
-                       "last_planned_at=? WHERE work_id=?", (
+                       "last_planned_at=?,sealed_planning_state=? WHERE work_id=?", (
                 self._seal_search(state, row["work_id"], "capture-window-plan-v1"),
                 state["next_ordinal"] == count, state["acknowledged"] == count,
-                now, row["work_id"]))
+                now, self._new_capture_planning_state(row["work_id"]), row["work_id"]))
             self._adjust_capture_schedule(db,
                 planning=row["planning_complete"] - (state["next_ordinal"] == count),
                 pending=row["resolved"] - (state["acknowledged"] == count))
@@ -266,10 +359,16 @@ class CaptureWindowJobsMixin:
 
     def capture_window_status(self, receipt):
         with self._connect() as db:
+            db.execute("BEGIN")
             row = self._capture_outbox_row(db, receipt)
             state = self._capture_plan_state(row)
+            planning = self._capture_planning_state(row)
+            details = ({"planning": {"state": "blocked" if planning["blocked"] else
+                                     "deferred" if planning["due_at"] > time.time() else "retry_ready",
+                                     "reason": planning["code"], "retry_at": planning["due_at"]}}
+                       if planning["attempts"] else {})
             if state is None:
-                return {"state": "pending"}
+                return {"state": "pending", **details}
             counts = dict(db.execute("SELECT j.state,COUNT(*) FROM capture_enrichment_windows w "
                                      "JOIN history_analysis_jobs j ON w.job_id=j.job_id WHERE w.work_id=? GROUP BY j.state",
                                      (row["work_id"],)))
@@ -279,13 +378,14 @@ class CaptureWindowJobsMixin:
                    else "failed" if any(counts.get(k) for k in ("failed", "cancelled", "outcome_unknown"))
                    else "deferred" if counts.get("retry") else "processing")
         return {"state": outcome, "windows": state["count"], "queued": state["next_ordinal"],
-                "acknowledged": state["acknowledged"], "jobs": counts}
+                "acknowledged": state["acknowledged"], "jobs": counts, **details}
 
     def _verify_capture_window_jobs(self, db):
         self._capture_schedule(db)
         for row in db.execute("SELECT * FROM capture_enrichment_sources"):
             receipt = self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db))
             state = self._capture_plan_state(row)
+            self._capture_planning_state(row)
             mappings = db.execute("SELECT * FROM capture_enrichment_windows WHERE work_id=? ORDER BY ordinal",
                                   (row["work_id"],)).fetchall()
             if state is None:
