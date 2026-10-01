@@ -82,6 +82,11 @@ def _request(base: str, token: str, path: str, *, body: dict | None = None,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query", default="Boxter")
+    parser.add_argument("--existing-job-id", help="Reuse a completed search job without enqueuing another")
+    parser.add_argument("--metadata-only", action="store_true",
+                        help="Report search result sizes without fetching text")
+    parser.add_argument("--smallest-match", action="store_true",
+                        help="Use the smallest returned snapshot for fetch and transcript checks")
     parser.add_argument("--base", default="http://127.0.0.1:42069")
     parser.add_argument("--deadline-seconds", type=int, default=180)
     parser.add_argument("--analyze", choices=("local", "remote"),
@@ -95,18 +100,26 @@ def main() -> int:
         parser.error("--transcript-pages must be between 0 and 20")
     if not args.base.startswith("http://127.0.0.1:"):
         parser.error("Only the local loopback Muninn service is permitted")
+    if args.existing_job_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", args.existing_job_id):
+        parser.error("--existing-job-id must be one opaque job identifier")
     token = _local_auth_token()
     if not token:
         print("MUNINN_AUTH_TOKEN is unavailable in this process", file=sys.stderr)
         return 2
     started = time.monotonic()
+    stage = "enqueue_search"
     try:
-        queued = _request(args.base, token, "/history/secure/search/jobs", body={"query": args.query, "limit": 3})
-        enqueue_ms = round((time.monotonic() - started) * 1000)
-        job_id = queued["data"]["job_id"]
+        if args.existing_job_id:
+            job_id = args.existing_job_id
+            enqueue_ms = 0
+        else:
+            queued = _request(args.base, token, "/history/secure/search/jobs", body={"query": args.query, "limit": 3})
+            enqueue_ms = round((time.monotonic() - started) * 1000)
+            job_id = queued["data"]["job_id"]
         state = None
         while time.monotonic() - started < args.deadline_seconds:
             time.sleep(2)
+            stage = "poll_search"
             status = _request(args.base, token, "/history/secure/search/jobs/" + job_id)["data"]
             state = status["state"]
             if state not in ("pending", "running", "retry"):
@@ -125,6 +138,11 @@ def main() -> int:
             "ready": result["ready"], "missing": result["missing"],
             "overflow": result["overflow"], "truncated": result["truncated"],
         }
+        if result["matches"]:
+            details["first_match_size_bucket_kib"] = result["matches"][0]["size_bucket_kib"]
+        if args.metadata_only:
+            print(json.dumps(details, sort_keys=True))
+            return 0
         if args.wait_auto:
             analysis_id = status.get("analysis_job_id")
             details["analysis_queued"] = bool(analysis_id)
@@ -143,15 +161,21 @@ def main() -> int:
                 details["auto_analysis_model"] = auto_status.get("model") if auto_state else None
                 details["auto_analysis_ms"] = round((time.monotonic() - model_started) * 1000)
         if result["matches"]:
-            capability = result["matches"][0]["fetch_capability"]
+            selected = (min(result["matches"], key=lambda match: match["size_bucket_kib"])
+                        if args.smallest_match else result["matches"][0])
+            details["selected_size_bucket_kib"] = selected["size_bucket_kib"]
+            capability = selected["fetch_capability"]
+            stage = "fetch"
             span = _request(
                 args.base, token, "/history/secure/fetch",
                 body={"capability": capability, "max_chars": 500},
+                timeout=180,
             )["data"]
             details["fetch_redaction"] = span["redaction"]
             details["fetch_chars"] = len(span["redacted_text"])
             if args.transcript_pages:
                 projection_started = time.monotonic()
+                stage = "transcript_start"
                 projected = _request(
                     args.base, token, "/history/secure/transcript/start",
                     body={"capability": capability},
@@ -159,6 +183,7 @@ def main() -> int:
                 while (projected["state"] == "pending"
                        and time.monotonic() - started < args.deadline_seconds):
                     time.sleep(2)
+                    stage = "transcript_poll"
                     projected = _request(
                         args.base, token, "/history/secure/transcript/poll",
                         body={"capability": capability},
@@ -176,6 +201,7 @@ def main() -> int:
                     checked = 0
                     characters = 0
                     while cursor and checked < args.transcript_pages:
+                        stage = "transcript_page"
                         page = _request(
                             args.base, token, "/history/secure/transcript/page",
                             body={"cursor": cursor},
@@ -190,6 +216,7 @@ def main() -> int:
                     details["transcript_more"] = cursor is not None
             if args.analyze:
                 model_started = time.monotonic()
+                stage = "explicit_analyze"
                 analyzed = _request(
                     args.base, token, "/history/secure/analyze",
                     body={"capability": capability, "allow_remote": args.analyze == "remote",
@@ -208,7 +235,7 @@ def main() -> int:
     except (HTTPError, URLError, ValueError, KeyError, TimeoutError) as exc:
         # Avoid printing response bodies, request headers, query, or capabilities.
         code = exc.code if isinstance(exc, HTTPError) else type(exc).__name__
-        print(json.dumps({"state": "probe_error", "error_type": code}), file=sys.stderr)
+        print(json.dumps({"state": "probe_error", "stage": stage, "error_type": code}), file=sys.stderr)
         return 1
 
 
