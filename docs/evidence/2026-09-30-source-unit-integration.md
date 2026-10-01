@@ -295,3 +295,41 @@ was printed. The short source supports parser/route proof, not extraction
 coverage or accuracy on the historical backlog. A spend-availability query is
 still not a reservation; automatic paid historical backfill remains gated on
 that separate dependency and ledger growth validation.
+
+### Approved activation and actual queued publication
+
+The user approved restarting only the existing Muninn installation. Before
+termination, five SQLite online preimages passed structural integrity checks;
+the final journal writer fence confirmed no in-flight or claimable capture,
+search, or analysis jobs. The Windows stop was forced termination, not graceful
+application shutdown. A log reservation failed after stop because the runtime
+parent was not owner-only. No data was removed. The existing local launcher
+then started the same checkout, Miniconda interpreter, runtime directory, and
+loopback port 42069 without bypassing antivirus or execution policy.
+
+Post-start checks: exactly one Muninn process/listener, health 200, anonymous
+protected route 401, authenticated route 200, strict encrypted archive ready,
+and no auth token in the anonymous dashboard. At the final observation the
+archive held 5,322 snapshots / 4,123 sources; capture was 3,259 archived and two
+explicitly unavailable missing Claude Code files, with no pending capture jobs.
+
+One authenticated queued search used an actual indexed archived chat, not a
+synthetic fixture. Search succeeded with one match and automatically linked an
+analysis job. The live worker selected `qwen2.5:7b`, reached `succeeded`, and
+published five encrypted provisional candidates with five acknowledged memory
+refs. The cited window, validated extraction, and publication receipt were
+persisted; publication admission was set. Fresh ledger verification authenticated
+all five refs and the event chain. Queue acknowledgment to publication proof was
+16.58 seconds. Source-selection preparation before queuing was much slower;
+16.58 seconds is not an end-to-end search latency or optimization claim.
+
+The diagnostic observer was stopped once and resumed using its private saved
+job handles; that did not cancel the durable job or repeat search/inference.
+After publication Ollama `/api/ps` returned `{"models":[]}`. No source text,
+credential, bearer, capability, or process ID is recorded here.
+
+All five GitHub checks passed for the activated `ebadb0c` code, including the
+full locked suite (2m53s). This closes the bounded live local publication gate,
+not historical classification accuracy, agent lookup of new ledger refs, paid
+backfill budget reservation, or UI completion. Those remain explicit acceptance
+gaps rather than grounds for widening this activation test.
