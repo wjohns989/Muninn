@@ -18,7 +18,8 @@ import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from itertools import zip_longest
 from pathlib import Path
 
 from muninn.history.credential_crypto import (
@@ -30,6 +31,7 @@ from muninn.history.credential_crypto import (
     encrypt_record,
 )
 from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
+from muninn.history.secure_archive import _rename_noreplace
 
 # Keep the v1 table constraint so an already-running server can still open the
 # vault. A new HMAC namespace forces one queue-enabled rescan without a schema
@@ -50,6 +52,11 @@ _OLD_COLUMNS = ["id", "service", "project", "source_hash", "envelope"]
 _LEGACY_COLUMNS = [*_OLD_COLUMNS, "source_hint"]
 _NEW_COLUMNS = [*_LEGACY_COLUMNS, "origin", "active", "discovery_key"]
 _ORIGINS = {"manual", "project", "transcript"}
+_RECOVERY_TABLES = {
+    "sentinel": "id", "credentials": "id", "scan_receipts": "receipt_id",
+    "reveal_audit": "id", "ambiguity_queue": "id", "ambiguity_audit": "id",
+    "sqlite_sequence": "name",
+}
 
 
 @dataclass(frozen=True)
@@ -702,6 +709,28 @@ class CredentialStore:
             finally:
                 target.close()
 
+    def _verify_recovery_records(self, db, key: bytes) -> int:
+        """Authenticate records one at a time; retain no queue-sized collection."""
+        count = 0
+        for row in db.execute("SELECT * FROM credentials ORDER BY id"):
+            meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=bool(row["active"]), discovery_key=row["discovery_key"])
+            decrypt_record(key, self.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
+            count += 1
+        for row in db.execute("SELECT * FROM ambiguity_queue ORDER BY id"):
+            meta = _metadata(row["name"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=True, discovery_key=row["ambiguity_key"])
+            decrypt_record(key, self.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
+        return count
+
+    @staticmethod
+    def _compare_recovery_snapshot(source, copied) -> None:
+        queries = ["SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY name", "PRAGMA user_version"]
+        queries.extend(f"SELECT * FROM {table} ORDER BY {order}" for table, order in _RECOVERY_TABLES.items())
+        absent = object()
+        for query in queries:
+            for original, restored in zip_longest(source.execute(query), copied.execute(query), fillvalue=absent):
+                if original is absent or restored is absent or tuple(original) != tuple(restored):
+                    raise VaultIntegrityError("Credential backup differs from source")
+
     def backup(self, destination: Path, *, passphrase: str) -> int:
         """Create a consistent encrypted portable backup; never copy a live DB file."""
         destination = Path(destination)
@@ -709,16 +738,12 @@ class CredentialStore:
             raise VaultIntegrityError("Credential backup destination exists")
         staging = destination.with_name(f".{destination.name}.incomplete-{uuid.uuid4().hex}")
         with self._lock, self._process_lock(), self._connect(readonly=True) as db:
+            db.execute("BEGIN")  # Pin every source table until copy and comparison finish.
             key = self._unlock(db, passphrase)
-            source_rows = db.execute("SELECT * FROM credentials ORDER BY id").fetchall()
-            # Verify all records before and after snapshot, not just the sentinel.
-            for row in source_rows:
-                meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=bool(row["active"]), discovery_key=row["discovery_key"])
-                decrypt_record(key, self.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
-            source_ambiguities = db.execute("SELECT * FROM ambiguity_queue ORDER BY id").fetchall()
-            for row in source_ambiguities:
-                meta = _metadata(row["name"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=True, discovery_key=row["ambiguity_key"])
-                decrypt_record(key, self.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if tables != set(_RECOVERY_TABLES):
+                raise VaultIntegrityError("Credential recovery schema is unsupported")
+            source_count = self._verify_recovery_records(db, key)
             create_private_directory(staging)
             create_private_file(staging / "header.json")
             create_private_file(staging / "records.db")
@@ -729,26 +754,15 @@ class CredentialStore:
             restored = CredentialStore(staging)
             with restored._connect(readonly=True) as check:
                 restored_key = restored._unlock(check, passphrase)
-                backup_rows = check.execute("SELECT * FROM credentials ORDER BY id").fetchall()
-                if len(backup_rows) != len(source_rows):
+                self._compare_recovery_snapshot(db, check)
+                copied_count = restored._verify_recovery_records(check, restored_key)
+                if copied_count != source_count:
                     raise VaultIntegrityError("Credential backup count mismatch")
-                for original, copied in zip(source_rows, backup_rows):
-                    if tuple(original) != tuple(copied):
-                        raise VaultIntegrityError("Credential backup differs from source")
-                    meta = _metadata(copied["service"], copied["project"], copied["source_hash"], copied["source_hint"], origin=copied["origin"], active=bool(copied["active"]), discovery_key=copied["discovery_key"])
-                    decrypt_record(restored_key, restored.header, copied["id"], meta,
-                                   EncryptedValue.from_json(copied["envelope"]))
-                backup_ambiguities = check.execute("SELECT * FROM ambiguity_queue ORDER BY id").fetchall()
-                if [tuple(row) for row in source_ambiguities] != [tuple(row) for row in backup_ambiguities]:
-                    raise VaultIntegrityError("Credential ambiguity backup differs from source")
-                for row in backup_ambiguities:
-                    meta = _metadata(row["name"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=True, discovery_key=row["ambiguity_key"])
-                    decrypt_record(restored_key, restored.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
             if destination.exists() or destination.is_symlink():
                 raise VaultIntegrityError("Credential backup destination appeared during backup")
             # The staging directory remains clearly marked incomplete on any failure.
-            os.rename(staging, destination)
-            return len(backup_rows)
+            _rename_noreplace(staging, destination)
+            return copied_count
 
     @classmethod
     def restore(cls, source: Path, destination: Path, *, passphrase: str) -> CredentialStore:
@@ -758,13 +772,13 @@ class CredentialStore:
         opened as a live vault, modified, or trusted before private staging and
         full authenticated validation.
         """
-        source, destination = Path(source), Path(destination)
+        source, destination = Path(source).absolute(), Path(destination).absolute()
         if destination.exists() or destination.is_symlink():
             raise VaultIntegrityError("Credential restore destination exists")
         header_source, db_source = source / "header.json", source / "records.db"
         if (source.is_symlink() or not source.is_dir()
                 or any(path.is_symlink() or not path.is_file() for path in (header_source, db_source))
-                or header_source.stat().st_size > 4096 or db_source.stat().st_size > 1_073_741_824
+                or header_source.stat().st_size > 4096
                 or (source / "records.db-wal").exists()):
             raise VaultIntegrityError("Invalid credential backup source")
         staging = destination.with_name(f".{destination.name}.incomplete-{uuid.uuid4().hex}")
@@ -772,22 +786,27 @@ class CredentialStore:
         for name in ("header.json", "records.db", "vault.lock"):
             create_private_file(staging / name)
         (staging / "vault.lock").write_bytes(b"\0")
-        shutil.copyfile(header_source, staging / "header.json")
-        shutil.copyfile(db_source, staging / "records.db")
+        with header_source.open("rb") as read, (staging / "header.json").open("wb") as write:
+            shutil.copyfileobj(read, write, 1024 * 1024)
+            write.flush()
+            os.fsync(write.fileno())
+        with closing(sqlite3.connect(f"{db_source.as_uri()}?mode=ro", uri=True)) as original:
+            with closing(sqlite3.connect(staging / "records.db")) as copied:
+                original.backup(copied, pages=256)
+        with (staging / "records.db").open("r+b") as copied_file:
+            os.fsync(copied_file.fileno())
         restored = cls(staging)
         with restored._connect(readonly=True) as db:
             key = restored._unlock(db, passphrase)
-            for row in db.execute("SELECT * FROM credentials"):
-                meta = _metadata(row["service"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=bool(row["active"]), discovery_key=row["discovery_key"])
-                decrypt_record(key, restored.header, row["id"], meta,
-                               EncryptedValue.from_json(row["envelope"]))
-            for row in db.execute("SELECT * FROM ambiguity_queue"):
-                meta = _metadata(row["name"], row["project"], row["source_hash"], row["source_hint"], origin=row["origin"], active=True, discovery_key=row["ambiguity_key"])
-                decrypt_record(key, restored.header, row["id"], meta, EncryptedValue.from_json(row["envelope"]))
+            restored._verify_recovery_records(db, key)
         if destination.exists() or destination.is_symlink():
             raise VaultIntegrityError("Credential restore destination appeared during restore")
-        os.rename(staging, destination)
-        return cls(destination)
+        restored.root = destination.absolute()
+        restored.header_path = restored.root / "header.json"
+        restored.db_path = restored.root / "records.db"
+        restored.lock_path = restored.root / "vault.lock"
+        _rename_noreplace(staging, destination)
+        return restored
 
 
 def source_fingerprint(source: str) -> str:
