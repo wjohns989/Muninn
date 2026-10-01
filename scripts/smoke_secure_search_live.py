@@ -234,6 +234,7 @@ def main() -> int:
                 if analyzed["status"] != "ok":
                     details["analysis_reason"] = _safe_reason(analyzed.get("reason"))
                 details["analysis_ms"] = round((time.monotonic() - model_started) * 1000)
+        details["elapsed_ms"] = round((time.monotonic() - started) * 1000)
         print(json.dumps(details, sort_keys=True))
         return 0 if _probe_succeeded(args.analyze, args.wait_auto, details,
                                      args.transcript_pages) else 2
