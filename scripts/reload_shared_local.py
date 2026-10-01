@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 
 REPO_DEFAULT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DEFAULT))
@@ -174,6 +175,32 @@ def queues_idle(queues):
     return not any(queues[table].get(state, 0) for table in TABLES for state in ACTIVE[table])
 
 
+def prepare_preimage_destination(archive):
+    require_unlinked_path(archive)
+    verify_private(archive)
+    parent = archive / "operator-preimages"
+    require_unlinked_path(parent)
+    if not parent.exists():
+        create_private_directory(parent)
+    verify_private(parent)
+    destination = parent / ("restart-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex)
+    require_unlinked_path(destination)
+    create_private_directory(destination)
+    return destination
+
+
+def preimage_databases(archive, journal):
+    preimages = archive / "operator-preimages"
+    databases = [journal]
+    # Prune our own namespace before traversal, not just before copying.
+    for directory, children, files in os.walk(archive, followlinks=False):
+        if Path(directory) == archive:
+            children[:] = [name for name in children if archive / name != preimages]
+        databases.extend(Path(directory) / name for name in sorted(files)
+                         if name.endswith(".sqlite3"))
+    return databases
+
+
 def verify_candidate(repo, revision):
     if not re.fullmatch(r"[0-9a-f]{7,64}", revision or ""):
         raise ValueError("Expected revision must be a Git commit hash")
@@ -275,11 +302,8 @@ def run(args):
         SmallCaptureCadence(quiet_seconds=float(launching.get("MUNINN_CAPTURE_QUIET_SECONDS", "300")),
                             interval_seconds=float(launching.get("MUNINN_CAPTURE_INTERVAL_SECONDS", "30")))
         user_before = {name: read_user_flag(name) for name in CAPTURE_FLAGS}
-    destination = data / ("restart-preimage-" + time.strftime("%Y%m%d-%H%M%S"))
-    require_unlinked_path(destination)
-    verify_private(data)
-    create_private_directory(destination)
-    databases = [journal, *[path for path in archive.rglob("*.sqlite3") if path.is_file()]]
+    destination = prepare_preimage_destination(archive)
+    databases = preimage_databases(archive, journal)
     for path in databases:
         require_unlinked_path(path)
         verify_private(path)

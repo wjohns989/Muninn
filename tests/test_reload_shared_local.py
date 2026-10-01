@@ -279,3 +279,30 @@ def test_linked_ancestor_rejected_before_resolution(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "lstat", lstat)
     with pytest.raises(RuntimeError, match="ancestor"):
         reload.require_unlinked_path(linked / "missing-child")
+
+
+def test_preimages_use_private_archive_not_public_runtime_parent(tmp_path):
+    from muninn.history.private_acl import create_private_directory, verify_private
+
+    archive = tmp_path / "archive"
+    create_private_directory(archive)
+    destination = reload.prepare_preimage_destination(archive)
+    assert destination.parent == archive / "operator-preimages"
+    verify_private(destination.parent)
+    verify_private(destination)
+
+
+def test_preimage_database_selection_never_recursively_copies_preimages(tmp_path):
+    from muninn.history.private_acl import create_private_directory, create_private_file
+
+    archive = tmp_path / "archive"
+    create_private_directory(archive)
+    journal = archive / "capture-jobs.db"
+    create_private_file(journal)
+    evidence = archive / "source-evidence"
+    create_private_directory(evidence)
+    database = evidence / "projections.sqlite3"
+    create_private_file(database)
+    previous = reload.prepare_preimage_destination(archive)
+    create_private_file(previous / "old.sqlite3")
+    assert reload.preimage_databases(archive, journal) == [journal, database]
