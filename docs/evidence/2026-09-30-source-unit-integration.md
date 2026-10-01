@@ -218,3 +218,22 @@ source path, IDs or credentials were printed. The preceding `85b96be` head had
 all five CI checks passing. Automatic worker/staged replay and complete remote
 request screening are subsequent integration dependencies, not verified by
 this preview.
+# Durable cited-result staging (component, not live activation)
+
+The encrypted capture journal now binds an immutable cited input, stages a
+validated model reply, and separates publication admission from ledger writes.
+Cancellation is durable before admission; after admission recovery replays the
+staged result without another inference call. Acknowledgment verifies the exact
+stage-derived IDs actually exist in the authenticated ledger, outside the journal
+writer transaction, then rechecks the lease before marking success.
+
+Focused isolated evidence: 33 staging/journal/service cases passed across the
+affected test runs, plus 10 capture/search/API cases. Tests cover remote/local
+crashes before and after ledger commit, portable restore, tampering, cancellation,
+fabricated or unpublished receipt IDs, corruption, lease expiry during proof,
+and independent writes during verification. The independent actual-diff/result
+review was CLEAR for this component. These are not new live inference tests.
+
+Remaining dependency: the existing worker still needs the cited extraction
+schema, whole-input remote credential admission, and staged-publication wiring.
+No service restart or historical model backfill was performed for this slice.

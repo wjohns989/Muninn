@@ -547,8 +547,10 @@ class HistoryService:
         # Keep an active worker's lease until it can prove whether HTTP began.
         # Revoking the lease here would turn a known-unsent marker into unknown.
         if self._secure_analysis_active and self._secure_analysis_active[0] == job_id:
-            self._secure_analysis_active[1].set()
-            return True
+            accepted = self._require_capture_journal().request_analysis_cancel(job_id)
+            if accepted:
+                self._secure_analysis_active[1].set()
+            return accepted
         return self._require_capture_journal().cancel_analysis(job_id)
 
     def secure_fetch_span(self, capability: str, *, max_chars: int = 3000) -> Dict[str, Any]:

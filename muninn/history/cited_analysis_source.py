@@ -201,3 +201,13 @@ class CitedAnalysisSource:
         entry = self._window(descriptor)[0]
         return self.ledger.record_batch(entry, descriptor["version"], descriptor["attempt"], checked,
                                         model_identity=model_identity)
+
+    def expected_refs(self, descriptor, proposals, *, model_identity):
+        """Compute stage-bound identities without publishing any candidate."""
+        checked = self.validated_proposals(descriptor, proposals)
+        if not MemoryLedger._hex(model_identity):
+            raise CitedSourceError("Invalid extraction model identity")
+        entry = self._window(descriptor)[0]
+        return [self.ledger._prepare_record(entry, descriptor["version"], descriptor["attempt"],
+                item["page"], item["proposal"], model_identity=model_identity,
+                proposal_origin="model")[0] for item in checked]

@@ -16,7 +16,7 @@ import re
 import sqlite3
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -39,7 +39,7 @@ _SEARCH_LEASE = 60.0
 _SEARCH_RESULT_TTL = 300.0
 _ANALYSIS_LEASE = 120.0
 _ANALYSIS_RESULT_TTL = 86400.0
-_ANALYSIS_ACTIVE = {"pending", "running", "retry"}
+_ANALYSIS_ACTIVE = {"pending", "running", "retry", "publishing", "publication_pending"}
 _ANALYSIS_STATES = _ANALYSIS_ACTIVE | {
     "succeeded",
     "failed",
@@ -102,6 +102,8 @@ class AnalysisJob:
     model: str | None = None
     target: dict[str, Any] | None = None
     remote_policy_generation: int = -1
+    window: dict[str, Any] | None = field(default=None, repr=False)
+    extraction: dict[str, Any] | None = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         return (
@@ -176,6 +178,13 @@ class CaptureJournal:
                 db.execute("ALTER TABLE history_analysis_jobs ADD COLUMN remote_policy_generation INTEGER NOT NULL DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
+            columns = {row[1] for row in db.execute("PRAGMA table_info(history_analysis_jobs)")}
+            for column, definition in (("sealed_window", "BLOB"), ("sealed_extraction", "BLOB"),
+                                       ("extraction_id", "TEXT"), ("sealed_receipt", "BLOB"),
+                                       ("cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
+                                       ("publication_started", "INTEGER NOT NULL DEFAULT 0")):
+                if column not in columns:
+                    db.execute(f"ALTER TABLE history_analysis_jobs ADD COLUMN {column} {definition}")
             for column, definition in (("analysis_job_id", "TEXT"), ("analysis_state", "TEXT")):
                 try:
                     db.execute(f"ALTER TABLE history_search_jobs ADD COLUMN {column} {definition}")
@@ -191,12 +200,7 @@ class CaptureJournal:
                     "UPDATE history_search_jobs SET state=CASE WHEN attempt < 3 AND ?-created_at <= 3600 THEN 'retry' ELSE 'failed' END, lease_token=NULL, lease_until=NULL, updated_at=? WHERE state='running' AND lease_until IS NOT NULL AND lease_until<=?",
                     (now, now, now),
                 )
-                db.execute(
-                    "UPDATE history_analysis_jobs SET state=CASE WHEN remote_dispatched=1 THEN 'outcome_unknown' WHEN attempt < 3 THEN 'retry' ELSE 'failed' END, "
-                    "error_code=CASE WHEN remote_dispatched=1 THEN 'outcome_unknown' ELSE error_code END, lease_token=NULL, lease_until=NULL, due_at=0, updated_at=? "
-                    "WHERE state='running' AND lease_until IS NOT NULL AND lease_until<=?",
-                    (now, now),
-                )
+                self._recover_analysis(db, now)
             # An interrupted worker cannot hold a claim after service restart.
             # Read-only backup access must not steal an active worker's claim.
             if recover:
@@ -431,6 +435,9 @@ class CaptureJournal:
                     self._allow_analysis_result(
                         self._open_search(row["sealed_result"], row["job_id"], "analysis-result")
                     )
+                self._read_analysis_window(row)
+                self._read_extraction(row)
+                self._read_publication_receipt(row)
             return count
 
     def _search_key(self, job_id: str) -> bytes:
@@ -691,7 +698,7 @@ class CaptureJournal:
                 dedup = hmac.new(self._key, b"analysis-dedup-v1\0" + raw, hashlib.sha256).hexdigest()
                 existing = db.execute("SELECT job_id FROM history_analysis_jobs WHERE dedup_key=?", (dedup,)).fetchone()
                 active = db.execute(
-                    "SELECT COUNT(*) FROM history_analysis_jobs WHERE state IN ('pending','running','retry')"
+                    "SELECT COUNT(*) FROM history_analysis_jobs WHERE state IN ('pending','running','retry','publishing','publication_pending')"
                 ).fetchone()[0]
                 if existing:
                     analysis_id = existing["job_id"]
@@ -757,25 +764,241 @@ class CaptureJournal:
             row["model"],
             target,
             row["remote_policy_generation"],
+            self._read_analysis_window(row),
+            self._read_extraction(row),
         )
+
+    @staticmethod
+    def _stage_json(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+    def _window_purpose(self, row):
+        target = self._open_search(row["sealed_target"], row["job_id"], "analysis-target")
+        return "analysis-window-v1:" + hashlib.sha256(self._stage_json(target)).hexdigest()
+
+    def _read_analysis_window(self, row):
+        if row["sealed_window"] is None:
+            return None
+        from muninn.history.cited_analysis_source import CitedAnalysisSource
+        try:
+            return CitedAnalysisSource.validate_descriptor(self._open_search(
+                row["sealed_window"], row["job_id"], self._window_purpose(row)))
+        except ValueError as exc:
+            raise VaultIntegrityError("Analysis window authentication failed") from exc
+
+    def _validate_extraction(self, stage, *, authenticate=False):
+        from muninn.history.cited_analysis_source import CitedAnalysisSource
+        from muninn.history.memory_ledger import MemoryLedger, TYPES
+        try:
+            if (not isinstance(stage, dict)
+                    or set(stage) != {"format", "window", "proposals", "model_identity", "result"}
+                    or type(stage["format"]) is not int or stage["format"] != 1
+                    or not MemoryLedger._hex(stage["model_identity"])
+                    or not isinstance(stage["proposals"], list) or len(stage["proposals"]) > 12):
+                raise ValueError
+            CitedAnalysisSource.validate_descriptor(stage["window"])
+            self._allow_analysis_result(stage["result"])
+            for proposal in stage["proposals"]:
+                if (not isinstance(proposal, dict) or set(proposal) != {"type", "text", "quote", "start"}
+                        or not isinstance(proposal["type"], str) or proposal["type"] not in TYPES
+                        or any(not isinstance(proposal[k], str) or not 1 <= len(proposal[k]) <= 2048
+                               for k in ("text", "quote"))
+                        or type(proposal["start"]) is not int or not 0 <= proposal["start"] < 3000):
+                    raise ValueError
+            raw = self._stage_json(stage)
+            if len(raw) > 512000:
+                raise ValueError
+            # Detach caller-owned mutable dictionaries before authentication.
+            checked = json.loads(raw)
+            if authenticate:
+                CitedAnalysisSource(self.archive).validated_proposals(checked["window"], checked["proposals"])
+            return checked
+        except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+            raise SearchJobError("Invalid cited extraction stage") from exc
+
+    def _extraction_purpose(self, row, window):
+        return ("analysis-extraction-v1:" + self._window_purpose(row).split(":", 1)[1]
+                + ":" + hashlib.sha256(self._stage_json(window)).hexdigest() + ":" + row["extraction_id"])
+
+    def _read_extraction(self, row):
+        if row["sealed_extraction"] is None:
+            if row["extraction_id"] is not None or row["sealed_receipt"] is not None:
+                raise VaultIntegrityError("Analysis extraction stage is incomplete")
+            return None
+        from muninn.history.memory_ledger import MemoryLedger
+        window = self._read_analysis_window(row)
+        if window is None or not MemoryLedger._hex(row["extraction_id"]):
+            raise VaultIntegrityError("Analysis extraction identity is invalid")
+        try:
+            stage = self._validate_extraction(self._open_search(
+                row["sealed_extraction"], row["job_id"], self._extraction_purpose(row, window)))
+            expected = hmac.new(self._key, b"analysis-stage-v1\0" + self._stage_json(stage),
+                                hashlib.sha256).hexdigest()
+            if stage["window"] != window or not hmac.compare_digest(expected, row["extraction_id"]):
+                raise ValueError
+            return stage
+        except (SearchJobError, ValueError, TypeError) as exc:
+            raise VaultIntegrityError("Analysis extraction authentication failed") from exc
+
+    def _publication_row(self, job_id):
+        with self._connect() as db:
+            return db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
+
+    def bind_analysis_window(self, job_id, lease_token, window):
+        from muninn.history.cited_analysis_source import CitedAnalysisSource
+        CitedAnalysisSource(self.archive).reopen(window)  # No journal writer held.
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=? AND state='running' "
+                             "AND lease_token=? AND lease_until>? AND cancel_requested=0",
+                             (job_id, lease_token, time.time())).fetchone()
+            if row is None:
+                return False
+            target = self._analysis_row(row).target
+            if any(window[k] != target[k] for k in ("blob", "sha256", "version")):
+                raise SearchJobError("Cited window does not match the queued target")
+            old = self._read_analysis_window(row)
+            if old is not None and old != window:
+                raise SearchJobError("Queued analysis window is immutable")
+            if old is None:
+                db.execute("UPDATE history_analysis_jobs SET sealed_window=? WHERE job_id=?",
+                           (self._seal_search(window, job_id, self._window_purpose(row)), job_id))
+            return True
+
+    def stage_analysis(self, job_id, lease_token, stage):
+        stage = self._validate_extraction(stage, authenticate=True)  # Outside journal transaction.
+        identity = hmac.new(self._key, b"analysis-stage-v1\0" + self._stage_json(stage), hashlib.sha256).hexdigest()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=? AND state='running' "
+                             "AND lease_token=? AND lease_until>? AND cancel_requested=0",
+                             (job_id, lease_token, time.time())).fetchone()
+            if row is None:
+                return False
+            if self._read_analysis_window(row) != stage["window"]:
+                raise SearchJobError("Extraction does not match the queued window")
+            existing = self._read_extraction(row)
+            if existing is not None:
+                if existing != stage:
+                    raise SearchJobError("Queued extraction stage is immutable")
+                return True
+            bound = dict(row)
+            bound["extraction_id"] = identity
+            sealed = self._seal_search(stage, job_id, self._extraction_purpose(bound, stage["window"]))
+            db.execute("UPDATE history_analysis_jobs SET sealed_extraction=?,extraction_id=? WHERE job_id=?",
+                       (sealed, identity, job_id))
+            return True
+
+    def begin_publication(self, job_id, lease_token):
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=? AND state='running' "
+                             "AND lease_token=? AND lease_until>? AND cancel_requested=0",
+                             (job_id, lease_token, time.time())).fetchone()
+            if row is None or self._read_extraction(row) is None:
+                return False
+            db.execute("UPDATE history_analysis_jobs SET state='publishing',publication_started=1,updated_at=? "
+                       "WHERE job_id=?", (time.time(), job_id))
+            return True
+
+    def acknowledge_publication(self, job_id, lease_token, refs):
+        from muninn.history.memory_ledger import MemoryLedger
+        if not isinstance(refs, list) or len(refs) > 12 or any(not MemoryLedger._hex(ref) for ref in refs):
+            raise SearchJobError("Invalid memory publication receipt")
+        # Source/ledger authentication may be expensive; never hold the shared
+        # journal writer through it. Recheck the lease and stage at final commit.
+        before = self._publication_row(job_id)
+        if (before is None or before["state"] != "publishing" or before["publication_started"] != 1
+                or before["lease_token"] != lease_token or before["lease_until"] <= time.time()):
+            return False
+        stage_before = self._read_extraction(before)
+        if stage_before is None:
+            raise SearchJobError("Memory receipt has no extraction stage")
+        from muninn.history.cited_analysis_source import CitedAnalysisSource
+        source = CitedAnalysisSource(self.archive)
+        expected = source.expected_refs(stage_before["window"], stage_before["proposals"],
+                                         model_identity=stage_before["model_identity"])
+        if refs != expected or not source.ledger.verify_refs(refs):
+            raise SearchJobError("Memory receipt has no matching durable records")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=? AND state='publishing' "
+                             "AND lease_token=? AND lease_until>? AND publication_started=1",
+                             (job_id, lease_token, time.time())).fetchone()
+            if row is None:
+                return False
+            stage = self._read_extraction(row)
+            if stage is None or row["extraction_id"] != before["extraction_id"]:
+                raise SearchJobError("Memory receipt does not match extraction")
+            result = stage["result"]
+            now = time.time()
+            receipt = {"extraction_id": row["extraction_id"], "refs": refs}
+            db.execute("UPDATE history_analysis_jobs SET state='succeeded',sealed_result=?,sealed_receipt=?,"
+                       "result_expires_at=?,provider=?,model=?,error_code='',lease_token=NULL,lease_until=NULL,updated_at=? "
+                       "WHERE job_id=?", (self._seal_search(result, job_id, "analysis-result"),
+                       self._seal_search(receipt, job_id, "analysis-receipt-v1:" + row["extraction_id"]),
+                       now + _ANALYSIS_RESULT_TTL, result["provider"], result["model"], now, job_id))
+            return True
+
+    def request_analysis_cancel(self, job_id):
+        with self._connect() as db:
+            cur = db.execute("UPDATE history_analysis_jobs SET cancel_requested=1,"
+                             "state=CASE WHEN state='running' THEN state ELSE 'cancelled' END,updated_at=? "
+                             "WHERE job_id=? AND publication_started=0 AND state IN ('pending','retry','running')",
+                             (time.time(), job_id))
+            return cur.rowcount == 1
+
+    def defer_publication(self, job_id, lease_token):
+        """Retry only the existing staged local publication, never inference."""
+        with self._connect() as db:
+            cur = db.execute("UPDATE history_analysis_jobs SET state='publication_pending',"
+                             "lease_token=NULL,lease_until=NULL,due_at=?,updated_at=? "
+                             "WHERE job_id=? AND state='publishing' AND publication_started=1 "
+                             "AND sealed_extraction IS NOT NULL AND lease_token=? AND lease_until>?",
+                             (time.time() + 5, time.time(), job_id, lease_token, time.time()))
+            return cur.rowcount == 1
+
+    def _read_publication_receipt(self, row):
+        if row["sealed_receipt"] is None:
+            return None
+        from muninn.history.memory_ledger import MemoryLedger
+        if self._read_extraction(row) is None:
+            raise VaultIntegrityError("Memory receipt has no extraction stage")
+        receipt = self._open_search(row["sealed_receipt"], row["job_id"],
+                                    "analysis-receipt-v1:" + row["extraction_id"])
+        if (not isinstance(receipt, dict) or set(receipt) != {"extraction_id", "refs"}
+                or receipt["extraction_id"] != row["extraction_id"]
+                or not isinstance(receipt["refs"], list) or len(receipt["refs"]) > 12
+                or any(not MemoryLedger._hex(ref) for ref in receipt["refs"])):
+            raise VaultIntegrityError("Memory publication receipt is invalid")
+        return receipt
+
+    @staticmethod
+    def _recover_analysis(db, now):
+        db.execute("UPDATE history_analysis_jobs SET state=CASE "
+                   "WHEN publication_started=1 THEN 'publication_pending' "
+                   "WHEN cancel_requested=1 AND (remote_dispatched=0 OR sealed_extraction IS NOT NULL) THEN 'cancelled' "
+                   "WHEN sealed_extraction IS NOT NULL THEN 'retry' "
+                   "WHEN remote_dispatched=1 THEN 'outcome_unknown' ELSE 'retry' END,"
+                   "error_code=CASE WHEN remote_dispatched=1 AND sealed_extraction IS NULL THEN 'outcome_unknown' ELSE error_code END,"
+                   "lease_token=NULL,lease_until=NULL,due_at=0,updated_at=? "
+                   "WHERE state IN ('running','publishing') AND lease_until IS NOT NULL AND lease_until<=?", (now, now))
 
     def claim_analysis(self) -> AnalysisJob | None:
         now = time.time()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute(
-                "UPDATE history_analysis_jobs SET state=CASE WHEN remote_dispatched=1 THEN 'outcome_unknown' ELSE 'retry' END,error_code=CASE WHEN remote_dispatched=1 THEN 'outcome_unknown' ELSE error_code END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE state='running' AND lease_until<=?",
-                (now, now),
-            )
+            self._recover_analysis(db, now)
             row = db.execute(
-                "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry') AND due_at<=? ORDER BY due_at,created_at LIMIT 1",
+                "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry','publication_pending') AND due_at<=? ORDER BY due_at,created_at LIMIT 1",
                 (now,),
             ).fetchone()
             if not row:
                 return None
             token = os.urandom(16).hex()
             db.execute(
-                "UPDATE history_analysis_jobs SET state='running',attempt=attempt+1,lease_token=?,lease_until=?,updated_at=? WHERE job_id=?",
+                "UPDATE history_analysis_jobs SET state=CASE WHEN publication_started=1 THEN 'publishing' ELSE 'running' END,attempt=attempt+1,lease_token=?,lease_until=?,updated_at=? WHERE job_id=?",
                 (token, now + _ANALYSIS_LEASE, now, row["job_id"]),
             )
             row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (row["job_id"],)).fetchone()
@@ -784,7 +1007,7 @@ class CaptureJournal:
     def heartbeat_analysis(self, job_id: str, lease_token: str) -> bool:
         with self._connect() as db:
             cur = db.execute(
-                "UPDATE history_analysis_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                "UPDATE history_analysis_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state IN ('running','publishing') AND lease_token=? AND lease_until>?",
                 (time.time() + _ANALYSIS_LEASE, time.time(), job_id, lease_token, time.time()),
             )
             return cur.rowcount == 1
@@ -792,7 +1015,7 @@ class CaptureJournal:
     def mark_remote_dispatched(self, job_id: str, lease_token: str) -> bool:
         with self._connect() as db:
             cur = db.execute(
-                "UPDATE history_analysis_jobs SET remote_dispatched=1,updated_at=? WHERE job_id=? AND state='running' AND remote_dispatched=0 AND lease_token=? AND lease_until>?",
+                "UPDATE history_analysis_jobs SET remote_dispatched=1,updated_at=? WHERE job_id=? AND state='running' AND remote_dispatched=0 AND cancel_requested=0 AND lease_token=? AND lease_until>?",
                 (time.time(), job_id, lease_token, time.time()),
             )
             return cur.rowcount == 1
@@ -830,14 +1053,14 @@ class CaptureJournal:
         code = code if code in _ANALYSIS_RETRY_CODES | _ANALYSIS_TERMINAL_CODES else "unknown"
         with self._connect() as db:
             row = db.execute(
-                "SELECT attempt,remote_dispatched FROM history_analysis_jobs WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                "SELECT attempt,remote_dispatched,cancel_requested,sealed_extraction FROM history_analysis_jobs WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
                 (job_id, token, now),
             ).fetchone()
             if not row:
                 return False
             state = (
-                "outcome_unknown" if row["remote_dispatched"]
-                else "cancelled" if code == "cancelled"
+                "outcome_unknown" if row["remote_dispatched"] and row["sealed_extraction"] is None
+                else "cancelled" if code == "cancelled" or row["cancel_requested"]
                 else "retry" if retry and code in _ANALYSIS_RETRY_CODES
                 else "failed"
             )
@@ -859,7 +1082,7 @@ class CaptureJournal:
     def cancel_analysis(self, job_id: str) -> bool:
         with self._connect() as db:
             cur = db.execute(
-                "UPDATE history_analysis_jobs SET state=CASE WHEN remote_dispatched=1 AND state='running' THEN 'outcome_unknown' ELSE 'cancelled' END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND state IN ('pending','retry','running')",
+                "UPDATE history_analysis_jobs SET cancel_requested=1,state=CASE WHEN remote_dispatched=1 AND sealed_extraction IS NULL AND state='running' THEN 'outcome_unknown' ELSE 'cancelled' END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND publication_started=0 AND state IN ('pending','retry','running')",
                 (time.time(), job_id),
             )
             return cur.rowcount == 1
@@ -873,7 +1096,7 @@ class CaptureJournal:
         result = None
         if row["state"] == "succeeded" and row["result_expires_at"] and row["result_expires_at"] > time.time():
             result = self._allow_analysis_result(self._open_search(row["sealed_result"], job_id, "analysis-result"))
-        return {
+        response = {
             "job_id": job.job_id,
             "state": job.state,
             "result": result,
@@ -883,6 +1106,10 @@ class CaptureJournal:
             "error_code": row["error_code"] if row["error_code"] in _ANALYSIS_RETRY_CODES | _ANALYSIS_TERMINAL_CODES else None,
             "due_at": row["due_at"] if row["state"] == "retry" else None,
         }
+        receipt = self._read_publication_receipt(row)
+        if receipt is not None:
+            response["memory_refs"] = list(receipt["refs"])
+        return response
 
     def fail_search(self, job_id: str, lease_token: str, error_code: str = "unknown") -> bool:
         now = time.time()

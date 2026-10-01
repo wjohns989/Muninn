@@ -412,3 +412,18 @@ class MemoryLedger:
                 else:
                     raise MemoryLedgerIntegrityError("Invalid memory event sequence")
         return report
+
+    def verify_refs(self, refs):
+        """Authenticate one full chain and every requested candidate citation."""
+        if not isinstance(refs, list) or len(refs) > 64 or any(not self._hex(ref) for ref in refs):
+            raise ValueError("Invalid bounded memory references")
+        wanted, found = set(refs), set()
+        with self._connect() as db:
+            db.execute("BEGIN")
+            for ref, payload in self._walk(db):
+                if ref in wanted and payload.get("event") == "candidate":
+                    if ref in found:
+                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
+                    self._check_candidate(payload)
+                    found.add(ref)
+        return found == wanted
