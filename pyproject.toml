@@ -52,6 +52,8 @@ dependencies = [
     "kuzu==0.11.3",
     # v3.1.0: Cross-platform path resolution
     "platformdirs>=4.0.0",
+    # Portable operator preflight/reload verifies process and listener ownership.
+    "psutil>=5.9.0",
     # Strict history and credential vault modules are imported by server.py.
     "cryptography>=46.0.0",
     # Strict history and private ACL enforcement require this on Windows.

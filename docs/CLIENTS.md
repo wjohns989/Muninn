@@ -11,6 +11,14 @@ one another.
 | Streamable HTTP | `http://127.0.0.1:42069/mcp` | Any client that accepts an MCP URL (preferred) |
 | stdio | `python /path/to/Muninn/mcp_wrapper.py` | Clients that only launch commands |
 
+`python -m muninn.mcp` is a compatibility entrypoint for the same stdio wrapper;
+it does not run a second transport implementation. Initialize only checks the
+configured backend/Ollama readiness. Bootstrap autostart flags default off and
+do not turn initialization into a service-start request. The installed
+`muninn_mcp_bridge` remains the preferred Windows route for loading authenticated
+local settings. Bridge diagnostics do not persist request payloads or return
+raw exception values; existing old trace files are not automatically removed.
+
 The stdio wrapper is a thin client of the same server; it never opens the
 store itself. Start the server first (`python server.py`, the tray app, or the
 service), then configure the clients below.
