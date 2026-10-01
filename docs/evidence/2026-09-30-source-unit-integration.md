@@ -366,3 +366,42 @@ API: one redacted page, 1,443 characters, with no ledger change or model call.
 This read proof took 1.58 seconds. New API/MCP definitions have not yet been
 loaded by the running service; activation and a live MCP round trip remain a
 separate gate. No PID, query, source text, grant, ref, or credential is saved here.
+
+### Live agent-access activation and configured bridge
+
+After a separate user-approved reload, the actual live MCP transport passed
+`get_cited_memory`, `search_cited_memories`, `get_cited_memory_source`, and the
+related redacted transcript-page read on a previously published real memory.
+Provisional/model-origin labels survived, anonymous and wrong-token reads were
+401, and Ollama reported zero resident models. The reload preserved one existing
+interpreter/listener, strict ready history, and five structurally verified SQLite
+preimages. Its first readiness assertion raced startup initialization; the same
+new process became ready and was independently verified, without another reload.
+
+Hook status confirms all four installed Codex and Claude Code hooks and Gemini's
+SessionStart/SessionEnd/AfterAgent/PreCompress hooks. Actual acceptance receipts
+exist for all four Codex and Claude events and Gemini SessionStart/SessionEnd.
+Gemini AfterAgent/PreCompress are installed but lack actual receipt evidence.
+The inspected existing client bindings select the same Python and stdio bridge
+with the core profile; no client configuration was changed or disabled server
+enabled. The bridge forces authenticated loopback and disables autostart itself.
+
+CI caught two concrete gaps: a synthetic home-path canary did not use the accepted
+portable `user` placeholder, and the expanded core profile exceeded its 20-tool
+limit. Both were corrected without weakening the guards. Three mutation tools
+remain available in the full profile instead of core. The existing compatibility
+case passes. A real subprocess launched through the configured stdio bridge,
+outside the repo working directory, listed exactly 20 core tools including the
+three new reads and retrieved an actual saved provisional memory. No model call
+or settings edit occurred. The running HTTP process retains its earlier core
+list until a future batch reload; configured stdio clients load the corrected
+20-tool definition now. A pre-activation smoke parser incorrectly assumed an
+API envelope in the MCP text result; correcting the probe to the existing data-
+only MCP contract required no program change or inference retry.
+
+At `1d759ff`, privacy, clean imports, replay, and benchmark CI checks have passed.
+The full locked suite remains in progress under run 36806259226; no full-suite
+pass is claimed. The preceding full run had 2,431 passed / 13 skipped and only
+the now-corrected core-count failure. Automatic historical enrichment, ambiguity
+resolution, paid-backfill reservation/scaling, and remaining UI work are still
+open; this evidence does not mark the installation goal complete.
