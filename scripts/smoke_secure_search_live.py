@@ -87,6 +87,8 @@ def main() -> int:
                         help="Report search result sizes without fetching text")
     parser.add_argument("--smallest-match", action="store_true",
                         help="Use the smallest returned snapshot for fetch and transcript checks")
+    parser.add_argument("--transcript-only", action="store_true",
+                        help="Project transcript pages without a synchronous span fetch")
     parser.add_argument("--base", default="http://127.0.0.1:42069")
     parser.add_argument("--deadline-seconds", type=int, default=180)
     parser.add_argument("--analyze", choices=("local", "remote"),
@@ -98,6 +100,8 @@ def main() -> int:
     args = parser.parse_args()
     if not 0 <= args.transcript_pages <= 20:
         parser.error("--transcript-pages must be between 0 and 20")
+    if args.transcript_only and args.transcript_pages == 0:
+        parser.error("--transcript-only requires --transcript-pages")
     if not args.base.startswith("http://127.0.0.1:"):
         parser.error("Only the local loopback Muninn service is permitted")
     if args.existing_job_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", args.existing_job_id):
@@ -165,14 +169,15 @@ def main() -> int:
                         if args.smallest_match else result["matches"][0])
             details["selected_size_bucket_kib"] = selected["size_bucket_kib"]
             capability = selected["fetch_capability"]
-            stage = "fetch"
-            span = _request(
-                args.base, token, "/history/secure/fetch",
-                body={"capability": capability, "max_chars": 500},
-                timeout=180,
-            )["data"]
-            details["fetch_redaction"] = span["redaction"]
-            details["fetch_chars"] = len(span["redacted_text"])
+            if not args.transcript_only:
+                stage = "fetch"
+                span = _request(
+                    args.base, token, "/history/secure/fetch",
+                    body={"capability": capability, "max_chars": 500},
+                    timeout=180,
+                )["data"]
+                details["fetch_redaction"] = span["redaction"]
+                details["fetch_chars"] = len(span["redacted_text"])
             if args.transcript_pages:
                 projection_started = time.monotonic()
                 stage = "transcript_start"
