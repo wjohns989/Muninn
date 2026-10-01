@@ -1,5 +1,83 @@
 # Provenance-aware memory routing (source-unit foundation implemented; filing pending)
 
+## Current verified checkpoint (supersedes earlier gap descriptions below)
+
+The implementation notes below retain their historical design context. They
+must not be interpreted as saying that the ledger, worker or agent reads still
+need to be built. The following checkpoint is authoritative for current scope:
+
+- Durable cited extraction is active locally: a real archived conversation
+  automatically produced five encrypted provisional memories through the
+  pertinent-search worker, with immutable source binding, staged publication
+  and an authenticated receipt. Ollama returned to zero resident models.
+- Agent search, lookup and source-following are active. Real authenticated HTTP
+  MCP retrieved a saved memory and its redacted transcript page. The actual
+  configured stdio bridge, launched outside the checkout, retrieved a real
+  memory and listed the corrected 20-tool core profile. Ordinary memory search
+  does not yet federate this separate cited ledger.
+- Codex and Claude have observed receipts for all four configured lifecycle
+  hooks. Gemini has real SessionStart/SessionEnd receipts; AfterAgent and
+  PreCompress remain unverified. Client bindings were inspected, not rewritten.
+- A journal connection contention fix is reviewed and pushed, with isolated
+  red-first/focused checks passing. Exact-candidate `e2236f3` Linux CI passed
+  2,434 tests / 13 skips; all five PR checks passed. The full suite took
+  163.47 seconds. This closes the demonstrated connection-setup regression;
+  the live process has not been reloaded for this later fix.
+
+Remaining dependencies, not completion claims:
+
+1. **Automatic coverage:** add resumable bounded windows for new captured
+   history, separately from pertinent-search interpretation. Reserve capacity
+   for active searches, keep CPU capture independent, and record actual window
+   coverage rather than claiming an entire source was interpreted. Cross-version
+   deduplication must preserve distinct occurrences and partial-message growth.
+2. **Classification:** evidence-gated project/type/time/conflict decisions and
+   agent/user consultation remain incomplete. Source lookup and a supported
+   quote alone do not resolve ambiguity. The credential queue needs its separate
+   authenticated local-context classification and representative proof.
+3. **Backfill admission:** measure cumulative encrypted-ledger validation cost
+   and implement durable spending reservations/accounting before broad paid
+   scheduling. Provider quota availability is not a reservation. Local and ZDR
+   short-source transport proofs do not establish historical coverage/accuracy.
+4. **Operational recovery/privacy:** validate current full archive, ledger and
+   staged-job backup/restore together; audit legacy indexed metadata with a
+   recoverable quarantine plan. Component recovery proofs are narrower.
+5. **Client and UI closure:** obtain the remaining real Gemini hook receipts;
+   then expose coverage, provisional/review state, resource routing and privacy/
+   budget controls coherently in the localhost UI. UI overhaul remains last.
+
+See `docs/evidence/2026-09-30-source-unit-integration.md` for exact proof scopes
+and known limits. Keep the service running; subsequent activation/reload still
+requires its own scoped authority and idle-queue/recovery checks.
+
+### Next bounded automatic-coverage slice
+
+Read-only independent examination confirmed that search targeting cannot serve
+as automatic capture coverage: its target requires query terms and selects a
+matching window. Do not fabricate a search query or count one such hit as a
+whole-source pass. Add a query-independent immutable source/window target.
+
+After archive commit, resolve that exact snapshot identity and idempotently
+enqueue capture enrichment before acknowledging the capture revision. An
+`unchanged` replay must still recover an enqueue interrupted after archive
+commit. Queue saturation is deferred work, not coverage. Changed snapshots and
+growing partial messages must not silently erase or conflate prior occurrences.
+
+Reuse sealed source-unit streaming, encrypted staging, model-origin provisional
+publication and existing crash recovery. Record window-level coverage and
+unsupported/no-context/integrity/deferred states explicitly. Search work has
+priority and reserved capacity. Begin this new lane with a bounded local-only
+cadence; persisted ZDR consent must not override that lane's temporary backfill
+cost gate. This is an incremental admission boundary, not a permanent removal
+of the requested automatic resource-aware ZDR fallback.
+
+Smallest proof: isolated crash-between-commit-and-enqueue replay, changed-version
+recapture, bounded long-source window continuity, queue saturation, search
+priority, local-only admission despite enabled remote consent, and stage-only
+publication recovery. Representative real-source/model validation follows
+component proof and a separately prepared activation; fixtures are not evidence
+that the live installation has automatically enriched newly captured history.
+
 ## Decision and observable outcome
 
 Muninn must not treat a model's interpretation as a verified memory merely

@@ -432,3 +432,12 @@ The connection fix is source-only until a separately approved reload. Existing
 live cited-memory and configured-bridge proofs remain unchanged. A new exact-
 candidate Linux CI result is required before calling this regression resolved
 across platforms; no broader scheduling or paid backfill has been enabled.
+
+**Result:** exact program/test candidate `e2236f3` passed all five PR checks.
+Linux run 36808400643 completed with **2,434 passed / 13 skipped** in 163.47
+seconds, including the previously failing automatic-analysis case. Independent
+examination of the actual connection diff and held-writer/mode-drift proofs was
+CLEAR. This closes the demonstrated connection-setup regression across the
+tested Windows and Linux environments, not every possible contention or prior
+stall. Source activation remains pending the next scoped service reload; no
+new service operation or model dispatch occurred in this follow-up.
