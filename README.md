@@ -807,6 +807,16 @@ python -m muninn.cli credentials backup --root '<your-private-data-dir>\credenti
 python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --archive-root '<your-private-data-dir>\history_secure_archive' --limit 60 --model '<your-installed-Ollama-chat-model>' --max-pages 200 --backup-before '<new-private-pre-triage-backup-dir>' --backup-after '<new-private-reviewed-backup-dir>' --apply
 ```
 
+Credential backup authenticates records with streaming cursors and compares the
+complete pinned SQLite snapshot, including receipts, audits and sequence state.
+Restore copies the database through SQLite's online backup API into private
+staging; it has no arbitrary database byte ceiling. Fixed-format header limits,
+link/WAL checks, passphrase authentication and record integrity checks remain.
+Publication never replaces an existing destination and does not reopen the
+store after publication. Atomic no-replace publication supports Windows and
+Linux; unavailable platform/filesystem support fails closed. These are vault
+component backups, not coordinated history/remote-policy installation bundles.
+
 For a specific opaque ID returned by `review-list`, use `credentials
 review-reveal --record-id <id>` only in an unlogged private terminal if you
 need to inspect the exact candidate. After independently checking its source,
