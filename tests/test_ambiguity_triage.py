@@ -182,6 +182,44 @@ def test_model_without_original_source_context_never_dispatches(monkeypatch):
     assert classify_local([item], model="local-test")[0].decision == "deferred"
 
 
+def test_triage_reports_quota_separately_from_transient_gpu_contention(tmp_path, monkeypatch):
+    class Store:
+        def list_ambiguities(self, **kwargs):
+            return [{"id": "one", "name": "SERVICE_API_KEY", "reason": "unparsed_value"}]
+        def reveal_ambiguity(self, *args, **kwargs):
+            return "synthetic-987654"
+        def ambiguity_status(self):
+            return {"pending": 1}
+
+    class Source(_ReviewSource):
+        saved = []
+        def inputs(self, prepared, row, candidate):
+            for page in range(4):
+                yield page, CandidateForReview(row["id"], row["name"], row["reason"], candidate,
+                                              {"context": f"synthetic source {page}"})
+        def record(self, prepared, page, identity, result):
+            self.saved.append(page)
+
+    source = Source()
+    monkeypatch.setattr(runner, "CredentialStore", lambda _root: Store())
+    utilization = iter([0, 85, 0, 0])
+    monkeypatch.setattr(runner, "probe_gpu", lambda: GpuState(
+        7_500, 16_376, next(utilization), time.time()))
+    monkeypatch.setattr(runner, "probe_ollama", lambda _url: (
+        [{"name": "qwen2.5:7b", "size": 4_700 * 1024 * 1024, "digest": "synthetic-weights"}], ()))
+    from muninn.history.ambiguity_triage import ReviewDecision
+    monkeypatch.setattr(runner, "classify_local", lambda items, **kwargs: [
+        ReviewDecision(items[0].id, "rejected", "local-model")])
+    report = runner.run(root=tmp_path, passphrase="synthetic phrase", limit=2, model_limit=2,
+                        model="qwen2.5:7b", apply=True, base_url="http://127.0.0.1:11434",
+                        review_source=source)
+    assert report["model_route"] == "model_limit_reached"
+    assert report["contexts_route_deferred"] == 1
+    assert report["contexts_quota_deferred"] == 1
+    assert report["model_calls"] == 2 and source.saved == [1, 2]
+    assert report["model_rejected"] == 0 and report["next_cursor"] is None
+
+
 def test_model_decision_cannot_spread_to_another_source_in_same_value_group(tmp_path, monkeypatch):
     passphrase = "synthetic passphrase long enough"
     root = tmp_path / "vault"

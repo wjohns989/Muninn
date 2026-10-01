@@ -122,8 +122,8 @@ def test_possible_credential_proposal_is_never_returned_as_ordinary_text(tmp_pat
     assert result["state"] == "pending" and "text" not in result and "quote" not in result
 
 
-@pytest.mark.parametrize("private_path", [r"C:\Users\synthetic\private.env",
-                                       "C:/Users/synthetic/private.env", "/home/synthetic/private.env"])
+@pytest.mark.parametrize("private_path", [r"C:\Users\user\private.env",
+                                       "C:/Users/user/private.env", "/home/user/private.env"])
 def test_json_escaping_or_slash_style_does_not_bypass_private_home_gate(tmp_path, private_path):
     text = "Keep citations. " + private_path
     archive, entry, attempt, page = fixture(tmp_path, text=text)

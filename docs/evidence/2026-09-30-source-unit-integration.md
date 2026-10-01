@@ -132,3 +132,25 @@ its live HTTP behavior can be claimed. Other services have not been stopped.
 
 Runtime and encrypted data stay local. Public source, tests and portable scripts
 belong in the existing repository branch/PR; unrelated dirty files stay untouched.
+# Interactive review C: truthful completion and resource reporting
+
+The user ran the visible interactive PowerShell helper with one six-row page
+and a two-call limit. Both encrypted backups validated at 10,424 records. Two
+local model calls completed; no queue rows resolved (24,442 pending, 155
+deferred, 30 rejected). Exit code 2 correctly reports unresolved review, not an
+unlock or backup failure. A subsequent read-only check found no review worker,
+one healthy existing Muninn listener, and an idle GPU. No service was restarted.
+
+The old page report could retain a transient `gpu_busy` reason after later
+successful calls, without identifying subsequent per-page quota deferrals. A
+red-first four-context regression demonstrated that exact misleading result.
+Reporting now distinguishes quota-deferred and route-deferred contexts and
+updates the route after successful admission; it does not relax GPU checks,
+invent resolutions, or change cached decision/application behavior. The old
+live report cannot establish how many contexts each deferral affected.
+
+Focused validation: 43 ambiguity-triage and encrypted-memory-ledger tests
+passed. The synthetic home-path privacy fixtures use the standard `user`
+placeholder so CI's portable-path gate stays enforced. The preceding commit's
+full locked-dependency suite passed; its only CI failure was those synthetic
+paths, not a discovered real secret.

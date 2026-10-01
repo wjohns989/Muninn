@@ -51,6 +51,7 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
             model_inputs.append((row, item))
     model_decisions = []
     calls, reused, incomplete = 0, 0, 0
+    quota_deferred, route_deferred = 0, 0
     route_reason = "no_model_needed" if not model_inputs else "deferred"
     if model_inputs and model_limit and (archive_root is not None or review_source is not None):
         review_source = review_source or CredentialReviewSource(archive_root)
@@ -70,6 +71,7 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
                 identity = hashlib.sha256(f"credential-review-v2\0{model}\0{digest}".encode()).hexdigest()
                 for row, original in model_inputs:
                     if calls >= model_limit:
+                        route_reason = "model_limit_reached"
                         break
                     if on_progress:
                         on_progress({"stage": "source_context_prepare", "model_calls": calls})
@@ -92,6 +94,7 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
                         if calls >= model_limit:
                             complete = False
                             resumable = True
+                            quota_deferred += 1
                             continue
                         # Acquire the shared local inference slot, then recheck
                         # GPU contention/headroom immediately before each call.
@@ -106,13 +109,16 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
                                 complete = False
                                 resumable = True
                                 route_reason = fresh.reason
+                                route_deferred += 1
                                 continue
                             fresh_model = next((m for m in installed if (m.get("name") or m.get("model")) == model), {})
                             if fresh_model.get("digest") != digest:
                                 complete = False
                                 resumable = True
                                 route_reason = "model_identity_changed"
+                                route_deferred += 1
                                 continue
+                            route_reason = fresh.reason
                             result = classify_local([item], model=model,
                                                     base_url=base_url, keep_alive=keep_alive)[0]
                             calls += 1
@@ -159,7 +165,10 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
         "rule_rejected": sum(d.decision == "rejected" for d in rule_decisions),
         "model_rejected": sum(d.decision == "rejected" for d in model_decisions),
         "deferred_for_user": sum(d.decision == "deferred" for d in [*rule_decisions, *model_decisions]),
-        "left_pending": queue_counts.get("pending", 0), "model_route": route_reason,
+        "left_pending": queue_counts.get("pending", 0),
+        "model_route": "model_limit_reached" if quota_deferred else route_reason,
+        "contexts_quota_deferred": quota_deferred,
+        "contexts_route_deferred": route_deferred,
         "applied": apply, "queue_counts": queue_counts,
         "next_cursor": next_cursor,
     }
