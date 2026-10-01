@@ -154,3 +154,22 @@ passed. The synthetic home-path privacy fixtures use the standard `user`
 placeholder so CI's portable-path gate stays enforced. The preceding commit's
 full locked-dependency suite passed; its only CI failure was those synthetic
 paths, not a discovered real secret.
+
+The reporting fix was pushed as `8fc88fc`; all five GitHub checks passed,
+including the full locked-dependency suite and the privacy gate.
+
+## Bounded atomic ledger batch component
+
+Ten new cases failed first because `record_batch` was absent. The implemented
+1–64 proposal API authenticates every source/quote before publication,
+validates the old encrypted event chain once per batch, preserves distinct
+occurrences, and skips exact retry/within-batch duplicates. Events and one
+committed head update are atomic. Late invalid quote/page, corrupt existing
+prefix, and head-update interruption leave prior database rows unchanged.
+All 35 ledger tests passed, including portable recovery and the prior privacy
+and citation tests. Independent examination of the actual diff was CLEAR;
+the reviewer did not rerun tests or access live data/providers. Automatic
+model-job integration remained FLAG for missing source citations, whole-input
+remote credential screening, explicit model-proposal provisional status and
+unreserved spend admission. These are recorded in the routing plan, not
+treated as resolved by batch tests. No live activation or restart occurred.

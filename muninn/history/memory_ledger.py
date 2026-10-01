@@ -154,29 +154,31 @@ class MemoryLedger:
             raise MemoryLedgerIntegrityError("Ledger committed head does not match events")
 
     def _append(self, ref, payload, *, idempotent=False):
+        self._append_batch([(ref, payload)], idempotent=idempotent)
+
+    def _append_batch(self, events, *, idempotent=False):
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             # Never extend a broken prefix merely because its tail/head survived.
-            # This first API verifies the whole chain before every publication;
-            # background batching needs measured amortization before activation.
+            # Authenticate the old chain once for this bounded atomic batch.
+            # Bulk backfill still requires measured scaling before activation.
             for _ in self._walk(db):
                 pass
             head = self._head(db)
-            if idempotent and db.execute("SELECT 1 FROM events WHERE ref=? LIMIT 1", (ref,)).fetchone():
-                # Validate before accepting a cached identity; never swallow a
-                # corrupted stored record as an idempotent successful retry.
-                return
-            if head["seq"]:
-                seq, last_ref, sealed = db.execute(
-                    "SELECT seq,ref,CASE WHEN length(ciphertext)<=? THEN ciphertext ELSE NULL END "
-                    "FROM events WHERE seq=?", (_LIMIT + 28, head["seq"])).fetchone()
-                self._open(sealed, "event", seq, last_ref)
-                if not self._hex(last_ref) or self._digest(seq, last_ref, sealed) != head["digest"]:
-                    raise MemoryLedgerIntegrityError("Ledger committed head does not match events")
-            seq = head["seq"] + 1
-            sealed = self._seal({"previous": head["digest"], "payload": payload}, "event", seq, ref)
-            db.execute("INSERT INTO events VALUES(?,?,?)", (seq, ref, sealed))
-            self._set_head(db, seq, self._digest(seq, ref, sealed))
+            seq, previous = head["seq"], head["digest"]
+            seen = set()
+            for ref, payload in events:
+                if idempotent and (ref in seen or db.execute(
+                        "SELECT 1 FROM events WHERE ref=? LIMIT 1", (ref,)).fetchone()):
+                    # The whole chain was validated before accepting retries.
+                    continue
+                seq += 1
+                sealed = self._seal({"previous": previous, "payload": payload}, "event", seq, ref)
+                db.execute("INSERT INTO events VALUES(?,?,?)", (seq, ref, sealed))
+                previous = self._digest(seq, ref, sealed)
+                seen.add(ref)
+            if seq != head["seq"]:
+                self._set_head(db, seq, previous)
 
     def _source(self, entry, version, attempt, page):
         try:
@@ -265,6 +267,27 @@ class MemoryLedger:
                         and self._screen(body)) else None
 
     def record(self, entry, version, attempt, page, proposal, *, model_identity):
+        ident, payload = self._prepare_record(entry, version, attempt, page, proposal,
+                                             model_identity=model_identity)
+        self._append(ident, payload, idempotent=True)
+        return ident
+
+    def record_batch(self, entry, version, attempt, items, *, model_identity):
+        """Authenticate all proposals before one bounded, all-or-none commit.
+
+        This API does not dispatch inference or activate automatic backfill.
+        No source-read transaction survives into the ledger write transaction.
+        """
+        if (not isinstance(items, list) or not 1 <= len(items) <= 64
+                or any(not isinstance(item, dict) or set(item) != {"page", "proposal"}
+                       or type(item["page"]) is not int or item["page"] < 0 for item in items)):
+            raise ValueError("Invalid bounded memory batch")
+        events = [self._prepare_record(entry, version, attempt, item["page"], item["proposal"],
+                                      model_identity=model_identity) for item in items]
+        self._append_batch(events, idempotent=True)
+        return [ref for ref, _payload in events]
+
+    def _prepare_record(self, entry, version, attempt, page, proposal, *, model_identity):
         if (not isinstance(proposal, dict) or set(proposal) != {"type", "text", "quote", "start"}
                 or proposal["type"] not in TYPES or not self._hex(model_identity)
                 or any(not isinstance(proposal[k], str) or not 1 <= len(proposal[k]) <= 2048
@@ -305,8 +328,7 @@ class MemoryLedger:
                                 "attempt": attempt, "page": page, "unit": unit.ordinal,
                                 "fragment": data["fragment"], "start": start, "length": len(quote),
                                 "parser_version": PARSER_VERSION}}
-        self._append(ident, payload, idempotent=True)
-        return ident
+        return ident, payload
 
     def _check_candidate(self, payload):
         try:

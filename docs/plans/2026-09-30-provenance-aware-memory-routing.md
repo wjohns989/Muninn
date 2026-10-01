@@ -267,3 +267,39 @@ local and approved ZDR route, source-following search, and idle-model release.
 Only after those pass does the scheduling slice prioritize active/new/backlog
 work. UI controls and historical backfill are subsequent dependencies, not
 implied by the ledger's unit tests.
+
+## Automatic integration admission requirements
+
+Independent review of the actual ledger/analysis boundary identified these
+remaining blockers before connecting model results to automatic filing:
+
+1. Bind a bounded source-fragment window and its exact offsets to the existing
+   encrypted analysis job **before** inference. The current summary window
+   supplies no authenticated claim citation. Persist parser/schema/model
+   identity and input digest; retry must reuse that window, not silently select
+   a different excerpt. Cross-fragment coverage is separate resumable work.
+2. Add exact-quote proposals to the internal extraction contract. Check each
+   against the persisted source window. Model-origin proposals stay explicitly
+   provisional even when they echo a whole user message; quote equality is
+   source support, not approval of the proposed type, scope or truth. Preserve
+   the public four-field analysis response until agent contracts are updated.
+3. Screen the complete actual serialized remote request, not merely the claim
+   or response. Credential-bearing or unknown inputs stay in the local lane;
+   consent, budget, lease and ZDR settings do not override that boundary.
+4. Reuse existing lease, remote-dispatch/unsent markers and consent-generation
+   checks. An interrupted possibly sent request is outcome-unknown, not an
+   automatic duplicate paid request. Persist accepted proposal refs atomically
+   before marking extraction complete; recover ledger-commit/job-ack crashes
+   by deterministic idempotency. Do not confuse a quota availability query
+   with a spend reservation.
+5. The bounded `record_batch` component validates all citations before a single
+   transaction and authenticates the prior ledger chain once for up to 64
+   proposals. Single-record callers retain the same semantics. This amortizes
+   validation but does **not** remove quadratic cumulative full-chain cost.
+   Measure representative growth before enabling a historical backfill; add
+   an authenticated scalable validation boundary if needed, without accepting
+   an unverified old prefix or holding a source reader through inference.
+
+The component is tested independently of the live service. It does not by
+itself activate historical inference, resolve conflicts, establish extraction
+coverage, or federate ledger results into agent search.

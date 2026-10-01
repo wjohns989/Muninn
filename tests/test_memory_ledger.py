@@ -253,3 +253,63 @@ def test_review_decision_appends_without_erasing_observation(tmp_path):
     assert result["state"] == "needs_user" and result["text"] == "I want source citations kept."
     assert result["truth_status"] == "unverified_assertion"
     assert ledger.verify_all() == {"events": 2, "candidates": 1, "decisions": 1}
+
+
+def test_bounded_batch_authenticates_old_chain_once_and_preserves_idempotency(tmp_path, monkeypatch):
+    text = "Keep citations. Drop citations."
+    archive, entry, attempt, page = fixture(tmp_path, text=text)
+    ledger = MemoryLedger(archive)
+    items = [{"page": page, "proposal": {"type": "observation", "text": quote,
+              "quote": quote, "start": start}}
+             for quote, start in [("Keep citations.", 0), ("Drop citations.", 16)]]
+    original_walk = ledger._walk
+    calls = []
+    def walk(db):
+        calls.append(True)
+        yield from original_walk(db)
+    monkeypatch.setattr(ledger, "_walk", walk)
+    refs = ledger.record_batch(entry, 0, attempt, items + [items[0]], model_identity=MODEL)
+    assert len(calls) == 1 and refs[0] != refs[1] and refs[0] == refs[2]
+    assert ledger.record_batch(entry, 0, attempt, items, model_identity=MODEL) == refs[:2]
+    assert len(calls) == 2
+    assert ledger.verify_all() == {"events": 2, "candidates": 2, "decisions": 0}
+    assert MemoryLedger(archive).get(refs[1])["text"] == "Drop citations."
+
+
+@pytest.mark.parametrize("failure", ["bad_quote", "bad_page", "head", "prefix"])
+def test_batch_publication_is_all_or_none(tmp_path, monkeypatch, failure):
+    archive, entry, attempt, page = fixture(tmp_path, text="Keep citations. Drop citations.")
+    ledger = MemoryLedger(archive)
+    record(ledger, entry, attempt, page, text="Keep citations.")
+    if failure == "prefix":
+        with ledger._connect() as db:
+            db.execute("UPDATE events SET ciphertext=zeroblob(length(ciphertext)) WHERE seq=1")
+    with ledger._connect() as db:
+        before_events = db.execute("SELECT * FROM events ORDER BY seq").fetchall()
+        before_head = db.execute("SELECT * FROM head").fetchall()
+    items = [{"page": page, "proposal": {"type": "observation", "text": "Drop citations.",
+              "quote": "Drop citations.", "start": 16}},
+             {"page": page, "proposal": {"type": "decision", "text": "Keep citations.",
+              "quote": "Keep citations.", "start": 0}}]
+    if failure == "bad_quote":
+        items[1]["proposal"]["quote"] = "invented quote"
+    elif failure == "bad_page":
+        items[1]["page"] = 999999
+    elif failure == "head":
+        def fail(*args):
+            raise RuntimeError("isolated head interruption")
+        monkeypatch.setattr(ledger, "_set_head", fail)
+    with pytest.raises((ValueError, RuntimeError)):
+        ledger.record_batch(entry, 0, attempt, items, model_identity=MODEL)
+    with ledger._connect() as db:
+        assert db.execute("SELECT * FROM events ORDER BY seq").fetchall() == before_events
+        assert db.execute("SELECT * FROM head").fetchall() == before_head
+
+
+@pytest.mark.parametrize("items", [[], [None], [{"page": 0}], [None] * 65, iter([])])
+def test_batch_enforces_bounded_explicit_shape_without_publication(tmp_path, items):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    with pytest.raises(ValueError):
+        ledger.record_batch(entry, 0, attempt, items, model_identity=MODEL)
+    assert ledger.verify_all() == {"events": 0, "candidates": 0, "decisions": 0}
