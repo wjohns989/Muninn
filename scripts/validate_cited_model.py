@@ -29,7 +29,10 @@ def main() -> int:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--query", required=True)
     parser.add_argument("--provider", choices=("ollama", "openrouter"), default="ollama")
-    parser.add_argument("--model", help="Installed Ollama model to test")
+    parser.add_argument("--model", help="Installed Ollama model or exact OpenRouter model to test")
+    parser.add_argument("--remote-token-parameter", choices=("max_completion_tokens", "max_tokens"),
+                        default="max_completion_tokens",
+                        help="Exact bound supported by the chosen ZDR endpoint")
     parser.add_argument("--acknowledge-private-zdr", action="store_true",
                         help="Allow one screened private archive window through managed ZDR admission")
     parser.add_argument("--no-think", action="store_true",
@@ -57,10 +60,12 @@ def main() -> int:
                 if args.max_output_tokens is not None:
                     body.setdefault("options", {})["num_predict"] = args.max_output_tokens
             elif provider.name == "openrouter" and args.provider == "openrouter":
-                # Live ZDR endpoint metadata confirms this on the preferred
-                # GPT-6 Luna route. require_parameters rejects incompatible
-                # fallbacks instead of silently dropping the ceiling.
-                body["max_completion_tokens"] = 2048
+                if args.model:
+                    body["model"] = args.model
+                    body["models"] = [args.model]
+                # require_parameters rejects endpoints that would discard the
+                # selected completion bound; different providers name it differently.
+                body[args.remote_token_parameter] = 2048
             return body
 
         Provider.request_body = bounded_request

@@ -128,6 +128,28 @@ async def test_missing_cost_cannot_return_publishable_result_or_free_allowance(t
 
 
 @pytest.mark.asyncio
+async def test_capture_opt_out_after_marker_still_prevents_remote_post(tmp_path, monkeypatch):
+    calls = []
+    async def post():
+        calls.append(True)
+        return response()
+    history = route(tmp_path, monkeypatch, post)
+    monkeypatch.setattr(analysis, "_select_local", lambda base: (None, "gpu_busy"))
+    marker = []
+    async def before_remote():
+        marker.append(True)
+        return True
+    async def remote_not_sent():
+        return True
+    result = await analysis._analyze_window(history, "Use source citations.",
+        allow_remote=True, before_remote=before_remote,
+        remote_not_sent=remote_not_sent, remote_gate=lambda: False)
+    assert result["status"] == "deferred" and result["reason"] == "remote_consent_revoked"
+    assert marker == [True] and calls == []
+    assert status(tmp_path)["unresolved"] == 0
+
+
+@pytest.mark.asyncio
 async def test_revocation_during_post_still_settles_returned_cost(tmp_path, monkeypatch):
     async def post():
         write_policy(tmp_path, enabled=False, daily_usd=5, monthly_usd=50,

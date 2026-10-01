@@ -140,8 +140,10 @@ class AnalysisJob:
 
 
 class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
-    def __init__(self, archive: SecureHistoryArchive, *, recover: bool = True):
+    def __init__(self, archive: SecureHistoryArchive, *, recover: bool = True,
+                 policy_root: Path | None = None):
         self.archive = archive
+        self.policy_root = Path(policy_root) if policy_root is not None else archive.root.parent
         # SQLite URI connections require an absolute path even when the archive
         # CLI was given a relative --root.
         self.path = (archive.root / "capture-jobs.db").absolute()
@@ -863,10 +865,15 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
         from muninn.history.memory_ledger import MemoryLedger, TYPES
         try:
             if (not isinstance(stage, dict)
-                    or set(stage) != {"format", "window", "proposals", "model_identity", "result"}
+                    or set(stage) not in ({"format", "window", "proposals", "model_identity", "result"},
+                                          {"format", "window", "proposals", "model_identity", "result",
+                                           "admission_id"})
                     or type(stage["format"]) is not int or stage["format"] != 1
                     or not MemoryLedger._hex(stage["model_identity"])
                     or not isinstance(stage["proposals"], list) or len(stage["proposals"]) > 12):
+                raise ValueError
+            if "admission_id" in stage and (not isinstance(stage["admission_id"], str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", stage["admission_id"])):
                 raise ValueError
             CitedAnalysisSource.validate_descriptor(stage["window"])
             self._allow_analysis_result(stage["result"])
@@ -908,11 +915,35 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                                 hashlib.sha256).hexdigest()
             if stage["window"] != window or not hmac.compare_digest(expected, row["extraction_id"]):
                 raise ValueError
-            if row["lane"] == 1 and stage["result"]["provider"] != "ollama":
-                raise ValueError
+            if row["lane"] == 1:
+                provider = stage["result"]["provider"]
+                if not (provider == "ollama" and row["remote_dispatched"] == 0
+                        or provider == "openrouter" and row["remote_dispatched"] == 1
+                        and row["remote_policy_generation"] > 0):
+                    raise ValueError
+                self._verify_capture_stage_settlement(row, stage)
             return stage
         except (SearchJobError, ValueError, TypeError) as exc:
             raise VaultIntegrityError("Analysis extraction authentication failed") from exc
+
+    def _verify_capture_stage_settlement(self, row, stage):
+        if row["lane"] != 1:
+            return
+        provider = stage["result"]["provider"]
+        if provider == "ollama":
+            if "admission_id" in stage:
+                raise SearchJobError("Local capture stage has remote admission")
+            return
+        from muninn.history.remote_accounting import AdmissionError, settled_response
+        identifier = stage.get("admission_id")
+        if not isinstance(identifier, str):
+            raise SearchJobError("Remote capture settlement is missing")
+        try:
+            settled = settled_response(self.policy_root, identifier, row["remote_policy_generation"])
+        except AdmissionError as exc:
+            raise SearchJobError("Remote capture settlement is unavailable") from exc
+        if not settled:
+            raise SearchJobError("Remote capture settlement is not verified")
 
     def _publication_row(self, job_id):
         with self._connect() as db:
@@ -952,8 +983,13 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                 return False
             if self._read_analysis_window(row) != stage["window"]:
                 raise SearchJobError("Extraction does not match the queued window")
-            if row["lane"] == 1 and stage["result"]["provider"] != "ollama":
-                raise SearchJobError("Automatic window lane is local-only")
+            if row["lane"] == 1:
+                provider = stage["result"]["provider"]
+                if not (provider == "ollama" and row["remote_dispatched"] == 0
+                        or provider == "openrouter" and row["remote_dispatched"] == 1
+                        and row["remote_policy_generation"] > 0):
+                    raise SearchJobError("Automatic window provider is not authorized")
+                self._verify_capture_stage_settlement(row, stage)
             existing = self._read_extraction(row)
             if existing is not None:
                 if existing != stage:
@@ -1123,8 +1159,24 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
 
     def mark_remote_dispatched(self, job_id: str, lease_token: str) -> bool:
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM history_analysis_jobs WHERE job_id=? AND state='running' "
+                "AND remote_dispatched=0 AND cancel_requested=0 AND lease_token=? AND lease_until>?",
+                (job_id, lease_token, time.time()),
+            ).fetchone()
+            if row is None:
+                return False
+            if row["lane"] == 1:
+                self._validated_analysis_target(row, db)
+                if row["remote_policy_generation"] < 1:
+                    return False
+            elif row["lane"] != 0:
+                return False
             cur = db.execute(
-                "UPDATE history_analysis_jobs SET remote_dispatched=1,updated_at=? WHERE job_id=? AND lane=0 AND state='running' AND remote_dispatched=0 AND cancel_requested=0 AND lease_token=? AND lease_until>?",
+                "UPDATE history_analysis_jobs SET remote_dispatched=1,updated_at=? WHERE job_id=? "
+                "AND state='running' AND remote_dispatched=0 AND cancel_requested=0 "
+                "AND lease_token=? AND lease_until>?",
                 (time.time(), job_id, lease_token, time.time()),
             )
             return cur.rowcount == 1

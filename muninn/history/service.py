@@ -123,6 +123,12 @@ class HistoryService:
         return (strict_history_mode() and _flag("MUNINN_CAPTURE_ENRICHMENT")
                 and _flag("MUNINN_CAPTURE_AUTO_ANALYSIS"))
 
+    def _capture_remote_enabled(self) -> bool:
+        if not (self._capture_auto_enabled() and _flag("MUNINN_CAPTURE_AUTO_REMOTE")):
+            return False
+        from muninn.history.auto_routing import remote_policy_snapshot
+        return remote_policy_snapshot(self.data_dir).enabled
+
     def _open_secure_archive(self) -> None:
         if self.secure_archive is not None:
             return
@@ -145,7 +151,8 @@ class HistoryService:
 
     def _require_capture_journal(self) -> CaptureJournal:
         if getattr(self, "_capture_journal", None) is None:
-            self._capture_journal = CaptureJournal(self._require_secure_archive())
+            self._capture_journal = CaptureJournal(self._require_secure_archive(),
+                                                  policy_root=self.data_dir)
         return self._capture_journal
 
     def _configure_capture_enrichment(self) -> bool:
@@ -716,7 +723,7 @@ class HistoryService:
             "last_secure_capture": self.last_secure_capture,
             "capture_enrichment": ({"capture_enabled": _flag("MUNINN_CAPTURE_ENRICHMENT"),
                                     "automatic_analysis_enabled": self._capture_auto_enabled(),
-                                    "automatic_remote_enabled": False,
+                                    "automatic_remote_enabled": self._capture_remote_enabled(),
                                     "cadence": self._capture_cadence.snapshot(),
                                     **self._capture_journal.enrichment_status(),
                                     "last_reconciliation": self.last_capture_enrichment}
@@ -897,11 +904,16 @@ class HistoryService:
         if receipt is None:
             return False
         ticket = await asyncio.to_thread(journal.capture_planning_ticket, receipt)
+        remote_generation = -1
+        if self._capture_remote_enabled():
+            from muninn.history.auto_routing import remote_policy_snapshot
+            remote_generation = remote_policy_snapshot(self.data_dir).generation
         cancelled = threading.Event()
         from muninn.history.structured_projector import ProjectionCancelled, UnsupportedTranscript
         from muninn.history.secure_projection_store import ProjectionIntegrityError
         in_flight = asyncio.create_task(asyncio.to_thread(
             journal.queue_capture_windows, receipt, limit=4,
+            remote_policy_generation=remote_generation,
             should_cancel=lambda: cancelled.is_set() or should_cancel()))
         try:
             await asyncio.shield(in_flight)
@@ -987,27 +999,51 @@ class HistoryService:
                                         job.lease_token, "cancelled")
                 return True
 
+            remote_was_not_sent = True
+
             async def before_remote() -> bool:
-                if cancelled.is_set() or job.lane == 1:
+                nonlocal remote_was_not_sent
+                if cancelled.is_set() or job.lane == 1 and not capture_remote_gate():
                     return False
                 # This durable marker precedes the HTTP request. After it is
                 # set, an interrupted run is outcome_unknown, never auto-retry.
-                return await asyncio.to_thread(
+                marked = await asyncio.to_thread(
                     journal.mark_remote_dispatched, job.job_id, job.lease_token,
                 )
+                if marked:
+                    remote_was_not_sent = False
+                return marked
 
             async def remote_not_sent() -> bool:
-                return await asyncio.to_thread(
+                nonlocal remote_was_not_sent
+                cleared = await asyncio.to_thread(
                     journal.mark_remote_not_sent, job.job_id, job.lease_token,
                 )
+                if cleared:
+                    remote_was_not_sent = True
+                return cleared
 
             from muninn.history.auto_routing import remote_policy_snapshot
             from muninn.history.secure_analysis import analyze_cited_window
 
+            def capture_remote_gate() -> bool:
+                if job.lane != 1:
+                    return True
+                if job.remote_policy_generation < 1 or not self._capture_remote_enabled():
+                    return False
+                policy = remote_policy_snapshot(self.data_dir)
+                return policy.enabled and policy.generation == job.remote_policy_generation
+
             if job.lane == 1:
-                # Persisted general ZDR consent cannot override this lane's
-                # temporary cost gate. Do not read remote credentials/policy.
-                remote_enabled, remote_generation = False, -1
+                if (job.remote_policy_generation > 0
+                        and self._capture_remote_enabled()):
+                    remote_policy = remote_policy_snapshot(self.data_dir)
+                    remote_enabled = (remote_policy.enabled
+                                      and remote_policy.generation == job.remote_policy_generation)
+                    remote_generation = remote_policy.generation
+                else:
+                    # Legacy and opt-out capture jobs never read remote keys.
+                    remote_enabled, remote_generation = False, -1
             else:
                 remote_policy = remote_policy_snapshot(self.data_dir)
                 remote_enabled = (remote_policy.enabled
@@ -1037,11 +1073,24 @@ class HistoryService:
                 # resource-deferred and reuse attempts; staged recovery above
                 # needs no new model attempt.
                 self._capture_cadence.note_attempt()
-            outcome = await analyze_cited_window(
-                self, source, descriptor, allow_remote=remote_enabled, should_cancel=cancelled.is_set,
+            analysis_kwargs = dict(
+                allow_remote=remote_enabled, prefer_remote=job.lane == 1 and remote_enabled,
+                should_cancel=cancelled.is_set,
                 before_remote=before_remote, remote_not_sent=remote_not_sent,
-                expected_remote_generation=remote_generation, **reuse_kwargs,
+                expected_remote_generation=remote_generation,
+                remote_gate=capture_remote_gate if job.lane == 1 else None,
             )
+            outcome = await analyze_cited_window(self, source, descriptor,
+                                                 **analysis_kwargs, **reuse_kwargs)
+            if (job.lane == 1 and remote_enabled and outcome["status"] == "deferred"
+                    and remote_was_not_sent):
+                # A policy/budget/privacy denial before HTTP is safe to handle
+                # locally. An uncertain or sent POST must never be retried.
+                outcome = await analyze_cited_window(
+                    self, source, descriptor, allow_remote=False,
+                    should_cancel=cancelled.is_set, expected_remote_generation=-1,
+                    **reuse_kwargs,
+                )
             if outcome["status"] == "reused":
                 return True  # Already ACKed; retain original refs/citations.
             elif outcome["status"] == "ok":

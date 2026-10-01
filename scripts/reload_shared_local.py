@@ -29,6 +29,7 @@ from muninn.history.private_acl import create_private_directory, create_private_
 from scripts.local_runtime_preflight import inspect_runtime
 
 CAPTURE_FLAGS = ("MUNINN_CAPTURE_ENRICHMENT", "MUNINN_CAPTURE_AUTO_ANALYSIS")
+REMOTE_FLAG = "MUNINN_CAPTURE_AUTO_REMOTE"
 TABLES = ("jobs", "history_search_jobs", "history_analysis_jobs")
 ACTIVE = {"jobs": {"pending", "retry", "capturing"},
           "history_search_jobs": {"pending", "retry", "running"},
@@ -72,6 +73,8 @@ def parse_args(argv=None):
     parser.add_argument("--enable-capture-auto", action="store_true", help="Enable local-only new-capture processing")
     parser.add_argument("--preserve-capture-auto", action="store_true",
                         help="Reload already enabled local capture without changing settings or queued work")
+    parser.add_argument("--enable-capture-remote", action="store_true",
+                        help="Opt in to managed ZDR for new capture windows on an existing auto-capture service")
     parser.add_argument("--expected-revision", help="Approved, tested Git commit hash")
     parser.add_argument("--finalize-capture-auto", action="store_true",
                         help="Persist an already running approved local activation; never restart")
@@ -83,6 +86,8 @@ def parse_args(argv=None):
         parser.error("capture activation requires an explicitly authorized restart")
     if args.preserve_capture_auto and (not args.restart or args.enable_capture_auto or args.finalize_capture_auto):
         parser.error("capture preservation requires restart and cannot activate or finalize")
+    if args.enable_capture_remote and not args.preserve_capture_auto:
+        parser.error("remote capture requires restart with --preserve-capture-auto")
     if args.restart and not args.expected_revision:
         parser.error("restart requires an approved --expected-revision")
     if args.finalize_capture_auto and (args.restart or args.enable_capture_auto
@@ -93,10 +98,12 @@ def parse_args(argv=None):
     return args
 
 
-def launch_environment(original, *, enable_capture_auto):
+def launch_environment(original, *, enable_capture_auto, enable_capture_remote=False):
     copied = dict(original)
     if enable_capture_auto:
         copied.update({name: "1" for name in CAPTURE_FLAGS})
+    if enable_capture_remote:
+        copied[REMOTE_FLAG] = "1"
     return copied
 
 
@@ -111,7 +118,7 @@ def validate_flag_value(value):
 
 def read_user_flag(name):
     import winreg
-    if name not in CAPTURE_FLAGS:
+    if name not in (*CAPTURE_FLAGS, REMOTE_FLAG):
         raise ValueError("Setting is outside the capture flag whitelist")
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
@@ -125,7 +132,7 @@ def read_user_flag(name):
 
 def write_user_flag(name, value):
     import winreg
-    if name not in CAPTURE_FLAGS:
+    if name not in (*CAPTURE_FLAGS, REMOTE_FLAG):
         raise ValueError("Setting is outside the capture flag whitelist")
     validate_flag_value(value)
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, "Environment", access=winreg.KEY_SET_VALUE) as key:
@@ -163,14 +170,27 @@ def persist_capture_flags(before, *, read=read_user_flag, write=write_user_flag)
                                + ("compensation incomplete" if failures else "settings compensated")) from exc
 
 
-def mode_matches(report, *, enable):
+def persist_remote_flag(before, *, read=read_user_flag, write=write_user_flag):
+    validate_flag_value(before)
+    require(read(REMOTE_FLAG) == before, "Remote capture setting changed before persistence")
+    try:
+        write(REMOTE_FLAG, "1")
+        if read(REMOTE_FLAG) != "1":
+            raise PersistenceError("Remote capture setting persistence was not verified")
+    except Exception as exc:
+        if before != "1" and read(REMOTE_FLAG) == "1":
+            write(REMOTE_FLAG, before)
+        raise PersistenceError("Remote capture setting persistence failed") from exc
+
+
+def mode_matches(report, *, enable, remote=False):
     state = report.get("capture_enrichment")
     if not isinstance(state, dict):
         return False
     if enable:
         return (state.get("capture_enabled") is True
                 and state.get("automatic_analysis_enabled") is True
-                and state.get("automatic_remote_enabled") is False)
+                and state.get("automatic_remote_enabled") is remote)
     return state.get("capture_enabled") is False
 
 
@@ -182,7 +202,12 @@ def pre_reload_mode_matches(report, environment, *, preserve_capture_auto=False)
     Post-reload mode verification still requires the modern effective report.
     """
     if preserve_capture_auto:
-        return (mode_matches(report, enable=True)
+        try:
+            remote_value = validate_flag_value(environment.get(REMOTE_FLAG))
+        except ValueError:
+            return False
+        remote_enabled = bool(remote_value and remote_value.strip().lower() in {"1", "true", "yes", "on"})
+        return (mode_matches(report, enable=True, remote=remote_enabled)
                 and all(isinstance(environment.get(name), str)
                         and environment[name].strip().lower() in {"1", "true", "yes", "on"}
                         for name in CAPTURE_FLAGS))
@@ -396,9 +421,13 @@ def run(args):
     require(pre_reload_mode_matches(before, environment, preserve_capture_auto=args.preserve_capture_auto),
             "Existing capture mode differs from the requested reload procedure")
     verify_candidate(repo, args.expected_revision)
-    launching = launch_environment(environment, enable_capture_auto=args.enable_capture_auto)
+    launching = launch_environment(environment, enable_capture_auto=args.enable_capture_auto,
+                                   enable_capture_remote=args.enable_capture_remote)
     expected_auto = args.enable_capture_auto or args.preserve_capture_auto
+    expected_remote = (args.enable_capture_remote or
+                       bool(launching.get(REMOTE_FLAG, "").strip().lower() in {"1", "true", "yes", "on"}))
     user_before = None
+    remote_user_before = read_user_flag(REMOTE_FLAG) if args.enable_capture_remote else None
     if args.enable_capture_auto:
         SmallCaptureCadence(quiet_seconds=float(launching.get("MUNINN_CAPTURE_QUIET_SECONDS", "300")),
                             interval_seconds=float(launching.get("MUNINN_CAPTURE_INTERVAL_SECONDS", "30")))
@@ -422,6 +451,11 @@ def run(args):
         create_private_file(flags_path)
         flags_path.write_text(json.dumps(user_before, sort_keys=True), encoding="utf-8")
         verify_private(flags_path)
+    if args.enable_capture_remote:
+        remote_path = destination / "capture-remote-user-flag.json"
+        create_private_file(remote_path)
+        remote_path.write_text(json.dumps({REMOTE_FLAG: remote_user_before}), encoding="utf-8")
+        verify_private(remote_path)
     out, err = destination / "server.stdout.log", destination / "server.stderr.log"
     create_private_file(out)
     create_private_file(err)
@@ -443,54 +477,68 @@ def run(args):
     with out.open("ab") as stdout, err.open("ab") as stderr:
         child = subprocess.Popen(command, cwd=repo, env=launching, stdout=stdout, stderr=stderr,
                                  stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-    deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        require(child.poll() is None, "Candidate exited; private preimages and logs preserved")
-        try:
-            report = inspect_runtime(repo, authenticated=True, port=args.port)
-            owners = report.get("listener_owners")
-            if owners is not None and owners != [] and owners != [child.pid]:
-                raise RuntimeError("Candidate ownership differs")
-            if runtime_ready(report):
-                if startup_listener_pending(report):
-                    time.sleep(1)
-                    continue
-                owned = report.get("muninn_processes")
-                if not candidate_ownership_matches(report, child_pid=child.pid,
-                                                   retired_pid=process.pid,
-                                                   retired_created_at=identity[0]):
-                    entries = owned if isinstance(owned, list) else []
-                    print(json.dumps({"stage": "candidate_ownership_observation",
-                                      "listener_matches_child": report.get("listener_owners") == [child.pid],
-                                      "owned_process_count": len(entries),
-                                      "child_visible": any(isinstance(item, dict) and item.get("pid") == child.pid
-                                                           for item in entries),
-                                      "retired_visible": any(isinstance(item, dict) and item.get("pid") == process.pid
-                                                             for item in entries),
-                                      "retired_identity_matches": any(isinstance(item, dict)
-                                          and item.get("pid") == process.pid
-                                          and item.get("create_time") == identity[0] for item in entries)}),
-                          flush=True)
+    verified = False
+    try:
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            require(child.poll() is None, "Candidate exited; private preimages and logs preserved")
+            try:
+                report = inspect_runtime(repo, authenticated=True, port=args.port)
+                owners = report.get("listener_owners")
+                if owners is not None and owners != [] and owners != [child.pid]:
                     raise RuntimeError("Candidate ownership differs")
-                if startup_mode_pending(report):
-                    time.sleep(1)
-                    continue
-                require(mode_matches(report, enable=expected_auto), "Requested capture mode is not effective")
-                with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
-                    columns = {row[1] for row in db.execute("PRAGMA table_info(history_analysis_jobs)")}
-                require({"sealed_window", "sealed_extraction", "extraction_id", "sealed_receipt",
-                         "sealed_reuse", "cancel_requested", "publication_started"} <= columns,
-                        "Candidate publication schema is incomplete")
-                if user_before is not None:
-                    persist_capture_flags(user_before)
-                print(json.dumps({"stage": "restarted_verified", "port": args.port, "process_count": 1,
-                                  "strict_archive_ready": True, "automatic_local_capture": expected_auto,
-                                  "capture_settings_persisted": user_before is not None}), flush=True)
-                return
-        except (httpx.HTTPError, ConnectionError):
-            pass
-        time.sleep(1)
-    raise RuntimeError("Candidate startup deadline reached; private preimages and logs preserved")
+                if runtime_ready(report):
+                    if startup_listener_pending(report):
+                        time.sleep(1)
+                        continue
+                    owned = report.get("muninn_processes")
+                    if not candidate_ownership_matches(report, child_pid=child.pid,
+                                                       retired_pid=process.pid,
+                                                       retired_created_at=identity[0]):
+                        entries = owned if isinstance(owned, list) else []
+                        print(json.dumps({"stage": "candidate_ownership_observation",
+                                          "listener_matches_child": report.get("listener_owners") == [child.pid],
+                                          "owned_process_count": len(entries),
+                                          "child_visible": any(isinstance(item, dict) and item.get("pid") == child.pid
+                                                               for item in entries),
+                                          "retired_visible": any(isinstance(item, dict) and item.get("pid") == process.pid
+                                                                 for item in entries),
+                                          "retired_identity_matches": any(isinstance(item, dict)
+                                              and item.get("pid") == process.pid
+                                              and item.get("create_time") == identity[0] for item in entries)}),
+                              flush=True)
+                        raise RuntimeError("Candidate ownership differs")
+                    if startup_mode_pending(report):
+                        time.sleep(1)
+                        continue
+                    require(mode_matches(report, enable=expected_auto, remote=expected_remote),
+                            "Requested capture mode is not effective")
+                    with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
+                        columns = {row[1] for row in db.execute("PRAGMA table_info(history_analysis_jobs)")}
+                    require({"sealed_window", "sealed_extraction", "extraction_id", "sealed_receipt",
+                             "sealed_reuse", "cancel_requested", "publication_started"} <= columns,
+                            "Candidate publication schema is incomplete")
+                    if user_before is not None:
+                        persist_capture_flags(user_before)
+                    if args.enable_capture_remote:
+                        persist_remote_flag(remote_user_before)
+                    verified = True
+                    print(json.dumps({"stage": "restarted_verified", "port": args.port, "process_count": 1,
+                                      "strict_archive_ready": True, "automatic_local_capture": expected_auto,
+                                      "automatic_remote_capture": expected_remote,
+                                      "capture_settings_persisted": user_before is not None}), flush=True)
+                    return
+            except (httpx.HTTPError, ConnectionError):
+                pass
+            time.sleep(1)
+        raise RuntimeError("Candidate startup deadline reached; private preimages and logs preserved")
+    finally:
+        if expected_remote and not verified and child.poll() is None:
+            # Popen's Windows process handle identifies only our new candidate.
+            # Leave sealed queue recovery to the journal; never keep an
+            # unverified remote-enabled child running after a failed reload.
+            child.terminate()
+            child.wait(timeout=15)
 
 
 if __name__ == "__main__":

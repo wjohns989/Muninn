@@ -138,9 +138,10 @@ interpreter as the service; `--repo` and `--port` support other checkout locatio
 and ports. By default this procedure requires capture enrichment to be off and
 the durable queues to be idle; it is not an unattended upgrade mechanism.
 
-For an already enabled, local-only installation, add `--preserve-capture-auto`
+For an already enabled installation, add `--preserve-capture-auto`
 to an explicitly authorized reload. This requires both the authenticated
-effective mode and owned-process flags to confirm automatic local capture.
+effective mode and owned-process flags to confirm automatic capture and its
+current remote opt-in state.
 It copies the existing launch environment without reading or writing the User
 capture flags. Pending/retry jobs remain intact and resume after restart; active
 capture, search, analysis or publication work blocks the stop. A journal writer
@@ -160,7 +161,15 @@ flag and writing it cannot be guaranteed preserved. Do not edit these flags
 concurrently with this operator procedure. Untracked program files, changed
 process identity/listener ownership and linked/reparse ancestors fail closed.
 Database preimages are not a complete portable archive/vault backup. The helper does not
-enable paid capture fallback, historical backfill or another service.
+enable historical backfill or another service. For new-capture ZDR opt-in on
+an already enabled installation, use `--restart --preserve-capture-auto
+--enable-capture-remote --expected-revision <tested-commit>`. This saves a
+private preimage of the nonsecret User flag, requires the managed ZDR policy
+and its spending caps, verifies the new process, then persists the flag for
+future launcher starts. A failed remote-enabled reload stops its own new
+process. Existing local-only queued windows remain local-only. The opt-in does
+not clear unresolved cost admissions or guarantee that remote inference is
+available; ordinary captures and encrypted search continue locally.
 
 Verify it's running:
 
@@ -473,7 +482,8 @@ Key environment variables:
 | `MUNINN_HISTORY_INDEX_AUTO` | off for direct server starts; on in Windows shared launcher | Build a resumable CPU-only encrypted transcript index in bounded batches; no model or GPU use |
 | `MUNINN_SECURE_AUTO_ANALYSIS` | off for direct server starts; on in Windows shared launcher | After an authenticated search finds a pertinent encrypted snapshot, queue one durable, provisional interpretation job; capture and indexing remain CPU-only. Set `0` in the Windows User environment to disable |
 | `MUNINN_CAPTURE_ENRICHMENT` | off | Encrypted new-capture outbox with immutable enable watermark and crash reconciliation. Alone it does not run models or backfill historical snapshots |
-| `MUNINN_CAPTURE_AUTO_ANALYSIS` | off | With capture enrichment enabled, automatically prepare and interpret new captures after quiet time. One CPU-only planner and one shared resource-aware model consumer; foreground search takes priority. Currently local-only: general ZDR consent does not enable paid capture fallback |
+| `MUNINN_CAPTURE_AUTO_ANALYSIS` | off | With capture enrichment enabled, automatically prepare and interpret new captures after quiet time. One CPU-only planner and one shared resource-aware model consumer; foreground search takes priority. Local-only unless capture-specific ZDR is enabled |
+| `MUNINN_CAPTURE_AUTO_REMOTE` | off | Separately opt in to remote-first interpretation of newly queued capture windows under the managed ZDR policy and daily/monthly spending caps. An ineligible, denied, or unsent request falls back to local inference; an uncertain/sent request never auto-retries. Old local-only jobs stay local-only. Does not start a historical bulk run |
 | `MUNINN_CAPTURE_QUIET_SECONDS` | `300` | Quiet period after a successful archive operation and fresh startup grace. Rejected or merely queued requests do not reset it. Valid finite range: greater than zero through 86400 |
 | `MUNINN_CAPTURE_INTERVAL_SECONDS` | `30` | Minimum interval between capture analysis attempts, including deferred/reuse attempts; foreground analysis is not throttled. Same valid range as quiet seconds |
 | `MUNINN_HISTORY_SYNC_MINUTES` | `30` | Legacy sync cadence or strict-mode CPU-only discovery cadence for missed/changed chat transcripts; historical exports still need explicit encrypted sync |

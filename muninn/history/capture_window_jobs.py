@@ -216,7 +216,8 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
             raise VaultIntegrityError("Capture window source commit is unavailable")
         return plans, entry
 
-    def queue_capture_windows(self, receipt, *, limit=4, should_cancel=lambda: False):
+    def queue_capture_windows(self, receipt, *, limit=4, should_cancel=lambda: False,
+                              remote_policy_generation=-1):
         """Internal trusted admission only; no API accepts lane or target options.
 
         Plan/source authentication and descriptor reopening happen outside the
@@ -225,6 +226,9 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
         """
         if type(limit) is not int or not 1 <= limit <= 32:
             raise ValueError("Invalid capture window batch limit")
+        if (type(remote_policy_generation) is not int
+                or remote_policy_generation != -1 and remote_policy_generation < 1):
+            raise ValueError("Invalid capture remote policy generation")
         with self._connect() as db:
             before = self._capture_outbox_row(db, receipt)
             state = self._capture_plan_state(before)
@@ -265,13 +269,16 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                           "blob": receipt["blob"], "sha256": receipt["sha256"], "version": receipt["version"],
                           "work_id": row["work_id"], "plan_attempt": attempt,
                           "ordinal": ordinal, "descriptor_sha256": digest}
+                if remote_policy_generation > 0:
+                    target["remote_policy_generation"] = remote_policy_generation
                 dedup = hmac.new(self._key, b"capture-window-dedup-v1\0" + self._stage_json(target),
                                  hashlib.sha256).hexdigest()
                 job_id = os.urandom(16).hex()
                 db.execute("INSERT INTO history_analysis_jobs(job_id,vault_id,dedup_key,sealed_target,"
                            "state,created_at,updated_at,remote_policy_generation,lane) VALUES(?,?,?,?,?,?,?,?,1)",
                            (job_id, self.archive.vault_id, dedup,
-                            self._seal_search(target, job_id, "analysis-target"), "pending", now, now, -1))
+                            self._seal_search(target, job_id, "analysis-target"), "pending", now, now,
+                            remote_policy_generation))
                 db.execute("INSERT INTO capture_enrichment_windows VALUES(?,?,?,?)", (
                     row["work_id"], ordinal, job_id,
                     self._seal_search(target, job_id, "capture-window-binding-v1")))
@@ -303,11 +310,21 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
             if checked is None:
                 raise VaultIntegrityError("Search analysis target format is invalid")
             return checked
-        if (row["lane"] != 1 or not isinstance(target, dict) or set(target) != _TARGET_FIELDS
+        if not isinstance(target, dict):
+            raise VaultIntegrityError("Capture window lane or target is invalid")
+        bound_generation = target.get("remote_policy_generation", -1)
+        remote_bound = (set(target) == _TARGET_FIELDS | {"remote_policy_generation"}
+                        and type(bound_generation) is int and bound_generation > 0)
+        local_bound = set(target) == _TARGET_FIELDS and row["remote_policy_generation"] == -1
+        if (row["lane"] != 1 or not (remote_bound or local_bound)
                 or target["kind"] != "capture_window" or target["vault_id"] != self.archive.vault_id
                 or row["vault_id"] != self.archive.vault_id
-                or row["remote_policy_generation"] != -1 or row["remote_dispatched"] != 0
-                or row["provider"] not in (None, "ollama")
+                or row["remote_policy_generation"] != bound_generation
+                or row["remote_dispatched"] not in ((0, 1) if remote_bound else (0,))
+                or row["provider"] not in ((None, "ollama", "openrouter") if remote_bound
+                                            else (None, "ollama"))
+                or (row["provider"] == "openrouter" and row["remote_dispatched"] != 1)
+                or (row["provider"] == "ollama" and row["remote_dispatched"] != 0)
                 or any(not isinstance(target[k], str) or not re.fullmatch(r"[0-9a-f]{64}", target[k])
                        for k in ("work_id", "sha256", "descriptor_sha256"))
                 or any(not isinstance(target[k], str) or not re.fullmatch(r"[0-9a-f]{32}", target[k])

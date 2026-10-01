@@ -27,6 +27,23 @@ def test_preserve_mode_requires_restart_and_cannot_activate_or_finalize():
     assert args.preserve_capture_auto and not args.enable_capture_auto
 
 
+def test_remote_capture_opt_in_requires_owned_preserve_reload():
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--enable-capture-remote"])
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--restart", "--enable-capture-remote",
+                           "--expected-revision", "abcdef0"])
+    args = reload.parse_args(["--restart", "--preserve-capture-auto",
+                              "--enable-capture-remote", "--expected-revision", "abcdef0"])
+    assert args.enable_capture_remote
+
+
+def test_shared_launcher_reads_persisted_remote_capture_flag():
+    launcher = (reload.REPO_DEFAULT / "scripts" / "start_shared_local.ps1").read_text(encoding="utf-8")
+    assert '"MUNINN_CAPTURE_AUTO_REMOTE"' in launcher
+    assert 'GetEnvironmentVariable($name, "User")' in launcher
+
+
 def test_reload_failure_code_never_exposes_unreviewed_exception_text():
     assert reload.safe_failure_code(RuntimeError("Candidate ownership differs")) == "candidate_ownership"
     assert reload.safe_failure_code(RuntimeError("private path or token")) == "unspecified"
@@ -80,6 +97,15 @@ def test_preserve_preflight_requires_modern_local_mode_and_owned_true_flags(bad)
     assert not reload.pre_reload_mode_matches(report, environment, preserve_capture_auto=True)
 
 
+def test_preserve_preflight_accepts_matching_owned_remote_mode():
+    report = {"capture_enrichment": {"capture_enabled": True,
+        "automatic_analysis_enabled": True, "automatic_remote_enabled": True}}
+    environment = {**{name: "1" for name in reload.CAPTURE_FLAGS}, reload.REMOTE_FLAG: "1"}
+    assert reload.pre_reload_mode_matches(report, environment, preserve_capture_auto=True)
+    environment[reload.REMOTE_FLAG] = "0"
+    assert not reload.pre_reload_mode_matches(report, environment, preserve_capture_auto=True)
+
+
 def test_preserve_queues_allow_only_unclaimed_durable_work():
     queued = {table: {"pending": 2, "retry": 1} for table in reload.TABLES}
     assert not reload.queues_idle(queued)
@@ -91,13 +117,15 @@ def test_preserve_queues_allow_only_unclaimed_durable_work():
 
 @pytest.mark.skipif(reload.os.name != "nt", reason="Windows owned reload procedure")
 @pytest.mark.parametrize("claim_race,foreign_owner", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("remote_enabled", [False, True])
 def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
-        tmp_path, monkeypatch, claim_race, foreign_owner):
+        tmp_path, monkeypatch, claim_race, foreign_owner, remote_enabled):
     report, process = isolated_installation(tmp_path, monkeypatch)
     report["capture_enrichment"] = {"capture_enabled": True,
-        "automatic_analysis_enabled": True, "automatic_remote_enabled": False}
+        "automatic_analysis_enabled": True, "automatic_remote_enabled": remote_enabled}
     original = process.environ()
-    environment = {**original, **{name: "1" for name in reload.CAPTURE_FLAGS}}
+    environment = {**original, **{name: "1" for name in reload.CAPTURE_FLAGS},
+                   reload.REMOTE_FLAG: "1" if remote_enabled else "0"}
     process.environ = lambda: dict(environment)
     journal = tmp_path / "history_secure_archive" / "capture-jobs.db"
     with sqlite3.connect(journal) as db:
@@ -117,7 +145,10 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
 
     process.terminate = stop
     process.wait = lambda **kwargs: None
-    child = SimpleNamespace(pid=456, poll=lambda: None)
+    stopped_child = []
+    child = SimpleNamespace(pid=456, poll=lambda: None,
+                            terminate=lambda: stopped_child.append(True),
+                            wait=lambda **kwargs: None)
 
     def start(command, **kwargs):
         launched.append(kwargs["env"])
@@ -163,9 +194,11 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
         with pytest.raises(RuntimeError, match="Candidate ownership differs"):
             reload.run(args)
         assert stopped == [True] and launched == [environment]
+        assert stopped_child == ([True] if remote_enabled else [])
     else:
         reload.run(args)
         assert stopped == [True] and launched == [environment]
+        assert stopped_child == []
         with sqlite3.connect(journal) as db:
             assert reload.queue_states(db) == {table: {"pending": 1} for table in reload.TABLES}
 
@@ -180,6 +213,25 @@ def test_enable_changes_only_two_copied_environment_flags():
     assert {key: value for key, value in updated.items() if key not in reload.CAPTURE_FLAGS} == {
         key: value for key, value in original.items() if key not in reload.CAPTURE_FLAGS}
     assert reload.launch_environment(original, enable_capture_auto=False) == original
+
+
+def test_remote_opt_in_changes_only_remote_flag_in_copied_environment():
+    original = {"MUNINN_AUTH_TOKEN": "test-only-auth", reload.REMOTE_FLAG: "0"}
+    updated = reload.launch_environment(original, enable_capture_auto=False,
+                                        enable_capture_remote=True)
+    assert original[reload.REMOTE_FLAG] == "0"
+    assert updated == {**original, reload.REMOTE_FLAG: "1"}
+
+
+def test_remote_flag_persistence_preserves_preimage_and_compensates_failure():
+    before = None
+    state, read, write = fake_registry({})
+    reload.persist_remote_flag(before, read=read, write=write)
+    assert state[reload.REMOTE_FLAG] == "1"
+    state, read, write = fake_registry({}, fail_on=reload.REMOTE_FLAG, after_write=True)
+    with pytest.raises(reload.PersistenceError):
+        reload.persist_remote_flag(before, read=read, write=write)
+    assert reload.REMOTE_FLAG not in state
 
 
 @pytest.mark.parametrize("value", ["api-key-private-canary", 1, "banana", "true\nsecret"])

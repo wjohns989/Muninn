@@ -235,6 +235,22 @@ def status(root, *, now=None, local_details=False):
         return result
 
 
+def settled_response(root, identifier, generation):
+    """Authenticate one settled provider response for durable publication."""
+    _check_id(identifier)
+    if type(generation) is not int or generation < 1:
+        return False
+    with _db(root) as (db, managed):
+        if not managed:
+            return False
+        row = db.execute(
+            "SELECT state,resolution,cost_micro FROM remote_admissions WHERE id=? AND generation=?",
+            (identifier, generation),
+        ).fetchone()
+        return bool(row and row[0] == "settled" and row[1] == "response"
+                    and type(row[2]) is int and 0 <= row[2] <= _MAX)
+
+
 def main(argv=None):
     def decimal_argument(text):
         try:

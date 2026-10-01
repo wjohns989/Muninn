@@ -350,7 +350,7 @@ async def analyze_cited_window(history, source, descriptor, **kwargs):
 async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=False,
                           should_cancel=None, before_remote=None, remote_not_sent=None,
                           expected_remote_generation=None, source=None, descriptor=None, cited=False,
-                          reuse_completed=None):
+                          reuse_completed=None, remote_gate=None):
     if prefer_remote and not allow_remote:
         raise ValueError("A remote preference requires an explicit remote allowance")
     def ensure_active() -> None:
@@ -464,6 +464,9 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
                                     expected_generation=expected_remote_generation):
                 return {"status": "deferred", "provider": None, "model": None,
                         "reason": "remote_consent_revoked"}
+            if remote_gate is not None and not remote_gate():
+                return {"status": "deferred", "provider": None, "model": None,
+                        "reason": "remote_consent_revoked"}
             if not _request_safe(body):
                 return {"status": "deferred", "provider": None, "model": None,
                         "reason": "source_not_remote_safe"}
@@ -498,7 +501,9 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
         actual_model = data.get("model")
         if not isinstance(actual_model, str) or not actual_model or len(actual_model) > 128:
             raise ModelOutputInvalid("Remote model identity unavailable")
-        return _cited_outcome(content, source, descriptor, "openrouter", actual_model)
+        outcome = _cited_outcome(content, source, descriptor, "openrouter", actual_model)
+        outcome["extraction"]["admission_id"] = admission.identifier
+        return outcome
     return {"status": "ok", "provider": "openrouter", "model": data.get("model") or provider.models[0],
             "analysis": _clean_result(content, source_span=span)}
 
