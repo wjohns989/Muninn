@@ -759,6 +759,9 @@ context. These tools require the main local token, stay loopback-only, use no
 model, and do not change a provisional claim into verified truth. Keep private
 context and capabilities out of logs/publication. Search is lexical over safe
 candidate text/type, not a plaintext index or a full historical claim backfill.
+The compact `core` profile remains at 20 tools; `update_memory`,
+`set_project_goal`, and `correct_fact` are available in `full` instead of loading
+those mutation schemas into every ordinary retrieval session.
 
 Dedicated authenticated agent search and source-following tools are available;
 they are not yet federated into ordinary `search_memory`. **Automatic historical

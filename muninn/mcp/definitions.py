@@ -1115,8 +1115,7 @@ CORE_TOOLS = (
     "poll_secure_history_analysis",
     "analyze_secure_history",
     "search_credential_metadata",
-    "update_memory", "get_project_goal", "set_project_goal",
-    "get_user_profile", "correct_fact",
+    "get_project_goal", "get_user_profile",
 )
 TOOLSETS: Dict[str, Tuple[str, ...]] = {
     "full": tuple(schema["name"] for schema in TOOLS_SCHEMAS),
