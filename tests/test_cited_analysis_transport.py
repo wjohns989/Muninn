@@ -124,6 +124,22 @@ def test_unique_exact_quote_can_resolve_incorrect_model_coordinate(tmp_path):
     assert source.ledger.verify_all()["candidates"] == 0
 
 
+def test_invalid_quote_does_not_discard_independent_valid_citation(tmp_path):
+    journal, archive, job, stage, source = queued(tmp_path)
+    valid = stage["proposals"][0]
+    output = json.dumps({**stage["result"]["analysis"], "proposals": [
+        valid, {**valid, "quote": "not in this source"},
+    ]})
+    result = analysis._cited_outcome(output, source, stage["window"],
+                                     "ollama", "fixture-model", "a" * 64)
+    assert result["extraction"]["proposals"] == [valid]
+    assert source.ledger.verify_all()["candidates"] == 0
+    refs = source.record_proposals(result["extraction"]["window"],
+                                   result["extraction"]["proposals"],
+                                   model_identity=result["extraction"]["model_identity"])
+    assert len(refs) == 1 and source.ledger.verify_all()["candidates"] == 1
+
+
 def test_repeated_exact_quote_with_bad_coordinate_stays_ambiguous():
     class Source:
         def reopen(self, descriptor):

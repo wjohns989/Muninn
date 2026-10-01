@@ -224,11 +224,16 @@ def _cited_outcome(content, source, descriptor, provider, model, digest=None, *,
         code = "cited_schema"
         if not isinstance(parsed, dict) or set(parsed) != set(_CITED_SCHEMA["required"]):
             raise ValueError()
-        if any(not isinstance(p, dict) or p.get("type") not in _CITED_SCHEMA["properties"]["proposals"]["items"]["properties"]["type"]["enum"]
-               for p in parsed["proposals"]):
+        proposals = parsed["proposals"]
+        if (not isinstance(proposals, list) or len(proposals) > 12
+                or any(not isinstance(p, dict) or set(p) != {"type", "text", "quote", "start"}
+                       or p.get("type") not in _CITED_SCHEMA["properties"]["proposals"]["items"]["properties"]["type"]["enum"]
+                       or not isinstance(p.get("text"), str) or not 1 <= len(p["text"]) <= 2048
+                       for p in proposals)):
             raise ValueError()
         code = "citation"
-        for proposal in parsed["proposals"]:
+        valid = []
+        for proposal in proposals:
             quote, start = proposal.get("quote"), proposal.get("start")
             if (not isinstance(quote, str) or not 1 <= len(quote) <= 2048
                     or type(start) is not int or start < 0):
@@ -239,10 +244,14 @@ def _cited_outcome(content, source, descriptor, provider, model, digest=None, *,
                 # Ambiguity, paraphrases and cross-range quotes are not repaired.
                 first = window["text"].find(quote)
                 if first < 0 or window["text"].find(quote, first + 1) >= 0:
-                    code = "quote_missing_or_ambiguous"
-                    raise ValueError()
-                proposal["start"] = first
-        source.validated_proposals(descriptor, parsed["proposals"])
+                    continue
+                proposal = {**proposal, "start": first}
+            valid.append(proposal)
+        if proposals and not valid:
+            code = "quote_missing_or_ambiguous"
+            raise ValueError()
+        source.validated_proposals(descriptor, valid)
+        parsed["proposals"] = valid
     except (ValueError, TypeError) as exc:
         raise ModelOutputInvalid("Model cited output is invalid", code=code) from exc
     result = {"status": "ok", "provider": provider, "model": model, "analysis": _clean_result(
