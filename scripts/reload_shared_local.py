@@ -55,6 +55,9 @@ def parse_args(argv=None):
     parser.add_argument("--restart", action="store_true", help="Requires explicit operator authorization")
     parser.add_argument("--enable-capture-auto", action="store_true", help="Enable local-only new-capture processing")
     parser.add_argument("--expected-revision", help="Approved, tested Git commit hash")
+    parser.add_argument("--finalize-capture-auto", action="store_true",
+                        help="Persist an already running approved local activation; never restart")
+    parser.add_argument("--preimage-root", type=Path, help="Private preimage from the approved activation")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("invalid local port")
@@ -62,6 +65,11 @@ def parse_args(argv=None):
         parser.error("capture activation requires an explicitly authorized restart")
     if args.restart and not args.expected_revision:
         parser.error("restart requires an approved --expected-revision")
+    if args.finalize_capture_auto and (args.restart or args.enable_capture_auto
+                                      or not args.expected_revision or args.preimage_root is None):
+        parser.error("finalization requires candidate/preimage and cannot restart")
+    if args.preimage_root is not None and not args.finalize_capture_auto:
+        parser.error("--preimage-root is only valid for finalization")
     return args
 
 
@@ -201,6 +209,28 @@ def preimage_databases(archive, journal):
     return databases
 
 
+def load_capture_flag_preimage(archive, preimage):
+    require_unlinked_path(preimage)
+    require(preimage.parent.resolve(strict=True) == (archive / "operator-preimages").resolve(strict=True),
+            "Capture preimage is outside the private namespace")
+    verify_private(archive)
+    verify_private(preimage.parent)
+    verify_private(preimage)
+    flags = preimage / "capture-user-flags.json"
+    verify_private(flags)
+    require(flags.is_file() and flags.stat().st_size <= 1024, "Capture flag preimage is not bounded")
+    before = json.loads(flags.read_text(encoding="utf-8"))
+    require(isinstance(before, dict) and set(before) == set(CAPTURE_FLAGS),
+            "Incomplete capture flag preimage")
+    for value in before.values():
+        validate_flag_value(value)
+    return before
+
+
+def startup_mode_pending(report):
+    return report.get("capture_enrichment") is None
+
+
 def verify_candidate(repo, revision):
     if not re.fullmatch(r"[0-9a-f]{7,64}", revision or ""):
         raise ValueError("Expected revision must be a Git commit hash")
@@ -289,6 +319,19 @@ def run(args):
     with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
         initial = queue_states(db)
     print(json.dumps({"stage": "inspection", "queues": initial}), flush=True)
+    if args.finalize_capture_auto:
+        require(os.name == "nt", "Capture persistence is supported only on Windows")
+        require(mode_matches(before, enable=True), "Approved local activation is not running")
+        require(all(environment.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+                    for name in CAPTURE_FLAGS), "Owned process capture flags are not enabled")
+        verify_candidate(repo, args.expected_revision)
+        saved = load_capture_flag_preimage(archive, args.preimage_root)
+        verify_stop_ownership(process, identity, repo=repo, port=args.port)
+        persist_capture_flags(saved)
+        print(json.dumps({"stage": "activation_persisted", "port": args.port,
+                          "automatic_local_capture": True, "capture_settings_persisted": True,
+                          "process_restarted": False}), flush=True)
+        return
     if not args.restart:
         return
     require(os.name == "nt", "Owned forced reload is supported only on Windows")
@@ -349,6 +392,9 @@ def run(args):
             if runtime_ready(report):
                 require(report["listener_owners"] == [child.pid]
                         and len(report["muninn_processes"]) == 1, "Candidate ownership differs")
+                if startup_mode_pending(report):
+                    time.sleep(1)
+                    continue
                 require(mode_matches(report, enable=args.enable_capture_auto), "Requested capture mode is not effective")
                 with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
                     columns = {row[1] for row in db.execute("PRAGMA table_info(history_analysis_jobs)")}

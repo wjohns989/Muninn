@@ -306,3 +306,66 @@ def test_preimage_database_selection_never_recursively_copies_preimages(tmp_path
     previous = reload.prepare_preimage_destination(archive)
     create_private_file(previous / "old.sqlite3")
     assert reload.preimage_databases(archive, journal) == [journal, database]
+
+
+def test_finalize_requires_candidate_and_preimage_without_restart():
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--finalize-capture-auto"])
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--restart", "--finalize-capture-auto", "--expected-revision", "abcdef0",
+                           "--preimage-root", "fixture"])
+    args = reload.parse_args(["--finalize-capture-auto", "--expected-revision", "abcdef0",
+                              "--preimage-root", "fixture"])
+    assert args.finalize_capture_auto and not args.restart
+
+
+def test_flag_preimage_is_private_bounded_and_from_archive_namespace(tmp_path):
+    import json
+    from muninn.history.private_acl import create_private_directory, create_private_file
+
+    archive = tmp_path / "archive"
+    create_private_directory(archive)
+    preimage = reload.prepare_preimage_destination(archive)
+    flags = preimage / "capture-user-flags.json"
+    create_private_file(flags)
+    before = {name: None for name in reload.CAPTURE_FLAGS}
+    flags.write_text(json.dumps(before))
+    assert reload.load_capture_flag_preimage(archive, preimage) == before
+    with pytest.raises(RuntimeError, match="namespace"):
+        reload.load_capture_flag_preimage(archive, tmp_path)
+    flags.write_text(json.dumps({**before, "unrelated": "0"}))
+    with pytest.raises(RuntimeError, match="Incomplete"):
+        reload.load_capture_flag_preimage(archive, preimage)
+    flags.write_text(" " * 1025)
+    with pytest.raises(RuntimeError, match="bounded"):
+        reload.load_capture_flag_preimage(archive, preimage)
+
+
+@pytest.mark.parametrize("report,pending", [({}, True), ({"capture_enrichment": None}, True),
+    ({"capture_enrichment": {}}, False), ({"capture_enrichment": {"capture_enabled": False}}, False),
+    ({"capture_enrichment": []}, False)])
+def test_startup_waits_only_for_missing_mode_not_contradictory_mode(report, pending):
+    assert reload.startup_mode_pending(report) is pending
+
+
+def test_finalize_never_spawns_or_stops_and_uses_saved_compare_preimage(tmp_path, monkeypatch):
+    report, process = isolated_installation(tmp_path, monkeypatch)
+    report["capture_enrichment"] = {"capture_enabled": True,
+        "automatic_analysis_enabled": True, "automatic_remote_enabled": False}
+    original = process.environ
+    process.environ = lambda: {**original(), **{name: "1" for name in reload.CAPTURE_FLAGS}}
+    saved = {name: None for name in reload.CAPTURE_FLAGS}
+    writes = []
+    monkeypatch.setattr(reload, "verify_candidate", lambda *args: None)
+    monkeypatch.setattr(reload, "verify_stop_ownership", lambda *args, **kwargs: None)
+    monkeypatch.setattr(reload, "load_capture_flag_preimage", lambda *args: saved)
+    monkeypatch.setattr(reload, "persist_capture_flags", lambda before: writes.append(before))
+    def forbidden(*args, **kwargs):
+        pytest.fail("finalization attempted lifecycle or preimage mutation")
+    monkeypatch.setattr(reload.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(reload, "prepare_preimage_destination", forbidden)
+    args = reload.parse_args(["--repo", str(tmp_path), "--finalize-capture-auto",
+        "--expected-revision", "abcdef0", "--preimage-root", str(tmp_path / "fixture")])
+    if reload.os.name == "nt":
+        reload.run(args)
+        assert writes == [saved]
