@@ -86,6 +86,31 @@ def _dpapi_unwrap(value: bytes) -> bytes:
         raise VaultIntegrityError("History archive cannot unlock for this Windows user") from exc
 
 
+def _rename_noreplace(source: Path, destination: Path) -> None:
+    """Publish a sibling directory atomically without replacing another owner."""
+    if os.name == "nt":
+        # Windows os.rename fails even when the existing target is empty.
+        os.rename(source, destination)
+        return
+    if sys.platform != "linux":
+        raise VaultIntegrityError("Atomic no-replace archive publication is unavailable")
+    import ctypes
+    import errno
+
+    try:
+        rename = ctypes.CDLL(None, use_errno=True).renameat2
+    except (AttributeError, OSError) as exc:
+        raise VaultIntegrityError("Atomic no-replace archive publication is unavailable") from exc
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    # AT_FDCWD, RENAME_NOREPLACE. Unsupported kernels/filesystems fail closed.
+    if rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise FileExistsError("History archive destination already exists")
+        raise VaultIntegrityError("Atomic no-replace archive publication failed")
+
+
 class SecureHistoryArchive:
     """Immutable encrypted blobs plus versioned encrypted manifests.
 
@@ -620,7 +645,18 @@ class SecureHistoryArchive:
             copy_sealed(source, destination / "blobs" / source.name)
         journal = source_root / "capture-jobs.db"
         if copy_journal and (journal.exists() or _is_link(journal)):
-            copy_sealed(journal, destination / journal.name)
+            import sqlite3
+
+            verify_private(journal)
+            target = destination / journal.name
+            create_private_file(target)
+            source_db = sqlite3.connect(journal.resolve().as_uri() + "?mode=ro", uri=True)
+            target_db = sqlite3.connect(target)
+            try:
+                source_db.backup(target_db)
+            finally:
+                source_db.close()
+                target_db.close()
         for evidence_name, db_name in (("source-evidence", "projections.sqlite3"),
                                       ("credential-context", "projections.sqlite3"),
                                       ("cited-windows", "projections.sqlite3"),
@@ -646,66 +682,102 @@ class SecureHistoryArchive:
                 source_db.close()
                 target_db.close()
 
+    @staticmethod
+    def _staging_destination(destination: Path) -> Path:
+        destination = Path(destination)
+        if (destination.exists() or _is_link(destination) or not destination.parent.is_dir()
+                or _is_link(destination.parent)):
+            raise ValueError("Invalid history archive restore locations")
+        return destination.parent / f".{destination.name}.incomplete-{uuid.uuid4().hex}"
+
+    @staticmethod
+    def _publish_staging(staging: Path, destination: Path) -> None:
+        # Failed stages are deliberately retained, private and visibly incomplete.
+        if destination.exists() or _is_link(destination):
+            raise ValueError("History archive destination already exists")
+        verify_private(staging)
+        _rename_noreplace(staging, destination)
+
     @classmethod
     def restore_from_backup(cls, backup_root: Path, destination: Path,
                             passphrase: str) -> "SecureHistoryArchive":
         """Portable restore to a new private root; verify all snapshots."""
-        cls._copy_archive_files(backup_root, destination)
-        restored = cls(destination, passphrase)
+        destination = Path(destination)
+        staging = cls._staging_destination(destination)
+        cls._copy_archive_files(backup_root, staging)
+        restored = cls(staging, passphrase)
         restored.verify_all()
-        if (destination / "capture-jobs.db").exists():
+        if (staging / "capture-jobs.db").exists():
             from muninn.history.capture_journal import CaptureJournal
 
-            CaptureJournal(restored, recover=False).verify_all()
-        if (destination / "source-evidence").exists():
+            journal = CaptureJournal(restored, recover=False)
+            journal.verify_all()
+            journal.verify_publications()
+        if (staging / "source-evidence").exists():
             from muninn.history.source_evidence import SourceEvidenceStore
 
             SourceEvidenceStore(restored).verify_all()
-        if (destination / "credential-context").exists():
+        if (staging / "credential-context").exists():
             from muninn.history.credential_context import CredentialContextStore
 
             CredentialContextStore(restored).verify_all()
-        if (destination / "memory-ledger").exists():
+        if (staging / "memory-ledger").exists():
             from muninn.history.memory_ledger import MemoryLedger
 
             MemoryLedger(restored).verify_all()
-        if (destination / "cited-windows").exists():
+        if (staging / "cited-windows").exists():
             from muninn.history.cited_windows import CitedWindowPlanStore
 
             CitedWindowPlanStore(restored).verify_all()
+        # Rebase the already authenticated object before the final publication.
+        # No second unlock or fallible filesystem operation follows success.
+        restored.root = destination
+        restored._header_path = destination / "header.json"
+        restored._lock_path = destination / "archive.lock"
+        restored._blobs = destination / "blobs"
+        cls._publish_staging(staging, destination)
         return restored
 
     def backup_to(self, destination: Path) -> dict[str, int]:
-        """Take a consistent owner-only ciphertext backup under this Windows user."""
+        """Copy ciphertext and cross-check references, then publish a private backup.
+
+        This is not a single instant across independently written stores, nor
+        a backup of the separate credential vault or remote-policy directory.
+        """
         if os.name != "nt":
             raise VaultIntegrityError("Local unattended backup requires Windows user protection")
+        destination = Path(destination)
+        staging = self._staging_destination(destination)
         with self._write_lock():
             self._load_manifest()
-            self._copy_archive_files(self.root, destination, copy_journal=False)
+            self._copy_archive_files(self.root, staging, copy_journal=False)
             from muninn.history.capture_journal import CaptureJournal
 
-            CaptureJournal(self, recover=False).backup_to(destination / "capture-jobs.db")
-            backup = SecureHistoryArchive(destination)
+            CaptureJournal(self, recover=False).backup_to(staging / "capture-jobs.db")
+            backup = SecureHistoryArchive(staging)
             if backup.vault_id != self.vault_id:
                 raise VaultIntegrityError("History backup identity mismatch")
             report = backup.verify_all()
-            CaptureJournal(backup, recover=False).verify_all()
-            if (destination / "source-evidence").exists():
+            journal = CaptureJournal(backup, recover=False)
+            journal.verify_all()
+            report["publication_receipts_verified"] = journal.verify_publications()
+            if (staging / "source-evidence").exists():
                 from muninn.history.source_evidence import SourceEvidenceStore
 
                 report["evidence_snapshots_verified"] = SourceEvidenceStore(backup).verify_all()["snapshots"]
-            if (destination / "credential-context").exists():
+            if (staging / "credential-context").exists():
                 from muninn.history.credential_context import CredentialContextStore
 
                 report["credential_context_snapshots_verified"] = CredentialContextStore(backup).verify_all()["snapshots"]
-            if (destination / "memory-ledger").exists():
+            if (staging / "memory-ledger").exists():
                 from muninn.history.memory_ledger import MemoryLedger
 
                 report["memory_candidates_verified"] = MemoryLedger(backup).verify_all()["candidates"]
-            if (destination / "cited-windows").exists():
+            if (staging / "cited-windows").exists():
                 from muninn.history.cited_windows import CitedWindowPlanStore
 
                 report["cited_windows_verified"] = CitedWindowPlanStore(backup).verify_all()["windows"]
+            self._publish_staging(staging, destination)
             return report
 
     def metadata_catalog(self, *, provider: str | None = None, offset: int = 0,

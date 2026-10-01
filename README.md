@@ -709,8 +709,20 @@ Windows user with `python -m muninn.history.secure_archive rebind --root
 '<restored-archive>'`. The `restore --backup-root '<backup>' --root
 '<new-private-destination>'` action copies ciphertext into a new owner-only
 directory, verifies every encrypted snapshot, and leaves the backup unchanged.
-The `backup` action requires a new destination, holds the archive writer lock
-while copying ciphertext, and authenticates the complete backup before success.
+The `backup` action requires a new destination and holds the archive writer lock
+while copying ciphertext. Backup and restore first use a private
+`.incomplete-<random-id>` sibling directory, authenticate the copied stores, and
+check that publication receipts identify the exact cited memories present in the
+copied ledger. Only validated copies are published with an atomic no-replace
+rename. A failed stage stays private and incomplete; existing destinations are
+never replaced. Finalization currently supports Windows and Linux with
+`renameat2(RENAME_NOREPLACE)`; unsupported systems/filesystems fail closed.
+The journal and encrypted sidecars use SQLite online snapshots, not raw live DB
+copies. These checks establish reference consistency, not a single snapshot time
+across all writers. This archive command does **not** include the separate
+credential vault or remote-policy/accounting directory: back those up separately
+until a full-installation backup coordinator is available. See
+[the recovery decision](docs/architecture/adr-archive-backup-reference-integrity.md).
 Keep the recovery passphrase outside both the archive and its backups.
 Existing older gzip history copies and source transcripts are **not**
 converted or removed by strict mode; protect them and their backups separately.

@@ -274,3 +274,205 @@ def test_acknowledgment_does_not_hold_writer_lock_during_verification(tmp_path, 
         return original(ledger, refs)
     monkeypatch.setattr(MemoryLedger, "verify_refs", unrelated_write)
     assert journal.acknowledge_publication(job.job_id, job.lease_token, refs)
+
+
+def test_restore_rejects_valid_but_torn_publication_set(tmp_path):
+    journal, archive, job, stage, source = queued(tmp_path)
+    empty_path = tmp_path / "empty-ledger.sqlite3"
+    with sqlite3.connect(source.ledger.db_path) as original, sqlite3.connect(empty_path) as empty:
+        original.backup(empty)
+    bind_stage(journal, job, stage)
+    assert journal.begin_publication(job.job_id, job.lease_token)
+    refs = publish(source, stage)
+    assert journal.acknowledge_publication(job.job_id, job.lease_token, refs)
+    # Both components are authentic, but describe incompatible snapshot cuts.
+    with sqlite3.connect(empty_path) as empty, sqlite3.connect(source.ledger.db_path) as ledger:
+        empty.backup(ledger)
+    assert source.ledger.verify_all()["candidates"] == 0
+    assert journal.verify_all() == 0
+    destination = tmp_path / "restored"
+    with pytest.raises(VaultIntegrityError, match="publication"):
+        SecureHistoryArchive.restore_from_backup(archive.root, destination,
+                                                "synthetic recovery passphrase")
+    assert not destination.exists()
+    assert list(tmp_path.glob(".restored.incomplete-*"))
+    assert journal.get_analysis_job(job.job_id)["memory_refs"] == refs
+
+
+def test_restore_failure_never_publishes_partial_destination(tmp_path, monkeypatch):
+    journal, archive, job, stage, source = queued(tmp_path)
+    original = SecureHistoryArchive._copy_archive_files
+
+    def fail_after_copy(*args, **kwargs):
+        original(*args, **kwargs)
+        raise VaultIntegrityError("Injected copy failure")
+
+    monkeypatch.setattr(SecureHistoryArchive, "_copy_archive_files", fail_after_copy)
+    destination = tmp_path / "restored"
+    with pytest.raises(VaultIntegrityError, match="Injected"):
+        SecureHistoryArchive.restore_from_backup(archive.root, destination,
+                                                "synthetic recovery passphrase")
+    assert not destination.exists()
+    assert list(tmp_path.glob(".restored.incomplete-*"))
+
+
+def test_restore_accepts_unacknowledged_durable_candidate(tmp_path):
+    journal, archive, job, stage, source = queued(tmp_path)
+    bind_stage(journal, job, stage)
+    assert journal.begin_publication(job.job_id, job.lease_token)
+    refs = publish(source, stage)
+    restored = SecureHistoryArchive.restore_from_backup(archive.root, tmp_path / "restored",
+                                                       "synthetic recovery passphrase")
+    assert CitedAnalysisSource(restored).ledger.get(refs[0]) is not None
+    assert CaptureJournal(restored, recover=False).get_analysis_job(job.job_id)["state"] == "publishing"
+
+
+def test_publication_verifier_authenticates_ledger_only_once(tmp_path, monkeypatch):
+    from muninn.history.memory_ledger import MemoryLedger
+
+    journal, archive, job, stage, source = queued(tmp_path)
+    bind_stage(journal, job, stage)
+    assert journal.begin_publication(job.job_id, job.lease_token)
+    assert journal.acknowledge_publication(job.job_id, job.lease_token, publish(source, stage))
+    original = MemoryLedger._walk
+    walks = []
+
+    def counted(ledger, db):
+        walks.append(True)
+        yield from original(ledger, db)
+
+    monkeypatch.setattr(MemoryLedger, "_walk", counted)
+    assert journal.verify_publications() == 1
+    assert len(walks) == 1
+
+
+def test_publication_verifier_checks_binding_not_just_membership(tmp_path):
+    journal, archive, job, stage, source = queued(tmp_path)
+    bind_stage(journal, job, stage)
+    assert journal.begin_publication(job.job_id, job.lease_token)
+    assert journal.acknowledge_publication(job.job_id, job.lease_token, publish(source, stage))
+    other_stage = {**stage, "model_identity": "b" * 64}
+    other_refs = publish(source, other_stage)
+    assert source.ledger.verify_refs(other_refs)
+    with journal._connect() as db:
+        db.execute("UPDATE history_analysis_jobs SET sealed_receipt=? WHERE job_id=?",
+                   (journal._seal_search({"extraction_id": journal._publication_row(job.job_id)["extraction_id"],
+                                          "refs": other_refs}, job.job_id,
+                                         "analysis-receipt-v1:" + journal._publication_row(job.job_id)["extraction_id"]),
+                    job.job_id))
+    assert journal.verify_all() == 0
+    with pytest.raises(VaultIntegrityError, match="publication"):
+        journal.verify_publications()
+
+
+def test_restore_uses_committed_journal_snapshot_during_writer(tmp_path):
+    journal, archive, job, stage, source = queued(tmp_path)
+    with sqlite3.connect(journal.path) as db:
+        db.execute("CREATE TABLE backup_probe(value TEXT)")
+        db.execute("INSERT INTO backup_probe VALUES('committed')")
+    writer = sqlite3.connect(journal.path)
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE backup_probe SET value='uncommitted'")
+        copied = tmp_path / "copied"
+        SecureHistoryArchive._copy_archive_files(archive.root, copied)
+        with sqlite3.connect(copied / "capture-jobs.db") as snapshot:
+            assert snapshot.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert snapshot.execute("SELECT value FROM backup_probe").fetchone()[0] == "committed"
+    finally:
+        writer.rollback()
+        writer.close()
+    restored = SecureHistoryArchive.restore_from_backup(copied, tmp_path / "restored",
+                                                       "synthetic recovery passphrase")
+    assert CaptureJournal(restored, recover=False).verify_all() == 0
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="unattended backup uses Windows DPAPI")
+def test_backup_refuses_torn_set_and_retains_private_stage(tmp_path, monkeypatch):
+    journal, archive, job, stage, source = queued(tmp_path)
+    original = SecureHistoryArchive._copy_archive_files
+
+    def publish_after_ledger_copy(*args, **kwargs):
+        original(*args, **kwargs)
+        bind_stage(journal, job, stage)
+        assert journal.begin_publication(job.job_id, job.lease_token)
+        assert journal.acknowledge_publication(job.job_id, job.lease_token, publish(source, stage))
+
+    monkeypatch.setattr(SecureHistoryArchive, "_copy_archive_files", staticmethod(publish_after_ledger_copy))
+    destination = tmp_path / "backup"
+    with pytest.raises(VaultIntegrityError, match="publication"):
+        archive.backup_to(destination)
+    assert not destination.exists()
+    incomplete = list(tmp_path.glob(".backup.incomplete-*"))
+    assert len(incomplete) == 1
+    from muninn.history.private_acl import verify_private
+    verify_private(incomplete[0])
+
+
+def test_restore_preserves_destination_created_during_validation(tmp_path, monkeypatch):
+    journal, archive, job, stage, source = queued(tmp_path)
+    destination = tmp_path / "restored"
+    original = SecureHistoryArchive._publish_staging
+
+    def concurrent_creator(staging, target):
+        target.mkdir()
+        (target / "user-owned.txt").write_text("preserve")
+        original(staging, target)
+
+    monkeypatch.setattr(SecureHistoryArchive, "_publish_staging", concurrent_creator)
+    with pytest.raises(ValueError, match="already exists"):
+        SecureHistoryArchive.restore_from_backup(archive.root, destination,
+                                                "synthetic recovery passphrase")
+    assert (destination / "user-owned.txt").read_text() == "preserve"
+    assert not (destination / "header.json").exists()
+
+
+def test_atomic_publication_preserves_empty_racing_destination(tmp_path, monkeypatch):
+    from muninn.history import secure_archive
+    from muninn.history.private_acl import create_private_directory
+
+    staging, destination = tmp_path / ".incomplete", tmp_path / "published"
+    create_private_directory(staging)
+    (staging / "saved.txt").write_text("saved")
+    original = secure_archive._rename_noreplace
+
+    def creator_after_absence_check(source, target):
+        target.mkdir()
+        original(source, target)
+
+    monkeypatch.setattr(secure_archive, "_rename_noreplace", creator_after_absence_check)
+    with pytest.raises(FileExistsError):
+        SecureHistoryArchive._publish_staging(staging, destination)
+    assert destination.is_dir() and not list(destination.iterdir())
+    assert (staging / "saved.txt").read_text() == "saved"
+
+
+def test_acl_failure_precedes_publication(tmp_path, monkeypatch):
+    from muninn.history import secure_archive
+    from muninn.history.private_acl import create_private_directory
+
+    staging, destination = tmp_path / ".incomplete", tmp_path / "published"
+    create_private_directory(staging)
+
+    def refuse_acl(_path):
+        raise VaultIntegrityError("Injected ACL failure")
+
+    def forbid_rename(*_args):
+        pytest.fail("Publication preceded ACL verification")
+
+    monkeypatch.setattr(secure_archive, "verify_private", refuse_acl)
+    monkeypatch.setattr(secure_archive, "_rename_noreplace", forbid_rename)
+    with pytest.raises(VaultIntegrityError, match="ACL"):
+        SecureHistoryArchive._publish_staging(staging, destination)
+    assert staging.is_dir() and not destination.exists()
+
+
+def test_publication_verifier_rejects_deleted_ack_receipt(tmp_path):
+    journal, archive, job, stage, source = queued(tmp_path)
+    bind_stage(journal, job, stage)
+    assert journal.begin_publication(job.job_id, job.lease_token)
+    assert journal.acknowledge_publication(job.job_id, job.lease_token, publish(source, stage))
+    with sqlite3.connect(journal.path) as db:
+        db.execute("UPDATE history_analysis_jobs SET sealed_receipt=NULL WHERE job_id=?", (job.job_id,))
+    with pytest.raises(VaultIntegrityError, match="publication"):
+        journal.verify_publications()

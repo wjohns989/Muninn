@@ -456,6 +456,46 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                 self._capture_reuse_state(row)
             return count
 
+    def verify_publications(self) -> int:
+        """Cross-check ACKs in a staged backup; never publish or run inference.
+
+        This supplements, rather than replaces, verify_all(). Components can
+        have different snapshot times; extra unacknowledged candidates are
+        recoverable, but an ACK without its exact durable candidates is not.
+        """
+        selection = ("sealed_receipt IS NOT NULL OR "
+                     "(state='succeeded' AND publication_started=1 AND sealed_reuse IS NULL)")
+        with self._connect() as db:
+            if db.execute(f"SELECT 1 FROM history_analysis_jobs WHERE {selection} LIMIT 1").fetchone() is None:
+                return 0
+        if not (self.archive.root / "memory-ledger" / "ledger.sqlite3").is_file():
+            raise VaultIntegrityError("History publication ledger is missing")
+        from muninn.history.cited_analysis_source import CitedAnalysisSource
+
+        # Constructors can initialize schemas: keep them outside pinned readers.
+        source = CitedAnalysisSource(self.archive)
+        try:
+            with self._connect() as db, source.ledger.verified_reference_reader() as (contains, _):
+                db.execute("BEGIN")
+                count = 0
+                for row in db.execute(f"SELECT * FROM history_analysis_jobs WHERE {selection}"):
+                    stage = self._read_extraction(row)
+                    receipt = self._read_publication_receipt(row)
+                    if (row["state"] != "succeeded" or not row["publication_started"]
+                            or stage is None or receipt is None):
+                        raise VaultIntegrityError("History publication state is invalid")
+                    refs = receipt["refs"]
+                    self._validated_analysis_target(row, db)
+                    self._read_analysis_window(row)
+                    expected = source.expected_refs(stage["window"], stage["proposals"],
+                                                    model_identity=stage["model_identity"])
+                    if refs != expected or not contains(refs):
+                        raise VaultIntegrityError("History publication references are incomplete")
+                    count += 1
+                return count
+        except (ValueError, RuntimeError) as exc:
+            raise VaultIntegrityError("History publication verification failed") from exc
+
     def _search_key(self, job_id: str) -> bytes:
         return hmac.new(
             self.archive._key, b"muninn-search-job-key-v1\0" + job_id.encode("ascii"), hashlib.sha256

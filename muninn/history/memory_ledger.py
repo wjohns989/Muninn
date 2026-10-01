@@ -505,23 +505,47 @@ class MemoryLedger:
         self._append(ident, {"event": "decision", "state": "needs_user",
                              "reason": reason, "actor": "local-evidence-policy"})
 
-    def verify_all(self):
+    def _verify_snapshot(self, db):
         report = {"events": 0, "candidates": 0, "decisions": 0}
         candidates = set()
+        for ref, payload in self._walk(db):
+            report["events"] += 1
+            if payload.get("event") == "candidate" and ref not in candidates:
+                self._check_candidate(payload)
+                candidates.add(ref)
+                report["candidates"] += 1
+            elif (payload.get("event") == "decision" and ref in candidates
+                  and payload.get("state") == "needs_user"):
+                report["decisions"] += 1
+            else:
+                raise MemoryLedgerIntegrityError("Invalid memory event sequence")
+        return report
+
+    def verify_all(self):
         with self._connect() as db:
             db.execute("BEGIN")
-            for ref, payload in self._walk(db):
-                report["events"] += 1
-                if payload.get("event") == "candidate" and ref not in candidates:
-                    self._check_candidate(payload)
-                    candidates.add(ref)
-                    report["candidates"] += 1
-                elif (payload.get("event") == "decision" and ref in candidates
-                      and payload.get("state") == "needs_user"):
-                    report["decisions"] += 1
-                else:
-                    raise MemoryLedgerIntegrityError("Invalid memory event sequence")
-        return report
+            return self._verify_snapshot(db)
+
+    @contextmanager
+    def verified_reference_reader(self):
+        """Authenticate once; check bounded refs in that same pinned snapshot.
+
+        Construct all dependent stores before entering this reader. It is for
+        offline backup validation, not a lock across live publication writers.
+        """
+        with self._connect() as db:
+            db.execute("BEGIN")
+            report = self._verify_snapshot(db)
+
+            def contains(refs):
+                if not isinstance(refs, list) or len(refs) > 64 or any(not self._hex(ref) for ref in refs):
+                    raise ValueError("Invalid bounded memory references")
+                # Full-chain validation established that the first event for
+                # every indexed ref is an authenticated, cited candidate.
+                return all(db.execute("SELECT 1 FROM events WHERE ref=? LIMIT 1", (ref,)).fetchone()
+                           is not None for ref in refs)
+
+            yield contains, report
 
     def verify_refs(self, refs):
         """Authenticate one full chain and every requested candidate citation."""
