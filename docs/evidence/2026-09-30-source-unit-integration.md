@@ -1,5 +1,42 @@
 # Source-unit integration: bounded evidence, not goal completion
 
+### 2026-10-01 automatic new-capture cadence
+
+An opt-in CPU-only planner now feeds the existing single model consumer from the
+authenticated post-enable-watermark outbox. Both capture flags must be enabled.
+Startup and accepted archived activity impose a fresh 300-second quiet period;
+capture attempts have a separate configurable 30-second interval. Foreground
+search and queue capacity gate planning, with foreground priority rechecked at
+the transactional model claim. Capture-only mode excludes search-analysis jobs.
+No capture ZDR route, paid backfill, second model worker or size cutoff was added.
+
+The native worker implemented only the pure timing helper and fake-clock tests;
+the parent owns journal admission and service integration. Red-first journal
+tests failed on three missing gates, then passed with the legacy journal cases
+(15 tests / 6.96 seconds). Three service regressions demonstrated the missing
+planner lifecycle, automatic admission, and lane selection before wiring.
+
+Final affected automatic/helper/enrichment/planning/search-service checks passed
+61 tests in 26.03 seconds. The affected capture-window/reuse/transport/legacy
+analysis set passed 100 tests in 80.22 seconds. The timer-loop integration case
+also passed separately in 1.80 seconds: it reaches a durable encrypted publication
+ACK without a manual batch call, using an explicitly isolated model stub. That
+is wiring proof, not model quality or installed-runtime deployment. Existing
+direct-parent reuse and transport results remain scoped to their tested property.
+
+Enabled cadence values are validated before any tasks are created; tests cover
+invalid settings leaving no tasks, accepted versus rejected capture activity,
+revocation, restart grace, single-consumer lifecycle, foreground arrivals during
+preparation, and queue saturation. The Windows launcher copies the four nonsecret
+capture settings from User scope through its existing whitelist; it was not run.
+No live service/configuration change or model invocation occurred in this slice.
+Full candidate CI and explicitly authorized local activation remain separate.
+
+Architecture trade-offs and cold-parser/backfill limitations are recorded in
+`docs/architecture/adr-capture-automatic-cadence.md`. The architecture and
+agent-memory-systems skills informed reuse of the existing retrieval, provenance
+and encrypted publication boundaries rather than introducing a parallel store.
+
 ### 2026-10-01 CI contention counterexample
 
 The full locked-dependency run for `01d6f1d` passed 2,604 tests but failed the

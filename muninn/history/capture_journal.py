@@ -1014,20 +1014,34 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                    "lease_token=NULL,lease_until=NULL,due_at=0,updated_at=? "
                    "WHERE state IN ('running','publishing') AND lease_until IS NOT NULL AND lease_until<=?", (now, now))
 
-    def claim_analysis(self, *, include_capture: bool = False) -> AnalysisJob | None:
-        if type(include_capture) is not bool:
+    @staticmethod
+    def _foreground_search_pending(db, now):
+        return db.execute("SELECT 1 FROM history_search_jobs WHERE state='running' "
+                          "OR (state IN ('pending','retry') AND due_at<=?) LIMIT 1", (now,)).fetchone() is not None
+
+    def capture_planning_ready(self) -> bool:
+        """Cheap preflight; claims recheck priority after lengthy preparation."""
+        with self._connect() as db:
+            self._capture_schedule(db)
+            return (self._enrichment_baseline(db) is not None
+                    and not self._foreground_search_pending(db, time.time())
+                    and self._capture_window_capacity(db) > 0)
+
+    def claim_analysis(self, *, include_capture: bool = False,
+                       include_search: bool = True) -> AnalysisJob | None:
+        if type(include_capture) is not bool or type(include_search) is not bool:
             raise ValueError("Invalid capture lane admission")
         now = time.time()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self._recover_analysis(db, now)
-            foreground = db.execute("SELECT 1 FROM history_search_jobs WHERE state='running' "
-                                    "OR (state IN ('pending','retry') AND due_at<=?) LIMIT 1", (now,)).fetchone()
-            maximum_lane = 1 if include_capture and foreground is None else 0
+            foreground = self._foreground_search_pending(db, now)
+            maximum_lane = 1 if include_capture and not foreground else 0
+            minimum_lane = 0 if include_search else 1
             row = db.execute(
                 "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry','publication_pending') "
-                "AND due_at<=? AND lane<=? ORDER BY lane,due_at,created_at LIMIT 1",
-                (now, maximum_lane),
+                "AND due_at<=? AND lane>=? AND lane<=? ORDER BY lane,due_at,created_at LIMIT 1",
+                (now, minimum_lane, maximum_lane),
             ).fetchone()
             if not row:
                 return None

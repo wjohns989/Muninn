@@ -25,6 +25,7 @@ import httpx
 from muninn.history.blind_index import SearchCancelled, SecureHistoryBlindIndex
 from muninn.history.blind_index import _terms as _search_terms
 from muninn.history.capture_journal import CaptureJournal
+from muninn.history.capture_cadence import SmallCaptureCadence
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.importer import import_history, read_thread
 from muninn.history.locations import app_data_dirs, export_candidates, history_homes, history_sources
@@ -105,6 +106,9 @@ class HistoryService:
         self._secure_analysis_task: Optional[asyncio.Task] = None
         self._secure_analysis_wakeup = asyncio.Event()
         self._secure_analysis_active: tuple[str, threading.Event] | None = None
+        self._secure_capture_plan_task: Optional[asyncio.Task] = None
+        self._secure_capture_plan_wakeup = asyncio.Event()
+        self._capture_cadence = SmallCaptureCadence()
         self._secure_scan_task: Optional[asyncio.Task] = None
         self.last_capture_scan: Optional[Dict[str, Any]] = None
         self.last_secure_capture: Optional[Dict[str, Any]] = None
@@ -113,6 +117,11 @@ class HistoryService:
         self.last_auto_route: Optional[Dict[str, Any]] = None
 
     # --- settings ---------------------------------------------------------------
+
+    @staticmethod
+    def _capture_auto_enabled() -> bool:
+        return (strict_history_mode() and _flag("MUNINN_CAPTURE_ENRICHMENT")
+                and _flag("MUNINN_CAPTURE_AUTO_ANALYSIS"))
 
     def _open_secure_archive(self) -> None:
         if self.secure_archive is not None:
@@ -416,6 +425,11 @@ class HistoryService:
                     logger.warning("Encrypted capture outbox insertion deferred (journal)")
             if outcome["status"] == "captured":
                 self._secure_index_wakeup.set()
+            if outcome["status"] in {"captured", "unchanged"}:
+                # Activity follows a successful archive operation, never a
+                # rejected or merely queued hook. Fresh startup also waits.
+                self._capture_cadence.note_activity()
+                self._secure_capture_plan_wakeup.set()
             return {"captured": outcome["status"] == "captured", "archive": outcome,
                     "indexing": "CPU-only encrypted index eligible"}
         require_legacy_history_disabled()
@@ -701,6 +715,9 @@ class HistoryService:
             "last_capture_scan": self.last_capture_scan,
             "last_secure_capture": self.last_secure_capture,
             "capture_enrichment": ({"capture_enabled": _flag("MUNINN_CAPTURE_ENRICHMENT"),
+                                    "automatic_analysis_enabled": self._capture_auto_enabled(),
+                                    "automatic_remote_enabled": False,
+                                    "cadence": self._capture_cadence.snapshot(),
                                     **self._capture_journal.enrichment_status(),
                                     "last_reconciliation": self.last_capture_enrichment}
                                    if strict and self._capture_journal is not None else None),
@@ -712,6 +729,11 @@ class HistoryService:
 
     async def start(self) -> None:
         if strict_history_mode():
+            # Validate enabled cadence settings before creating any tasks.
+            if self._capture_auto_enabled() and self._secure_capture_plan_task is None:
+                self._capture_cadence = SmallCaptureCadence(
+                    quiet_seconds=float(os.environ.get("MUNINN_CAPTURE_QUIET_SECONDS", "300")),
+                    interval_seconds=float(os.environ.get("MUNINN_CAPTURE_INTERVAL_SECONDS", "30")))
             self._require_capture_journal()
             if _flag("MUNINN_CAPTURE_ENRICHMENT"):
                 await asyncio.to_thread(self._configure_capture_enrichment)
@@ -721,7 +743,9 @@ class HistoryService:
                 self._secure_scan_task = asyncio.create_task(self._secure_scan_loop())
             if self._secure_search_task is None:
                 self._secure_search_task = asyncio.create_task(self._secure_search_loop())
-            if _flag("MUNINN_SECURE_AUTO_ANALYSIS") and self._secure_analysis_task is None:
+            if self._capture_auto_enabled() and self._secure_capture_plan_task is None:
+                self._secure_capture_plan_task = asyncio.create_task(self._secure_capture_plan_loop())
+            if (_flag("MUNINN_SECURE_AUTO_ANALYSIS") or self._capture_auto_enabled()) and self._secure_analysis_task is None:
                 self._secure_analysis_task = asyncio.create_task(self._secure_analysis_loop())
             if _flag("MUNINN_HISTORY_INDEX_AUTO") and self._secure_index_task is None:
                 self._secure_index_task = asyncio.create_task(self._secure_index_loop())
@@ -740,6 +764,7 @@ class HistoryService:
                                   self._secure_capture_task, self._secure_scan_task,
                                   self._secure_search_task,
                                   self._secure_analysis_task,
+                                  self._secure_capture_plan_task,
                                   *self._background) if task and not task.done()]
         if self._secure_search_active:
             self._secure_search_active[1].set()
@@ -755,6 +780,7 @@ class HistoryService:
         self._secure_scan_task = None
         self._secure_search_task = None
         self._secure_analysis_task = None
+        self._secure_capture_plan_task = None
         if self.vault is not None:
             self.vault.close()
 
@@ -857,9 +883,16 @@ class HistoryService:
                 cancelled.set()
                 return
 
-    async def _process_capture_plan_once(self, *, should_cancel=lambda: False) -> bool:
+    async def _process_capture_plan_once(self, *, should_cancel=lambda: False,
+                                         automatic: bool = False) -> bool:
         """Prepare one fair, bounded batch; no provider call or activation here."""
+        if type(automatic) is not bool:
+            raise ValueError("Invalid automatic planning admission")
+        if automatic and (not self._capture_auto_enabled() or not self._capture_cadence.planning_ready()):
+            return False
         journal = self._require_capture_journal()
+        if automatic and not await asyncio.to_thread(journal.capture_planning_ready):
+            return False
         receipt = await asyncio.to_thread(journal.next_capture_plan)
         if receipt is None:
             return False
@@ -895,14 +928,16 @@ class HistoryService:
             await asyncio.to_thread(journal.defer_capture_plan, receipt, ticket, "preparation_error")
         return True
 
-    async def _process_secure_analysis_once(self, *, include_capture: bool = False) -> bool:
+    async def _process_secure_analysis_once(self, *, include_capture: bool = False,
+                                            include_search: bool = True) -> bool:
         """Interpret one immutable target without occupying idle VRAM.
 
-        Existing background consumers do not opt into capture-window work. Its
-        activation remains separate from outbox capture and search analysis.
+        Capture-window admission is opt-in and separate from both outbox
+        capture and search analysis. The shared consumer selects its lanes.
         """
         journal = self._require_capture_journal()
-        job = await asyncio.to_thread(journal.claim_analysis, include_capture=include_capture)
+        job = await asyncio.to_thread(journal.claim_analysis, include_capture=include_capture,
+                                      include_search=include_search)
         if job is None:
             return False
         cancelled = threading.Event()
@@ -997,6 +1032,11 @@ class HistoryService:
                         await asyncio.gather(in_flight, return_exceptions=True)
                         raise
                 reuse_kwargs["reuse_completed"] = reuse_completed
+            if job.lane == 1:
+                # Rate-limit attempts, not foreground requests. This includes
+                # resource-deferred and reuse attempts; staged recovery above
+                # needs no new model attempt.
+                self._capture_cadence.note_attempt()
             outcome = await analyze_cited_window(
                 self, source, descriptor, allow_remote=remote_enabled, should_cancel=cancelled.is_set,
                 before_remote=before_remote, remote_not_sent=remote_not_sent,
@@ -1054,10 +1094,14 @@ class HistoryService:
         return True
 
     async def _secure_analysis_loop(self) -> None:
-        """One optional background inference worker; capture/search stay CPU-only."""
+        """One inference consumer; capture admission is quiet/resource-gated."""
         while True:
             try:
-                processed = await self._process_secure_analysis_once()
+                include_search = _flag("MUNINN_SECURE_AUTO_ANALYSIS")
+                include_capture = self._capture_auto_enabled() and self._capture_cadence.analysis_ready()
+                processed = (await self._process_secure_analysis_once(
+                    include_capture=include_capture, include_search=include_search)
+                    if include_search or include_capture else False)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1069,6 +1113,26 @@ class HistoryService:
                     self._secure_analysis_wakeup.clear()
                 except asyncio.TimeoutError:
                     pass
+
+    async def _secure_capture_plan_loop(self) -> None:
+        """CPU-only preparation, independent of the single inference consumer.
+
+        Long supported sources finish authenticated EOF without a size cutoff
+        or interval timeout. Shutdown uses the existing cancellation/drain path.
+        """
+        while True:
+            try:
+                if await self._process_capture_plan_once(automatic=True):
+                    self._secure_analysis_wakeup.set()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Automatic capture planning deferred (%s)", type(exc).__name__)
+            try:
+                await asyncio.wait_for(self._secure_capture_plan_wakeup.wait(), timeout=15)
+                self._secure_capture_plan_wakeup.clear()
+            except asyncio.TimeoutError:
+                pass
 
     async def _secure_index_loop(self) -> None:
         """CPU-only, resumable history projection; no model or ordinary-memory writes."""

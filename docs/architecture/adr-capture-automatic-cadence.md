@@ -1,0 +1,55 @@
+# Automatic new-capture processing cadence
+
+Status: implemented in source; local activation and real inference proof pending.
+
+## Decision
+
+Use the existing encrypted post-enable-watermark outbox and one shared analysis
+consumer, with a separate CPU-only planner. Require both capture opt-in flags;
+the default installation keeps them off. Accepted archived activity postpones
+capture processing for five minutes. Every restart starts a new quiet grace.
+Capture attempts have a configurable thirty-second minimum interval. Foreground
+analysis is independent of that interval and prioritized at the atomic claim.
+
+Planning first checks due foreground searches and reserved queue capacity. A
+foreground search arriving during a long plan prevents subsequent capture-model
+admission, rather than discarding and restarting completed CPU work. Supported
+sources finish authenticated EOF with bounded memory; there is no source-size
+cutoff or cadence timeout. Shutdown cancels and drains the preparation thread.
+
+Capture remains local-only and never reads remote consent/credentials. Existing
+resource-aware model selection, resident-model avoidance, output validation,
+provisional cited publication, and keep-alive-zero behavior remain authoritative.
+The planner does not invoke a model. One model consumer prevents competing active
+job/cancellation trackers. Capture-only mode cannot dispatch search-analysis jobs.
+
+## Alternatives and trade-offs
+
+Running a second inference worker would race the existing active-job tracker and
+compete for GPU resources. Running cold preparation inside the inference loop
+would unnecessarily delay foreground interpretation. The selected split avoids
+both without adding a second service or database schema.
+
+Automatic capture fallback to ZDR is deferred until durable spending reservations
+and accounting prevent concurrency overspend. Existing authorized on-demand and
+search-analysis ZDR routes are separate. Historical backfill is also separate:
+enabling capture never resets its immutable watermark or silently processes old
+snapshots.
+
+Cold preparation of very large sources can still be slow, and interrupted cold
+parsing is not crash-resumable. Append-aware parser reuse and publication-chain
+amortization remain scaling work; they are not prerequisites to safely enabling
+the new-capture consumer. Continuous chat activity can postpone enrichment, while
+CPU capture and authenticated transcript retrieval remain available. Attempts
+that defer for GPU contention and those that reuse an old ACK also consume the
+cadence interval, a conservative initial policy rather than a GPU-use claim.
+
+## Evidence scope
+
+Regression tests cover startup/activity timing, queue saturation, foreground
+priority before and after preparation, search-lane exclusion, single-consumer
+lifecycle, invalid enabled configuration leaving no tasks, revocation, and timer
+loops reaching an authenticated publication ACK with an isolated model stub.
+That stub proves wiring, not local model quality or a live installed deployment.
+Real local activation must verify actual hook capture, eventual publication,
+authenticated agent reads, and model release without affecting other services.
