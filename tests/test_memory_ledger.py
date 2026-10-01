@@ -467,7 +467,7 @@ def test_agent_search_bounds_inputs(tmp_path,query,limit):
     with pytest.raises(ValueError): ledger.search(query,limit=limit)
 
 
-@pytest.mark.parametrize("query",["SERVICE_API_KEY=synthetic$secret",r"C:\Users\synthetic\secret.env"])
+@pytest.mark.parametrize("query",["SERVICE_API_KEY=synthetic$secret",r"C:\Users\user\secret.env"])
 def test_agent_search_rejects_sensitive_queries_without_echoing(tmp_path,query):
     archive,entry,attempt,page=fixture(tmp_path)
     ledger=MemoryLedger(archive)
