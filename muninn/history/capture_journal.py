@@ -27,6 +27,7 @@ from muninn.history.blind_index import _terms as _search_terms
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.private_acl import create_private_file, verify_private
 from muninn.history.secure_archive import SecureHistoryArchive
+from muninn.history.capture_enrichment import CaptureEnrichmentMixin
 
 _SESSION_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
 _ERROR_CODES = {"missing", "changed", "permission", "disk", "archive", "locked", "unknown"}
@@ -116,7 +117,7 @@ class AnalysisJob:
         )
 
 
-class CaptureJournal:
+class CaptureJournal(CaptureEnrichmentMixin):
     def __init__(self, archive: SecureHistoryArchive, *, recover: bool = True):
         self.archive = archive
         # SQLite URI connections require an absolute path even when the archive
@@ -208,6 +209,7 @@ class CaptureJournal:
             # Read-only backup access must not steal an active worker's claim.
             if recover:
                 db.execute("UPDATE jobs SET state='pending', due_at=0 WHERE state='capturing'")
+            self._init_enrichment(db)
 
     @contextmanager
     def _connect(self, *, initialize: bool = False) -> Iterator[sqlite3.Connection]:
@@ -415,6 +417,7 @@ class CaptureJournal:
         with self._connect() as db:
             if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise VaultIntegrityError("Capture journal integrity check failed")
+            self._verify_enrichment(db)
             count = 0
             for row in db.execute("SELECT source_key, sealed_locator, provider FROM jobs"):
                 path = self._open(row["sealed_locator"], row["provider"])

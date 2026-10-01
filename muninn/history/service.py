@@ -76,6 +76,8 @@ class HistoryService:
         self.secure_archive: Optional[SecureHistoryArchive] = None
         self.secure_archive_error: Optional[str] = None
         self._capture_journal: Optional[CaptureJournal] = None
+        self._capture_enrichment_configured = False
+        self.last_capture_enrichment: Optional[Dict[str, Any]] = None
         self._projection_access = None
         self._projection_access_lock = threading.Lock()
         if strict_history_mode():
@@ -136,6 +138,34 @@ class HistoryService:
         if getattr(self, "_capture_journal", None) is None:
             self._capture_journal = CaptureJournal(self._require_secure_archive())
         return self._capture_journal
+
+    def _configure_capture_enrichment(self) -> bool:
+        """Establish the new-capture boundary before any eligible archive write.
+
+        This only enables a durable outbox, never model processing. The archive
+        writer excludes a commit between reading the watermark and sealing it.
+        An existing watermark is immutable across restarts and flag toggles.
+        """
+        if not _flag("MUNINN_CAPTURE_ENRICHMENT"):
+            return False
+        if not self._capture_enrichment_configured:
+            archive = self._require_secure_archive()
+            journal = self._require_capture_journal()
+            with archive._write_lock():
+                journal.configure_enrichment(archive._load_manifest()["generation"])
+            self._capture_enrichment_configured = True
+        return True
+
+    def _reconcile_capture_enrichment(self) -> None:
+        if not self._configure_capture_enrichment():
+            return
+        try:
+            queued = self._require_capture_journal().reconcile_enrichment(limit=128)
+            self.last_capture_enrichment = {"state": "reconciled", "queued": queued, "at": time.time()}
+        except sqlite3.OperationalError:
+            # Do not expose a database path or hide source discovery on contention.
+            self.last_capture_enrichment = {"state": "retry", "error_code": "journal", "at": time.time()}
+            logger.warning("Encrypted capture outbox reconciliation deferred (journal)")
 
     def _validate_capture_source(self, path: str, provider: str, *, allow_missing: bool = False) -> Path:
         if provider not in ("codex", "claude_code", "gemini_cli"):
@@ -365,10 +395,25 @@ class HistoryService:
         if strict_history_mode():
             archive = self._require_secure_archive()
             source_path = self._validate_capture_source(path, provider)
+            enrichment = False
+            if _flag("MUNINN_CAPTURE_ENRICHMENT"):
+                enrichment = await asyncio.to_thread(self._configure_capture_enrichment)
+            options = {"expected_source": source_path}
+            if enrichment:
+                options["include_snapshot_receipt"] = True
             async with self._vault_lock:
                 outcome = await asyncio.to_thread(
-                    archive.archive_file, source_path, provider, expected_source=source_path,
+                    archive.archive_file, source_path, provider, **options,
                 )
+            receipt = outcome.pop("snapshot_receipt", None)
+            if enrichment and receipt is not None:
+                try:
+                    await asyncio.to_thread(self._require_capture_journal().enqueue_enrichment_receipt, receipt)
+                except sqlite3.OperationalError:
+                    # The authenticated archive commit is already durable. A later
+                    # reconciliation finds every version, even after source growth.
+                    self.last_capture_enrichment = {"state": "retry", "error_code": "journal", "at": time.time()}
+                    logger.warning("Encrypted capture outbox insertion deferred (journal)")
             if outcome["status"] == "captured":
                 self._secure_index_wakeup.set()
             return {"captured": outcome["status"] == "captured", "archive": outcome,
@@ -442,6 +487,7 @@ class HistoryService:
         journal = self._require_capture_journal()
 
         def scan() -> Dict[str, int]:
+            self._reconcile_capture_enrichment()
             signatures = archive.latest_source_signatures()
             generation = journal.begin_scan()
             batch: list[tuple[str, str]] = []
@@ -654,6 +700,10 @@ class HistoryService:
             "hook_receipts_error": hook_receipts_error,
             "last_capture_scan": self.last_capture_scan,
             "last_secure_capture": self.last_secure_capture,
+            "capture_enrichment": ({"capture_enabled": _flag("MUNINN_CAPTURE_ENRICHMENT"),
+                                    **self._capture_journal.enrichment_status(),
+                                    "last_reconciliation": self.last_capture_enrichment}
+                                   if strict and self._capture_journal is not None else None),
             "import_progress": self.progress,
             "warnings": ([] if strict else self.retention_warnings()),
         }
@@ -663,6 +713,8 @@ class HistoryService:
     async def start(self) -> None:
         if strict_history_mode():
             self._require_capture_journal()
+            if _flag("MUNINN_CAPTURE_ENRICHMENT"):
+                await asyncio.to_thread(self._configure_capture_enrichment)
             if self._secure_capture_task is None:
                 self._secure_capture_task = asyncio.create_task(self._secure_capture_loop())
             if self._secure_scan_task is None:

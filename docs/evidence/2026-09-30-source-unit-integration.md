@@ -441,3 +441,106 @@ CLEAR. This closes the demonstrated connection-setup regression across the
 tested Windows and Linux environments, not every possible contention or prior
 stall. Source activation remains pending the next scoped service reload; no
 new service operation or model dispatch occurred in this follow-up.
+
+### Query-independent encrypted window plans
+
+Program candidate `6d7bf01` adds `CitedWindowPlanStore`: descriptor-only encrypted
+pages partition supported conversational bodies into fragment-bound windows of
+at most 3,000 characters, without a fabricated search query or a total-message
+cutoff. Generated role labels and omitted/nonconversational records are not
+inference work; raw originals are retained separately. A plan is publishable
+only after authenticated archive and source-evidence EOF. It does not claim
+that any model ran or that ambiguity/classification is settled.
+
+Lookup and AEAD seals bind snapshot/version, evidence attempt, parser/plan
+algorithm and width. Independent review caught both evidence-regeneration and
+geometry-cache invalidation gaps; both were corrected. Supported old widths
+remain verifiable, while unknown algorithms require explicit migration. Copy,
+backup and portable restore now include and verify the derived encrypted store.
+
+Eleven isolated plan checks passed in 9.30 seconds, including full long-message
+body reconstruction, cached reuse without raw rescan, omitted units, cancellation
+after a staging commit and retry, late source/plan corruption, changed evidence
+attempt, changed geometry and portable recovery. The related source/citation/
+ledger suites passed 91 checks in 51.10 seconds. Initial red checks demonstrated
+the missing component. Early integration failures exposed formatting-label and
+empty-cache handling mistakes and were corrected; focused passes are not a
+full-installation completion claim.
+
+After independent examination cleared the corrected diff, the bounded real-
+source proof used the source of an already published memory, not a fixture:
+two encrypted windows, 1,422 conversational characters, nine source units;
+plan build/reopen/verification took 0.12 seconds and cached reuse passed. No
+source text, credential or bearer was printed. The memory ledger was unchanged;
+no inference, service restart, settings edit or automatic scheduler activation
+occurred. This is short-source operational proof, not large-backlog performance
+or model-processing coverage. Capture outbox, window-processing checkpoints,
+search priority and cadence remain the next integration dependency.
+
+The exact-candidate Linux run 36810376224 passed **2,445 tests / 13 skips** in
+155.51 seconds. All five PR checks passed. The running service remains healthy
+(HTTP 200); it has not been reloaded to use an automatic capture lane.
+
+Independent actual-proof examination retained the real source/plan/ledger
+result but identified one unmeasured telemetry field: the probe's literal
+`automatic_scheduler_active=false` was not a live scheduler-status check. That
+field was removed; only the probe's own absence of inference/restart paths is
+claimed. The scheduler is not implemented by this component or this proof.
+
+The same examination flagged the next architecture's archive/outbox crash gap:
+if source content changes between archive commit and retry, processing only the
+latest version can omit an earlier committed snapshot. The next integration
+must reconcile every post-enable commit absent from its durable outbox, exclude
+pre-enable historical snapshots, and obtain exact commit identities under the
+archive write lock. This is a required next design correction, not an additional
+pass claimed for the proposed scheduler. This documentation-only receipt can
+accompany the next code batch rather than force another identical full CI suite
+solely for a status update.
+
+### Durable capture outbox (source-only; not model coverage)
+
+The existing cited-tool activation was rechecked instead of redundantly restarting
+the shared service. One authenticated installation had idle durable queues.
+Actual MCP search, lookup, source-follow and a 1,443-character redacted transcript
+page passed; anonymous/wrong-token HTTP returned 401 and Ollama had zero resident
+models. No inference, service operation or client settings edit was performed.
+
+New source code adds an opt-in `MUNINN_CAPTURE_ENRICHMENT` outbox, default off.
+Archive commits return optional internal path-free exact-version receipts under
+the writer lock. The service strips these from ordinary capture results, seals
+an immutable starting watermark under the archive lock before capture/start/scan,
+and enqueues receipts after commit. A transient journal lock does not discard a
+successful raw capture; subsequent reconciliation recovers every eligible version,
+including one followed by a newer source version before retry. Existing archive
+return contracts and CPU-only capture remain intact when the flag is off. Empty
+schema tables are additive even while the flag is off, not a schema-inert claim.
+
+Independent design review caught a concrete efficiency defect in the first
+reconciler: bounded inserts still repeatedly enumerated the completed prefix and
+loaded every known outbox ID. The corrected reconciler persists an encrypted
+checkpoint tied to an immutable authenticated manifest generation/source/version
+position, examines at most 128 entries (including ineligible entries), and commits
+receipt inserts plus checkpoint advance in one transaction with a checkpoint
+comparison against concurrent advancement. New earlier-sort paths arriving during
+a pinned pass are found on the next generation pass. A zero-insert batch is not
+EOF. Manifest metadata loading/key-list construction remains O(catalog size);
+large-backlog scaling and recovery latency remain pending before activation.
+
+Four service admission checks failed before wiring. The integrated outbox,
+strict-service, archive and capture-journal suites passed **65 checks** in 41.41
+seconds. Failure/recovery cases include queue lock plus source growth, watermark
+lock ownership, unchanged/new and legacy receipts, batch commit epochs, bounded
+traversal, resumed checkpoint, concurrent checkpoint race, atomic rollback,
+encrypted-data/cursor/pinned-manifest tamper rejection and portable restore.
+An added partial-checkpoint portable recovery check plus affected window-plan
+and secure API suites passed **51 checks** in 16.98 seconds. Each set reported one
+unrelated installed-library deprecation warning. No synthetic model response is
+represented as a live model or installation proof.
+
+This stage does not enqueue typed inference windows or acknowledge processing
+coverage. Worker cadence, search priority, classification/ambiguity review and
+paid-backfill cost admission are still open. The live service was not reloaded
+to activate this source-only stage, and the installation goal remains active.
+Independent examination of the actual corrected source diff and focused results
+was CLEAR for this default-off outbox stage only; it did not clear scheduler or
+backfill activation.

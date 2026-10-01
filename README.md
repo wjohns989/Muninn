@@ -430,6 +430,7 @@ Key environment variables:
 | `MUNINN_HISTORY_ARCHIVE_DIR` | `<data_dir>/history_secure_archive` | Owner-only encrypted history archive location; set this to a private directory with enough space, on any drive |
 | `MUNINN_HISTORY_INDEX_AUTO` | off for direct server starts; on in Windows shared launcher | Build a resumable CPU-only encrypted transcript index in bounded batches; no model or GPU use |
 | `MUNINN_SECURE_AUTO_ANALYSIS` | off for direct server starts; on in Windows shared launcher | After an authenticated search finds a pertinent encrypted snapshot, queue one durable, provisional interpretation job; capture and indexing remain CPU-only. Set `0` in the Windows User environment to disable |
+| `MUNINN_CAPTURE_ENRICHMENT` | off | Source-stage encrypted capture outbox with immutable enable watermark and resumable crash reconciliation; not a model-processing scheduler. Leave off until window processing/cadence and scaling are validated |
 | `MUNINN_HISTORY_SYNC_MINUTES` | `30` | Legacy sync cadence or strict-mode CPU-only discovery cadence for missed/changed chat transcripts; historical exports still need explicit encrypted sync |
 | `MUNINN_HISTORY_AUTO_IMPORT` | off in strict mode | Legacy-mode automatic import switch; ignored by strict mode |
 | `MUNINN_OPENROUTER_API_KEY` | - | Preferred environment key for optional ZDR OpenRouter use; a Windows user-scoped value is picked up by the running service without putting the key in repo files |
@@ -766,6 +767,17 @@ those mutation schemas into every ordinary retrieval session.
 Dedicated authenticated agent search and source-following tools are available;
 they are not yet federated into ordinary `search_memory`. **Automatic historical
 fact/task/conflict enrichment and the ledger review UI remain incomplete**.
+
+The default-off capture outbox preserves exact committed snapshot identities even
+if queue insertion is interrupted and the chat file grows before retry. Receipts,
+the starting watermark and a pinned-generation resume checkpoint are encrypted
+inside the portable archive journal. Reconciliation examines at most 128 entries
+per batch; old/unsupported entries also consume that examination bound. It does
+not invoke models or prove processing coverage, and a zero-insert batch is not
+necessarily complete. Existing manifest metadata is still loaded in full; typed
+window jobs, responsive cadence and backlog scaling remain activation prerequisites.
+No model directory, drive letter or user home is assumed by this component.
+
 Its first publication API verifies the whole event chain; large background
 batches need measured amortization before activation. It detects event corruption
 and deletion, but cannot detect substitution of a valid older whole database.

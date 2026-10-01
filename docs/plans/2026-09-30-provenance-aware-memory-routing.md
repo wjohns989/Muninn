@@ -75,6 +75,35 @@ enqueue capture enrichment before acknowledging the capture revision. An
 commit. Queue saturation is deferred work, not coverage. Changed snapshots and
 growing partial messages must not silently erase or conflate prior occurrences.
 
+**Independent crash-gap finding:** capture retry alone is insufficient if the
+source changes before retry. Obtain the committed blob/hash/version while the
+archive write lock still pins that commit, and add watermark-bound reconciliation
+of every post-enable committed version absent from the outbox. Do not resolve
+the latest path version after releasing the lock, and do not turn reconciliation
+into accidental pre-enable historical backfill. The corresponding crash-after-
+commit/source-change/no-pre-watermark-work case is an admission test.
+
+**Capture-outbox source integration implemented, default off:** exact optional
+receipts are obtained under the commit lock and stripped from ordinary capture
+results. An immutable encrypted watermark is established under the same archive
+writer before eligible capture/start/scan. Transient post-commit journal locks
+leave the raw capture successful; reconciliation recovers each committed version.
+An encrypted checkpoint pins a retained authenticated manifest generation and
+source/version position. Each batch examines at most 128 entries, including
+legacy/excluded entries; receipt inserts and checkpoint advance commit atomically
+with a concurrent-checkpoint comparison. It does not reload all known outbox IDs
+or repeatedly enumerate the completed prefix. Portable recovery verifies pending
+receipts and the partial checkpoint. Flag disable pauses new outbox insertion
+and reconciliation, not deletion or reset of the existing watermark/work.
+
+This boundary excludes **pre-watermark archive commits**, not every historical
+file that could first be archived later. It is not a processing scheduler: typed
+window jobs, foreground priority, cadence and completion acknowledgments are
+still required. A zero-insert reconciliation batch does not prove EOF: it may
+have examined only old/ineligible entries. Existing manifest decryption/key-list
+loading is O(catalog size) per call; large-backlog cost and recovery latency remain
+explicit gates before activation/backfill, not a bounded-CPU claim.
+
 Reuse sealed source-unit streaming, encrypted staging, model-origin provisional
 publication and existing crash recovery. Record window-level coverage and
 unsupported/no-context/integrity/deferred states explicitly. Search work has

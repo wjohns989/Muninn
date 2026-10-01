@@ -182,15 +182,25 @@ class SecureHistoryArchive:
     def _manifest_aad(self, generation: int) -> bytes:
         return _json_bytes({"format": 1, "vault_id": self.vault_id, "generation": generation})
 
-    def _load_manifest(self, *, allow_empty: bool = False) -> dict[str, Any]:
+    def _load_manifest(self, *, allow_empty: bool = False,
+                       generation: int | None = None) -> dict[str, Any]:
         verify_private(self.root)
+        pinned = generation is not None
         candidates = []
-        for path in self.root.glob("manifest-*.enc"):
-            try:
-                generation = int(path.stem.split("-")[1])
-                candidates.append((generation, path))
-            except (IndexError, ValueError):
-                raise VaultIntegrityError("Invalid history archive manifest name")
+        if pinned:
+            if type(generation) is not int or generation < 1:
+                raise VaultIntegrityError("Invalid pinned history archive generation")
+            path = self.root / f"manifest-{generation:012d}.enc"
+            if not path.is_file():
+                raise VaultIntegrityError("Pinned history archive generation is unavailable")
+            candidates.append((generation, path))
+        else:
+            for path in self.root.glob("manifest-*.enc"):
+                try:
+                    candidate_generation = int(path.stem.split("-")[1])
+                    candidates.append((candidate_generation, path))
+                except (IndexError, ValueError):
+                    raise VaultIntegrityError("Invalid history archive manifest name")
         if not candidates:
             if not allow_empty:
                 raise VaultIntegrityError("History archive has no authenticated manifest")
@@ -210,7 +220,8 @@ class SecureHistoryArchive:
                 raise ValueError
         except (InvalidTag, ValueError, TypeError) as exc:
             raise VaultIntegrityError("History archive manifest authentication failed") from exc
-        self._manifest = manifest
+        if not pinned:
+            self._manifest = manifest
         return manifest
 
     def _save_manifest(self, manifest: dict[str, Any]) -> None:
@@ -239,14 +250,39 @@ class SecureHistoryArchive:
         handle.write(sealed)
 
     def archive_file(self, source: Path, provider: str, kind: str = "transcript", *,
-                     expected_source: Path | None = None) -> dict[str, Any]:
+                     expected_source: Path | None = None,
+                     include_snapshot_receipt: bool = False) -> dict[str, Any]:
         with self._write_lock():
+            source_key = str(Path(source).resolve(strict=True))
             manifest = self._load_manifest()
-            result = self._archive_one(manifest, source, provider, kind, expected_source=expected_source)
+            result = self._archive_one(manifest, Path(source_key), provider, kind, expected_source=expected_source)
             if result["status"] == "captured":
                 manifest["generation"] += 1
                 self._save_manifest(manifest)
+            if include_snapshot_receipt:
+                version = result["versions"] - 1
+                result["snapshot_receipt"] = self._snapshot_receipt(manifest["files"][source_key][version], version)
             return result
+
+    def _snapshot_receipt(self, entry: dict, version: int) -> dict[str, Any]:
+        """Internal path-free commit identity; unchanged entries keep their epoch."""
+        return {"vault_id": self.vault_id, "blob": entry["blob"], "sha256": entry["sha256"],
+                "version": version, "commit_generation": entry.get("commit_generation"),
+                "provider": entry["provider"], "kind": entry["kind"]}
+
+    def iter_committed_receipts(self, *, after_generation: int):
+        """Read one authenticated manifest snapshot, never resolve latest by path.
+
+        Legacy entries without a commit epoch are not post-enable work. The
+        snapshot is stable for this traversal; subsequent commits are found on
+        the next pass without retaining the archive writer lock.
+        """
+        manifest = self._load_manifest()
+        for entries in manifest["files"].values():
+            for version, entry in enumerate(entries):
+                generation = entry.get("commit_generation")
+                if type(generation) is int and after_generation < generation <= manifest["generation"]:
+                    yield self._snapshot_receipt(entry, version)
 
     def archive_many(self, items: list[tuple[Path, str, str]], *, commit_every: int = 100) -> dict[str, Any]:
         """Batch encrypted captures with bounded manifest rewrite cost."""
@@ -344,7 +380,8 @@ class SecureHistoryArchive:
         verify_private(blob)
         entry = {"blob": blob_id, "provider": provider, "kind": kind,
                  "size": size, "mtime_ns": before.st_mtime_ns,
-                 "sha256": digest.hexdigest(), "chunks": count, "captured_at": time.time()}
+                 "sha256": digest.hexdigest(), "chunks": count, "captured_at": time.time(),
+                 "commit_generation": manifest["generation"] + 1}
         manifest["files"][str(source)] = [*prior, entry]
         return {"status": "captured", "versions": len(manifest["files"][str(source)]), "size": size}
 
