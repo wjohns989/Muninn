@@ -340,7 +340,8 @@ class SecureProjectionStore:
         except (InvalidTag, KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
             raise ProjectionIntegrityError("projection authentication failed") from exc
 
-    def _iter_sealed_pages(self, entry: dict, version: int, attempt: str) -> Iterator[str]:
+    def _iter_sealed_pages(self, entry: dict, version: int, attempt: str, *,
+                           check_cancel: Callable[[], None] = lambda: None) -> Iterator[str]:
         """Read bounded authenticated batches, releasing DB locks before yield.
 
         Consumers can persist per-page review results while iterating. A pinned
@@ -367,6 +368,7 @@ class SecureProjectionStore:
 
         seen = 0
         while seen < count:
+            check_cancel()
             with self._connect() as db:
                 batch = db.execute(
                     "SELECT ordinal,length,CASE WHEN length BETWEEN 1 AND ? "
@@ -376,6 +378,7 @@ class SecureProjectionStore:
             if not batch:
                 raise ProjectionIntegrityError("projection page sequence is incomplete")
             for ordinal, length, ciphertext in batch:
+                check_cancel()
                 if ordinal != seen:
                     raise ProjectionIntegrityError("projection page sequence is incomplete")
                 fingerprint(consumed, ordinal, length, ciphertext)
@@ -393,6 +396,7 @@ class SecureProjectionStore:
                     "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
                     "FROM pages WHERE attempt=? ORDER BY ordinal",
                     (self.max_page_chars * 4, attempt)):
+                check_cancel()
                 if ordinal != checked:
                     raise ProjectionIntegrityError("projection page sequence is incomplete")
                 fingerprint(current, ordinal, length, ciphertext)

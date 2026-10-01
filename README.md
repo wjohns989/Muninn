@@ -825,8 +825,9 @@ per batch; old/unsupported entries also consume that examination bound. It does
 not invoke models or prove processing coverage, and a zero-insert batch is not
 necessarily complete. Its internal typed-window queue authenticates exact plan
 ordinals, reserves foreground search capacity and acknowledges coverage only after
-durable publication. Automatic jobs are currently local-only and excluded by
-existing worker consumers; no automatic capture-processing timer is activated.
+durable publication. Automatic capture jobs are local-only. The quiet-time
+planner and shared analysis consumer are implemented but default off; enabling
+both capture flags above activates the cadence without a manual batch command.
 Completed and no-context sources leave pending selectors without deleting their
 encrypted receipts. Sealed scheduler totals and per-source plans detect inconsistent
 exclusion hints. New strictly appended snapshots can carry an encrypted,
@@ -834,9 +835,9 @@ authenticated same-source byte-prefix certificate. A private window matcher
 requires an existing parent plan, unchanged input/partition and exact source-unit
 provenance; it never deduplicates by text across occurrences or marks analysis
 complete. The interpretation-contract identity is independently recomputable
-and includes prompt/schema/version/model weights. Durable cross-version reuse
-acknowledgments, responsive cadence and backlog scaling remain activation
-prerequisites. Existing manifest metadata is still loaded in full. This internal
+and includes prompt/schema/version/model weights. Durable direct-parent reuse
+acknowledgments and quiet-time cadence are implemented; measured historical
+backlog scaling remains unproven. Existing manifest metadata is still loaded in full. This internal
 integration is not automatic historical backfill.
 Preparation failures have required encrypted per-source retry/blocked state,
 so a failed source can yield to healthy work without advancing its coverage.
@@ -852,6 +853,17 @@ stream instead of decrypting the original archive a third time. Publication
 still requires the complete pinned fragment sequence and matching coverage
 metadata. This inherits the original raw EOF proof, not a fresh raw-file check.
 
+For a certified Codex/Claude JSONL append with compatible sealed parent evidence
+and a newline-ended boundary, source preparation copies and re-encrypts the
+authenticated parent units, then parses only the new suffix. Both current raw
+passes still decrypt/hash the entire snapshot through authenticated EOF. Blank
+lines, omitted units, per-turn project context and original timestamp coordinates
+are preserved. Missing parent evidence, legacy/rewrite captures, non-newline
+boundaries and Gemini use the full parser. Corruption or cancellation cannot seal
+a partial child. This saves prefix parsing, not full-file I/O or encrypted parent
+copying; interrupted cold parsing still restarts, and no whole-backlog speedup is
+claimed from isolated regression tests.
+
 The internal capture worker can acknowledge an unchanged window as `reused`
 instead of calling Ollama again. Admission requires the direct parent to have an
 original completed local analysis, an authenticated publication ACK and matching
@@ -863,8 +875,9 @@ weights after source/ledger proof and commits its receipt/coverage together unde
 the current lease. Interrupted, rewritten, changed-model, cloud or already-reused
 parents do not qualify. Portable verification revalidates the original evidence;
 later model settings do not invalidate historically admitted coverage. This
-default-off capture lane still needs cadence, multi-growth reuse and measured
-backlog scaling before automatic activation; these are not new live-model tests.
+default-off capture lane has quiet-time cadence, but multi-growth reuse and
+measured historical backlog scaling remain incomplete; these source changes
+are not new live-model tests or automatic historical-backfill activation.
 
 Its first publication API verifies the whole event chain; large background
 batches need measured amortization before activation. It detects event corruption

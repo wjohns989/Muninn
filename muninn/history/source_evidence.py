@@ -26,6 +26,7 @@ from muninn.history.private_acl import create_private_directory, create_private_
 from muninn.history.secure_projection_store import ProjectionIntegrityError, SecureProjectionStore, _j
 from muninn.history import streaming_redaction
 from muninn.history.transcript_units import PARSER_VERSION, SourceUnit, UnitFragment, transcript_units
+from muninn.history.structured_projector import ProjectionCancelled
 
 
 class SourceEvidenceStore(SecureProjectionStore):
@@ -137,11 +138,31 @@ class SourceEvidenceStore(SecureProjectionStore):
         if existing is not None:
             return existing
         stats = {"source_units": 0, "conversational_units": 0, "omitted_units": 0}
+        parent = self._append_parent(entry, version)
+
+        def check_cancel():
+            if should_cancel():
+                raise ProjectionCancelled("source-unit extraction cancelled")
+
+        def parent_parts():
+            parent_entry, parent_attempt = parent
+            ident = self._identity(parent_entry, version - 1)
+            with self._connect() as db:
+                count, parent_stats = self._authenticated_count(db, ident, parent_attempt)
+            pages = self._iter_sealed_pages(parent_entry, version - 1, parent_attempt,
+                                           check_cancel=check_cancel)
+            try:
+                yield from self._decoded_fragments(pages, count, parent_stats)
+            finally:
+                pages.close()
 
         def project(source: Iterable[bytes]) -> Iterator[str]:
             fragment = 0
             emitted = False
-            for part in transcript_units(self.archive, entry, source, should_cancel=should_cancel):
+            for part in transcript_units(
+                    self.archive, entry, source, should_cancel=should_cancel,
+                    _prefix_entry=parent[0] if parent else None,
+                    _parent_parts=parent_parts if parent else None):
                 yield json.dumps({"unit": asdict(part.unit), "fragment": fragment,
                                   "text": part.text, "final": part.final},
                                  ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -153,6 +174,19 @@ class SourceEvidenceStore(SecureProjectionStore):
                     fragment, emitted = 0, False
 
         return super().build(entry, version, project, stats=stats)
+
+    def _append_parent(self, entry: dict, version: int):
+        """Resolve only an exact same-origin, sealed immediate JSONL prefix."""
+        if (version == 0 or "prefix_of" not in entry or entry.get("kind") != "transcript"
+                or entry.get("provider") not in {"codex", "claude_code"}):
+            return None
+        for versions in self.archive._load_manifest()["files"].values():
+            if version >= len(versions) or versions[version] != entry:
+                continue
+            parent = self.archive._prefix_parent(versions, version)
+            attempt = self.find_snapshot(parent, version - 1) if parent is not None else None
+            return (parent, attempt) if attempt is not None else None
+        return None
 
     def find_snapshot(self, entry: dict, version: int) -> str | None:
         ident = self._identity(entry, version)
@@ -178,13 +212,20 @@ class SourceEvidenceStore(SecureProjectionStore):
             yield from self._fragments(db, rows, ident, attempt, count, stats, cipher)
 
     def _fragments(self, db, rows, ident, attempt, count, stats, cipher) -> Iterator[UnitFragment]:
+        def pages():
+            seen = 0
+            for ordinal, length, ciphertext in rows:
+                if ordinal != seen:
+                    raise ProjectionIntegrityError("source-unit fragment sequence is incomplete")
+                seen += 1
+                yield self._decrypt_page(ident, attempt, ordinal, (length, ciphertext), cipher)
+        yield from self._decoded_fragments(pages(), count, stats)
+
+    def _decoded_fragments(self, pages, count, stats) -> Iterator[UnitFragment]:
         expected_unit, expected_fragment = 0, 0
         unit = None
         seen = 0
-        for ordinal, length, ciphertext in rows:
-            if ordinal != seen:
-                raise ProjectionIntegrityError("source-unit fragment sequence is incomplete")
-            page = self._decrypt_page(ident, attempt, ordinal, (length, ciphertext), cipher)
+        for page in pages:
             seen += 1
             try:
                 data = json.loads(page)
