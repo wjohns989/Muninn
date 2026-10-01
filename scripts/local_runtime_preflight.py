@@ -10,7 +10,9 @@ import httpx
 import psutil
 
 
-def inspect_runtime(repo: Path, *, authenticated: bool = False) -> dict:
+def inspect_runtime(repo: Path, *, authenticated: bool = False, port: int = 42069) -> dict:
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("Invalid local service port")
     server = (repo / "server.py").resolve()
     owned = []
     for process in psutil.process_iter(["pid", "name", "exe", "cwd", "cmdline"]):
@@ -25,13 +27,13 @@ def inspect_runtime(repo: Path, *, authenticated: bool = False) -> dict:
             continue
     try:
         owners = sorted({item.pid for item in psutil.net_connections(kind="tcp")
-                         if item.laddr and item.laddr.port == 42069
+                         if item.laddr and item.laddr.port == port
                          and item.status == psutil.CONN_LISTEN})
     except psutil.Error:
         owners = None
     try:
         with httpx.Client(timeout=10, trust_env=False) as client:
-            response = client.get("http://127.0.0.1:42069/health")
+            response = client.get(f"http://127.0.0.1:{port}/health")
         health = response.status_code
     except httpx.HTTPError:
         health = "unreachable"
@@ -43,7 +45,7 @@ def inspect_runtime(repo: Path, *, authenticated: bool = False) -> dict:
         report["auth_configured"] = bool(token)
         if token:
             with httpx.Client(timeout=15, trust_env=False) as client:
-                base = "http://127.0.0.1:42069"
+                base = f"http://127.0.0.1:{port}"
                 anonymous = client.get(base + "/profiles/model")
                 protected = client.get(base + "/profiles/model", headers={"Authorization": "Bearer " + token})
                 root = client.get(base + "/")
@@ -57,7 +59,8 @@ def inspect_runtime(repo: Path, *, authenticated: bool = False) -> dict:
                 vault = data.get("vault", {})
                 report.update(history_security=data.get("history_security"),
                               archive_ready=vault.get("ready"), archive=vault.get("archive"),
-                              capture_queue=data.get("capture_queue"))
+                              capture_queue=data.get("capture_queue"),
+                              capture_enrichment=data.get("capture_enrichment"))
     return report
 
 

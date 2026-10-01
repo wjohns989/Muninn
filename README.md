@@ -131,6 +131,28 @@ sets strict history mode, deferred chat LLM use, zero Ollama residency, and
 consolidation dry-run; it does not import historical chats or send them to a
 remote model. Start the service explicitly before connecting MCP clients.
 
+For an already running Windows installation, `python scripts/reload_shared_local.py`
+is read-only by default. An explicitly authorized reload requires `--restart`
+and `--expected-revision` with the tested Git commit hash. Use the same Python
+interpreter as the service; `--repo` and `--port` support other checkout locations
+and ports. This procedure currently requires capture enrichment to be off and
+the durable queues to be idle; it is not an unattended upgrade mechanism.
+
+Adding `--enable-capture-auto` opts in to automatic, local-only processing of
+**new** captures. The helper preserves all other service settings, saves encrypted
+database preimages and the two nonsecret capture-flag preimages, then verifies
+authentication, strict history, single-service ownership and the effective
+capture mode. Only after verification does it persist the two opt-in flags in
+the Windows User environment. Partial setting writes are compensated without
+overwriting a detected user revocation. Failures do not claim runtime rollback;
+inspect the service and preserved private logs before another action.
+Windows registry writes are not atomic; a concurrent edit between checking a
+flag and writing it cannot be guaranteed preserved. Do not edit these flags
+concurrently with this operator procedure. Untracked program files, changed
+process identity/listener ownership and linked/reparse ancestors fail closed.
+Database preimages are not a complete portable archive/vault backup. The helper does not
+enable paid capture fallback, historical backfill or another service.
+
 Verify it's running:
 
 ```bash
