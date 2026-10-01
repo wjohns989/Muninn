@@ -197,17 +197,27 @@ class MemoryLedger:
         except (ProjectionIntegrityError, ValueError, TypeError, KeyError) as exc:
             raise MemoryLedgerIntegrityError("Ledger citation is not authenticated") from exc
 
-    def _unit_info(self, entry, version, attempt, unit):
+    def _unit_info(self, entry, version, attempt, unit, *, use_persisted=True):
         """Stream the WHOLE source unit so labels/quotes cannot hide in other chunks.
 
         Only bounded raw/redacted digest state is retained. Within one worker,
-        immutable completed-unit results use a bounded 128-entry cache. No
+        immutable completed-unit results use a bounded 128-entry cache and an
+        encrypted cross-worker attestation bound to source and screen policy. No
         transaction remains open when the model is called or a ledger is written.
         """
-        cache_key = (attempt, unit.ordinal)
+        cache_key = self.units._screen_ref(self.units._screen_binding(entry, version, attempt, unit))
         if cache_key in self._screen_cache:
             self._screen_cache.move_to_end(cache_key)
             return self._screen_cache[cache_key]
+        try:
+            cached = self.units.screen_info(entry, version, attempt, unit) if use_persisted else None
+        except ProjectionIntegrityError as exc:
+            raise MemoryLedgerIntegrityError("Ledger context is not authenticated") from exc
+        if cached is not None:
+            self._screen_cache[cache_key] = cached
+            if len(self._screen_cache) > 128:
+                self._screen_cache.popitem(last=False)
+            return cached
         raw, screened, body = hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
         body_length = 0
 
@@ -231,6 +241,12 @@ class MemoryLedger:
         except ProjectionIntegrityError as exc:
             raise MemoryLedgerIntegrityError("Ledger context is not authenticated") from exc
         info = raw.digest() == screened.digest(), body_length, body.digest()
+        try:
+            self.units._store_screen_info(entry, version, attempt, unit,
+                raw_sha=raw.hexdigest(), screened_sha=screened.hexdigest(),
+                body_length=body_length, body_sha=body.hexdigest())
+        except ProjectionIntegrityError as exc:
+            raise MemoryLedgerIntegrityError("Ledger context is not authenticated") from exc
         self._screen_cache[cache_key] = info
         if len(self._screen_cache) > 128:
             self._screen_cache.popitem(last=False)
@@ -395,7 +411,11 @@ class MemoryLedger:
         cite = candidate["citation"]
         entry = self._entries[(cite["blob"], cite["version"])]
         unit, data = self._source(entry, cite["version"], cite["attempt"], cite["page"])
-        return (self._unit_info(entry, cite["version"], cite["attempt"], unit)[0]
+        # Ordinary agent reads retain the stronger pre-existing requirement:
+        # freshly authenticate the whole cited unit, including unselected pages.
+        # Cross-worker reuse only attests the original immutable unit for worker
+        # preparation; it must not silently relax this public-read guarantee.
+        return (self._unit_info(entry, cite["version"], cite["attempt"], unit, use_persisted=False)[0]
                 and self._screen({"window": data["text"], "claim": candidate["text"],
                                   "quote": candidate["quote"]}))
 

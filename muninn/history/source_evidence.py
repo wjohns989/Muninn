@@ -8,6 +8,9 @@ full source authentication; source-unit metadata and text are ciphertext too.
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
+import os
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict
@@ -17,9 +20,11 @@ from typing import Any
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.exceptions import InvalidTag
 
 from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
-from muninn.history.secure_projection_store import ProjectionIntegrityError, SecureProjectionStore
+from muninn.history.secure_projection_store import ProjectionIntegrityError, SecureProjectionStore, _j
+from muninn.history import streaming_redaction
 from muninn.history.transcript_units import PARSER_VERSION, SourceUnit, UnitFragment, transcript_units
 
 
@@ -30,6 +35,86 @@ class SourceEvidenceStore(SecureProjectionStore):
 
     def __init__(self, archive: Any, root: Path | None = None):
         super().__init__(archive, root or Path(archive.root) / "source-evidence")
+        with self._connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS unit_screens("
+                       "ref TEXT PRIMARY KEY, ciphertext BLOB NOT NULL)")
+
+    def _screen_key(self):
+        return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
+                    info=b"muninn whole source unit screen v1").derive(self.archive._key)
+
+    def _screen_binding(self, entry, version, attempt, unit):
+        return {"source": self._identity(entry, version), "attempt": attempt,
+                "unit": asdict(unit), "screen_version": streaming_redaction.UNIT_SCREEN_VERSION}
+
+    def _screen_ref(self, binding):
+        return hmac.new(self._screen_key(), b"index\0" + _j(binding), hashlib.sha256).hexdigest()
+
+    def _decode_screen(self, ref, ciphertext):
+        try:
+            if (not isinstance(ref, str) or len(ref) != 64
+                    or not isinstance(ciphertext, bytes) or not 28 < len(ciphertext) <= 65536):
+                raise ValueError
+            record = json.loads(AESGCM(self._screen_key()).decrypt(
+                ciphertext[:12], ciphertext[12:], b"unit-screen-v1\0" + ref.encode("ascii")))
+            if (set(record) != {"binding", "raw_sha", "screened_sha", "body_length", "body_sha"}
+                    or type(record["body_length"]) is not int or record["body_length"] < 0
+                    or any(not isinstance(record[k], str) or len(record[k]) != 64
+                           or any(c not in "0123456789abcdef" for c in record[k])
+                           for k in ("raw_sha", "screened_sha", "body_sha"))):
+                raise ValueError
+            binding = record["binding"]
+            if (not isinstance(binding, dict)
+                    or set(binding) != {"source", "attempt", "unit", "screen_version"}
+                    or type(binding["screen_version"]) is not int or binding["screen_version"] < 1
+                    or ref != self._screen_ref(binding)):
+                raise ValueError
+            return record
+        except (InvalidTag, KeyError, TypeError, ValueError, UnicodeError) as exc:
+            raise ProjectionIntegrityError("source-unit screening authentication failed") from exc
+
+    def screen_info(self, entry, version, attempt, unit):
+        """Read an original immutable-unit attestation, not a raw-file rescan.
+
+        Selected pages and every serialized outgoing model request must still
+        be authenticated/screened by callers. No read lock survives this call.
+        """
+        binding = self._screen_binding(entry, version, attempt, unit)
+        ref = self._screen_ref(binding)
+        with self._connect() as db:
+            db.execute("BEGIN")
+            _count, stats = self._authenticated_count(db, binding["source"], attempt)
+            if stats is None or type(unit.ordinal) is not int or not 0 <= unit.ordinal < stats["source_units"]:
+                raise ProjectionIntegrityError("source unit is unavailable")
+            row = db.execute("SELECT CASE WHEN length(ciphertext)<=65536 THEN ciphertext ELSE NULL END "
+                             "FROM unit_screens WHERE ref=?", (ref,)).fetchone()
+            if row is None:
+                return None
+            record = self._decode_screen(ref, row[0])
+            if record["binding"] != binding:
+                raise ProjectionIntegrityError("source-unit screening binding changed")
+        return (record["raw_sha"] == record["screened_sha"], record["body_length"],
+                bytes.fromhex(record["body_sha"]))
+
+    def _store_screen_info(self, entry, version, attempt, unit, *, raw_sha, screened_sha,
+                           body_length, body_sha):
+        """Private ledger writer: call only AFTER whole-unit iterator EOF/close."""
+        binding = self._screen_binding(entry, version, attempt, unit)
+        ref = self._screen_ref(binding)
+        record = {"binding": binding, "raw_sha": raw_sha, "screened_sha": screened_sha,
+                  "body_length": body_length, "body_sha": body_sha}
+        nonce = os.urandom(12)
+        ciphertext = nonce + AESGCM(self._screen_key()).encrypt(
+            nonce, _j(record), b"unit-screen-v1\0" + ref.encode("ascii"))
+        self._decode_screen(ref, ciphertext)  # Validate before any durable write.
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._authenticated_count(db, binding["source"], attempt)
+            db.execute("INSERT OR IGNORE INTO unit_screens VALUES(?,?)", (ref, ciphertext))
+            stored = db.execute("SELECT CASE WHEN length(ciphertext)<=65536 THEN ciphertext ELSE NULL END "
+                                "FROM unit_screens WHERE ref=?", (ref,)).fetchone()
+            if self._decode_screen(ref, stored[0]) != record:
+                raise ProjectionIntegrityError("source-unit screening proof conflicts")
 
     def _key(self) -> bytes:
         return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
@@ -200,6 +285,29 @@ class SourceEvidenceStore(SecureProjectionStore):
                 report["fragments"] += 1
                 report["units"] += int(part.final)
             report["snapshots"] += 1
+        # Cache entries are ciphertext-only and included by SQLite backup. Even
+        # obsolete screen-policy entries must authenticate against their exact
+        # archived source/attempt/unit; corruption cannot hide behind a miss.
+        with self._connect() as db:
+            rows = db.execute("SELECT ref,CASE WHEN length(ciphertext)<=65536 THEN ciphertext ELSE NULL END "
+                              "FROM unit_screens")
+            for ref, ciphertext in rows:
+                record = self._decode_screen(ref, ciphertext)
+                try:
+                    binding = record["binding"]
+                    source = binding["source"]
+                    entry = entries[(source["blob"], source["hash"], source["version"])]
+                    if source != self._identity(entry, source["version"]):
+                        raise ValueError
+                    unit = SourceUnit(**binding["unit"])
+                    parts = self.unit_fragments(entry, source["version"], binding["attempt"], unit.ordinal)
+                    try:
+                        if next(parts).unit != unit:
+                            raise ValueError
+                    finally:
+                        parts.close()
+                except (KeyError, TypeError, ValueError, StopIteration) as exc:
+                    raise ProjectionIntegrityError("source-unit screening binding changed") from exc
         return report
 
     def backup_to(self, destination: Path) -> None:

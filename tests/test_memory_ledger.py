@@ -454,7 +454,7 @@ def test_agent_source_rechecks_whole_unit_privacy_not_only_stored_screen_flag(tm
     archive,entry,attempt,page=fixture(tmp_path)
     ledger=MemoryLedger(archive)
     ident=record(ledger,entry,attempt,page)
-    monkeypatch.setattr(ledger,"_unit_info",lambda *a:(False,0,b""))
+    monkeypatch.setattr(ledger,"_unit_info",lambda *a,**kw:(False,0,b""))
     assert "text" not in ledger.get(ident)
     assert ledger.search("citations")["matches"]==[]
     assert ledger.source(ident)["context_state"]=="withheld"

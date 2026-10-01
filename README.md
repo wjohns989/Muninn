@@ -739,6 +739,13 @@ truth. Excerpts and typed model interpretations remain provisional, and possible
 secrets remain pending without public text. Screening streams the entire source
 unit before releasing a selected window, including across chunk boundaries.
 The ledger is included in portable archive backup/restore verification.
+Worker preparation can reuse an encrypted whole-unit screening attestation
+across worker instances, bound to the exact archived version, sealed parser
+attempt, unit metadata and screening-policy version. It contains hashes, not
+transcript text. Selected inputs remain authenticated and outgoing requests are
+screened afresh. Ordinary agent reads retain their stronger whole-unit recheck;
+cache reuse does not weaken that boundary. Portable verification checks the
+cache too, including obsolete policy entries.
 
 With `MUNINN_SECURE_AUTO_ANALYSIS` enabled, pertinent secure-search jobs now
 bind immutable cited inputs before inference, stage validated replies encrypted,
@@ -798,6 +805,10 @@ resumption: interrupting an incomplete large-source projection can still discard
 its staging. There is no source-size cutoff, but restart-cost/scaling remains
 an explicit activation gate.
 No model directory, drive letter or user home is assumed by this component.
+New window plans derive from the already authenticated, sealed source-unit
+stream instead of decrypting the original archive a third time. Publication
+still requires the complete pinned fragment sequence and matching coverage
+metadata. This inherits the original raw EOF proof, not a fresh raw-file check.
 
 Its first publication API verifies the whole event chain; large background
 batches need measured amortization before activation. It detects event corruption

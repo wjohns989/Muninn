@@ -7,14 +7,17 @@ or public plaintext endpoint belongs here.
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from itertools import zip_longest
 from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from muninn.history.cited_analysis_source import CitedAnalysisSource
-from muninn.history.secure_projection_store import SecureProjectionStore, ProjectionIntegrityError
+from muninn.history.secure_projection_store import SecureProjectionStore, ProjectionIntegrityError, _j
 from muninn.history.structured_projector import ProjectionCancelled
 from muninn.history.transcript_units import PARSER_VERSION
 
@@ -109,20 +112,66 @@ class CitedWindowPlanStore(SecureProjectionStore):
         existing = self.find_snapshot(entry, version)
         if existing is not None:
             return existing
+        with self._build_lock():
+            self._recover_incomplete_locked()
+            existing = self.find_snapshot(entry, version)
+            if existing is not None:
+                return existing
+            return self._derive_sealed_units(entry, version, source_attempt, should_cancel)
+
+    def _derive_sealed_units(self, entry, version, source_attempt, should_cancel):
+        """Trusted unit-to-plan derivation; no generic 'verified' bypass.
+
+        The parent attempt sealed full authenticated raw EOF. This writer must
+        drain its pinned encrypted fragment sequence and validate all unit/count
+        metadata before publishing. It inherits that original snapshot proof;
+        it does not claim to have freshly reverified the raw blob on disk.
+        The general raw SecureProjectionStore.build contract remains unchanged.
+        """
+        units = self.source.ledger.units
+        ident = self._bound_identity(entry, version, source_attempt)
+        parent_info = units.projection_info(entry, version, source_attempt)
+        if units.find_snapshot(entry, version) != source_attempt:
+            raise ProjectionIntegrityError("Window plan source binding changed")
+        attempt = uuid.uuid4().hex
         stats = {"source_units": 0, "conversational_units": 0, "omitted_units": 0}
-
-        def project(raw):
-            for _chunk in raw:
+        cipher = AESGCM(self._key())
+        try:
+            with self._connect() as db:
+                db.execute("INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)", (
+                    attempt, ident["vault"], ident["blob"], ident["hash"], ident["size"],
+                    version, "building", 0, None, None))
+                db.commit()
+                count = 0
+                for descriptor in self._descriptors(entry, version, source_attempt,
+                        should_cancel=should_cancel, stats=stats):
+                    raw = _j(descriptor)
+                    if not 1 <= len(raw.decode("utf-8")) <= self.max_page_chars:
+                        raise ProjectionIntegrityError("Window descriptor is not bounded")
+                    nonce = os.urandom(12)
+                    sealed = nonce + cipher.encrypt(nonce, raw, self._aad(ident, attempt, count, len(raw)))
+                    db.execute("INSERT INTO pages VALUES(?,?,?,?)", (attempt, count, len(raw), sealed))
+                    count += 1
+                    if count % 64 == 0:
+                        db.commit()  # Unpublished staging only.
                 self._cancel(should_cancel)
-            if self._identity(entry, version)["source_attempt"] != source_attempt:
-                raise ProjectionIntegrityError("Window plan source binding changed")
-            for descriptor in self._descriptors(entry, version, source_attempt,
-                    should_cancel=should_cancel, stats=stats):
-                yield json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
-            if self._identity(entry, version)["source_attempt"] != source_attempt:
-                raise ProjectionIntegrityError("Window plan source binding changed")
-
-        return super().build(entry, version, project, stats=stats)
+                if (units.find_snapshot(entry, version) != source_attempt
+                        or units.projection_info(entry, version, source_attempt) != parent_info
+                        or stats != parent_info[1]):
+                    raise ProjectionIntegrityError("Window plan source coverage changed")
+                completion = {**ident, "attempt": attempt, "pages": count,
+                              "source_sha256": ident["hash"], "stats": stats}
+                nonce = os.urandom(12)
+                sealed_completion = nonce + cipher.encrypt(nonce, _j(completion), _j(ident))
+                db.execute("UPDATE attempts SET state='complete',count=?,digest=?,completion=? WHERE attempt=?", (
+                    count, bytes.fromhex(ident["hash"]), sealed_completion, attempt))
+                db.commit()
+                return attempt
+        except Exception:
+            # Connection exit has rolled back its partial batch. The exclusive
+            # builder removes committed unpublished batches, never valid plans.
+            self._recover_incomplete_locked()
+            raise
 
     def window_at(self, entry, version, attempt, ordinal):
         descriptor = json.loads(self.get_page(entry, version, attempt, ordinal))

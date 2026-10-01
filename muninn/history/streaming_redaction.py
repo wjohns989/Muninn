@@ -11,6 +11,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Iterator
 
+# Bump on any change to whole-unit redaction semantics. Persisted screening
+# attestations must never carry admission forward under a different policy.
+UNIT_SCREEN_VERSION = 1
+
 _OPAQUE_LIMIT = 28
 _REDACTED = "[REDACTED_SENSITIVE_VALUE]"
 _SENSITIVE = re.compile(

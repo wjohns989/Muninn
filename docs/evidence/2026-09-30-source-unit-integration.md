@@ -680,3 +680,53 @@ No inference, live schema migration, service reload or scheduler activation.
   Independent review cleared the actual snapshot correction. The earlier broad
   proof remains scoped before this final reader change; exact-candidate CI is
   required for the integrated batch.
+
+**Exact-candidate CI:** `777661db5c212db4e80a816fe65f8e7243a59661` passed all
+five checks. Full suite run `36822223918`, job `110240063322`: **2,566 passed /
+13 skipped**, two warnings, 148.73 seconds. Clean imports, privacy, replay and
+benchmark dry run also passed. This status-only receipt is held for the next
+code batch; no extra CI push is needed for an unchanged implementation.
+
+### 2026-10-01 sealed-plan derivation and worker screening reuse
+
+Changed dependencies: private source-unit-to-window derivation and encrypted
+whole-unit worker-screening attestations. Automatic capture inference/backfill
+and paid dispatch are not activated by these changes. The running HTTP service
+was not reloaded.
+
+- Five derivation tests: initially 2 failed / 3 passed; corrected derivation plus
+  original plan/preservation checks: 26 passed in 21.11 seconds. A completed
+  source-unit attempt retains its full raw EOF proof; the new plan drains the
+  pinned authenticated fragment stream and checks parent/count/stat bindings,
+  without a third raw decryption. General raw projection construction is unchanged.
+- Three initial cache checks failed before implementation, then passed. The
+  cache stores only encrypted hashes, lengths and exact source/attempt/unit/policy
+  bindings. Publication follows normal whole-unit screening EOF. Tampering,
+  transplant, new source/attempt/policy, late failure, backup and selected-page
+  authentication are tested. Outgoing requests are always screened fresh.
+- Expanded affected checks found the existing public-read late-tamper regression;
+  persistent reuse was narrowed to worker preparation, preserving fresh whole-unit
+  public reads. The regression assertions were not relaxed. A mocked private
+  method was adapted for the added keyword argument. Final combined ledger,
+  cache, derivation, plan and preservation suite: **95 passed in 63.43 seconds**.
+  Earlier source/analysis/cache/ledger run had 100 passed before that correction.
+- Independent actual-diff review was CLEAR for derivation, cache storage/privacy
+  and the preserved public-read boundary. Cache verification includes obsolete
+  policy entries in portable recovery. It attests originally authenticated
+  immutable units, not fresh on-disk authentication of every unselected frame
+  for each worker lookup. Full-store verification retains that corruption check.
+- Real local archived-unit proof: initial preparation drained one whole unit;
+  a fresh worker reused the exact screening result with zero whole-unit scans.
+  Observed timings were 32.16 ms and 1.42 ms for this small unit only; no general
+  machine/backlog speedup is claimed. The host-only proof initially selected no
+  sample because roles are capitalized; its selector now normalizes case. No
+  transcript, credential, ID or model output was printed; zero model calls.
+- The existing live service independently passed actual MCP cited lookup/search,
+  source-follow and one 1,443-character redacted transcript page. Anonymous and
+  wrong-token reads returned 401; Ollama had zero resident models. This validates
+  existing live agent retrieval, not activation of the new preparation code.
+
+The one derived screening record was written encrypted to the existing local
+archive. No original transcript, model setting, credential vault, service process
+or other application was changed. Durable parser restart/resume, growth-coverage
+reuse, automatic cadence, paid reservations and remaining UI work stay open.
