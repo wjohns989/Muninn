@@ -798,9 +798,32 @@ class HistoryService:
         heartbeat = asyncio.create_task(
             self._secure_analysis_heartbeat(job.job_id, job.lease_token, cancelled)
         )
+        publishing = job.state == "publishing"
         try:
-            index = SecureHistoryBlindIndex(self._require_secure_archive())
+            from muninn.history.cited_analysis_source import CitedAnalysisSource
+            source = await asyncio.to_thread(CitedAnalysisSource, self._require_secure_archive())
+            stage = job.extraction
+            if stage is not None:
+                # The reply is already validated and encrypted. Recovery never
+                # redispatches inference, including an already charged ZDR call.
+                if not publishing:
+                    if not await asyncio.to_thread(journal.begin_publication, job.job_id, job.lease_token):
+                        await asyncio.to_thread(journal.fail_analysis, job.job_id, job.lease_token, "cancelled")
+                        return True
+                    publishing = True
+                refs = await asyncio.to_thread(source.record_proposals, stage["window"],
+                    stage["proposals"], model_identity=stage["model_identity"])
+                await asyncio.to_thread(journal.acknowledge_publication, job.job_id, job.lease_token, refs)
+                return True
+            index = SecureHistoryBlindIndex(source.archive)
             capability = await asyncio.to_thread(index._analysis_capability, job.target)
+            descriptor = job.window or await asyncio.to_thread(source.prepare, capability,
+                                                               should_cancel=cancelled.is_set)
+            if descriptor is None:
+                await asyncio.to_thread(journal.fail_analysis, job.job_id, job.lease_token, "insufficient_context")
+                return True
+            if not await asyncio.to_thread(journal.bind_analysis_window, job.job_id, job.lease_token, descriptor):
+                return True
             if cancelled.is_set():
                 await asyncio.to_thread(journal.fail_analysis, job.job_id,
                                         job.lease_token, "cancelled")
@@ -821,20 +844,28 @@ class HistoryService:
                 )
 
             from muninn.history.auto_routing import remote_policy_snapshot
-            from muninn.history.secure_analysis import analyze_secure_hit
+            from muninn.history.secure_analysis import analyze_cited_window
 
             remote_policy = remote_policy_snapshot(self.data_dir)
             remote_enabled = (remote_policy.enabled
                               and remote_policy.generation == job.remote_policy_generation)
 
-            outcome = await analyze_secure_hit(
-                self, capability, allow_remote=remote_enabled, should_cancel=cancelled.is_set,
+            outcome = await analyze_cited_window(
+                self, source, descriptor, allow_remote=remote_enabled, should_cancel=cancelled.is_set,
                 before_remote=before_remote, remote_not_sent=remote_not_sent,
                 expected_remote_generation=remote_policy.generation,
             )
             if outcome["status"] == "ok":
-                await asyncio.to_thread(journal.finish_analysis, job.job_id,
-                                        job.lease_token, outcome)
+                stage = outcome["extraction"]
+                if not await asyncio.to_thread(journal.stage_analysis, job.job_id, job.lease_token, stage):
+                    return True
+                if not await asyncio.to_thread(journal.begin_publication, job.job_id, job.lease_token):
+                    await asyncio.to_thread(journal.fail_analysis, job.job_id, job.lease_token, "cancelled")
+                    return True
+                publishing = True
+                refs = await asyncio.to_thread(source.record_proposals, stage["window"],
+                    stage["proposals"], model_identity=stage["model_identity"])
+                await asyncio.to_thread(journal.acknowledge_publication, job.job_id, job.lease_token, refs)
             elif outcome["status"] == "deferred":
                 await asyncio.to_thread(journal.defer_analysis, job.job_id,
                                         job.lease_token, outcome.get("reason", "deferred"))
@@ -847,14 +878,25 @@ class HistoryService:
             # outcome_unknown and local work can retry without double charge.
             raise
         except VaultIntegrityError:
-            await asyncio.to_thread(journal.fail_analysis, job.job_id,
+            await asyncio.to_thread(journal.fail_publication if publishing else journal.fail_analysis, job.job_id,
                                     job.lease_token, "vault_integrity")
         except ValueError:
-            await asyncio.to_thread(journal.fail_analysis, job.job_id,
+            await asyncio.to_thread(journal.fail_publication if publishing else journal.fail_analysis, job.job_id,
                                     job.lease_token, "snapshot_unavailable")
-        except (OSError, RuntimeError, sqlite3.OperationalError, httpx.HTTPError):
-            await asyncio.to_thread(journal.fail_analysis, job.job_id,
-                                    job.lease_token, "cancelled" if cancelled.is_set() else "model_unavailable")
+        except (OSError, RuntimeError, sqlite3.OperationalError, httpx.HTTPError) as exc:
+            from muninn.history.memory_ledger import MemoryLedgerIntegrityError
+            from muninn.history.secure_projection_store import ProjectionIntegrityError
+            # Publication has no provider request left to retry. A transient
+            # write failure retries only the immutable stage; integrity failure
+            # is terminal and actionable rather than an automatic model loop.
+            if publishing:
+                if isinstance(exc, (MemoryLedgerIntegrityError, ProjectionIntegrityError)):
+                    await asyncio.to_thread(journal.fail_publication, job.job_id, job.lease_token, "vault_integrity")
+                else:
+                    await asyncio.to_thread(journal.defer_publication, job.job_id, job.lease_token)
+            else:
+                await asyncio.to_thread(journal.fail_analysis, job.job_id,
+                                        job.lease_token, "cancelled" if cancelled.is_set() else "model_unavailable")
         finally:
             cancelled.set()
             heartbeat.cancel()

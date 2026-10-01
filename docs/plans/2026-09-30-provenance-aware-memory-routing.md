@@ -282,7 +282,9 @@ remaining blockers before connecting model results to automatic filing:
    descriptor bound to snapshot, attempt, page coordinates, parser and canonical
    input digest. Boundary hits retain authenticated adjacent-page context in a
    bounded window; explicit single-page citation ranges reject cross-page
-   fabricated quotes. Queue binding and prompting remain to be connected.
+   fabricated quotes. **Worker integration implemented:** the immutable
+   descriptor is bound before inference and reused on retry. Model input keeps
+   role/event/project-basis metadata; local opaque project IDs stay in the ledger.
 2. Add exact-quote proposals to the internal extraction contract. Check each
    against the persisted source window. Model-origin proposals stay explicitly
    provisional even when they echo a whole user message; quote equality is
@@ -294,10 +296,18 @@ remaining blockers before connecting model results to automatic filing:
    rule callers retain the single-record API and historical ref derivation.
    Model refs bind their origin separately; older records report
    `legacy_unrecorded`, not an invented origin. Portable recovery retains this
-   distinction. The automatic worker has not yet been connected to the API.
+   distinction. **Worker integration implemented:** the internal cited schema
+   validates supported quotes, preserves private proposals only in encrypted
+   staging, and publishes the model-only batch before acknowledging success.
+   Ordinary enrichment excludes the separate credential-only proposal type.
 3. Screen the complete actual serialized remote request, not merely the claim
    or response. Credential-bearing or unknown inputs stay in the local lane;
    consent, budget, lease and ZDR settings do not override that boundary.
+   **Implemented for cited and archive-backed legacy on-demand routes:** whole
+   unit admission precedes budget lookup; nested strings and the complete request
+   envelope are screened, with a final body/policy check at HTTP admission.
+   Exact bundled public model IDs are recognized only in structural model
+   configuration fields; transcript/prompt/unknown values receive no exception.
 4. Reuse existing lease, remote-dispatch/unsent markers and consent-generation
    checks. An interrupted possibly sent request is outcome-unknown, not an
    automatic duplicate paid request. Persist accepted proposal refs atomically
@@ -317,6 +327,11 @@ remaining blockers before connecting model results to automatic filing:
    response remains outcome-unknown. Stage AAD binds job, target/window and
    result identity. Prove cancel/admission races, stale-lease acknowledgment,
    no duplicate inference after publication crash, and tampered stage rejection.
+   **Implemented and tested:** recovery bypasses inference when a validated
+   extraction exists, publication failures retry only the stage (integrity
+   failures are terminal), and ACK proves the exact refs exist in the ledger.
+   Resource/privacy deferrals retain their immutable input and back off rather
+   than becoming unknown permanent failures.
 5. The bounded `record_batch` component validates all citations before a single
    transaction and authenticates the prior ledger chain once for up to 64
    proposals. Single-record callers retain the same semantics. This amortizes
@@ -325,6 +340,14 @@ remaining blockers before connecting model results to automatic filing:
    an authenticated scalable validation boundary if needed, without accepting
    an unverified old prefix or holding a source reader through inference.
 
-The component is tested independently of the live service. It does not by
+The worker integration is tested independently of the running service and has
+not been activated by a restart. It does not by
 itself activate historical inference, resolve conflicts, establish extraction
 coverage, or federate ledger results into agent search.
+
+Representative short real-source previews passed through actual local Ollama
+and ZDR OpenRouter with no memory publication. Exact source coordinate recovery
+uses unique unchanged quotes, not fuzzy matches or model arithmetic. Existing
+local-only credential review remains distinct. Live restart, durable agent
+search federation, temporal/type conflict filing, budget reservations, and
+historical coverage are still separate unfinished dependencies.

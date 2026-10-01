@@ -737,6 +737,15 @@ secrets remain pending without public text. Screening streams the entire source
 unit before releasing a selected window, including across chunk boundaries.
 The ledger is included in portable archive backup/restore verification.
 
+With `MUNINN_SECURE_AUTO_ANALYSIS` enabled, pertinent secure-search jobs now
+bind immutable cited inputs before inference, stage validated replies encrypted,
+and publish model-origin candidates before reporting success. A recovered reply
+replays publication without another model call. Model interpretations remain
+provisional; exact quotes do not verify truth. Local calls release their model,
+and ZDR requests require persisted consent, budget admission, whole-unit privacy
+screening, and final request screening. Existing running services must load the
+updated code before this behavior is active.
+
 This is a tested persistence/evidence component, **not yet automatic historical
 fact/task/conflict enrichment, agent search federation, or a ledger review UI**.
 Its first publication API verifies the whole event chain; large background
@@ -756,6 +765,19 @@ it sends no inference and prints no source text. This is a component check, not
 a full historical import. Preview may build encrypted source-evidence sidecars,
 but does not publish a memory candidate. Paths and installed model tags remain
 user-configurable.
+
+For an explicitly requested **single real-source inference check**, without
+publishing memories or changing policy:
+
+```powershell
+python -m scripts.smoke_memory_ledger_archive --root '<your-archive-dir>' --local-analysis-preview
+python -m scripts.smoke_memory_ledger_archive --root '<your-archive-dir>' --zdr-analysis-preview --policy-root '<your-private-data-dir>'
+```
+
+The ZDR check can incur a provider charge and requires an enabled managed policy
+at the explicit data directory. It never infers consent from an archive location.
+Output contains counts/status, not original chat text. A short source preview
+does not prove historical coverage or extraction accuracy on the backlog.
 
 Only the named project roots and archive are scanned. Generated/example `.env`
 files, linked paths, and unsupported assignments are not silently treated as

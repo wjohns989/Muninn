@@ -1,11 +1,13 @@
 """Bounded real-source ledger proof; prints counts/types, never source text.
 
-No model is dispatched and no historical source is changed. --apply stores one
-encrypted source observation. This is not automatic enrichment or full backfill.
+Default checks dispatch no model and change no historical source. --apply stores
+one encrypted source observation. Explicit inference-preview flags perform one
+approved real-input call without publication. This is not historical backfill.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -17,11 +19,28 @@ from muninn.history.blind_index import SecureHistoryBlindIndex, _terms
 from muninn.history.cited_analysis_source import CitedAnalysisSource
 
 
-def run(root: Path, *, apply=False, max_snapshots=8, cited_preview=False):
+def preview_policy_root(policy_root: Path | None):
+    """Never infer remote authority from the archive's configurable location."""
+    if policy_root is None:
+        raise ValueError("ZDR preview requires an explicit policy root")
+    resolved = policy_root.resolve(strict=True)
+    from muninn.history.auto_routing import remote_policy_snapshot
+    policy = remote_policy_snapshot(resolved)
+    if policy.source != "managed" or not policy.enabled:
+        raise ValueError("ZDR preview requires an enabled managed policy")
+    return resolved
+
+
+def run(root: Path, *, apply=False, max_snapshots=8, cited_preview=False,
+        local_analysis_preview=False, zdr_analysis_preview=False, policy_root=None):
     if not 1 <= max_snapshots <= 8:
         raise ValueError("Invalid bounded source proof")
-    if cited_preview and apply:
+    if sum(map(bool, (cited_preview, local_analysis_preview, zdr_analysis_preview))) > 1:
+        raise ValueError("Select only one preview route")
+    if (cited_preview or local_analysis_preview or zdr_analysis_preview) and apply:
         raise ValueError("Cited input preview does not publish memories")
+    if zdr_analysis_preview:
+        policy_root = preview_policy_root(policy_root)
     archive = SecureHistoryArchive(root)
     units = SourceEvidenceStore(archive)
     manifest = archive._load_manifest()
@@ -56,7 +75,7 @@ def run(root: Path, *, apply=False, max_snapshots=8, cited_preview=False):
             if ledger.remote_input(entry, version, attempt, page) is None:
                 counts["screen_denied"] += 1
                 continue
-            if cited_preview:
+            if cited_preview or local_analysis_preview or zdr_analysis_preview:
                 terms = _terms(data["text"][:3000])
                 if not terms:
                     continue
@@ -67,6 +86,21 @@ def run(root: Path, *, apply=False, max_snapshots=8, cited_preview=False):
                 if descriptor is None:
                     continue
                 window = CitedAnalysisSource(archive).reopen(descriptor)
+                if local_analysis_preview or zdr_analysis_preview:
+                    from muninn.history.secure_analysis import analyze_cited_window
+                    # A one-call proof, not a second server or queued backfill.
+                    class LocalContext:
+                        data_dir = policy_root if zdr_analysis_preview else root.parent
+                    result = asyncio.run(analyze_cited_window(LocalContext(), cited, descriptor,
+                        allow_remote=zdr_analysis_preview, prefer_remote=zdr_analysis_preview))
+                    return {"state": result["status"], "provider": result.get("provider"),
+                            "model": result.get("model"), "reason": result.get("reason"),
+                            "output_failure": result.get("output_failure"),
+                            "source_provider": entry["provider"], "snapshots_examined": examined,
+                            "source_bytes": entry["size"], "window_characters": len(window["text"]),
+                            "validated_proposals": len(result.get("extraction", {}).get("proposals", [])),
+                            "candidate_delta": ledger.verify_all()["candidates"] - before["candidates"],
+                            "applied": False, "remote_allowed": zdr_analysis_preview}
                 return {"state": "ok", "snapshots_examined": examined,
                         "provider": entry["provider"], "source_bytes": entry["size"],
                         "window_characters": len(window["text"]),
@@ -109,10 +143,17 @@ if __name__ == "__main__":
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--cited-preview", action="store_true",
                         help="Reopen one real cited model input; no inference or memory publication")
+    parser.add_argument("--local-analysis-preview", action="store_true",
+                        help="One explicitly requested local model call on real cited input; no publication")
+    parser.add_argument("--zdr-analysis-preview", action="store_true",
+                        help="One explicitly approved real-input ZDR call under persisted policy/budget; no publication")
+    parser.add_argument("--policy-root", type=Path,
+                        help="Explicit running installation's data directory; required for ZDR preview")
     args = parser.parse_args()
     try:
         report = run(args.root, apply=args.apply, max_snapshots=args.max_snapshots,
-                     cited_preview=args.cited_preview)
+                     cited_preview=args.cited_preview, local_analysis_preview=args.local_analysis_preview,
+                     zdr_analysis_preview=args.zdr_analysis_preview, policy_root=args.policy_root)
     except Exception as exc:
         report = {"state": "failed", "error_category": type(exc).__name__}
     print(json.dumps(report, sort_keys=True))

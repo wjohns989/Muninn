@@ -51,10 +51,13 @@ _ANALYSIS_STATES = _ANALYSIS_ACTIVE | {
 _ANALYSIS_RETRY_CODES = {
     "locked", "worker_timeout", "local_unavailable", "model_unavailable", "deferred",
     "remote_consent_revoked", "daily_zdr_cap_unverified", "gpu_busy",
+    "gpu_telemetry_unavailable", "no_eligible_model_fits", "no_chat_model_fits",
+    "ollama_model_already_resident", "source_not_remote_safe",
 }
 _ANALYSIS_TERMINAL_CODES = {
     "invalid_target", "queue_full", "vault_integrity", "snapshot_unavailable",
     "insufficient_context", "outcome_unknown", "unknown", "cancelled",
+    "local_output_invalid",
 }
 
 
@@ -957,6 +960,17 @@ class CaptureJournal:
                              "WHERE job_id=? AND state='publishing' AND publication_started=1 "
                              "AND sealed_extraction IS NOT NULL AND lease_token=? AND lease_until>?",
                              (time.time() + 5, time.time(), job_id, lease_token, time.time()))
+            return cur.rowcount == 1
+
+    def fail_publication(self, job_id, lease_token, code="vault_integrity"):
+        """Stop an invalid admitted stage without turning it into fresh inference."""
+        code = code if code in _ANALYSIS_TERMINAL_CODES else "unknown"
+        with self._connect() as db:
+            cur = db.execute("UPDATE history_analysis_jobs SET state='failed',error_code=?,"
+                             "lease_token=NULL,lease_until=NULL,due_at=0,updated_at=? "
+                             "WHERE job_id=? AND state='publishing' AND publication_started=1 "
+                             "AND lease_token=? AND lease_until>?",
+                             (code, time.time(), job_id, lease_token, time.time()))
             return cur.rowcount == 1
 
     def _read_publication_receipt(self, row):

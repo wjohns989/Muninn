@@ -228,7 +228,7 @@ async def test_local_invalid_model_output_uses_explicit_zdr_fallback(monkeypatch
 
     class History:
         def _secure_model_window(self, *_args):
-            return "A project decision was made. " * 10 + "TOKEN=CANARY-SECRET-91919"
+            return "A project decision was made. " * 10
 
     @asynccontextmanager
     async def slot():

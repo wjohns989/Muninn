@@ -234,6 +234,64 @@ fabricated or unpublished receipt IDs, corruption, lease expiry during proof,
 and independent writes during verification. The independent actual-diff/result
 review was CLEAR for this component. These are not new live inference tests.
 
-Remaining dependency: the existing worker still needs the cited extraction
-schema, whole-input remote credential admission, and staged-publication wiring.
-No service restart or historical model backfill was performed for this slice.
+Subsequent worker integration now connects the cited schema, immutable input
+binding, whole-unit/full-envelope remote admission, encrypted staging, and
+publication-only replay. The private model reply is never an ordinary tool/API
+result. Actual installed Ollama weights are checked before and after a call;
+remote identity binds the returned model identifier, not invented weight data.
+
+Focused evidence: 21 transport/service cases passed in 13.73s. They cover real
+isolated encrypted stores with mocked transport, staged replay before/after
+ledger commit, changed weights, invalid citations and schema type overrides,
+nested request credentials, mutation during remote marking, source credentials
+outside the window (both production routes), and resource deferral retention.
+Five resource cases failed red-first before the route/journal reason mismatch
+was corrected. The old safe-input ZDR fallback regression passed separately.
+One earlier red-first service test unexpectedly dispatched the old local route
+on nonsecret test text; a forbidden-legacy-route guard now prevents recurrence.
+That call is not claimed as representative live validation.
+
+The independent diff review found the credential-only type-schema mismatch;
+the explicit output check and malicious-response regression fixed it. No
+service restart or historical model backfill was performed for these slices.
+
+### Representative local cited inference
+
+The bounded real-source preview initially found no eligible window under its
+arbitrary 150-character minimum; no inference occurred. Using the existing safe
+89-character user window from a 13,210-byte Claude snapshot, Qwen returned valid
+JSON/schema but failed the citation check. A secret-free failure-category field
+distinguished citation failure from malformed JSON without printing the reply.
+The parser now derives a coordinate only if an unchanged exact quote occurs
+uniquely in the authenticated input. It does not repair paraphrases, non-integer
+offsets, ambiguous occurrences, or source-range crossings; valid repeated-quote
+coordinates remain unchanged. The extraction identity versions this behavior.
+
+Four coordinate cases passed, including old-defect sensitivity. After this
+reviewed correction, the real `qwen2.5:7b` preview completed in 6.19s with one
+validated proposal, no ledger publication (`candidate_delta=0`), and remote
+disabled. Ollama `/api/ps` then returned zero resident models. This proves the
+new parser/transport on a short actual chat source, not historical accuracy or
+automatic live filing. The final affected transport/service/legacy-analysis run
+passed 45 cases in 13.73s; real provider replies remain out of logs and this repo.
+
+### Representative ZDR cited inference
+
+The ZDR preview requires the installation's explicit existing policy root,
+not the configurable archive's parent, and fails closed without enabled managed
+consent. A separate regression proves revocation/re-enable during source loading
+cannot confer new consent on an old request. The initial actual preview sent no
+request: full-envelope screening treated the bundled 29-character fallback model
+ID as an opaque credential. A red-first regression reproduced this. Screening
+now recognizes only the three exact bundled public IDs in structural model
+fields; source/prompt/extra fields and unknown IDs are unchanged and screened.
+Four affected envelope cases passed, including final pre-POST mutation denial.
+
+After that reviewed correction, one actual preview under the existing persisted
+consent/budget and provider ZDR constraints returned `openai/gpt-6-luna-pro` in
+5.66s with valid analysis and zero proposed memory claims. Publication remained
+off (`candidate_delta=0`). No policy/cap changed and no private response text
+was printed. The short source supports parser/route proof, not extraction
+coverage or accuracy on the historical backlog. A spend-availability query is
+still not a reservation; automatic paid historical backfill remains gated on
+that separate dependency and ledger growth validation.

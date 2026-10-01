@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -18,25 +19,33 @@ async def test_search_automatically_queues_and_completes_one_analysis(tmp_path, 
     monkeypatch.setenv("MUNINN_SECURE_AUTO_ANALYSIS", "1")
     monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(tmp_path / "archive"))
     source = tmp_path / "chat.jsonl"
-    source.write_text("orbital-widget parser decision", encoding="utf-8")
+    source.write_text(json.dumps({"type": "event_msg", "payload": {
+        "type": "user_message", "message": "orbital-widget parser decision"}}) + "\n", encoding="utf-8")
     archive = SecureHistoryArchive.create(tmp_path / "archive", "test-only passphrase")
     archive.archive_file(source, "codex")
     SecureHistoryBlindIndex(archive).build()
     seen: dict[str, object] = {}
 
-    async def fake_analyze(history, capability, *, allow_remote, should_cancel, before_remote,
+    async def fake_analyze(history, cited_source, descriptor, *, allow_remote, should_cancel, before_remote,
                            remote_not_sent, expected_remote_generation):
-        seen["raw_window"] = history._secure_model_window(capability)
+        seen["raw_window"] = cited_source.reopen(descriptor)["text"]
         seen["allow_remote"] = allow_remote
         assert not should_cancel()
         assert before_remote is not None
         assert remote_not_sent is not None
         assert isinstance(expected_remote_generation, int)
-        return {"status": "ok", "provider": "ollama", "model": "fixture-model",
+        result = {"status": "ok", "provider": "ollama", "model": "fixture-model",
                 "analysis": {"summary": "A parser decision was mentioned.", "decisions": [],
                              "open_items": [], "uncertainty": "Not an execution receipt."}}
+        return {**result, "extraction": {"format": 1, "window": descriptor,
+            "model_identity": "a" * 64, "result": result, "proposals": [{
+                "type": "decision", "text": "A parser decision was mentioned.",
+                "quote": seen["raw_window"], "start": 0}]}}
 
-    monkeypatch.setattr("muninn.history.secure_analysis.analyze_secure_hit", fake_analyze)
+    monkeypatch.setattr("muninn.history.secure_analysis.analyze_cited_window", fake_analyze, raising=False)
+    async def forbidden_legacy(*args, **kwargs):
+        pytest.fail("queued durable analysis must not use the legacy inference route")
+    monkeypatch.setattr("muninn.history.secure_analysis.analyze_secure_hit", forbidden_legacy)
     service = HistoryService(None, tmp_path / "history_vault", home=tmp_path,
                              archive_passphrase="test-only passphrase")
     await service.start()
@@ -57,5 +66,9 @@ async def test_search_automatically_queues_and_completes_one_analysis(tmp_path, 
         assert analysis["result"]["analysis"]["summary"] == "A parser decision was mentioned."
         assert "orbital-widget" in seen["raw_window"]
         assert seen["allow_remote"] is False
+        assert len(analysis["memory_refs"]) == 1
+        from muninn.history.memory_ledger import MemoryLedger
+        candidate = MemoryLedger(archive).get(analysis["memory_refs"][0])
+        assert candidate["proposal_origin"] == "model"
     finally:
         await service.stop()
