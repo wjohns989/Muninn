@@ -43,6 +43,22 @@ class PersistenceError(RuntimeError):
     """Runtime may be enabled; failed persistence must not imply rollback."""
 
 
+_SAFE_FAILURE_CODES = {
+    "Durable workers are not idle": "workers_busy",
+    "Queue changed before owned stop": "workers_claimed",
+    "Candidate exited; private preimages and logs preserved": "candidate_exited",
+    "Candidate ownership differs": "candidate_ownership",
+    "Requested capture mode is not effective": "capture_mode",
+    "Candidate publication schema is incomplete": "publication_schema",
+    "Candidate startup deadline reached; private preimages and logs preserved": "startup_deadline",
+}
+
+
+def safe_failure_code(exc):
+    """Expose only reviewed static check names, never exception text or paths."""
+    return _SAFE_FAILURE_CODES.get(str(exc), "unspecified") if type(exc) is RuntimeError else "unspecified"
+
+
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
@@ -302,6 +318,35 @@ def runtime_ready(report):
             and report.get("anonymous_root_contains_token") is False)
 
 
+def candidate_ownership_matches(report, *, child_pid, retired_pid, retired_created_at):
+    """Ignore only the process already confirmed terminated by process.wait()."""
+    processes = report.get("muninn_processes")
+    if (report.get("listener_owners") != [child_pid] or not isinstance(processes, list)
+            or type(retired_created_at) not in (int, float)):
+        return False
+    seen_child = seen_retired = False
+    for item in processes:
+        if not isinstance(item, dict) or type(item.get("pid")) is not int:
+            return False
+        pid, created = item["pid"], item.get("create_time")
+        if type(created) not in (int, float):
+            return False
+        if pid == child_pid:
+            if seen_child or (pid == retired_pid and created == retired_created_at):
+                return False
+            seen_child = True
+        elif pid == retired_pid and created == retired_created_at and not seen_retired:
+            seen_retired = True
+        else:
+            return False
+    return seen_child
+
+
+def startup_listener_pending(report):
+    """The socket census may precede the HTTP readiness checks in one probe."""
+    return report.get("listener_owners") is None or report.get("listener_owners") == []
+
+
 def run(args):
     require_unlinked_path(args.repo)
     repo = args.repo.resolve(strict=True)
@@ -403,9 +448,30 @@ def run(args):
         require(child.poll() is None, "Candidate exited; private preimages and logs preserved")
         try:
             report = inspect_runtime(repo, authenticated=True, port=args.port)
+            owners = report.get("listener_owners")
+            if owners is not None and owners != [] and owners != [child.pid]:
+                raise RuntimeError("Candidate ownership differs")
             if runtime_ready(report):
-                require(report["listener_owners"] == [child.pid]
-                        and len(report["muninn_processes"]) == 1, "Candidate ownership differs")
+                if startup_listener_pending(report):
+                    time.sleep(1)
+                    continue
+                owned = report.get("muninn_processes")
+                if not candidate_ownership_matches(report, child_pid=child.pid,
+                                                   retired_pid=process.pid,
+                                                   retired_created_at=identity[0]):
+                    entries = owned if isinstance(owned, list) else []
+                    print(json.dumps({"stage": "candidate_ownership_observation",
+                                      "listener_matches_child": report.get("listener_owners") == [child.pid],
+                                      "owned_process_count": len(entries),
+                                      "child_visible": any(isinstance(item, dict) and item.get("pid") == child.pid
+                                                           for item in entries),
+                                      "retired_visible": any(isinstance(item, dict) and item.get("pid") == process.pid
+                                                             for item in entries),
+                                      "retired_identity_matches": any(isinstance(item, dict)
+                                          and item.get("pid") == process.pid
+                                          and item.get("create_time") == identity[0] for item in entries)}),
+                          flush=True)
+                    raise RuntimeError("Candidate ownership differs")
                 if startup_mode_pending(report):
                     time.sleep(1)
                     continue
@@ -433,5 +499,6 @@ if __name__ == "__main__":
         run(parsed)
     except Exception as exc:
         print(json.dumps({"stage": "failed", "error_category": type(exc).__name__,
+                          "failure_code": safe_failure_code(exc),
                           "runtime_rollback_claimed": False}), flush=True)
         raise SystemExit(2)

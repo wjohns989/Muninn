@@ -27,6 +27,43 @@ def test_preserve_mode_requires_restart_and_cannot_activate_or_finalize():
     assert args.preserve_capture_auto and not args.enable_capture_auto
 
 
+def test_reload_failure_code_never_exposes_unreviewed_exception_text():
+    assert reload.safe_failure_code(RuntimeError("Candidate ownership differs")) == "candidate_ownership"
+    assert reload.safe_failure_code(RuntimeError("private path or token")) == "unspecified"
+    assert reload.safe_failure_code(ValueError("Candidate ownership differs")) == "unspecified"
+    assert reload.safe_failure_code(reload.PersistenceError("Candidate ownership differs")) == "unspecified"
+
+
+def test_candidate_ownership_allows_only_the_just_retired_process():
+    report = {"listener_owners": [22], "muninn_processes": [
+        {"pid": 11, "create_time": 1.0}, {"pid": 22, "create_time": 2.0},
+    ]}
+    assert reload.candidate_ownership_matches(report, child_pid=22, retired_pid=11,
+                                              retired_created_at=1.0)
+    assert not reload.candidate_ownership_matches({**report, "listener_owners": [11]},
+                                                  child_pid=22, retired_pid=11,
+                                                  retired_created_at=1.0)
+    assert not reload.candidate_ownership_matches({**report, "muninn_processes": [
+        {"pid": 11, "create_time": 1.0}, {"pid": 22, "create_time": 2.0},
+        {"pid": 33, "create_time": 3.0}]}, child_pid=22, retired_pid=11,
+                                                  retired_created_at=1.0)
+    assert not reload.candidate_ownership_matches({**report, "muninn_processes": [
+        {"pid": 11, "create_time": 1.0}]}, child_pid=22, retired_pid=11,
+                                                  retired_created_at=1.0)
+    assert not reload.candidate_ownership_matches({**report, "muninn_processes": [
+        {"pid": 11, "create_time": 3.0}, {"pid": 22, "create_time": 2.0}]},
+        child_pid=22, retired_pid=11, retired_created_at=1.0)
+    assert reload.candidate_ownership_matches({"listener_owners": [11],
+        "muninn_processes": [{"pid": 11, "create_time": 2.0}]},
+        child_pid=11, retired_pid=11, retired_created_at=1.0)
+
+
+def test_startup_waits_for_missing_listener_but_not_a_foreign_owner():
+    assert reload.startup_listener_pending({"listener_owners": []})
+    assert reload.startup_listener_pending({"listener_owners": None})
+    assert not reload.startup_listener_pending({"listener_owners": [33]})
+
+
 @pytest.mark.parametrize("bad", ["missing_report", "remote", "flag_missing", "flag_false", "flag_invalid"])
 def test_preserve_preflight_requires_modern_local_mode_and_owned_true_flags(bad):
     report = {"capture_enrichment": {"capture_enabled": True,
@@ -53,8 +90,9 @@ def test_preserve_queues_allow_only_unclaimed_durable_work():
 
 
 @pytest.mark.skipif(reload.os.name != "nt", reason="Windows owned reload procedure")
-@pytest.mark.parametrize("claim_race", [False, True])
-def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(tmp_path, monkeypatch, claim_race):
+@pytest.mark.parametrize("claim_race,foreign_owner", [(False, False), (True, False), (False, True)])
+def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
+        tmp_path, monkeypatch, claim_race, foreign_owner):
     report, process = isolated_installation(tmp_path, monkeypatch)
     report["capture_enrichment"] = {"capture_enabled": True,
         "automatic_analysis_enabled": True, "automatic_remote_enabled": False}
@@ -84,10 +122,20 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(tmp_path
     def start(command, **kwargs):
         launched.append(kwargs["env"])
         report["listener_owners"] = [456]
-        report["muninn_processes"] = [{"pid": 456}]
+        report["muninn_processes"] = [{"pid": 123, "create_time": 1.0},
+                                      {"pid": 456, "create_time": 2.0}]
         return child
 
     monkeypatch.setattr(reload.subprocess, "Popen", start)
+    poststart_checks = []
+    def inspect(*args, **kwargs):
+        if launched and not poststart_checks:
+            poststart_checks.append(True)
+            if foreign_owner:
+                return {**report, "listener_owners": [999], "history_http": 503}
+            return {**report, "listener_owners": []}
+        return report
+    monkeypatch.setattr(reload, "inspect_runtime", inspect)
     monkeypatch.setattr(reload, "verify_private", lambda *args: None)
     monkeypatch.setattr(reload, "verify_stop_ownership", lambda *args, **kwargs: None)
     candidate_checks = []
@@ -111,6 +159,10 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(tmp_path
         with pytest.raises(RuntimeError, match="Queue changed"):
             reload.run(args)
         assert stopped == launched == []
+    elif foreign_owner:
+        with pytest.raises(RuntimeError, match="Candidate ownership differs"):
+            reload.run(args)
+        assert stopped == [True] and launched == [environment]
     else:
         reload.run(args)
         assert stopped == [True] and launched == [environment]
@@ -246,7 +298,7 @@ def isolated_installation(tmp_path, monkeypatch):
               "anonymous_root_contains_token": False, "listener_owners": [123],
               "muninn_processes": [{"pid": 123}],
               "capture_enrichment": {"capture_enabled": False}}
-    process = SimpleNamespace(exe=lambda: sys.executable, cwd=lambda: str(tmp_path),
+    process = SimpleNamespace(pid=123, exe=lambda: sys.executable, cwd=lambda: str(tmp_path),
         create_time=lambda: 1.0, cmdline=lambda: [sys.executable, str(tmp_path / "server.py")],
         environ=lambda: {"MUNINN_NO_AUTH": "0", "MUNINN_AUTH_TOKEN": "fixture-only",
                         "MUNINN_HOST": "127.0.0.1", "MUNINN_PORT": "42069",

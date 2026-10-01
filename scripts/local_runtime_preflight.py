@@ -15,14 +15,15 @@ def inspect_runtime(repo: Path, *, authenticated: bool = False, port: int = 4206
         raise ValueError("Invalid local service port")
     server = (repo / "server.py").resolve()
     owned = []
-    for process in psutil.process_iter(["pid", "name", "exe", "cwd", "cmdline"]):
+    for process in psutil.process_iter(["pid", "name", "exe", "cwd", "cmdline", "create_time"]):
         try:
             args = process.info["cmdline"] or []
             if not args or "python" not in (process.info["name"] or "").lower():
                 continue
             cwd = Path(process.info["cwd"] or ".")
             if any((cwd / arg).resolve() == server for arg in args[1:] if arg.endswith(".py")):
-                owned.append({"pid": process.pid, "interpreter": process.info["exe"]})
+                owned.append({"pid": process.pid, "interpreter": process.info["exe"],
+                              "create_time": process.info["create_time"]})
         except (psutil.Error, OSError, ValueError):
             continue
     try:
