@@ -27,7 +27,8 @@ async def test_search_automatically_queues_and_completes_one_analysis(tmp_path, 
     seen: dict[str, object] = {}
 
     async def fake_analyze(history, cited_source, descriptor, *, allow_remote, should_cancel, before_remote,
-                           remote_not_sent, expected_remote_generation):
+                           remote_not_sent, expected_remote_generation,
+                           prefer_remote=False, remote_gate=None):
         seen["raw_window"] = cited_source.reopen(descriptor)["text"]
         seen["allow_remote"] = allow_remote
         assert not should_cancel()

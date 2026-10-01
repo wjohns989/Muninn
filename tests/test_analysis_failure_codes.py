@@ -39,8 +39,10 @@ async def test_worker_preserves_only_fixed_failure_categories(
     monkeypatch.setattr("muninn.history.auto_routing.remote_policy_snapshot", forbidden)
 
     async def analyze(history, source, descriptor, *, allow_remote, should_cancel,
-                      before_remote, remote_not_sent, expected_remote_generation):
+                      before_remote, remote_not_sent, expected_remote_generation,
+                      prefer_remote=False, remote_gate=None):
         assert allow_remote is False and expected_remote_generation == -1
+        assert prefer_remote is False
         assert await before_remote() is False
         return {"status": "deferred", "reason": reason, "output_failure": subcode,
                 "content": "REJECTED_PRIVATE_TEXT"}
