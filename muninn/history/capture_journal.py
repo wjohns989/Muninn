@@ -57,11 +57,30 @@ _ANALYSIS_RETRY_CODES = {
     "gpu_telemetry_unavailable", "no_eligible_model_fits", "no_chat_model_fits",
     "ollama_model_already_resident", "source_not_remote_safe",
 }
+_LOCAL_OUTPUT_FAILURE_CODES = {
+    "json": "local_output_json",
+    "cited_schema": "local_output_cited_schema",
+    "citation": "local_output_citation",
+    "quote_missing_or_ambiguous": "local_output_quote",
+    "analysis_schema": "local_output_analysis_schema",
+}
 _ANALYSIS_TERMINAL_CODES = {
     "invalid_target", "queue_full", "vault_integrity", "snapshot_unavailable",
     "insufficient_context", "outcome_unknown", "unknown", "cancelled",
     "local_output_invalid",
-}
+} | set(_LOCAL_OUTPUT_FAILURE_CODES.values())
+
+
+def analysis_deferral_code(outcome: dict[str, Any]) -> str:
+    """Keep fixed local validation categories, never rejected model content."""
+    reason = outcome.get("reason", "deferred")
+    if not isinstance(reason, str):
+        return "unknown"
+    if reason != "local_output_invalid":
+        return reason
+    subcode = outcome.get("output_failure")
+    return (_LOCAL_OUTPUT_FAILURE_CODES.get(subcode, reason)
+            if isinstance(subcode, str) else reason)
 
 
 @dataclass(frozen=True)

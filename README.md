@@ -494,6 +494,15 @@ Key environment variables:
 `config.template.yaml` contains conservative, relative-path defaults. Keep real
 tokens and machine-specific data paths in private environment/configuration files.
 
+Strict-history analysis status preserves fixed local validation failure codes:
+`local_output_json`, `local_output_cited_schema`, `local_output_citation`,
+`local_output_quote` (missing or ambiguous exact quote), and
+`local_output_analysis_schema`. These are terminal diagnostics, not permission
+to weaken citations or automatically replay failed jobs. Unknown categories
+remain `local_output_invalid`; rejected model text is not stored in the journal.
+Older generic failures are not retrospectively reclassified. Resource deferrals
+remain retryable, and an uncertain remote dispatch remains `outcome_unknown`.
+
 ### Importing your existing AI conversations
 
 Strict history mode is now the default. It blocks the old gzip/plaintext vault,

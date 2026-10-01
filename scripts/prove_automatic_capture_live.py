@@ -18,7 +18,7 @@ import psutil
 
 from scripts.local_runtime_preflight import inspect_runtime
 from muninn.history.auto_routing import _local_setting, inspect_ollama
-from muninn.history.capture_journal import _ANALYSIS_TERMINAL_CODES
+from muninn.history.capture_journal import _ANALYSIS_RETRY_CODES, _ANALYSIS_TERMINAL_CODES
 from muninn.history.private_acl import verify_private
 
 
@@ -45,7 +45,7 @@ def main():
         errors = {}
         for code, count in db.execute("SELECT error_code,COUNT(*) FROM history_analysis_jobs "
                 "WHERE lane=1 AND created_at>=? AND state='failed' GROUP BY error_code", (cutoff,)):
-            safe_code = code if code in _ANALYSIS_TERMINAL_CODES else "other"
+            safe_code = code if code in _ANALYSIS_RETRY_CODES | _ANALYSIS_TERMINAL_CODES else "other"
             errors[safe_code] = errors.get(safe_code, 0) + count
         remote = db.execute("SELECT COUNT(*) FROM history_analysis_jobs WHERE lane=1 "
                             "AND created_at>=? AND remote_dispatched!=0", (cutoff,)).fetchone()[0]

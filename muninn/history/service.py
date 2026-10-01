@@ -24,7 +24,7 @@ import httpx
 
 from muninn.history.blind_index import SearchCancelled, SecureHistoryBlindIndex
 from muninn.history.blind_index import _terms as _search_terms
-from muninn.history.capture_journal import CaptureJournal
+from muninn.history.capture_journal import CaptureJournal, analysis_deferral_code
 from muninn.history.capture_cadence import SmallCaptureCadence
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.importer import import_history, read_thread
@@ -1057,7 +1057,7 @@ class HistoryService:
                 await asyncio.to_thread(journal.acknowledge_publication, job.job_id, job.lease_token, refs)
             elif outcome["status"] == "deferred":
                 await asyncio.to_thread(journal.defer_analysis, job.job_id,
-                                        job.lease_token, outcome.get("reason", "deferred"))
+                                        job.lease_token, analysis_deferral_code(outcome))
             else:
                 await asyncio.to_thread(journal.fail_analysis, job.job_id,
                                         job.lease_token, "insufficient_context")
