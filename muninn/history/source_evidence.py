@@ -123,6 +123,68 @@ class SourceEvidenceStore(SecureProjectionStore):
         if (seen != count or unit is not None or stats is None or expected_unit != stats["source_units"]):
             raise ProjectionIntegrityError("source-unit evidence coverage is incomplete")
 
+    def unit_fragments(self, entry: dict, version: int, attempt: str,
+                       unit_ordinal: int) -> Iterator[UnitFragment]:
+        """Authenticate one complete unit with bounded memory and indexed seeks.
+
+        Monotonic unit ordinals were generated before source publication. Binary
+        seeks locate the range without scanning preceding multi-GB conversations.
+        The caller must drain this iterator; do not hold it across model calls.
+        """
+        if type(unit_ordinal) is not int or unit_ordinal < 0:
+            raise ProjectionIntegrityError("invalid source unit reference")
+        ident = self._identity(entry, version)
+        with self._connect() as db:
+            db.execute("BEGIN")
+            count, stats = self._authenticated_count(db, ident, attempt)
+            if stats is None or unit_ordinal >= stats["source_units"]:
+                raise ProjectionIntegrityError("source unit is unavailable")
+            cipher = AESGCM(self._key())
+
+            def read(ordinal):
+                row = db.execute("SELECT length,CASE WHEN length BETWEEN 1 AND ? "
+                                 "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
+                                 "FROM pages WHERE attempt=? AND ordinal=?",
+                                 (self.max_page_chars * 4, attempt, ordinal)).fetchone()
+                try:
+                    data = json.loads(self._decrypt_page(ident, attempt, ordinal, row, cipher))
+                    if (set(data) != {"unit", "fragment", "text", "final"}
+                            or type(data["fragment"]) is not int or data["fragment"] < 0
+                            or type(data["final"]) is not bool or not isinstance(data["text"], str)
+                            or len(data["text"]) > 4096 or data["final"] and data["text"]):
+                        raise ValueError
+                    unit = SourceUnit(**data["unit"])
+                    if type(unit.ordinal) is not int or not 0 <= unit.ordinal < stats["source_units"]:
+                        raise ValueError
+                    return unit, data
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise ProjectionIntegrityError("source-unit evidence authentication failed") from exc
+
+            def lower_bound(target):
+                lo, hi = 0, count
+                while lo < hi:
+                    mid = (lo + hi) // 2
+                    unit, _data = read(mid)
+                    if unit.ordinal < target:
+                        lo = mid + 1
+                    else:
+                        hi = mid
+                return lo
+
+            first, end = lower_bound(unit_ordinal), lower_bound(unit_ordinal + 1)
+            if first >= end:
+                raise ProjectionIntegrityError("source unit is unavailable")
+            expected, metadata = 0, None
+            for ordinal in range(first, end):
+                unit, data = read(ordinal)
+                if (unit.ordinal != unit_ordinal or data["fragment"] != expected
+                        or metadata is not None and unit != metadata
+                        or data["final"] != (ordinal == end - 1)):
+                    raise ProjectionIntegrityError("source-unit fragment sequence is incomplete")
+                metadata = unit
+                expected += 1
+                yield UnitFragment(unit, data["text"], data["final"])
+
     def verify_all(self) -> dict[str, int]:
         entries = {(entry["blob"], entry["sha256"], version): entry
                    for versions in self.archive._load_manifest()["files"].values()

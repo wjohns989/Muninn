@@ -516,7 +516,9 @@ class SecureHistoryArchive:
         journal = source_root / "capture-jobs.db"
         if copy_journal and (journal.exists() or _is_link(journal)):
             copy_sealed(journal, destination / journal.name)
-        for evidence_name in ("source-evidence", "credential-context"):
+        for evidence_name, db_name in (("source-evidence", "projections.sqlite3"),
+                                      ("credential-context", "projections.sqlite3"),
+                                      ("memory-ledger", "ledger.sqlite3")):
             evidence = source_root / evidence_name
             if not (evidence.exists() or _is_link(evidence)):
                 continue
@@ -525,10 +527,10 @@ class SecureHistoryArchive:
             import sqlite3
 
             verify_private(evidence)
-            original = evidence / "projections.sqlite3"
+            original = evidence / db_name
             verify_private(original)
             create_private_directory(destination / evidence_name)
-            target = destination / evidence_name / "projections.sqlite3"
+            target = destination / evidence_name / db_name
             create_private_file(target)
             source_db = sqlite3.connect(original.resolve().as_uri() + "?mode=ro", uri=True)
             target_db = sqlite3.connect(target)
@@ -557,6 +559,10 @@ class SecureHistoryArchive:
             from muninn.history.credential_context import CredentialContextStore
 
             CredentialContextStore(restored).verify_all()
+        if (destination / "memory-ledger").exists():
+            from muninn.history.memory_ledger import MemoryLedger
+
+            MemoryLedger(restored).verify_all()
         return restored
 
     def backup_to(self, destination: Path) -> dict[str, int]:
@@ -582,6 +588,10 @@ class SecureHistoryArchive:
                 from muninn.history.credential_context import CredentialContextStore
 
                 report["credential_context_snapshots_verified"] = CredentialContextStore(backup).verify_all()["snapshots"]
+            if (destination / "memory-ledger").exists():
+                from muninn.history.memory_ledger import MemoryLedger
+
+                report["memory_candidates_verified"] = MemoryLedger(backup).verify_all()["candidates"]
             return report
 
     def metadata_catalog(self, *, provider: str | None = None, offset: int = 0,

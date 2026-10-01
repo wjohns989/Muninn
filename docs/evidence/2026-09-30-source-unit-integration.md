@@ -43,8 +43,6 @@
   archive handle and the tests use their passphrase-created handle. The
   corrected full CI run must be observed before claiming the merge gate passed.
 
-## Remaining acceptance gaps
-
 ## Follow-up: credential context reader lock (2026-09-30)
 
 The first monitored six-row/two-call live sample validated its pre-review
@@ -75,6 +73,51 @@ token disclosure, one expected interpreter/listener. Ollama had no loaded
 models and GPU utilization was 0%. The earlier corrected Linux CI and the
 capture-error diagnostic commit both passed all five GitHub checks. These
 claims do not prove this follow-up has been loaded by the running HTTP process.
+
+## Follow-up: durable candidate ledger (2026-09-30)
+
+Implemented an archive-attached encrypted event ledger with exact source-page
+citations, bounded whole-unit screening, opaque project references, separate
+source-observation/excerpt/model-interpretation labels, and append-only
+`needs_user` decisions. Only complete verbatim user observations with known
+project/event evidence auto-file, and remain `unverified_assertion`. Unsupported
+typing, quoted/negated excerpts and paraphrases remain provisional. Potential
+secret contexts do not enter public record text or eligible remote input.
+No automatic inference or ordinary-index publication is added by this component.
+
+The event chain and encrypted head commit atomically; every publication verifies
+its existing prefix. Deletion/ciphertext/reference/head changes fail closed, as
+do unsealed/forged citations and interrupted head publication. Whole-database
+rollback cannot be detected without an external freshness anchor. That is an
+explicit limitation, not a recovery guarantee. Archive online backups/restores
+include and verify the new ledger; isolated portable recovery passes.
+
+Source-unit lookup uses indexed binary seeks plus only the selected unit's
+contiguous fragment range. The regression proves logarithmic seek decrypts plus
+the selected range, with one completion-count authentication. Whole-unit
+screening keeps digest state and a bounded 128-entry cache. A 300,000-character
+benign unit is accepted for provisional excerpt use without a total-size cap;
+a credential outside the selected chunk denies release/remote eligibility.
+No measured whole-machine peak-memory claim is made.
+
+Focused affected suite: 61 passed in 28.76 seconds; after distinguishing actual
+user excerpts from model interpretations, the ledger's 25 cases passed in
+12.25 seconds. Intact source/archive/context results were reused. Independent
+review cleared the changed prefix-integrity and whole-assertion gates, then
+cleared the actual bounded receipt and smoke script. Earlier full Linux CI passed all
+five checks for the context-lock fix; this new slice needs its own CI result.
+
+Bounded real-source proof: one actual Claude Code 13,210-byte snapshot produced
+one encrypted whole-user observation. A fresh ledger object authenticated its
+event and source citation after reopening; project and provider event time were
+present. State was `filed`, truth status `unverified_assertion`. No provider was
+called; no transcript, opaque ID or credential value was printed. The first
+small-source selection had insufficient eligible text; selection was changed
+to completed Claude source units and bounded excerpts rather than weakening
+the secret gate. This is local persistence proof, not model classification or
+automatic agent-search proof.
+
+## Remaining acceptance gaps
 
 General durable claim extraction, project/type filing, temporal conflict review,
 historical backfill and UI integration are still implementation work. This slice

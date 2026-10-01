@@ -728,14 +728,34 @@ rebuildable, and included in portable archive backup/restore verification. Their
 raw pages are not public transcript endpoints. Conversational extraction streams
 large JSON strings, including pretty-printed Gemini container JSON, without
 imposing a whole-message byte limit; normal agent pages stay bounded and redacted.
-These source units are groundwork for general evidence-gated memory filing—not
-proof that full historical fact/task/conflict backfill is implemented.
+An archive-attached `memory-ledger` now provides encrypted durable candidates
+and append-only review decisions with authenticated source citations. Only an
+exact whole-user-message observation with known project/event evidence can
+auto-file; even then its read contract says `unverified_assertion`, not verified
+truth. Excerpts and typed model interpretations remain provisional, and possible
+secrets remain pending without public text. Screening streams the entire source
+unit before releasing a selected window, including across chunk boundaries.
+The ledger is included in portable archive backup/restore verification.
+
+This is a tested persistence/evidence component, **not yet automatic historical
+fact/task/conflict enrichment, agent search federation, or a ledger review UI**.
+Its first publication API verifies the whole event chain; large background
+batches need measured amortization before activation. It detects event corruption
+and deletion, but cannot detect substitution of a valid older whole database.
 
 To check bounded real-source samples without sending inference or printing text:
 
 ```powershell
 python -m scripts.smoke_source_evidence_archive --archive-root '<your-private-data-dir>\history_secure_archive'
+python -m scripts.smoke_memory_ledger_archive --root '<your-private-data-dir>\history_secure_archive'
 ```
+
+The ledger check previews at most eight bounded real snapshots. Adding `--apply`
+stores at most one encrypted source observation and verifies durable reopening;
+it sends no inference and prints no source text. This is a component check, not
+a full historical import. Preview may build encrypted source-evidence sidecars,
+but does not publish a memory candidate. Paths and installed model tags remain
+user-configurable.
 
 Only the named project roots and archive are scanned. Generated/example `.env`
 files, linked paths, and unsupported assignments are not silently treated as

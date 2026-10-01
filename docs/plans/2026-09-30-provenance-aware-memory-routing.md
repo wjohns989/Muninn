@@ -187,3 +187,83 @@ configured short duration even on early termination.
    temporal conflict rules, and agent-facing metadata/source navigation.
 4. Backfill historical snapshots under resource/budget policy; validate real
    local/ZDR and restore paths; then add UI controls after the core is proven.
+
+## Next implementation boundary: durable candidate ledger
+
+The next slice is an isolated encrypted ledger and evidence gate, not immediate
+activation of an archive-wide inference job. Its observable outcome is that a
+bounded source window produces durable typed candidates with exact citations;
+failed, missing or contradictory evidence cannot become a filed item. This
+closes the current 24-hour-analysis-expiry gap before scheduling more inference.
+
+- Store under the archive recovery envelope in `memory-ledger/ledger.sqlite3`,
+  with an independent HKDF/AAD domain. Only opaque HMAC identifiers, sequence
+  numbers and necessary structural states are plaintext. Text, project labels,
+  source references, model proposals and review decisions are encrypted.
+  Events form an AEAD-authenticated sequence with an encrypted committed head
+  and previous-ciphertext digest. Reads/restore validate the full chain before
+  returning a public result. This detects corruption, missing events and changed
+  references, but cannot detect replacement of the entire database by a valid
+  older copy without an external freshness anchor; rollback resistance is not
+  claimed. Writes commit event and head in one FULL-synchronous transaction.
+  The first publication API validates the whole chain in its write transaction;
+  an authenticated tail is insufficient proof that an earlier prefix is sound.
+  Measure/amortize that validation for background batches before large backfill.
+- An immutable citation identifies snapshot hash/blob/version, source-unit
+  ordinal, parser version and bounded window offsets/digest. Quote checks use
+  the original authenticated source, not model paraphrases. Context must retain
+  the source role, cwd evidence and event-time basis. A source observation is
+  not a world-fact verification. Assistant output remains model-inferred.
+- Candidate extraction can propose type/scope/text plus an exact supporting
+  quote. Candidate IDs bind source occurrence, schema/policy version and model
+  weight identity. Repeating a job is idempotent without collapsing distinct
+  occurrences or conflicting snapshot versions. Decisions append; they do not
+  destroy earlier candidates or sources. No automatic newest-wins rule.
+- `filed` requires exact quote, known project/event basis, a passed secret gate
+  and a narrowly supported source assertion. Unsupported paraphrases, missing
+  scope/time, assistant assertions and possible contradictions are provisional.
+  Any possible credential is diverted to credential review and cannot be an
+  ordinary filing. Model confidence by itself never authorizes promotion.
+- Until conflict identity is evidence-supported, automatic filing is restricted
+  to source observations, not consolidated truth. Typed summaries and temporal
+  relationships remain provisional. User-review decisions must name evidence
+  or explicit user authority and preserve contrary observations.
+- Persist `epistemic_kind=source_observation` and `truth_status=unverified_assertion`
+  for a filed verbatim user observation; assistant/model interpretations are
+  always explicitly labeled and provisional. The first gate only auto-files
+  type `observation` only for whole-user-message equality, never a stripped
+  quotation, negation or reported speech; proposed facts/preferences/decisions/tasks need further
+  type/conflict evidence. Public read/search contracts retain these labels.
+- Screen the entire serialized remote model input, including the evidence
+  window and supporting quote, before dispatch. Unknown screening outcome
+  blocks ZDR. Safe claim text cannot exempt a credential-bearing context. No
+  private cwd/path/native ID enters that input; project references are opaque.
+  Local credential interpretation remains in its separate approved lane.
+- The initial citation targets an independently authenticated bounded encrypted
+  source-fragment page from a fully sealed SourceEvidenceStore attempt. This
+  avoids rereading a multi-GB source for each candidate. Fragment-boundary
+  claims remain provisional or await a contiguous-window citation; the source
+  is not discarded or declared fully interpreted because one page was handled.
+  The gate streams the complete authenticated source unit through redaction
+  before exposing/admitting any selected window, so labels/open quotes cannot
+  hide in earlier chunks. Indexed binary seeks locate the unit's encrypted
+  fragment range, without scanning preceding conversations. Digest state and
+  a 128-entry immutable-unit screening cache keep memory bounded. There is no
+  whole-unit size cap. Cross-fragment claim citations and automatic enrichment
+  scheduling remain subsequent dependencies, not proven by this gate alone.
+- Publication is transactional after complete source verification. A crash or
+  late corruption leaves no published page/checkpoint. Bounded windows and
+  continuation offsets support arbitrarily long records; no whole-source size
+  ceiling and no claim of completion on a partial iterator.
+- Backups take a consistent SQLite ciphertext snapshot and verify ledger
+  integrity before declaring restore success. No new key or passphrase prompt
+  is necessary beyond the existing archive recovery credential.
+
+Cheapest proof: isolated red-first cases for quote mismatch, unknown event/cwd,
+assistant-vs-user role, secret diversion, distinct same-text occurrences,
+idempotent retry, crash-before-publication, temporal disagreement retention,
+ciphertext/AAD tamper and portable restore. Then one bounded real source window,
+local and approved ZDR route, source-following search, and idle-model release.
+Only after those pass does the scheduling slice prioritize active/new/backlog
+work. UI controls and historical backfill are subsequent dependencies, not
+implied by the ledger's unit tests.

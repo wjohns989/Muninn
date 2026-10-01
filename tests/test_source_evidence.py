@@ -48,6 +48,65 @@ def test_oversized_source_has_contiguous_bounded_fragments(tmp_path):
     assert store.verify_all()["units"] == 2
 
 
+def test_unit_fragment_seek_is_bounded_and_does_not_scan_preceding_units(tmp_path, monkeypatch):
+    import math
+    source = tmp_path / "many.jsonl"
+    rows = [{"type": "session_meta", "payload": {"cwd": "C:/synthetic"}}]
+    rows.extend({"type": "event_msg", "payload": {"type": "user_message",
+                 "message": "ordinary prior context " * 1000}} for _ in range(100))
+    rows.append({"type": "event_msg", "payload": {"type": "user_message", "message": "target unit"}})
+    source.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic portable recovery phrase")
+    archive.archive_file(source, "codex")
+    entry = archive._load_manifest()["files"][str(source.resolve())][0]
+    store = SourceEvidenceStore(archive)
+    attempt = store.build_snapshot(entry, 0)
+    count = store.count_pages(entry, 0, attempt)
+    decrypts, seals = [], []
+    decrypt, seal = store._decrypt_page, store._authenticated_count
+    def tracked_decrypt(*args, **kwargs):
+        decrypts.append(args[2])
+        return decrypt(*args, **kwargs)
+    def tracked_seal(*args, **kwargs):
+        seals.append(1)
+        return seal(*args, **kwargs)
+    monkeypatch.setattr(store, "_decrypt_page", tracked_decrypt)
+    monkeypatch.setattr(store, "_authenticated_count", tracked_seal)
+    selected = list(store.unit_fragments(entry, 0, attempt, 101))
+    assert "".join(part.text for part in selected).endswith("target unit")
+    assert selected[-1].final and all(part.unit.ordinal == 101 for part in selected)
+    assert len(decrypts) <= 2 * math.ceil(math.log2(count)) + len(selected) + 2
+    assert len(seals) == 1
+
+
+@pytest.mark.parametrize("unit", [-1, True, 2])
+def test_unit_fragment_seek_invalid_reference_fails_closed(tmp_path, unit):
+    archive, entry = _fixture(tmp_path)
+    store = SourceEvidenceStore(archive)
+    attempt = store.build_snapshot(entry, 0)
+    with pytest.raises(ProjectionIntegrityError):
+        list(store.unit_fragments(entry, 0, attempt, unit))
+
+
+def test_unit_fragment_seek_preserves_omissions_and_fails_on_late_corruption(tmp_path):
+    archive, entry = _fixture(tmp_path, "ordinary words " * 1000)
+    store = SourceEvidenceStore(archive)
+    attempt = store.build_snapshot(entry, 0)
+    omitted = list(store.unit_fragments(entry, 0, attempt, 0))
+    assert len(omitted) == 1 and omitted[0].final and not omitted[0].text
+    total = store.count_pages(entry, 0, attempt)
+    reader = store.unit_fragments(entry, 0, attempt, 1)
+    assert next(reader).unit.ordinal == 1
+    # Close the pinned reader before the isolated mutation; no models execute
+    # during a unit screening pass. A fresh full drain must detect corruption.
+    reader.close()
+    with store._connect() as db:
+        db.execute("UPDATE pages SET ciphertext=zeroblob(length(ciphertext)) "
+                   "WHERE attempt=? AND ordinal=?", (attempt, total - 1))
+    with pytest.raises(ProjectionIntegrityError):
+        list(store.unit_fragments(entry, 0, attempt, 1))
+
+
 def test_control_character_escaping_does_not_reject_a_bounded_fragment(tmp_path):
     archive, entry = _fixture(tmp_path, "\x01" * 4096)
     store = SourceEvidenceStore(archive)

@@ -77,6 +77,23 @@ def inspect_models() -> dict:
                        for name in ("qwen2.5:7b", "muninn-qwen35-defiant-q8-test:latest")]}
 
 
+def inspect_triage_workers(repo: Path) -> dict:
+    """Actual worker state; never disclose command arguments or vault values."""
+    active, inaccessible = 0, 0
+    for process in psutil.process_iter(["name", "cwd", "cmdline"]):
+        try:
+            info = process.info
+            if "python" not in (info["name"] or "").lower():
+                continue
+            args = info["cmdline"] or []
+            if ("scripts.triage_credential_ambiguity" in args
+                    and Path(info["cwd"] or ".").resolve() == repo.resolve()):
+                active += 1
+        except (psutil.Error, OSError, ValueError):
+            inaccessible += 1
+    return {"active_workers": active, "inaccessible_processes": inaccessible}
+
+
 def inspect_capture_errors(repo: Path) -> list[dict]:
     from muninn.history.auto_routing import _local_setting
     configured = _local_setting("MUNINN_HISTORY_ARCHIVE_DIR")
@@ -106,4 +123,6 @@ if __name__ == "__main__":
         report["models"] = inspect_models()
     if "--capture-errors" in sys.argv:
         report["capture_errors"] = inspect_capture_errors(Path(__file__).resolve().parents[1])
+    if "--triage-workers" in sys.argv:
+        report["triage_workers"] = inspect_triage_workers(Path(__file__).resolve().parents[1])
     print(json.dumps(report, sort_keys=True))
