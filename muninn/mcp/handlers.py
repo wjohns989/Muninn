@@ -820,7 +820,7 @@ def _do_poll_secure_history_transcript(args: Dict[str, Any], deadline: Optional[
 def _do_read_secure_history_transcript_page(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
     response = make_request_with_retry(
         "POST", f"{SERVER_URL}/history/secure/transcript/page", deadline_epoch=deadline,
-        json={"cursor": args.get("cursor")}, timeout=DEFAULT_HTTP_TIMEOUT,
+        json={"cursor": args.get("cursor")}, timeout=DEFAULT_HTTP_TIMEOUT, max_retries=0,
     )
     return response.json()
 
@@ -831,7 +831,7 @@ def _do_analyze_secure_history(args: Dict[str, Any], deadline: Optional[float]) 
                "prefer_remote": args.get("prefer_remote", False)}
     response = make_request_with_retry(
         "POST", f"{SERVER_URL}/history/secure/analyze", deadline_epoch=deadline,
-        json=payload, timeout=180.0,
+        json=payload, timeout=180.0, max_retries=0,
     )
     return response.json()
 

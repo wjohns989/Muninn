@@ -171,6 +171,14 @@ or fetched span. Search jobs are available through
 Polls that encounter a transient SQLite writer return no-store HTTP 503 with
 `Retry-After: 1`; retry polling within your existing deadline. This is not a
 new durable job state, a lost result, or permission to replay a model request.
+The MCP bridge sends immediate `analyze_secure_history` calls and one-use
+`read_secure_history_transcript_page` calls once, without automatic HTTP replay.
+A timeout or lost response can leave the outcome unknown; it does not prove
+that generation was uncharged or a cursor unconsumed. Read-only job polling
+keeps its existing retry behavior. Reopen an interrupted transcript through its
+source capability; do not blindly repeat a potentially completed model request.
+This bridge safeguard does not prevent an external client from independently
+submitting another request, and is not a hard spending-cap guarantee.
 For more context, `start_secure_history_transcript` queues a CPU-only encrypted
 projection of the selected snapshot. Repeat that call while pending (or use
 `poll_secure_history_transcript` in the full tool profile),
@@ -636,9 +644,15 @@ OpenRouter API keys have one provider-enforced reset period (daily or monthly).
 Muninn checks that finite key limit against the matching local admission
 threshold and checks provider-reported usage for the other period before each
 request. Application thresholds are **not hard spending caps**: an individual
-request or overlapping requests can cross one. Use OpenRouter key and account
-guardrails for hard limits. Changing Muninn's local threshold does not raise the
-API key's own limit.
+request or overlapping requests can cross one. Changing Muninn's local threshold
+does not raise the API key's own limit. Do not treat provider-side limits as proof
+of zero overshoot: OpenRouter documents that already-dispatched requests can
+finish past a workspace budget. Its multiple-interval workspace budgets are an
+Enterprise feature, not a prerequisite or an assumed capability of this local
+setup. See [OpenRouter workspace budget enforcement](https://openrouter.ai/docs/guides/features/workspaces/workspace-budgets).
+Muninn does not yet reserve a verified upper cost bound per paid request or
+claim exact simultaneous daily/monthly enforcement; automatic paid capture
+fallback remains disabled until that separate accounting boundary is closed.
 The dashboard shows the provider-enforced key limit, reset period, remaining
 amount, and current route eligibility when remote use is enabled. This status
 requires the main local token and does not expose the API key or key label.
