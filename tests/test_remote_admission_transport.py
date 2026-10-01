@@ -30,6 +30,7 @@ def route(tmp_path, monkeypatch, post):
         async def __aexit__(self, *args):
             pass
         async def post(self, *args, **kwargs):
+            assert kwargs["json"]["max_completion_tokens"] == 2048
             return await post()
 
     monkeypatch.setattr(analysis.httpx, "AsyncClient", Client)
@@ -112,13 +113,15 @@ async def test_real_http_json_decimal_cost_never_rounds_down(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_missing_cost_can_return_result_but_never_frees_allowance(tmp_path, monkeypatch):
+async def test_missing_cost_cannot_return_publishable_result_or_free_allowance(tmp_path, monkeypatch):
     calls = []
     async def post():
         calls.append(True)
         return response(None)
     history = route(tmp_path, monkeypatch, post)
-    assert (await run(history))["status"] == "ok"
+    first = await run(history)
+    assert first["status"] == "deferred"
+    assert first["reason"] == "remote_cost_unresolved"
     assert status(tmp_path)["state"] == "blocked"
     assert (await run(history))["reason"] == "remote_admission_busy"
     assert len(calls) == 1

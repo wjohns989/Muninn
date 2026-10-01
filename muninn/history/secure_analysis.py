@@ -428,6 +428,10 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
         span = source.reopen(descriptor)["text"]
     provider = Provider.from_env("openrouter")
     body = provider.request_body(_cited_prompt(source.reopen(descriptor)) if cited else _prompt(span))
+    # The selected ZDR route supports this parameter; require_parameters=True
+    # makes incompatible fallbacks fail closed instead of dropping the bound.
+    # The same 2048-token bound passed a real cited-archive smoke.
+    body["max_completion_tokens"] = 2048
     if body.get("provider") != {"zdr": True, "data_collection": "deny",
                                 "require_parameters": True}:
         raise RuntimeError("OpenRouter ZDR policy unavailable")
@@ -472,7 +476,11 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
             )
             # Billing may be valid even if the model output/HTTP status fails.
             data = response.json(parse_float=Decimal)
-            admission.settle_response(data)
+            if not admission.settle_response(data):
+                # A valid model body is not publishable when billing is
+                # unresolved. Keep the pre-POST unknown admission durable so
+                # neither this job nor another can silently spend again.
+                raise AdmissionError("remote_cost_unresolved")
             response.raise_for_status()
     except AdmissionError as exc:
         return {"status": "deferred", "provider": None, "model": None, "reason": exc.code}
