@@ -11,9 +11,23 @@ one another.
 | Streamable HTTP | `http://127.0.0.1:42069/mcp` | Any client that accepts an MCP URL (preferred) |
 | stdio | `python /path/to/Muninn/mcp_wrapper.py` | Clients that only launch commands |
 
+`python -m muninn.mcp` is a compatibility entrypoint for the same stdio wrapper;
+it does not run a second transport implementation. Initialize only checks the
+configured backend/Ollama readiness. Bootstrap autostart flags default off and
+do not turn initialization into a service-start request. The installed
+`muninn_mcp_bridge` remains the preferred Windows route for loading authenticated
+local settings. Bridge diagnostics do not persist request payloads or return
+raw exception values; existing old trace files are not automatically removed.
+
 The stdio wrapper is a thin client of the same server; it never opens the
 store itself. Start the server first (`python server.py`, the tray app, or the
 service), then configure the clients below.
+
+On Windows, authenticated desktop clients whose process environment may be
+stale can use the installed `muninn_mcp_bridge` entry point described below.
+It reads `MUNINN_AUTH_TOKEN` from the current Windows **User** environment at
+each MCP launch, without copying it into client configuration. It requires the
+already-running shared loopback server and never starts the server or Ollama.
 
 Replace `/path/to/Muninn` with your checkout and `python` with the interpreter
 that has Muninn installed (for example `/path/to/Muninn/.venv/bin/python`).
@@ -163,19 +177,30 @@ python -m muninn.cli hooks uninstall --apply
 | Event | What Muninn does |
 |---|---|
 | Session start (also after resume, clear, compaction) | Injects the project briefing into the new session: goal, open handoffs, earlier threads from every app, project rules, recent memories, preferences |
-| Before compaction | Copies the transcript to the vault and imports the thread right away, so what compaction drops is saved at that moment |
-| After each reply | Same, at most every two minutes per thread |
-| Session end | Same, immediately |
+| Before compaction | Copies the transcript into the encrypted archive; CPU indexing follows in the background |
+| After each reply | Same, throttled per thread |
+| Session end | Same when the host delivers the event; scheduled sync covers missed exits |
 
-- **Claude Code** (CLI, IDE extensions, Claude Desktop's Code tab): `http` hooks
-  in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) that call
-  `http://127.0.0.1:42069/hooks/claude-code`.
+- **Claude Code** (CLI, IDE extensions, Claude Desktop's Code tab): command
+  hooks in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) that run the
+  local `muninn/hook_client.py` bridge. Claude Code does not run HTTP handlers
+  for `SessionStart`.
 - **Codex** (CLI, IDE extension, ChatGPT desktop app): command hooks in
-  `~/.codex/hooks.json` (or `$CODEX_HOME`) that run `muninn/hook_client.py`, a
-  standard-library script that starts in about 50 ms (Codex gives session-end
-  hooks one second) and never blocks Codex if the server is down.
-- With a server token, export `MUNINN_AUTH_TOKEN` in the environment the apps
-  start from; the hooks send it.
+  `~/.codex/hooks.json` (or `$CODEX_HOME`) that run the installed
+  `muninn_hook_client` standard-library-only module with the selected Python interpreter in isolated
+  mode, so a project file cannot shadow it. On affected Windows Codex builds,
+  the Python executable must have a path without spaces because Codex's `cmd /C`
+  wrapper fails quoted executables; the installer rejects incompatible paths.
+  Install Muninn into that interpreter before installing hooks,
+  then review and trust the exact hook definitions in Codex. Codex gives
+  session-end hooks one second; the bridge never blocks Codex if the server is down.
+- **Gemini CLI**: command hooks in `~/.gemini/settings.json` for SessionStart,
+  PreCompress, AfterAgent and SessionEnd. AfterAgent captures a real local
+  transcript at a bounded cadence. Gemini's PreCompress and SessionEnd are
+  best-effort, so scheduled encrypted sync remains the safety net.
+- With a server token, set `MUNINN_AUTH_TOKEN` in the apps' environment. On
+  Windows, the command bridge also reads the User environment value when an
+  already-running app has not inherited a newly set token. It never prints it.
 
 ## Understanding imported threads (optional LLM step)
 
@@ -360,23 +385,30 @@ save and handoff routine.
 Claude Desktop launches local servers over stdio. Edit
 `claude_desktop_config.json` (Settings → Developer → Edit Config):
 
+On Windows with the authenticated shared server, use the installed Python
+interpreter and the token-free bridge. Replace the example interpreter path
+with the user's own installed Python; never place the bearer in this file:
+
 ```json
 {
   "mcpServers": {
     "muninn": {
-      "command": "/path/to/Muninn/.venv/bin/python",
-      "args": ["/path/to/Muninn/mcp_wrapper.py"],
+      "command": "C:\\path\\to\\python.exe",
+      "args": ["-E", "-P", "-m", "muninn_mcp_bridge"],
       "env": {
         "MUNINN_AGENT_NAME": "claude-desktop",
-        "MUNINN_AUTH_TOKEN": "only-if-the-server-has-one"
+        "MUNINN_MCP_TOOLSET": "core"
       }
     }
   }
 }
 ```
 
-On Windows use `silent_mcp.py` instead of `mcp_wrapper.py` to avoid a console
-window. Restart Claude Desktop after editing.
+Preserve every existing MCP server in `claude_desktop_config.json`. Restart
+Claude Desktop when convenient to load the new entry; this does not launch a
+second Muninn server. On other platforms, use the shared authenticated HTTP
+endpoint if the client supports it, or the standard-library wrapper with an
+OS-managed token.
 
 The Code tab runs Claude Code, which also reads Claude Code's own configuration
 (below). Current Desktop builds inject `claude_desktop_config.json` servers into
@@ -415,6 +447,26 @@ selects Streamable HTTP:
   }
 }
 ```
+
+### Windows authenticated stdio for Codex, Claude Code and Gemini CLI
+
+Install Muninn into the selected Python interpreter, set `MUNINN_AUTH_TOKEN`
+in the Windows **User** environment, and start the shared authenticated server.
+Then register this command as the `muninn` stdio MCP server in each client:
+
+```text
+<absolute-path-to-installed-python.exe> -E -P -m muninn_mcp_bridge
+```
+
+Set only `MUNINN_MCP_TOOLSET=core` in the client's MCP environment; do not put
+the bearer token there. `-E -P` avoids inherited `PYTHON*` overrides and
+modules in the client's working directory while allowing dependencies installed
+in the selected interpreter's user site. The bridge ignores a stale process
+token, pins `127.0.0.1:42069`, and refuses a nonlocal server override. It
+fails closed if the Windows User token is missing or malformed. A fresh MCP
+launch is needed after token rotation; an already-running MCP process keeps
+its connection until restarted. For other operating systems, use a client
+configuration that passes the token securely to the ordinary wrapper.
 
 ## Cursor
 

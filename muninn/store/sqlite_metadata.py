@@ -274,7 +274,14 @@ class SQLiteMetadataStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
         self._json1_available = False
-        self._initialize()
+        # A fresh database and schema migrations must have exactly one writer.
+        # The same advisory lock already serializes ordinary cross-process adds.
+        with get_store_lock(self.db_path.parent, timeout=60.0).acquire(shared=False):
+            try:
+                self._initialize()
+            except BaseException:
+                self.close()
+                raise
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -301,6 +308,13 @@ class SQLiteMetadataStore:
         if self._json1_available:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_user_id_json ON memories(json_extract(metadata, '$.user_id'));"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_thread_id_json ON memories(json_extract(metadata, '$.thread_id'));"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_history_prompt_digest_json "
+                "ON memories(json_extract(metadata, '$.history_prompt_digest'));"
             )
         conn.execute(SCHEMA_META)
         conn.execute(USER_SCOPE_BACKFILL_FAILURES)
@@ -1738,6 +1752,17 @@ class SQLiteMetadataStore:
         return self._get_conn().execute(
             "SELECT 1 FROM history_prompts_imported WHERE digest = ?", (digest,)
         ).fetchone() is not None
+
+    def get_history_prompt_memories(self, digest: str) -> List[MemoryRecord]:
+        """Find an uncheckpointed recovered prompt by its stable source digest."""
+        if self._json1_available:
+            where, param = "json_extract(metadata, '$.history_prompt_digest') = ?", digest
+        else:
+            where, param = "metadata LIKE ?", f'%"history_prompt_digest": "{digest}"%'
+        rows = self._get_conn().execute(
+            f"SELECT * FROM memories WHERE {where} LIMIT 2", (param,)
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
 
     def mark_history_prompts(self, digests: Iterable[str]) -> None:
         conn = self._get_conn()

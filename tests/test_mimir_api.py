@@ -150,6 +150,8 @@ def _clear_api_key(monkeypatch):
     """Ensure tests run in dev mode by default (MUNINN_DEV_MODE=true)."""
     monkeypatch.setenv("MUNINN_DEV_MODE", "true")
     monkeypatch.delenv("MUNINN_API_KEY", raising=False)
+    monkeypatch.delenv("MUNINN_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("MUNINN_SERVER_AUTH_TOKEN", raising=False)
 
 
 @pytest.fixture

@@ -59,6 +59,32 @@ class TestInstructorExtractorExtract:
         result = extractor.extract("test")
         assert isinstance(result, ExtractionResult)
 
+    def test_native_ollama_uses_request_scoped_unload(self, monkeypatch):
+        import requests
+
+        sent = {}
+
+        def fake_post(url, *, json, timeout):
+            sent.update(url=url, body=json, timeout=timeout)
+            response = MagicMock()
+            response.json.return_value = {"message": {"content": '{"entities":[{"name":"Python","entity_type":"tech"}],"relations":[],"summary":"Python is used."}'}}
+            return response
+
+        monkeypatch.setattr(requests, "post", fake_post)
+        extractor = InstructorExtractor(
+            base_url="http://localhost:11434/v1",
+            model="muninn-test",
+            ollama_keep_alive="0",
+            timeout=120,
+        )
+        result = extractor.extract("Python is used.")
+        assert sent["url"] == "http://localhost:11434/api/chat"
+        assert sent["body"]["keep_alive"] == "0"
+        assert sent["body"]["stream"] is False
+        assert sent["body"]["format"]["type"] == "object"
+        assert sent["timeout"] == 120
+        assert result.entities[0].name == "Python"
+
 
 class TestInstructorExtractorConversion:
     """Test ExtractedMemoryFacts → ExtractionResult conversion."""

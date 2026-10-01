@@ -9,14 +9,34 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from muninn.history import insights, llm_settings
+from muninn.history import llm_settings
 from muninn.history.importer import collect, import_history, read_thread
-from muninn.history.insights import Provider, analyze_threads, parse_reply, render_turns, validate_reply
+from muninn.history.insights import (
+    Provider,
+    analyze_threads,
+    parse_reply,
+    render_turns,
+    store_understanding,
+    validate_reply,
+)
+
+
 from muninn.history.vault import HistoryVault
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 
+
+@pytest.fixture(autouse=True)
+def _clear_openrouter_process_key(monkeypatch):
+    monkeypatch.delenv("MUNINN_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
 sys.path.insert(0, str(Path(__file__).parent))
 from test_history_import import T0, FakeMemory, home, relay  # noqa: E402,F401  (fixtures)
+
+
+@pytest.fixture(autouse=True)
+def _legacy_history_test_mode(monkeypatch):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
 
 GOOD = {"summary": "Built the login page; logout pending.", "status": "in_progress", "topics": ["Auth", "frontend"],
         "insights": [{"kind": "decision", "text": "Sessions use JWT cookies.", "turn": 0, "scope": "project"},
@@ -28,6 +48,7 @@ def isolated_settings(tmp_path, monkeypatch):
     for var in ("OPENROUTER_API_KEY", "MUNINN_OPENROUTER_API_KEY", "MUNINN_INSIGHTS_PROVIDER",
                 "MUNINN_INSIGHTS_MODEL", "MUNINN_INSIGHTS_WINDOW_TOKENS"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(llm_settings, "_windows_user_env", lambda name: None)
     monkeypatch.setenv("MUNINN_CONFIG_DIR", str(tmp_path / "config"))
 
 
@@ -36,14 +57,46 @@ def isolated_settings(tmp_path, monkeypatch):
 def test_key_is_saved_privately_and_env_wins(monkeypatch):
     assert llm_settings.api_key() is None and llm_settings.should_prompt()
     path = llm_settings.save_key("sk-or-saved", model="deepseek/deepseek-v4.1-flash")
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
-    assert llm_settings.api_key() == "sk-or-saved" and llm_settings.key_source() == str(path)
+    assert "api_key" not in json.loads(path.read_text(encoding="utf-8"))
+    assert llm_settings.api_key() == "sk-or-saved" and "MUNINN_OPENROUTER_API_KEY" in llm_settings.key_source()
     assert llm_settings.models()[0] == "deepseek/deepseek-v4.1-flash"
+    monkeypatch.delenv("MUNINN_OPENROUTER_API_KEY")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
     assert llm_settings.api_key() == "sk-or-env" and "OPENROUTER_API_KEY" in llm_settings.key_source()
     monkeypatch.delenv("OPENROUTER_API_KEY")
     llm_settings.decline()
     assert llm_settings.api_key() is None and not llm_settings.should_prompt()
+
+
+def test_openrouter_key_is_environment_only_and_config_never_returns_it(monkeypatch):
+    monkeypatch.delenv("MUNINN_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(llm_settings, "_windows_user_env", lambda name: None)
+
+    llm_settings.save_key("sk-or-never-persist", model="deepseek/deepseek-v4.1-flash")
+
+    assert llm_settings.api_key() == "sk-or-never-persist"
+    assert "MUNINN_OPENROUTER_API_KEY" in llm_settings.key_source()
+    saved = json.loads(llm_settings.settings_path().read_text(encoding="utf-8"))
+    assert "api_key" not in saved
+    assert saved["model"] == "deepseek/deepseek-v4.1-flash"
+
+
+def test_user_scoped_environment_key_is_visible_to_existing_process(monkeypatch):
+    monkeypatch.setattr(llm_settings, "_windows_user_env",
+                        lambda name: "sk-or-user" if name == "MUNINN_OPENROUTER_API_KEY" else None,
+                        raising=False)
+    assert llm_settings.api_key() == "sk-or-user"
+    assert llm_settings.key_source() == "user environment (MUNINN_OPENROUTER_API_KEY)"
+    monkeypatch.setenv("MUNINN_OPENROUTER_API_KEY", "sk-or-process")
+    assert llm_settings.api_key() == "sk-or-process"
+    assert llm_settings.key_source() == "environment (MUNINN_OPENROUTER_API_KEY)"
+
+
+def test_saved_key_is_not_a_config_fallback():
+    llm_settings.save_key("sk-or-saved")
+    assert llm_settings.api_key() == "sk-or-saved"
+    assert "api_key" not in llm_settings.load()
 
 
 def test_default_models_are_luna_pro_then_zdr_fallbacks():
@@ -60,7 +113,6 @@ def test_batch_variants_are_used_as_their_direct_model(monkeypatch):
     chosen = Provider.from_env(model="openai/gpt-6-luna:batch")
     assert chosen.model == "openai/gpt-6-luna" and len(chosen.models) == 3   # OpenRouter's limit
     assert len(chosen.request_body([])["models"]) <= 3
-    assert oct(llm_settings.settings_path().parent.stat().st_mode & 0o777) == "0o700"
 
 
 def test_first_run_prompt_saves_a_verified_key(monkeypatch, capsys):
@@ -125,6 +177,36 @@ def test_missing_key_explains_how_to_set_it():
         Provider.from_env("openrouter")
 
 
+def test_local_ollama_analysis_unloads_model_after_request(monkeypatch):
+    monkeypatch.setenv("MUNINN_OLLAMA_KEEP_ALIVE", "0")
+    sent = {}
+
+    def respond(request):
+        sent["path"] = request.url.path
+        sent["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "model": "local-test",
+            "message": {"content": json.dumps(GOOD)},
+            "done_reason": "stop",
+            "prompt_eval_count": 12,
+            "eval_count": 8,
+        })
+
+    provider = Provider("ollama", "http://localhost:11434/v1", ["local-test"])
+
+    async def call():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await provider.complete(client, [{"role": "user", "content": "x"}])
+
+    content, meta = asyncio.run(call())
+    assert sent["path"] == "/api/chat"
+    assert sent["body"]["keep_alive"] == "0"
+    assert sent["body"]["format"]["type"] == "object"
+    assert sent["body"]["stream"] is False
+    assert json.loads(content) == GOOD
+    assert meta["prompt_tokens"] == 12 and meta["completion_tokens"] == 8
+
+
 # --- validation ---------------------------------------------------------------------------------
 
 def test_validation_normalizes_before_storage():
@@ -151,7 +233,7 @@ def test_validation_normalizes_before_storage():
 
 @pytest.fixture
 def imported(home, tmp_path):  # noqa: F811
-    vault = HistoryVault(tmp_path / "vault", home=home)
+    vault = HistoryVault(tmp_path / "vault", home=home, allow_plaintext=True)
     memory = FakeMemory(SQLiteMetadataStore(tmp_path / "metadata.db"))
     vault.sync()
     asyncio.run(import_history(memory, vault, apply=True, providers=["claude_code"]))
@@ -187,7 +269,6 @@ def test_render_uses_whole_conversation_and_redacts(imported):
 
 def test_analysis_validates_retries_and_stores(imported, monkeypatch):
     llm_settings.save_key("sk-or-k")
-    monkeypatch.setattr(insights, "HANDOFF_MAX_AGE_DAYS", 100_000)
     sent = []
     # First thread: an invalid reply, then a valid one after the schema error is sent back.
     answers = ["not json at all", json.dumps(GOOD), json.dumps(GOOD)]
@@ -212,12 +293,67 @@ def test_analysis_validates_retries_and_stores(imported, monkeypatch):
     assert {i["kind"] for i in view["insights"]} == {"decision", "open_item"}
     assert all(e["kind"] != "thread_insight" for e in view["entries"])
     thread = imported.store.list_history_threads("webapp", topic="auth")[0]
-    assert thread["status"] == "in_progress" and thread["topics"] == ["auth", "frontend"]
+    assert thread["status"] == "unverified" and thread["topics"] == ["auth", "frontend"]
     handoffs = imported.store.list_handoffs("global_user", "webapp", ["open"])
-    assert handoffs and handoffs[0]["details"]["next_steps"] == ["Add logout confirmation."]
+    assert handoffs == []  # unverified model output cannot create an actionable handoff
 
 
-def test_reanalysis_replaces_insights_and_giant_threads_are_merged(imported, monkeypatch):
+def test_unverified_model_fix_cannot_become_completed_history(imported):
+    key = "claude_code:c-111"
+    thread = next(t for t in collect(imported.vault).threads if t.key == key)
+    summary_id = imported.store.get_history_thread(key)["summary_memory_id"]
+    original_summary = imported.store.get(summary_id).content
+    result = validate_reply(json.dumps({
+        "summary": "Applied the patch and all tests passed.",
+        "status": "completed", "topics": ["auth"],
+        "insights": [
+            {"kind": "fix", "text": "Applied the login patch and tests passed.",
+             "turn": 0, "scope": "project", "current": True},
+            {"kind": "convention", "text": "Implemented a safe load pattern.",
+             "turn": 0, "scope": "project", "current": True},
+            {"kind": "fact", "text": "The stall was due to VRAM contention.",
+             "turn": 0, "scope": "project", "current": True},
+            {"kind": "decision", "text": "Sessions use JWT cookies.",
+             "turn": 0, "scope": "project", "current": True},
+        ], "supersedes": [],
+    }), turn_count=len(thread.session.turns))
+    result["supersedes"] = [summary_id]
+
+    for _ in range(2):
+        asyncio.run(store_understanding(imported.memory, thread, result, model="local-test"))
+        insights_stored = [r for r in imported.store.get_thread_memories(key, 0, 100)
+                           if (r.metadata or {}).get("kind") == "thread_insight"]
+        assert len(insights_stored) == 1
+        assert insights_stored[0].metadata["insight_kind"] == "decision"
+        assert insights_stored[0].metadata["evidence_state"] == "model_inferred_unverified"
+        assert insights_stored[0].content.startswith("Unverified history inference")
+        assert imported.store.get_history_thread(key)["status"] == "unverified"
+        assert imported.store.get(summary_id).content == original_summary
+        assert not imported.store.get(summary_id).archived
+
+
+def test_reanalysis_preserves_previous_insights_and_ignores_model_current(imported):
+    key = "claude_code:c-111"
+    thread = next(t for t in collect(imported.vault).threads if t.key == key)
+    original = {"summary": "", "status": "in_progress", "topics": [], "supersedes": [],
+                "insights": [{"kind": "decision", "text": "Use JWT cookies.", "turn": 0,
+                              "scope": "project", "current": True}]}
+    asyncio.run(store_understanding(imported.memory, thread, original))
+    old = next(r for r in imported.store.get_thread_memories(key, 0, 100)
+               if (r.metadata or {}).get("kind") == "thread_insight")
+    replacement = {"summary": "", "status": "completed", "topics": [], "supersedes": [old.id],
+                   "insights": [{"kind": "fact", "text": "JWT cookies are configured.", "turn": 0,
+                                 "scope": "project", "current": False}]}
+    for _ in range(2):
+        counts = asyncio.run(store_understanding(imported.memory, thread, replacement))
+        stored = [r for r in imported.store.get_thread_memories(key, 0, 100)
+                  if (r.metadata or {}).get("kind") == "thread_insight"]
+        assert len(stored) == 2 and all(not r.archived for r in stored)
+        assert imported.store.get(old.id) is not None
+        assert counts["replaced"] == 0 and counts["supersedes_suppressed"] == 1
+
+
+def test_reanalysis_preserves_and_deduplicates_insights_and_giant_threads_are_merged(imported, monkeypatch):
     llm_settings.save_key("sk-or-k")
     monkeypatch.setenv("MUNINN_INSIGHTS_WINDOW_TOKENS", "2000")   # force several windows
     part = json.dumps({**GOOD, "insights": GOOD["insights"][:1]})
@@ -240,7 +376,23 @@ def test_reanalysis_replaces_insights_and_giant_threads_are_merged(imported, mon
     imported.store.set_history_analysis(key, status="completed", topics=[], analyzed_turns=0)  # thread "grew"
     second = asyncio.run(analyze_threads(imported.memory, imported.vault, apply=True, concurrency=1,
                                          project="webapp", limit=1, transport=_openrouter(answers(), [])))
-    assert second["replaced_insights"] == before and count() == before
+    assert second["replaced_insights"] == 0 and second["insights"] == 0 and count() == before
+
+
+def test_selected_thread_key_does_not_drift_to_a_newer_thread(imported):
+    pending = imported.store.list_history_threads(limit=10, needs_analysis=True)
+    assert len(pending) >= 2
+    selected = pending[-1]
+    report = asyncio.run(analyze_threads(
+        imported.memory, imported.vault, apply=False, provider="ollama",
+        thread_key=selected["thread_key"], limit=1,
+    ))
+    assert report["threads"] == 1
+    excluded = asyncio.run(analyze_threads(
+        imported.memory, imported.vault, apply=False, provider="ollama",
+        thread_key=selected["thread_key"], since=selected["ended_at"] + 1,
+    ))
+    assert excluded["threads"] == 0
 
 
 def test_catalog_filters(imported):
@@ -296,13 +448,14 @@ def test_analysis_reads_projects_in_order_across_apps(relay, monkeypatch):  # no
 
     insights_by_text = {r.content.split("\n")[0]: r for r in relay.store.get_all(limit=200)
                         if (r.metadata or {}).get("kind") == "thread_insight"}
-    rest = insights_by_text["Decision: The API uses REST."]
-    assert rest.archived and rest.metadata["superseded"] is True
-    graphql = insights_by_text["Decision: The API moves to GraphQL."]
+    rest = insights_by_text["Unverified history inference · Decision: The API uses REST."]
+    assert not rest.archived and rest.metadata["evidence_state"] == "model_inferred_unverified"
+    graphql = insights_by_text["Unverified history inference · Decision: The API moves to GraphQL."]
     assert not graphql.archived
-    assert report["superseded_insights"] == 1
-    replaced_here = insights_by_text["Fact: A temporary mock server was used."]
-    assert replaced_here.archived and replaced_here.metadata["superseded"] is True
+    assert report["superseded_insights"] == 0 and report["supersedes_suppressed"] == 1
+    replaced_here = insights_by_text["Unverified history inference · Fact: A temporary mock server was used."]
+    assert not replaced_here.archived
+    assert replaced_here.metadata.get("superseded") is not True
 
 
 # --- refusals ------------------------------------------------------------------------------------
@@ -323,8 +476,10 @@ REFUSALS = {
     "moderation error": (403, {"error": {
         "code": 403, "message": "Input was flagged by moderation",
         "metadata": {"reasons": ["sexual"], "model_slug": "openai/gpt-6-luna-pro"}}}),
-    "azure content filter": (400, {"error": {"code": "content_filter", "message": "The response was filtered "
-                                             "due to the prompt triggering Azure OpenAI's content management policy."}}),
+    "azure content filter": (400, {"error": {
+        "code": "content_filter",
+        "message": "The response was filtered due to the prompt triggering Azure OpenAI's content management policy.",
+    }}),
 }
 
 

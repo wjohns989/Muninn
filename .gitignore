@@ -29,6 +29,8 @@ debug_*.log
 inspect_*.py
 inspect_*.txt
 verify_*.py
+!scripts/verify_large_history_search.py
+!scripts/verify_live_model_routes.py
 manual_inspect.txt
 test_memory.json
 test_kuzu_db

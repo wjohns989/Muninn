@@ -1,9 +1,9 @@
-"""Install Muninn's hooks into Claude Code and Codex settings (dry run first, backup, idempotent).
+"""Install Muninn's hooks into Claude Code, Codex, and Gemini CLI settings.
 
 Claude Code (CLI, IDE and Claude Desktop's Code tab) reads ``settings.json``
-under ``$CLAUDE_CONFIG_DIR`` or ``~/.claude`` and supports ``http`` hooks, so it
-posts straight to the server. Codex (CLI, IDE, ChatGPT desktop app) reads
-``$CODEX_HOME/hooks.json`` and runs commands, so it calls ``hook_client.py``.
+under ``$CLAUDE_CONFIG_DIR`` or ``~/.claude``. Both it and Codex run the
+standard-library ``hook_client.py`` command bridge to reach the local server.
+Gemini CLI uses the same bridge with its own event names and millisecond timeouts.
 Only entries Muninn added are ever changed or removed.
 """
 
@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import re
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from muninn.history.locations import claude_code_source, codex_source
+from muninn.history.locations import claude_code_source, codex_source, gemini_source
 
 CLAUDE_EVENTS = {
     # event: (matcher, timeout seconds)
@@ -27,6 +29,11 @@ CLAUDE_EVENTS = {
     "SessionEnd": (None, 2),
 }
 CODEX_EVENTS = {"SessionStart": 10, "PreCompact": 30, "Stop": 5, "SessionEnd": 1}
+# Gemini's Windows PowerShell hook startup can outlast its former 10s/2s
+# deadlines under local startup contention, even though the bridge itself is
+# usually quick. Keep finite host deadlines; the bridge has shorter HTTP caps.
+GEMINI_EVENTS_MS = {"SessionStart": 30000, "PreCompress": 30000,
+                    "AfterAgent": 10000, "SessionEnd": 30000}
 
 
 @dataclass
@@ -51,7 +58,15 @@ def _read(path: Path) -> Dict[str, Any]:
 
 
 def _is_muninn(handler: Dict[str, Any]) -> bool:
-    return "/hooks/claude-code" in str(handler.get("url", "")) or "hook_client.py" in str(handler.get("command", ""))
+    if handler.get("name") == "muninn-local-memory":
+        return True
+    if str(handler.get("url", "")).endswith("/hooks/claude-code"):
+        return True  # legacy HTTP hook installed by older Muninn versions
+    command = str(handler.get("command", ""))
+    return (re.search(r'[/\\]muninn[/\\]hook_client\.py"?\s+(?:codex|claude-code|gemini-cli)(?:\s|$)',
+                      command) is not None or
+            re.fullmatch(r'\s*(?:"[^"]+"|\S+)\s+(?:-I\s+)?-m\s+(?:muninn\.hook_client|muninn_hook_client)\s+codex\s*',
+                         command) is not None)
 
 
 def _without_muninn(hooks: Dict[str, Any]) -> Dict[str, Any]:
@@ -80,17 +95,18 @@ def _with_groups(settings: Dict[str, Any], groups: Dict[str, Dict[str, Any]], in
     return updated
 
 
-def claude_plan(server_url: str, install: bool = True, home: Optional[Path] = None) -> HookPlan:
+def claude_plan(server_url: str, install: bool = True, home: Optional[Path] = None,
+                python: Optional[str] = None) -> HookPlan:
     path = claude_code_source(home or Path.home()).home / "settings.json"
     groups = {}
     for event, (matcher, timeout) in CLAUDE_EVENTS.items():
-        handler = {
-            "type": "http",
-            "url": f"{server_url.rstrip('/')}/hooks/claude-code",
-            "timeout": timeout,
-            "headers": {"Authorization": "Bearer $MUNINN_AUTH_TOKEN"},
-            "allowedEnvVars": ["MUNINN_AUTH_TOKEN"],
-        }
+        # SessionStart cannot use HTTP handlers in Claude Code. Use the same
+        # local bridge for every event so a process started before a Windows
+        # User token was set can still authenticate without storing it here.
+        client = Path(__file__).resolve().parent.parent / "hook_client.py"
+        handler = {"type": "command",
+                   "command": f'"{python or sys.executable}" "{client}" claude-code "{server_url}"',
+                   "timeout": timeout}
         groups[event] = {**({"matcher": matcher} if matcher else {}), "hooks": [handler]}
     before = _read(path)
     return HookPlan("claude_code", path, before, _with_groups(before, groups, install))
@@ -98,12 +114,44 @@ def claude_plan(server_url: str, install: bool = True, home: Optional[Path] = No
 
 def codex_plan(install: bool = True, home: Optional[Path] = None, python: Optional[str] = None) -> HookPlan:
     path = codex_source(home or Path.home()).home / "hooks.json"
-    client = Path(__file__).resolve().parent.parent / "hook_client.py"
-    command = f'"{python or sys.executable}" "{client}" codex'
+    executable = python or sys.executable
+    # Affected Windows Codex builds pass the whole string through cmd /C with
+    # an outer quote. Even a single quote around the executable then fails.
+    # Keep the command quote-free and reject paths cmd cannot parse safely.
+    if os.name == "nt":
+        if re.search(r'\s|[&|<>^%!"]', executable):
+            raise ValueError("Codex hooks on Windows require a no-space Python executable path")
+        command = f'{executable} -I -m muninn_hook_client codex'
+    else:
+        command = f'"{executable}" -I -m muninn_hook_client codex'
     groups = {event: {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
               for event, timeout in CODEX_EVENTS.items()}
     before = _read(path)
     return HookPlan("codex", path, before, _with_groups(before, groups, install))
+
+
+def _gemini_command(python: str, client: Path, server_url: str, *, windows: bool) -> str:
+    if not windows:
+        return f'"{python}" "{client}" gemini-cli "{server_url}"'
+
+    def quoted(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    # Gemini CLI's Windows hook runner uses PowerShell (or pwsh) even when
+    # ComSpec is cmd.exe. The call operator makes a quoted executable runnable.
+    return f"& {quoted(python)} {quoted(str(client))} gemini-cli {quoted(server_url)}"
+
+
+def gemini_plan(server_url: str, install: bool = True, home: Optional[Path] = None,
+                python: Optional[str] = None) -> HookPlan:
+    path = gemini_source(home or Path.home()).home / "settings.json"
+    client = Path(__file__).resolve().parent.parent / "hook_client.py"
+    command = _gemini_command(python or sys.executable, client, server_url, windows=os.name == "nt")
+    groups = {event: {"hooks": [{"name": "muninn-local-memory", "type": "command",
+                                 "command": command, "timeout": timeout}]}
+              for event, timeout in GEMINI_EVENTS_MS.items()}
+    before = _read(path)
+    return HookPlan("gemini_cli", path, before, _with_groups(before, groups, install))
 
 
 def apply_plan(plan: HookPlan) -> Optional[Path]:

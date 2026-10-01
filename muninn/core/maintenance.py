@@ -47,10 +47,12 @@ def vector_payload(record: MemoryRecord) -> Dict[str, Any]:
     }
 
 
-def _live_pages(memory: "MuninnMemory", page_size: int) -> Iterable[List[MemoryRecord]]:
+def _live_pages(
+    memory: "MuninnMemory", page_size: int, *, archived: Optional[bool] = False
+) -> Iterable[List[MemoryRecord]]:
     cursor = ""
     while True:
-        page = memory._metadata.get_for_consolidation(limit=page_size, archived=False, after_id=cursor)
+        page = memory._metadata.get_for_consolidation(limit=page_size, archived=archived, after_id=cursor)
         if page:
             yield page
         if len(page) < page_size:
@@ -150,6 +152,9 @@ def normalize_legacy_record(
     if raw.get("id") is not None:
         metadata["legacy_id"] = str(raw["id"])
     metadata["import_source"] = source
+    # Legacy bulk import must not load a local LLM for each row. The original
+    # text remains stored and searchable; richer analysis can run separately.
+    metadata["muninn_rule_only_extraction"] = True
     project = raw.get("project") or raw_metadata.get("project")
     if project:
         metadata["project"] = project
@@ -188,7 +193,9 @@ async def import_memories(
     """Import exported memories, skipping exact duplicates and keeping original timestamps."""
     memory._check_initialized()
     existing = set()
-    for page in _live_pages(memory, 500):
+    # Archived rows still exist. Include them in duplicate detection so an
+    # import cannot bring their content back as a new live memory.
+    for page in _live_pages(memory, 500, archived=None):
         existing.update(content_hash(r.content) for r in page)
 
     report = {"dry_run": dry_run, "read": 0, "invalid": 0, "duplicates": 0,

@@ -33,7 +33,9 @@ jobs:
         env:
           # No display on CI runners; pystray's dummy backend lets tray imports load.
           PYSTRAY_BACKEND: dummy
-        run: uv run --frozen pytest -q
+        # Fail promptly with the real assertion; show Python stacks if a test
+        # stalls instead of consuming the entire job with buffered dot output.
+        run: uv run --frozen pytest -q --maxfail=1 -o faulthandler_timeout=60
 
   clean-install:
     name: Clean install imports

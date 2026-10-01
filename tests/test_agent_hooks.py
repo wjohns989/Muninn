@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -9,6 +10,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _legacy_history_test_mode(monkeypatch):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
 
 from muninn.history import hook_install
 from muninn.history.hooks import handle_hook
@@ -78,6 +84,26 @@ def test_unknown_agents_and_missing_transcripts_are_ignored(memory):
     assert service.calls == []
 
 
+@pytest.mark.parametrize("event,force", [
+    ("PreCompress", True), ("AfterAgent", False), ("SessionEnd", True),
+])
+def test_gemini_events_capture_without_blocking(memory, event, force):
+    service = RecordingService()
+    out = asyncio.run(handle_hook("gemini-cli", {
+        "hook_event_name": event, "transcript_path": "/chat.json",
+        "cwd": "/nowhere"}, memory, service))
+    assert out == {}
+    assert service.calls == [("/chat.json", "gemini_cli", force)]
+
+
+def test_gemini_session_start_returns_context(memory, repo):
+    out = asyncio.run(handle_hook("gemini-cli", {
+        "hook_event_name": "SessionStart", "source": "startup",
+        "cwd": str(repo)}, memory, RecordingService()))
+    assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert out["hookSpecificOutput"]["additionalContext"]
+
+
 def test_capture_imports_one_thread_and_debounces(tmp_path, monkeypatch):
     from muninn.history.service import HistoryService
 
@@ -113,8 +139,16 @@ def test_install_keeps_user_hooks_and_uninstall_restores_them(tmp_path, monkeypa
     plan = hook_install.claude_plan("http://127.0.0.1:42069", home=tmp_path)
     assert plan.changed and hook_install.installed(plan) == []
     stop = plan.after["hooks"]["Stop"]
-    assert stop[0]["hooks"][0]["command"] == "notify.sh" and stop[1]["hooks"][0]["type"] == "http"
+    assert stop[0]["hooks"][0]["command"] == "notify.sh" and stop[1]["hooks"][0]["type"] == "command"
     assert plan.after["hooks"]["SessionStart"][0]["matcher"] == "startup|resume|clear|compact"
+    start_handler = plan.after["hooks"]["SessionStart"][0]["hooks"][0]
+    assert start_handler["type"] == "command"
+    assert start_handler["command"].endswith('hook_client.py" claude-code "http://127.0.0.1:42069"')
+    assert start_handler["timeout"] == 10
+    for event in ("SessionStart", "PreCompact", "Stop", "SessionEnd"):
+        handler = plan.after["hooks"][event][-1]["hooks"][0]
+        assert handler["type"] == "command"
+        assert 'hook_client.py" claude-code "http://127.0.0.1:42069"' in handler["command"]
     backup = hook_install.apply_plan(plan)
     assert backup and json.loads(backup.read_text()) == original
 
@@ -129,9 +163,145 @@ def test_codex_plan_uses_the_stdlib_client_and_honours_codex_home(tmp_path, monk
     plan = hook_install.codex_plan(home=tmp_path, python="/usr/bin/python3")
     assert plan.path == tmp_path / "codex-moved" / "hooks.json"
     handler = plan.after["hooks"]["SessionEnd"][0]["hooks"][0]
-    assert handler["command"].startswith('"/usr/bin/python3" "')
-    assert handler["command"].endswith('hook_client.py" codex')
+    executable = "/usr/bin/python3" if sys.platform == "win32" else '"/usr/bin/python3"'
+    assert handler["command"] == f'{executable} -I -m muninn_hook_client codex'
     assert handler["timeout"] == 1 and set(plan.after["hooks"]) == {"SessionStart", "PreCompact", "Stop", "SessionEnd"}
+
+
+def test_codex_plan_replaces_legacy_quoted_path_without_touching_other_hooks(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    settings = tmp_path / "codex" / "hooks.json"
+    settings.parent.mkdir()
+    old = {'hooks': {'SessionStart': [
+        {'hooks': [{'type': 'command', 'command':
+                    '"C:\\Python\\python.exe" "C:\\Muninn\\muninn\\hook_client.py" codex'}]},
+        {'hooks': [{'type': 'command', 'command': 'other-tool session-start'}]},
+    ]}}
+    settings.write_text(json.dumps(old), encoding="utf-8")
+    plan = hook_install.codex_plan(home=tmp_path, python="C:/Python/python.exe")
+    handlers = [group['hooks'][0] for group in plan.after['hooks']['SessionStart']]
+    assert [handler['command'] for handler in handlers] == [
+        'other-tool session-start',
+        ('C:/Python/python.exe' if sys.platform == "win32" else '"C:/Python/python.exe"')
+        + ' -I -m muninn_hook_client codex',
+    ]
+    backup = hook_install.apply_plan(plan)
+    assert backup and json.loads(backup.read_text(encoding="utf-8")) == old
+    assert not hook_install.codex_plan(home=tmp_path, python="C:/Python/python.exe").changed
+    hook_install.apply_plan(hook_install.codex_plan(install=False, home=tmp_path))
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        'hooks': {'SessionStart': [old['hooks']['SessionStart'][1]]},
+    }
+
+
+@pytest.mark.parametrize("module", ["muninn.hook_client", "muninn_hook_client"])
+def test_codex_plan_preserves_unrelated_command_with_module_name_as_argument(tmp_path, monkeypatch, module):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    settings = tmp_path / "codex" / "hooks.json"
+    settings.parent.mkdir()
+    unrelated = {"type": "command", "command": f'"C:/Python/python.exe" other-tool x=-m {module} codex'}
+    settings.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [unrelated]}]}}), encoding="utf-8")
+    plan = hook_install.codex_plan(home=tmp_path, python="C:/Python/python.exe")
+    assert plan.after["hooks"]["Stop"][0]["hooks"] == [unrelated]
+    assert hook_install.codex_plan(install=False, home=tmp_path).after == plan.before
+
+
+def test_codex_fast_module_runs_from_unrelated_directory_without_package_import(tmp_path):
+    (tmp_path / "muninn_hook_client.py").write_text('raise RuntimeError("project module was loaded")')
+    completed = subprocess.run(
+        [sys.executable, "-I", "-X", "importtime", "-m", "muninn_hook_client", "codex"],
+        input="not-json", text=True, capture_output=True, cwd=tmp_path, timeout=5,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert "muninn.sdk" not in completed.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Codex's cmd.exe wrapper is Windows-only")
+def test_codex_fast_module_survives_cmd_wrapper(tmp_path):
+    command = f'{sys.executable} -I -m muninn_hook_client codex'
+    completed = subprocess.run(
+        f'cmd.exe /C "{command}"', input="not-json", text=True,
+        capture_output=True, cwd=tmp_path, timeout=5,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == ""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Codex's cmd.exe wrapper is Windows-only")
+def test_codex_rejects_space_in_windows_python_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    with pytest.raises(ValueError, match="no-space Python executable"):
+        hook_install.codex_plan(home=tmp_path, python="C:/Program Files/Python/python.exe")
+
+
+def test_gemini_plan_preserves_unrelated_hooks_and_uses_millisecond_timeouts(tmp_path):
+    assert hook_install.GEMINI_EVENTS_MS == {
+        "SessionStart": 30000, "PreCompress": 30000,
+        "AfterAgent": 10000, "SessionEnd": 30000,
+    }
+    settings = tmp_path / ".gemini" / "settings.json"
+    settings.parent.mkdir()
+    original = {"model": {"name": "keep"}, "hooks": {
+        "SessionEnd": [{"hooks": [{"name": "other", "type": "command", "command": "notify.exe"}]}]}}
+    settings.write_text(json.dumps(original))
+    plan = hook_install.gemini_plan("http://127.0.0.1:42069", home=tmp_path,
+                                    python="C:/Python/python.exe")
+    assert plan.changed
+    assert plan.after["model"] == original["model"]
+    assert plan.after["hooks"]["SessionEnd"][0] == original["hooks"]["SessionEnd"][0]
+    assert set(plan.after["hooks"]) == {"SessionStart", "PreCompress", "AfterAgent", "SessionEnd"}
+    for event, timeout in hook_install.GEMINI_EVENTS_MS.items():
+        handler = plan.after["hooks"][event][-1]["hooks"][0]
+        assert handler["name"] == "muninn-local-memory"
+        assert handler["timeout"] == timeout
+        if os.name == "nt":
+            assert handler["command"].startswith("& 'C:/Python/python.exe' ")
+            assert handler["command"].endswith("hook_client.py' gemini-cli 'http://127.0.0.1:42069'")
+        else:
+            assert handler["command"].startswith('"C:/Python/python.exe" ')
+            assert handler["command"].endswith('hook_client.py" gemini-cli "http://127.0.0.1:42069"')
+    backup = hook_install.apply_plan(plan)
+    assert backup and json.loads(backup.read_text()) == original
+    assert not hook_install.gemini_plan("http://127.0.0.1:42069", home=tmp_path,
+                                         python="C:/Python/python.exe").changed
+    hook_install.apply_plan(hook_install.gemini_plan("http://127.0.0.1:42069",
+                                                       install=False, home=tmp_path))
+    assert json.loads(settings.read_text()) == original
+
+
+def test_gemini_command_quotes_windows_and_unix_independently():
+    python = "C:/Program Files/O'Brien & Co/python.exe"
+    client = Path("C:/User Files/O'Brien & Co/hook_client.py")
+    url = "http://127.0.0.1:42069/a&b's"
+    windows = hook_install._gemini_command(python, client, url, windows=True)
+    unix = hook_install._gemini_command(python, client, url, windows=False)
+    assert windows.startswith("& '")
+    assert "O''Brien" in windows and "b''s" in windows
+    assert unix.startswith(f'"{python}" ')
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell hook execution proof")
+def test_gemini_windows_hook_command_runs_from_powershell(tmp_path):
+    folder = tmp_path / "O'Brien & Co"
+    folder.mkdir()
+    client = folder / "probe client.py"
+    client.write_text(
+        "import sys\nprint('|'.join(sys.argv[1:]))\nsys.exit(7 if '--fail' in sys.argv else 0)\n",
+        encoding="utf-8",
+    )
+    url = "http://127.0.0.1:42069/a&b's"
+    for fail in (False, True):
+        suffix = "--fail" if fail else url
+        command = hook_install._gemini_command(sys.executable, client, suffix, windows=True)
+        # Gemini CLI's Windows hook runner appends this exact exit-code guard.
+        command += "; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, timeout=60, check=False,
+        )
+        assert result.returncode == (7 if fail else 0), result.stderr.decode(errors="replace")
+        assert result.stdout.decode().strip() == f"gemini-cli|{suffix}"
 
 
 # --- the command-hook client -----------------------------------------------------------
@@ -140,8 +310,10 @@ CLIENT = Path(__file__).resolve().parent.parent / "muninn" / "hook_client.py"
 
 
 def _run_client(payload, env):
+    # Windows sockets need SystemRoot even in a deliberately sparse test env.
+    base = {key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ}
     return subprocess.run([sys.executable, "-I", str(CLIENT), "codex"], input=json.dumps(payload),
-                          capture_output=True, text=True, env=env, timeout=20)
+                          capture_output=True, text=True, env={**base, **env}, timeout=20)
 
 
 def test_client_forwards_and_prints_the_briefing():
@@ -166,7 +338,8 @@ def test_client_forwards_and_prints_the_briefing():
     env = {"MUNINN_SERVER_URL": f"http://127.0.0.1:{server.server_port}", "MUNINN_AUTH_TOKEN": "tok"}
     result = _run_client({"hook_event_name": "SessionStart", "cwd": "/x"}, env)
     server.server_close()
-    assert result.returncode == 0 and json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] == "brief"
+    assert result.returncode == 0 and result.stdout, result.stderr
+    assert json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] == "brief"
     assert received == {"path": "/hooks/codex", "auth": "Bearer tok",
                         "body": {"hook_event_name": "SessionStart", "cwd": "/x"}}
 
@@ -174,3 +347,57 @@ def test_client_forwards_and_prints_the_briefing():
 def test_client_never_blocks_the_agent_when_the_server_is_down():
     result = _run_client({"hook_event_name": "SessionEnd"}, {"MUNINN_SERVER_URL": "http://127.0.0.1:9"})
     assert result.returncode == 0 and result.stdout == "" and "not reachable" in result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows User environment fallback")
+def test_client_reads_windows_user_token_when_process_token_is_missing(monkeypatch):
+    from contextlib import nullcontext
+
+    import winreg
+
+    from muninn import hook_client
+
+    monkeypatch.delenv("MUNINN_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(winreg, "OpenKey", lambda *_: nullcontext(None))
+    monkeypatch.setattr(winreg, "QueryValueEx", lambda *_: ("test-only-token", winreg.REG_SZ))
+    assert hook_client._auth_token() == "test-only-token"
+
+
+def test_hook_token_selection_is_endpoint_aware(monkeypatch):
+    from muninn import hook_client
+
+    monkeypatch.setattr(hook_client.sys, "platform", "win32")
+    monkeypatch.setattr(hook_client, "_windows_user_token", lambda: "current-user-token", raising=False)
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", "stale-process-token")
+    assert hook_client._auth_token("http://127.0.0.1:42069") == "current-user-token"
+    assert hook_client._auth_token("http://localhost:42069") == "current-user-token"
+    assert hook_client._auth_token("http://[::1]:42069") == "current-user-token"
+    assert hook_client._auth_token("http://127.0.0.1:42070") == "stale-process-token"
+
+    monkeypatch.delenv("MUNINN_AUTH_TOKEN")
+    assert hook_client._auth_token("http://127.0.0.1:42070") == "current-user-token"
+    assert hook_client._auth_token("https://remote.example") == ""
+    assert hook_client._auth_token("http://127.0.0.1.evil:42069") == ""
+    assert hook_client._auth_token("http://user@127.0.0.1:42069") == ""
+    assert hook_client._auth_token("ftp://127.0.0.1:42069") == ""
+
+
+def test_hook_client_passes_target_url_into_token_selection(monkeypatch):
+    import io
+
+    from muninn import hook_client
+
+    observed = []
+    monkeypatch.setattr(hook_client.sys, "stdin", io.StringIO('{"hook_event_name":"AuthProbe"}'))
+    monkeypatch.setattr(hook_client, "_auth_token", lambda url: observed.append(url) or "")
+    monkeypatch.setattr(hook_client.urllib.request, "urlopen",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")))
+    assert hook_client.main(["hook_client", "codex", "https://remote.example"]) == 0
+    assert observed == ["https://remote.example"]
+
+
+def test_gemini_after_agent_client_timeout_is_shorter_than_host_deadline():
+    from muninn import hook_client
+
+    assert "AfterAgent" in hook_client.FAST_EVENTS
+    assert hook_install.GEMINI_EVENTS_MS["AfterAgent"] > 800

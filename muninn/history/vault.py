@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS vault_files (
 _STORED_COMPRESSED = (".zst", ".zip", ".gz")
 
 
+def strict_history_mode() -> bool:
+    """Vault-first is the default; plaintext requires an explicit legacy opt-in."""
+    return os.environ.get("MUNINN_HISTORY_SECURITY", "").strip().lower() != "legacy"
+
+
+def require_legacy_history_disabled() -> None:
+    if strict_history_mode():
+        raise RuntimeError("strict history mode blocks the legacy plaintext history pipeline")
+
+
 @dataclass
 class VaultFile:
     source_path: str
@@ -122,7 +132,10 @@ def read_text(path: Path) -> str:
 
 
 class HistoryVault:
-    def __init__(self, root: Path, home: Optional[Path] = None):
+    def __init__(self, root: Path, home: Optional[Path] = None, *, allow_plaintext: bool = False):
+        require_legacy_history_disabled()
+        if not allow_plaintext:
+            raise RuntimeError("Legacy plaintext history requires an explicit caller opt-in")
         self.root = Path(root)
         self.home = home
         _private_dir(self.root)

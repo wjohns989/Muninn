@@ -15,7 +15,7 @@ from muninn.version import __version__ as _MUNINN_VERSION
 from .state import _SESSION_STATE
 from .definitions import (
     SUPPORTED_PROTOCOL_VERSIONS, TOOLS_SCHEMAS, JSON_SCHEMA_2020_12,
-    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS, OPEN_WORLD_TOOLS,
+    READ_ONLY_TOOLS, DESTRUCTIVE_TOOLS, IDEMPOTENT_TOOLS, OPEN_WORLD_TOOLS, PRIVATE_MAIN_TOKEN_TOOLS,
     SUPPORTED_MODEL_PROFILES, MIMIR_TOOLS, TOOLSETS, resolve_toolset, toolset_schemas, tool_title,
 )
 from .tasks import (
@@ -255,8 +255,13 @@ def _run_tool_call_task_worker(session_id: str, task_id: str, name: str, argumen
         else:
              set_task_state_locked(task, status="completed", result=res)
     except Exception as e:
-        logger.exception("Task execution failed: %s", task_id)
-        set_task_state_locked(task, status="failed", error={"code": -32603, "message": str(e)})
+        if name in PRIVATE_MAIN_TOKEN_TOOLS:
+            logger.warning("Private task execution failed: tool=%s", name)
+            message = "Private memory operation unavailable"
+        else:
+            logger.exception("Task execution failed: %s", task_id)
+            message = str(e)
+        set_task_state_locked(task, status="failed", error={"code": -32603, "message": message})
     finally:
         emit_task_status_notification(task, send_notification_fn)
 
@@ -439,11 +444,16 @@ def handle_call_tool(msg_id: Any, params: Dict[str, Any], send_error_fn, send_re
         tool_metrics["response_bytes_max"] = max(tool_metrics["response_bytes_max"], len(truncated_text))
 
     except Exception as e:
-        logger.exception("Tool execution failed: %s", name)
+        if name in PRIVATE_MAIN_TOKEN_TOOLS:
+            logger.warning("Private tool execution failed: tool=%s", name)
+            message = "Private memory operation unavailable"
+        else:
+            logger.exception("Tool execution failed: %s", name)
+            message = str(e) or type(e).__name__
         tool_metrics["saw_error"] = True
         # MCP 2025-11-25: execution and input-validation failures are tool
         # results with isError so the model can read them and self-correct.
-        send_result_fn(msg_id, tool_error_result(str(e) or type(e).__name__))
+        send_result_fn(msg_id, tool_error_result(message))
     finally:
         # Telemetry logging matching the original wrapper
         elapsed_ms = (time.monotonic() - tool_call_started_monotonic) * 1000.0
@@ -469,6 +479,21 @@ def _do_call_tool_logic(name: str, arguments: Dict[str, Any], deadline: Optional
         "add_memory": _do_add_memory,
         "add_image_memory": _do_add_image_memory,
         "search_memory": _do_search_memory,
+        "search_secure_history": _do_search_secure_history,
+        "start_secure_history_search": _do_start_secure_history_search,
+        "poll_secure_history_search": _do_poll_secure_history_search,
+        "cancel_secure_history_search": _do_cancel_secure_history_search,
+        "poll_secure_history_analysis": _do_poll_secure_history_analysis,
+        "search_cited_memories": _do_search_cited_memories,
+        "get_cited_memory": _do_get_cited_memory,
+        "get_cited_memory_source": _do_get_cited_memory_source,
+        "cancel_secure_history_analysis": _do_cancel_secure_history_analysis,
+        "fetch_secure_history": _do_fetch_secure_history,
+        "start_secure_history_transcript": _do_start_secure_history_transcript,
+        "poll_secure_history_transcript": _do_poll_secure_history_transcript,
+        "read_secure_history_transcript_page": _do_read_secure_history_transcript_page,
+        "analyze_secure_history": _do_analyze_secure_history,
+        "search_credential_metadata": _do_search_credential_metadata,
         "hunt_memory": _do_hunt_memory,
         "get_all_memories": _do_get_all_memories,
         "update_memory": _do_update_memory,
@@ -693,6 +718,131 @@ def _search_session_id() -> Optional[str]:
         # MCP 2026-07-28 has no sessions; each request's context is throwaway.
         return None
     return _STDIO_SEARCH_SESSION_ID if session_id in ("default", "stdio") else session_id
+
+
+def _do_search_secure_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"query": args.get("query"), "limit": args.get("limit", 20)}
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/search", deadline_epoch=deadline,
+        json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_start_secure_history_search(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/search/jobs", deadline_epoch=deadline,
+        json={"query": args.get("query"), "limit": args.get("limit", 20)},
+        timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_poll_secure_history_search(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    job_id = str(args.get("job_id") or "")
+    response = make_request_with_retry(
+        "GET", f"{SERVER_URL}/history/secure/search/jobs/{quote(job_id, safe='')}",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_cancel_secure_history_search(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    job_id = str(args.get("job_id") or "")
+    response = make_request_with_retry(
+        "DELETE", f"{SERVER_URL}/history/secure/search/jobs/{quote(job_id, safe='')}",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_poll_secure_history_analysis(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    job_id = str(args.get("job_id") or "")
+    response = make_request_with_retry(
+        "GET", f"{SERVER_URL}/history/secure/analysis/jobs/{quote(job_id, safe='')}",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_search_cited_memories(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    return make_request_with_retry("POST", f"{SERVER_URL}/history/secure/memories/search",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+        json={"query": args.get("query"), "limit": args.get("limit", 10)}).json()
+
+
+def _do_get_cited_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    return make_request_with_retry("POST", f"{SERVER_URL}/history/secure/memories/get",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+        json={"memory_ref": args.get("memory_ref")}).json()
+
+
+def _do_get_cited_memory_source(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    return make_request_with_retry("POST", f"{SERVER_URL}/history/secure/memories/source",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+        json={"memory_ref": args.get("memory_ref"), "max_chars": args.get("max_chars", 3000)}).json()
+
+
+def _do_cancel_secure_history_analysis(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    job_id = str(args.get("job_id") or "")
+    response = make_request_with_retry(
+        "DELETE", f"{SERVER_URL}/history/secure/analysis/jobs/{quote(job_id, safe='')}",
+        deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_fetch_secure_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"capability": args.get("capability"), "max_chars": args.get("max_chars", 3000)}
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/fetch", deadline_epoch=deadline,
+        json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_start_secure_history_transcript(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/transcript/start", deadline_epoch=deadline,
+        json={"capability": args.get("capability")}, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_poll_secure_history_transcript(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/transcript/poll", deadline_epoch=deadline,
+        json={"capability": args.get("capability")}, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
+
+
+def _do_read_secure_history_transcript_page(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/transcript/page", deadline_epoch=deadline,
+        json={"cursor": args.get("cursor")}, timeout=DEFAULT_HTTP_TIMEOUT, max_retries=0,
+    )
+    return response.json()
+
+
+def _do_analyze_secure_history(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"capability": args.get("capability"),
+               "allow_remote": args.get("allow_remote", False),
+               "prefer_remote": args.get("prefer_remote", False)}
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/history/secure/analyze", deadline_epoch=deadline,
+        json=payload, timeout=180.0, max_retries=0,
+    )
+    return response.json()
+
+
+def _do_search_credential_metadata(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    payload = {"query": args.get("query"), "limit": args.get("limit", 10)}
+    response = make_request_with_retry(
+        "POST", f"{SERVER_URL}/credentials/agent-search", deadline_epoch=deadline,
+        json=payload, timeout=DEFAULT_HTTP_TIMEOUT,
+    )
+    return response.json()
 
 
 def _do_search_memory(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
@@ -1130,8 +1280,13 @@ CHATGPT_SEARCH_LIMIT = 10
 STRUCTURED_TOOLS = {"search", "fetch"}
 # Nested briefings and handoffs are returned whole rather than preview-compacted.
 EXACT_JSON_TOOLS = STRUCTURED_TOOLS | {
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
     "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
-    "import_agent_history",
+    "import_agent_history", "search_secure_history", "start_secure_history_search",
+    "poll_secure_history_search", "cancel_secure_history_search", "fetch_secure_history",
+    "poll_secure_history_analysis", "cancel_secure_history_analysis",
+    "analyze_secure_history",
+    "search_credential_metadata",
 }
 _TITLE_CHARS = 80
 

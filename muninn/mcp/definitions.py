@@ -281,6 +281,184 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         }
     },
     {
+        "name": "search_secure_history",
+        "description": (
+            "Search encrypted local transcripts. Returns source metadata and an expiring "
+            "capability for fetching a bounded redacted span; never credential values. "
+            "Results may be incomplete until the private index is built."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words to find in archived transcripts."},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "start_secure_history_search",
+        "description": (
+            "Start a durable CPU-only search across encrypted transcripts of any size. "
+            "Returns an opaque job id immediately; poll_secure_history_search for "
+            "authenticated metadata hits and expiring fetch capabilities. Use this "
+            "for broad or slow searches instead of waiting on the synchronous tool."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words to find in archived transcripts."},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "poll_secure_history_search",
+        "description": (
+            "Check a durable encrypted-history search job. Pending/retry states do not "
+            "imply no match; completed results include metadata and short-lived fetch "
+            "capabilities. When locally enabled, a pertinent hit also links a separate "
+            "automatic provisional analysis job. Poll at most once every two seconds."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "Opaque job id from start_secure_history_search."}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "cancel_secure_history_search",
+        "description": "Cancel a pending or running private history search job; archived data is unaffected.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "Opaque job id from start_secure_history_search."}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "search_cited_memories",
+        "description": "Search encrypted source-cited memories locally without inference. Returns bounded safe text, provenance and uncertainty labels; provisional memories are not verified facts. Credential values are never searched or returned. Private context, not safe for publication.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string", "maxLength": 512},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10}},
+            "required": ["query"]},
+    },
+    {
+        "name": "get_cited_memory",
+        "description": "Retrieve one encrypted cited memory by memory_ref from search_cited_memories or poll_secure_history_analysis.memory_refs. Preserves provisional/review and truth labels. Credential-risk records return metadata only. Private context.",
+        "inputSchema": {"type": "object", "properties": {
+            "memory_ref": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}, "required": ["memory_ref"]},
+    },
+    {
+        "name": "get_cited_memory_source",
+        "description": "Follow a cited memory to exact source coordinates and bounded safe context. Unsafe units have metadata only. Use transcript_capability with start_secure_history_transcript, then read_secure_history_transcript_page for the full credential-redacted transcript; never raw originals or credential values. Do not log/publish the expiring capability or private context.",
+        "inputSchema": {"type": "object", "properties": {
+            "memory_ref": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 4000, "default": 3000}},
+            "required": ["memory_ref"]},
+    },
+    {
+        "name": "poll_secure_history_analysis",
+        "description": (
+            "Check automatic interpretation linked from a completed secure history search. "
+            "Pending/deferred does not mean no evidence; succeeded analysis is provisional "
+            "and may not prove that a planned action occurred. Poll at most every two seconds."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "Opaque analysis_job_id from search polling."}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "cancel_secure_history_analysis",
+        "description": "Cancel a pending or running automatic history analysis; captured evidence is unaffected.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "Opaque analysis_job_id from search polling."}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "fetch_secure_history",
+        "description": (
+            "Fetch one authenticated, bounded, best-effort redacted transcript span using a "
+            "capability from search_secure_history. This is private context, not a safe "
+            "source of credential values; never use it for automatic credential execution."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "capability": {"type": "string", "description": "Expiring capability from search_secure_history."},
+                "max_chars": {"type": "integer", "default": 3000, "minimum": 1, "maximum": 4000},
+            },
+            "required": ["capability"],
+        },
+    },
+    {
+        "name": "start_secure_history_transcript",
+        "description": (
+            "Queue a CPU-only encrypted projection of the full conversational transcript "
+            "selected by a search_secure_history capability. Returns pending or a page cursor."
+        ),
+        "inputSchema": {"type": "object", "properties": {
+            "capability": {"type": "string", "description": "Expiring search hit capability."}},
+            "required": ["capability"]},
+    },
+    {
+        "name": "poll_secure_history_transcript",
+        "description": "Poll transcript projection status using the original search capability.",
+        "inputSchema": {"type": "object", "properties": {
+            "capability": {"type": "string"}}, "required": ["capability"]},
+    },
+    {
+        "name": "read_secure_history_transcript_page",
+        "description": (
+            "Read up to 4000 redacted conversational characters. Follow next_cursor "
+            "repeatedly to continue without a transcript-size cutoff."
+        ),
+        "inputSchema": {"type": "object", "properties": {
+            "cursor": {"type": "string", "description": "Opaque cursor from start, poll, or prior page."}},
+            "required": ["cursor"]},
+    },
+    {
+        "name": "analyze_secure_history",
+        "description": (
+            "Interpret one authenticated encrypted-history hit on demand. Selects a fitting "
+            "installed local Ollama chat model and unloads it afterward; if none fits, "
+            "OpenRouter ZDR is available only when locally enabled and allow_remote is true. "
+            "Returns bounded best-effort credential-redacted analysis without storing it. "
+            "Use only after a pertinent search; never treat the result as execution proof."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "capability": {"type": "string", "description": "Expiring capability from search_secure_history."},
+                "allow_remote": {"type": "boolean", "default": False,
+                                 "description": "Allow locally enabled, budgeted ZDR OpenRouter if no local model fits."},
+                "prefer_remote": {"type": "boolean", "default": False,
+                                  "description": "Explicitly request ZDR OpenRouter for this hit; requires allow_remote."},
+            },
+            "required": ["capability"],
+        },
+    },
+    {
+        "name": "search_credential_metadata",
+        "description": (
+            "Find whether a credential is recorded and which project-relative .env file contains it. "
+            "Returns only metadata; never a secret value. Requires opt-in local authorization."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Service, project, or .env filename."},
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 20},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "hunt_memory",
         "description": "Agentic proactive retrieval. Analyzes the query to identify key entities and relationships, then performs a multi-hop discovery pass across the knowledge graph and vector store to surface hidden context and 'forgotten' wisdom. Best for deep-diving into complex topics or resolving ambiguities.",
         "inputSchema": {
@@ -829,8 +1007,13 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
 
 # Mapping for tool categorized hints
 READ_ONLY_TOOLS = {
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
     "get_project_context", "get_thread",
-    "search_memory", "hunt_memory", "get_all_memories", "get_project_goal",
+    "search_memory", "search_secure_history", "poll_secure_history_search",
+    "poll_secure_history_analysis", "fetch_secure_history",
+    "poll_secure_history_transcript", "read_secure_history_transcript_page",
+    "search_credential_metadata", "hunt_memory",
+    "get_all_memories", "get_project_goal",
     "get_user_profile", "get_model_profiles", "get_model_profile_events", "get_model_profile_alerts",
     "export_handoff", "discover_legacy_sources",
     "get_periodic_ingestion_status",
@@ -923,10 +1106,16 @@ IDEMPOTENT_TOOLS |= {"search", "fetch"}
 # Tool profiles let a client load only what it needs: Cursor caps active tools
 # at 40 across all servers, and every schema costs context on each request.
 CORE_TOOLS = (
-    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff", "get_thread",
-    "add_memory", "search_memory", "hunt_memory", "update_memory", "delete_memory",
-    "record_retrieval_feedback", "get_project_goal", "set_project_goal", "set_project_instruction",
-    "get_user_profile", "correct_fact",
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
+    "get_project_context", "create_handoff", "resume_handoff", "complete_handoff",
+    "add_memory", "search_memory", "search_secure_history", "start_secure_history_search",
+    "poll_secure_history_search", "fetch_secure_history",
+    "start_secure_history_transcript",
+    "read_secure_history_transcript_page",
+    "poll_secure_history_analysis",
+    "analyze_secure_history",
+    "search_credential_metadata",
+    "get_project_goal", "get_user_profile",
 )
 TOOLSETS: Dict[str, Tuple[str, ...]] = {
     "full": tuple(schema["name"] for schema in TOOLS_SCHEMAS),
@@ -934,6 +1123,15 @@ TOOLSETS: Dict[str, Tuple[str, ...]] = {
     "readonly": tuple(schema["name"] for schema in TOOLS_SCHEMAS if schema["name"] in READ_ONLY_TOOLS),
     "chatgpt": ("search", "fetch"),
 }
+PRIVATE_MAIN_TOKEN_TOOLS = frozenset({
+    "search_cited_memories", "get_cited_memory", "get_cited_memory_source",
+    "search_secure_history", "start_secure_history_search", "poll_secure_history_search",
+    "cancel_secure_history_search", "poll_secure_history_analysis",
+    "cancel_secure_history_analysis", "fetch_secure_history", "analyze_secure_history",
+    "start_secure_history_transcript", "poll_secure_history_transcript",
+    "read_secure_history_transcript_page",
+    "search_credential_metadata",
+})
 DEFAULT_TOOLSET = "full"
 
 _ALL_SCHEMAS = {schema["name"]: schema for schema in TOOLS_SCHEMAS + CHATGPT_TOOLS_SCHEMAS}

@@ -5,9 +5,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Muninn Hub | Cyber-Norse Interface</title>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700;900&family=Rajdhani:wght@400;500;600;700&display=swap"
-        rel="stylesheet">
     <link rel="stylesheet" href="/dashboard.css">
 </head>
 
@@ -19,10 +16,7 @@
     <div class="modal-overlay" id="auth-modal">
         <div class="modal-content">
             <h2>Welcome to Huginn</h2>
-            <p>To securely access the Muninn memory core, please initialize your session. You can find your secure
-                <code>MUNINN_AUTH_TOKEN</code> inside the <code>.muninn_token</code> file located in your project
-                directory.
-            </p>
+            <p>Enter your locally configured Muninn API or authentication token. It is kept only in this browser tab's memory.</p>
             <div class="modal-form">
                 <input type="password" id="modal-token-input" class="input-base"
                     placeholder="Paste your Auth Token here...">
@@ -61,7 +55,7 @@
             <span>MUNINN</span>
         </div>
         <ul class="nav-list">
-            <li class="nav-item active" onclick="showTab('overview')">
+            <li class="nav-item active" data-tab="overview" tabindex="0" role="button" aria-label="Overview" aria-current="page">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="3" width="7" height="7"></rect>
@@ -72,7 +66,7 @@
                 <span class="nav-text">Overview</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('ingest')">
+            <li class="nav-item" data-tab="ingest" tabindex="0" role="button" aria-label="Ingestion">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -83,16 +77,34 @@
                 <span id="ingest-badge" class="nav-badge hidden pulse-active">0</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('search')">
+            <li class="nav-item" data-tab="search" tabindex="0" role="button" aria-label="Ordinary Search">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="11" cy="11" r="8"></circle>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 </svg>
-                <span class="nav-text">Search</span>
+                <span class="nav-text">Ordinary Search</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('system')">
+            <li class="nav-item" data-tab="history" tabindex="0" role="button" aria-label="Encrypted History">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="4" y="3" width="16" height="18" rx="2"></rect>
+                    <path d="M8 8h8M8 12h8M8 16h5"></path>
+                </svg>
+                <span class="nav-text">Encrypted History</span>
+                <div class="tab-beam"></div>
+            </li>
+            <li class="nav-item" data-tab="credentials" tabindex="0" role="button" aria-label="Credential Metadata">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="8" cy="15" r="4"></circle>
+                    <path d="M11 12l9-9m-3 3 3 3m-6 0 3 3"></path>
+                </svg>
+                <span class="nav-text">Credential Metadata</span>
+                <div class="tab-beam"></div>
+            </li>
+            <li class="nav-item" data-tab="system" tabindex="0" role="button" aria-label="System">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
@@ -103,7 +115,7 @@
                 <span class="nav-text">System</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="openUserProfile()">
+            <li class="nav-item" data-action="profile" tabindex="0" role="button" aria-label="User Profile">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
@@ -139,16 +151,15 @@
                 <canvas id="brain-pulse"></canvas>
 
                 <div class="help-box">
-                    <b>🧠 Muninn Semantic Engine</b>
-                    Welcome to the dashboard. The neural visualizer above reflects real-time Temporal Knowledge Graph
-                    (TKG) consolidation. Memories ingested here are intelligently evaluated, stored, and
-                    shadow-versioned using biological consolidation principles.
+                    <b>🧠 Muninn Local Service</b>
+                    The visualization above is decorative, not live telemetry. The counts below describe ordinary
+                    memory and graph storage; encrypted transcript coverage and queued model work are separate.
                 </div>
 
                 <div class="stat-grid">
                     <div class="stat-card">
                         <div class="stat-header">
-                            <span class="stat-label">Memory Nodes</span>
+                            <span class="stat-label">Ordinary Memories</span>
                             <svg class="rune-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
                                 stroke="var(--neon-purple)" stroke-width="2">
                                 <path d="M12 2v20M5 7l7 5 7-5M5 17l7-5 7 5" />
@@ -158,7 +169,7 @@
                     </div>
                     <div class="stat-card">
                         <div class="stat-header">
-                            <span class="stat-label">Active Entities</span>
+                            <span class="stat-label">Graph Nodes</span>
                             <svg class="rune-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
                                 stroke="var(--neon-blue)" stroke-width="2">
                                 <path d="M12 2L2 22h20L12 2zM12 8l4 8H8l4-8z" />
@@ -176,8 +187,22 @@
                                 <circle cx="12" cy="12" r="1.5" fill="var(--emerald-400)" />
                             </svg>
                         </div>
-                        <div class="stat-value" id="stat-profile">Balanced</div>
+                        <div class="stat-value" id="stat-profile">Not reported</div>
                     </div>
+                </div>
+
+                <div class="card" id="overview-local-status">
+                    <h3>Local Service & Encrypted History</h3>
+                    <p class="card-description">Live service state and generation-bound encrypted coverage. Capture
+                        intents, archive snapshots, and indexed versions are different counts.</p>
+                    <p id="overview-service-status" class="overview-status-text">Authenticate to check service health.</p>
+                    <p id="overview-history-status" class="overview-status-text">Encrypted archive coverage: unknown.</p>
+                    <p id="overview-queue-status" class="overview-status-text">Capture queue: unknown.</p>
+                    <p id="overview-hooks-status" class="overview-status-text">Hook delivery: unknown.</p>
+                    <p id="overview-refreshed-status" class="card-description">Not refreshed in this browser session.</p>
+                    <button onclick="checkHealth()" class="btn-secondary">Refresh local status</button>
+                    <p class="card-description">GPU and Ollama are sampled only when you request them in Encrypted
+                        History. Backup currency and running code revision are not yet reported by this service.</p>
                 </div>
 
                 <div class="card">
@@ -191,10 +216,9 @@
             <!-- TAB: INGEST -->
             <div id="tab-ingest" class="tab-content">
                 <div class="help-box">
-                    <b>📥 Zero-Trust Ingestion</b>
-                    Information added here initiates as "Episodic Context." Subprocess isolation guarantees secure
-                    parsing, while our TKG infrastructure evaluates contradictions against existing semantic fact nodes
-                    automatically.
+                    <b>📥 Ordinary Memory Ingestion</b>
+                    Text entered here is stored in ordinary searchable memory. Do not enter credentials. Encrypted
+                    transcript capture and credential discovery use separate workflows.
                 </div>
 
                 <div class="card">
@@ -236,7 +260,13 @@
                         & Ingest</button>
                 </div>
 
-                <div class="card" id="legacy-section">
+                <div class="card" id="strict-history-note" style="display:none">
+                    <h3>Encrypted history is active</h3>
+                    <p class="card-description">Legacy plaintext transcript import is unavailable in strict mode.
+                        Encrypted history capture and search continue separately from ordinary memory.</p>
+                </div>
+
+                <div class="card" id="legacy-section" style="display:none">
                     <h3>Legacy Assistant Discovery</h3>
                     <p class="card-description">Scan local
                         environments (Claude, VS Code, Cursor) for fragmented chat context to integrate into the central
@@ -289,6 +319,82 @@
                 </div>
             </div>
 
+            <!-- TAB: ENCRYPTED HISTORY -->
+            <div id="tab-history" class="tab-content">
+                <div class="card">
+                    <h3>Encrypted capture status</h3>
+                    <p class="card-description">Archive and index counts come from the authenticated local service.
+                        Hook counts are accepted endpoint invocations, not proof of unique host events or completed archival.</p>
+                    <p id="history-coverage-status" role="status" aria-live="polite">Enter the main local token to inspect coverage.</p>
+                    <p id="history-capture-status" role="status" aria-live="polite">Capture queue not loaded.</p>
+                    <p id="history-hook-receipts" class="history-hook-receipts">Hook receipts not loaded.</p>
+                </div>
+                <div class="card">
+                    <h3>Local model resources</h3>
+                    <p class="card-description">Sample current GPU headroom and Ollama residency on demand. An empty Ollama
+                        residency list does not prove other applications are idle; no model is loaded by this check.</p>
+                    <button type="button" id="refresh-local-resources" class="btn-secondary">Check GPU and Ollama</button>
+                    <p id="local-resource-status" role="status" aria-live="polite">Not sampled in this tab.</p>
+                    <ul id="local-resource-models"></ul>
+                </div>
+                <div class="card" id="remote-policy-card">
+                    <h3>Private OpenRouter fallback</h3>
+                    <p class="card-description">Local models remain preferred. When enabled, ZDR OpenRouter may interpret a pertinent
+                        encrypted excerpt if local GPU capacity is unavailable. These dollar values are admission thresholds,
+                        not hard spending caps; a separately provider-enforced key limit is still required.
+                        Changing consent affects new dispatches; a request already admitted may finish.</p>
+                    <label><input type="checkbox" id="remote-policy-enabled"> Allow ZDR OpenRouter fallback on this machine</label>
+                    <div class="discovery-grid">
+                        <div><label for="remote-daily-usd">Daily admission threshold (USD)</label>
+                            <input id="remote-daily-usd" class="input-base" type="number" min="0.01" step="0.01" value="1"></div>
+                        <div><label for="remote-monthly-usd">Monthly admission threshold (USD)</label>
+                            <input id="remote-monthly-usd" class="input-base" type="number" min="0.01" step="0.01" value="20"></div>
+                    </div>
+                    <label><input type="checkbox" id="remote-policy-override"> Explicitly override the default $10/day and $100/month app ceilings</label>
+                    <div class="m-t-8"><button type="button" id="remote-policy-save" class="btn-primary">Save local policy</button></div>
+                    <p id="remote-policy-status" role="status" aria-live="polite">Enter the main local token to inspect policy.</p>
+                    <p id="remote-key-status" role="status" aria-live="polite">Provider key limit not checked.</p>
+                </div>
+                <div class="help-box">
+                    <b>Encrypted History Search</b>
+                    This searches locally archived transcripts, separate from ordinary memories.
+                    Search enqueues a durable local encrypted-index job. Excerpts are bounded and sanitized with
+                    best-effort redaction; do not treat them as guaranteed free of sensitive information.
+                    Open a result to read one redacted transcript page at a time; non-conversational tool output is omitted.
+                </div>
+                <div class="search-container">
+                    <input type="text" id="history-query" aria-label="Search encrypted history"
+                        placeholder="Search archived transcripts..." maxlength="240">
+                    <button type="button" id="history-search-button" class="btn-primary search-btn-absolute">Search History</button>
+                </div>
+                <p id="history-search-status" role="status" aria-live="polite">Enter a query to search encrypted history.</p>
+                <div id="history-results"></div>
+                <div id="history-transcript-viewer" class="card" hidden>
+                    <h3 id="history-transcript-heading">Redacted transcript</h3>
+                    <p id="history-transcript-status" role="status" aria-live="polite"></p>
+                    <pre id="history-transcript-page" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
+                    <button type="button" id="history-transcript-next" class="btn-secondary" hidden>Next page</button>
+                </div>
+            </div>
+
+            <!-- TAB: CREDENTIAL METADATA -->
+            <div id="tab-credentials" class="tab-content">
+                <div class="card">
+                    <h3>Credential metadata</h3>
+                    <p class="card-description">Search the separate local vault by service, project, or source hint.
+                        Values are never returned here. Only previously scanned or recorded sources can match;
+                        discovered candidates remain unverified. Revealing or using a value requires separate local authorization.</p>
+                    <label for="credential-metadata-query">Metadata query</label>
+                    <div class="search-container">
+                        <input type="text" id="credential-metadata-query" class="input-base"
+                            placeholder="Service, project, or source hint..." maxlength="64">
+                        <button type="button" id="credential-metadata-search" class="btn-primary search-btn-absolute">Search metadata</button>
+                    </div>
+                    <p id="credential-metadata-status" role="status" aria-live="polite">Enter the main local token, then search on demand.</p>
+                    <div id="credential-metadata-results"></div>
+                </div>
+            </div>
+
             <!-- TAB: SYSTEM -->
             <div id="tab-system" class="tab-content">
                 <div class="card">
@@ -330,9 +436,11 @@
                 </div>
 
                 <div class="card">
-                    <h3>System Mainteance</h3>
+                    <h3>System Maintenance</h3>
+                    <p class="card-description">TKG consolidation concerns ordinary memories only. It does not scan,
+                        index, or interpret encrypted history, and server policy may leave it in dry-run mode.</p>
                     <div class="maintenance-grid">
-                        <button onclick="forceConsolidation()" class="btn-secondary">Trigger TKG Consolidation</button>
+                        <button onclick="forceConsolidation()" class="btn-secondary">Request ordinary-memory TKG consolidation</button>
                         <button onclick="checkHealth()" class="btn-secondary">Ping Diagnostics</button>
                     </div>
                 </div>
@@ -344,16 +452,24 @@
         let API_BASE = window.location.protocol === 'file:' ? 'http://localhost:42069' : window.location.origin;
         let SECURITY_ENABLED = true;
 
-        // v3.18.3: Server-injected token takes priority to avoid stale localStorage issues
-        // The server will replace "{{MUNINN_TOKEN}}" with the actual token
-        let AUTH_TOKEN = "{{MUNINN_TOKEN}}";
-        if (AUTH_TOKEN.includes("{{") || !AUTH_TOKEN) {
-            AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
-        } else {
-            // New valid token from server - persist it
-            localStorage.setItem('muninn_token', AUTH_TOKEN);
-        }
-        console.log(`[AUTH] Active Token Hash: ${AUTH_TOKEN.substring(0, 8)}...`);
+        let AUTH_TOKEN = "";
+        let HISTORY_SECURITY_MODE = "unknown";
+        let historySearchSequence = 0;
+        let historySearchJobId = null;
+        let historyTranscriptSequence = 0;
+        let historyTranscriptNextCursor = null;
+        let historyTranscriptPageNumber = 0;
+        let historyStatusSequence = 0;
+        let overviewStatusSequence = 0;
+        let remotePolicyLoadedEnabled = false;
+        let remotePolicyLoadSequence = 0;
+        let remotePolicySavePending = false;
+        let resourceStatusSequence = 0;
+        let credentialSearchSequence = 0;
+        let healthPoll = null;
+        let scanPoll = null;
+        // Retire credentials persisted by older dashboard releases.
+        try { localStorage.removeItem('muninn_token'); } catch (_) { /* storage may be disabled */ }
 
         // XSS prevention: escape HTML entities in user-influenced strings
         function esc(str) {
@@ -489,56 +605,83 @@
            ================================ */
 
         // Modal Logic
+        function startStatusPolling() {
+            if (healthPoll !== null) return;
+            updateScanBadge();
+            healthPoll = setInterval(checkHealth, 30000);
+            scanPoll = setInterval(updateScanBadge, 60000);
+        }
+
         function checkAuthOnLoad() {
-            console.log("[AUTH] checkAuthOnLoad triggered");
             if (!SECURITY_ENABLED) {
                 document.getElementById('auth-modal').classList.remove('active');
                 document.getElementById('auth-dot').className = 'status-dot online';
                 log("Authentication bypassed (development mode).");
                 checkHealth();
+                startStatusPolling();
                 return;
             }
-
-            if (AUTH_TOKEN && AUTH_TOKEN !== '""') {
-                console.log("[AUTH] Valid token found, dismissing modal");
-                document.getElementById('auth-modal').classList.remove('active');
-                const tokenInput = document.getElementById('server-token');
-                if (tokenInput) tokenInput.value = AUTH_TOKEN;
-                checkHealth();
-            } else {
-                console.log("[AUTH] No token found, showing modal");
-                document.getElementById('auth-modal').classList.add('active');
-            }
+            document.getElementById('auth-modal').classList.add('active');
         }
 
-        function initializeAuth() {
-            const token = document.getElementById('modal-token-input').value.trim();
-            if (token) {
-                AUTH_TOKEN = token;
-                localStorage.setItem('muninn_token', token);
-                document.getElementById('server-token').value = token;
-                document.getElementById('auth-modal').classList.remove('active');
-                log("Session authenticated.");
-                checkHealth();
+        async function acceptToken(token) {
+            if (!token) return false;
+            try {
+                const response = await fetch(`${API_BASE}/auth/check`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!response.ok) return false;
+            } catch (_) {
+                return false;
             }
+            AUTH_TOKEN = token;
+            document.getElementById('auth-modal').classList.remove('active');
+            document.getElementById('auth-dot').className = 'status-dot online';
+            checkHealth();
+            if (document.getElementById('tab-history').classList.contains('active')) {
+                loadHistoryStatus();
+                loadRemotePolicy();
+            }
+            startStatusPolling();
+            return true;
+        }
+
+        async function initializeAuth() {
+            const token = document.getElementById('modal-token-input').value.trim();
+            if (await acceptToken(token)) {
+                document.getElementById('modal-token-input').value = '';
+                log("Session authenticated.");
+            } else showToast('Authentication failed. Check your local token.', 'error');
         }
 
         function showTab(tabId) {
+            if (tabId !== 'overview') overviewStatusSequence++;
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(t => {
+                t.classList.remove('active');
+                t.removeAttribute('aria-current');
+            });
 
             const activeTab = document.getElementById('tab-' + tabId);
             if (activeTab) activeTab.classList.add('active');
 
-            const activeNav = document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
-            if (activeNav) activeNav.classList.add('active');
+            const activeNav = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
+            if (activeNav) {
+                activeNav.classList.add('active');
+                activeNav.setAttribute('aria-current', 'page');
+            }
 
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
 
             // Auto-load legacy catalog if switching to ingest
-            if (tabId === 'ingest') {
+            if (tabId === 'ingest' && HISTORY_SECURITY_MODE === 'legacy') {
                 discoverLegacySources(true);
             }
+            if (tabId === 'history' && (AUTH_TOKEN || !SECURITY_ENABLED)) {
+                loadHistoryStatus();
+                loadRemotePolicy();
+            }
+            if (tabId === 'overview' && (AUTH_TOKEN || !SECURITY_ENABLED)) checkHealth();
         }
 
         // Original log function (now `originalLog`)
@@ -551,15 +694,19 @@
         //     logDiv.prepend(line);
         // }
 
-        async function api(endpoint, method = 'GET', body = null) {
+        async function api(endpoint, method = 'GET', body = null, timeoutMs = 0) {
             const options = {
                 method,
+                cache: 'no-store',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${AUTH_TOKEN}`
                 }
             };
             if (body) options.body = JSON.stringify(body);
+            const controller = timeoutMs > 0 ? new AbortController() : null;
+            if (controller) options.signal = controller.signal;
+            const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
             try {
                 const res = await fetch(`${API_BASE}${endpoint}`, options);
@@ -576,10 +723,39 @@
                 return payload;
             } catch (e) {
                 return { error: e.message };
+            } finally {
+                if (timer !== null) clearTimeout(timer);
             }
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.nav-item[data-tab], .nav-item[data-action="profile"]').forEach(nav => {
+                const activate = () => nav.dataset.action === 'profile'
+                    ? openUserProfile() : showTab(nav.dataset.tab);
+                nav.addEventListener('click', activate);
+                nav.addEventListener('keydown', event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        activate();
+                    }
+                });
+            });
+            document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
+            document.getElementById('history-transcript-next').addEventListener('click', () => {
+                const cursor = historyTranscriptNextCursor;
+                if (!cursor) return;
+                historyTranscriptNextCursor = null;
+                void loadHistoryTranscriptPage(cursor, historySearchSequence, historyTranscriptSequence);
+            });
+            document.getElementById('remote-policy-save').addEventListener('click', saveRemotePolicy);
+            document.getElementById('refresh-local-resources').addEventListener('click', loadLocalResources);
+            document.getElementById('credential-metadata-search').addEventListener('click', searchCredentialMetadata);
+            document.getElementById('credential-metadata-query').addEventListener('keydown', event => {
+                if (event.key === 'Enter') searchCredentialMetadata();
+            });
+            document.getElementById('history-query').addEventListener('keydown', event => {
+                if (event.key === 'Enter') handleEncryptedHistorySearch();
+            });
             const huntToggle = document.getElementById('hunt-mode');
             if (huntToggle) {
                 huntToggle.addEventListener('change', () => {
@@ -594,10 +770,573 @@
         });
 
         function pulseNav(tabId, enable) {
-            const nav = document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
+            const nav = document.querySelector(`.nav-item[data-tab="${tabId}"]`) ||
+                document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
             if (!nav) return;
             if (enable) nav.classList.add('pulse-active');
             else nav.classList.remove('pulse-active');
+        }
+
+        function formatOverviewStatus(data) {
+            const count = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            const archive = data?.vault?.archive;
+            const index = data?.last_secure_index;
+            let coverage = 'Encrypted archive coverage: unknown.';
+            if (data?.history_security !== 'strict') {
+                coverage = 'Encrypted archive inactive or security mode unknown; no strict-history coverage claim.';
+            } else if (data?.vault?.ready === true && archive && typeof archive === 'object') {
+                coverage = `Archive generation ${count(archive.generation)}: ` +
+                    `${count(archive.snapshots)} encrypted snapshot versions across ${count(archive.sources)} sources. `;
+                const sameGeneration = Number.isSafeInteger(archive.generation) &&
+                    archive.generation >= 0 && index?.archive_generation === archive.generation;
+                if (sameGeneration && Number.isSafeInteger(index.ready) && index.ready >= 0 &&
+                    Number.isSafeInteger(index.total) && index.total >= 0 &&
+                    Number.isSafeInteger(index.missing) && index.missing >= 0 &&
+                    Number.isSafeInteger(index.unsearchable) && index.unsearchable >= 0 &&
+                    Number.isSafeInteger(archive.snapshots) && archive.snapshots >= 0) {
+                    const caughtUp = index.complete === true && index.ready === archive.snapshots &&
+                        index.total === archive.snapshots && index.missing === 0 && index.unsearchable === 0;
+                    coverage += `Current index: ${count(index.ready)}/${count(index.total)} ready, ` +
+                        `${count(index.missing)} missing, ${count(index.unsearchable)} unsearchable; ` +
+                        `current archive fully indexed: ${caughtUp ? 'yes' : 'no'}.`;
+                } else {
+                    coverage += `Current index coverage: unknown (index report generation ` +
+                        `${count(index?.archive_generation)} is absent, invalid, or does not match).`;
+                }
+            }
+
+            const queue = data?.capture_queue;
+            let capture = 'Capture queue unavailable; no archival conclusion can be drawn.';
+            if (queue && typeof queue === 'object' && !Array.isArray(queue)) {
+                const stateCount = state => Object.prototype.hasOwnProperty.call(queue, state) ?
+                    count(queue[state]) : '0';
+                capture = `Capture intents: ${stateCount('archived')} archived intents, ` +
+                    `${stateCount('pending')} pending, ${stateCount('running')} running, ` +
+                    `${stateCount('retry')} retry, ${stateCount('unavailable')} unavailable. ` +
+                    'Intent counts are not archive snapshot counts.';
+                const scan = data.last_capture_scan;
+                if (scan && Number.isSafeInteger(scan.generation) && scan.generation >= 0) {
+                    const scanComplete = (scan.complete === true || scan.complete === 1) &&
+                        scan.missing === 0 && scan.errors === 0;
+                    capture += ` Last source scan generation ${count(scan.generation)}: ` +
+                        `${scanComplete ? 'complete' : 'incomplete or status unknown'}.`;
+                } else {
+                    capture += ' Last source scan: unknown.';
+                }
+            }
+
+            let hooks = 'Hook receipt ledger unavailable; delivery is unknown.';
+            if (!data?.hook_receipts_error && Array.isArray(data?.hook_receipts)) {
+                const clients = ['claude_code', 'codex', 'gemini_cli'];
+                hooks = clients.map(client => {
+                    const latest = data.hook_receipts.filter(receipt => receipt?.provider === client &&
+                        typeof receipt.event === 'string' && receipt.event.length <= 64 &&
+                        Number.isSafeInteger(receipt.accepted_invocations) &&
+                        receipt.accepted_invocations >= 0 &&
+                        typeof receipt.last_accepted_at === 'number' &&
+                        Number.isFinite(receipt.last_accepted_at) && receipt.last_accepted_at >= 0
+                    ).reduce((best, receipt) => !best || receipt.last_accepted_at > best.last_accepted_at ?
+                        receipt : best, null);
+                    if (!latest) return `${client}: no accepted receipt recorded`;
+                    return `${client}: ${latest.event} accepted ` +
+                        `${count(latest.accepted_invocations)} time(s) as of ` +
+                        `${new Date(latest.last_accepted_at * 1000).toLocaleString()}`;
+                }).join('\n') +
+                    '\nThese are accepted endpoint invocations, not unique host events or archival proof.';
+            }
+            return {coverage, capture, hooks};
+        }
+
+        async function loadOverviewStatus() {
+            if ((!AUTH_TOKEN && SECURITY_ENABLED) ||
+                !document.getElementById('tab-overview').classList.contains('active')) return;
+            const sequence = ++overviewStatusSequence;
+            const token = AUTH_TOKEN;
+            const coverage = document.getElementById('overview-history-status');
+            const capture = document.getElementById('overview-queue-status');
+            const hooks = document.getElementById('overview-hooks-status');
+            const refreshed = document.getElementById('overview-refreshed-status');
+            coverage.textContent = 'Loading encrypted archive coverage...';
+            capture.textContent = 'Loading capture queue...';
+            hooks.textContent = 'Loading hook receipts...';
+            const response = await api('/history/status');
+            if (sequence !== overviewStatusSequence || token !== AUTH_TOKEN ||
+                !document.getElementById('tab-overview').classList.contains('active')) return;
+            if (response.error || !response.data) {
+                coverage.textContent = 'Encrypted archive coverage unavailable; current state unknown.';
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+                hooks.textContent = 'Hook receipt ledger unavailable; delivery is unknown.';
+            } else {
+                const status = formatOverviewStatus(response.data);
+                coverage.textContent = status.coverage;
+                capture.textContent = status.capture;
+                hooks.textContent = status.hooks;
+            }
+            refreshed.textContent = `Local status checked at ${new Date().toLocaleTimeString()}.`;
+        }
+
+        function historyMessage(message) {
+            document.getElementById('history-search-status').textContent = message;
+        }
+
+        async function loadHistoryStatus() {
+            const sequence = ++historyStatusSequence;
+            const token = AUTH_TOKEN;
+            const coverage = document.getElementById('history-coverage-status');
+            const capture = document.getElementById('history-capture-status');
+            const hooks = document.getElementById('history-hook-receipts');
+            coverage.textContent = 'Loading encrypted archive and index coverage...';
+            capture.textContent = 'Loading capture queue and source scan...';
+            hooks.textContent = 'Loading hook receipts...';
+            const response = await api('/history/status');
+            if (sequence !== historyStatusSequence || token !== AUTH_TOKEN) return;
+            if (response.error || !response.data) {
+                coverage.textContent = `Coverage unavailable: ${response.error || 'unexpected response'}`;
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+                hooks.textContent = 'Hook receipts unavailable; no delivery conclusion can be drawn.';
+                return;
+            }
+            const data = response.data;
+            const archive = data.vault?.archive || {};
+            const index = data.last_secure_index || {};
+            const count = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            const matchingGeneration = data.vault?.ready === true &&
+                Number.isSafeInteger(archive.generation) &&
+                index.archive_generation === archive.generation;
+            const caughtUp = matchingGeneration && Number.isSafeInteger(archive.snapshots) &&
+                Number.isSafeInteger(index.ready) && Number.isSafeInteger(index.total) ?
+                (index.complete === true && index.ready === archive.snapshots &&
+                    index.total === archive.snapshots ? 'yes' : 'no') : 'unknown';
+            coverage.textContent = `Archive generation ${count(archive.generation)} · ` +
+                `${count(archive.snapshots)} encrypted snapshot versions across ${count(archive.sources)} sources. ` +
+                `Index generation ${count(index.archive_generation)}: ` +
+                `${count(index.ready)}/${count(index.total)} ready, ${count(index.missing)} missing; ` +
+                `current archive fully indexed: ${caughtUp}.`;
+            const queue = data.capture_queue;
+            if (queue && typeof queue === 'object' && !Array.isArray(queue)) {
+                const queued = state => Object.prototype.hasOwnProperty.call(queue, state) ?
+                    count(queue[state]) : '0';
+                const scan = data.last_capture_scan;
+                const scanKnown = scan && Number.isSafeInteger(scan.generation) &&
+                    Number.isSafeInteger(scan.missing) && Number.isSafeInteger(scan.errors) &&
+                    (scan.complete === true || scan.complete === 1 ||
+                        scan.complete === false || scan.complete === 0);
+                const scanLabel = scan && typeof scan === 'object' &&
+                    Number.isSafeInteger(scan.generation) ?
+                    `scan generation ${count(scan.generation)} ` +
+                    (scanKnown ? ((scan.complete === true || scan.complete === 1) &&
+                        scan.missing === 0 && scan.errors === 0 ? 'complete' : 'incomplete') : 'status unknown') +
+                    ` (${count(scan.missing)} missing, ${count(scan.errors)} errors)` :
+                    'source scan not yet reported';
+                capture.textContent = `Capture intents: ${queued('archived')} archived intents, ` +
+                    `${queued('pending')} pending, ${queued('running')} running, ` +
+                    `${queued('retry')} retry, ${queued('unavailable')} unavailable; ${scanLabel}. ` +
+                    'Intent counts are not archive snapshot counts.';
+            } else {
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+            }
+            if (data.hook_receipts_error) {
+                hooks.textContent = 'Hook receipt ledger unavailable; no delivery conclusion can be drawn.';
+                return;
+            }
+            const receipts = Array.isArray(data.hook_receipts) ? data.hook_receipts : null;
+            if (!receipts) {
+                hooks.textContent = 'Hook receipt ledger not reported; delivery is unknown.';
+                return;
+            }
+            const clients = ['claude_code', 'codex', 'gemini_cli'];
+            const lines = clients.map(client => {
+                const observed = receipts.filter(receipt => receipt.provider === client);
+                if (!observed.length) return `${client}: no accepted receipt recorded`;
+                return `${client}: ` + observed.map(receipt =>
+                    `${receipt.event}: ${count(receipt.accepted_invocations)} accepted ` +
+                    `(${receipt.last_outcome || 'outcome unknown'})`).join('; ');
+            });
+            hooks.textContent = lines.join('\n') +
+                '\nCounts are accepted endpoint invocations, not unique host events or archival proof.';
+        }
+
+        async function loadLocalResources() {
+            const sequence = ++resourceStatusSequence;
+            const token = AUTH_TOKEN;
+            const status = document.getElementById('local-resource-status');
+            const models = document.getElementById('local-resource-models');
+            const button = document.getElementById('refresh-local-resources');
+            button.disabled = true;
+            status.textContent = 'Sampling local GPU and Ollama without loading a model...';
+            models.replaceChildren();
+            try {
+                const response = await api('/history/secure/resources');
+                if (sequence !== resourceStatusSequence || token !== AUTH_TOKEN) return;
+                if (response.error || !response.data) {
+                    status.textContent = 'Local resource status unavailable; no idle or headroom conclusion can be drawn.';
+                    return;
+                }
+                const gpu = response.data.gpu || {};
+                const ollama = response.data.ollama || {};
+                const stamped = value => Number.isFinite(value) && value > 0 ?
+                    new Date(value * 1000).toLocaleString() : 'time unknown';
+                const gpuText = gpu.state === 'ready' && Number.isSafeInteger(gpu.free_mib) &&
+                    Number.isSafeInteger(gpu.total_mib) && Number.isSafeInteger(gpu.utilization_percent) ?
+                    `GPU ${gpu.free_mib} MiB free of ${gpu.total_mib} MiB; ${gpu.utilization_percent}% utilization ` +
+                    `(sampled ${stamped(gpu.sampled_at)})` : 'GPU telemetry unavailable';
+                const resident = Array.isArray(ollama.resident_models) ? ollama.resident_models : null;
+                const ollamaText = ollama.state === 'ready' && resident ?
+                    (resident.length ? `Ollama resident models: ${resident.join(', ')}` :
+                        'no Ollama models resident') + ` (sampled ${stamped(ollama.sampled_at)})` :
+                    'Ollama status unavailable';
+                status.textContent = `${gpuText}. ${ollamaText}.`;
+                if (ollama.state !== 'ready' || !Array.isArray(ollama.installed)) return;
+                for (const item of ollama.installed) {
+                    if (typeof item.name !== 'string' || !Number.isSafeInteger(item.size_bytes)) continue;
+                    const row = document.createElement('li');
+                    row.textContent = `${item.name} · ${(item.size_bytes / (1024 ** 3)).toFixed(2)} GiB on disk`;
+                    models.appendChild(row);
+                }
+            } finally {
+                if (sequence === resourceStatusSequence) button.disabled = false;
+            }
+        }
+
+        async function searchCredentialMetadata() {
+            const query = document.getElementById('credential-metadata-query').value.trim();
+            const status = document.getElementById('credential-metadata-status');
+            const results = document.getElementById('credential-metadata-results');
+            const sequence = ++credentialSearchSequence;
+            const token = AUTH_TOKEN;
+            results.replaceChildren();
+            if (!query || query.length > 64) {
+                status.textContent = 'Enter 1–64 characters to search metadata.';
+                return;
+            }
+            status.textContent = 'Searching allowlisted local credential metadata...';
+            const response = await api('/credentials/agent-search', 'POST', { query, limit: 10 });
+            if (sequence !== credentialSearchSequence || token !== AUTH_TOKEN) return;
+            if (response.error || !Array.isArray(response.data)) {
+                status.textContent = 'Credential metadata search unavailable or disabled; no coverage conclusion can be drawn.';
+                return;
+            }
+            if (!response.data.length) {
+                status.textContent = 'No metadata matches among scanned sources; this does not prove the credential does not exist.';
+                return;
+            }
+            status.textContent = `${response.data.length} metadata match(es) among scanned sources (maximum 10). Values remain in the local vault.`;
+            const label = value => typeof value === 'string' && value ? value : 'unknown';
+            for (const item of response.data) {
+                const card = document.createElement('div');
+                card.className = 'result-item';
+                const heading = document.createElement('strong');
+                heading.textContent = `Service ${label(item.service)} · project ${label(item.project)}`;
+                const location = document.createElement('p');
+                location.textContent = `Source ${label(item.source_hint)} · ` +
+                    `${item.origin === 'project' || item.origin === 'transcript' ? item.origin : 'origin not reported'} · ` +
+                    `${item.candidate_status === 'unverified' ? 'unverified candidate' : 'status not reported'}`;
+                const reference = document.createElement('p');
+                reference.textContent = `Record ${label(item.id)} · source hash ${label(item.source_hash)}`;
+                card.appendChild(heading);
+                card.appendChild(location);
+                card.appendChild(reference);
+                results.appendChild(card);
+            }
+        }
+
+        async function loadRemotePolicy() {
+            if (remotePolicySavePending) return;
+            const sequence = ++remotePolicyLoadSequence;
+            const status = document.getElementById('remote-policy-status');
+            status.textContent = 'Loading local remote policy...';
+            const response = await api('/history/secure/remote-policy');
+            if (sequence !== remotePolicyLoadSequence) return;
+            if (response.error || !response.data) {
+                status.textContent = `Policy unavailable: ${response.error || 'unexpected response'}`;
+                return;
+            }
+            const policy = response.data;
+            remotePolicyLoadedEnabled = policy.enabled === true;
+            document.getElementById('remote-policy-enabled').checked = remotePolicyLoadedEnabled;
+            document.getElementById('remote-daily-usd').value = policy.daily_usd;
+            document.getElementById('remote-monthly-usd').value = policy.monthly_usd;
+            document.getElementById('remote-policy-override').checked = policy.override_ceiling === true;
+            status.textContent = `${policy.enabled ? 'Enabled' : 'Disabled'} · ${policy.source} policy · generation ${policy.generation}. ` +
+                'The OpenRouter key must have its own finite provider-enforced cap.';
+            await loadRemoteKeyStatus(policy.enabled === true);
+        }
+
+        async function loadRemoteKeyStatus(enabled) {
+            const status = document.getElementById('remote-key-status');
+            if (!enabled) {
+                status.textContent = 'Provider key not checked while remote use is disabled.';
+                return;
+            }
+            status.textContent = 'Checking provider-enforced key limit...';
+            const response = await api('/history/secure/remote-policy/key-status');
+            if (response.error || !response.data) {
+                status.textContent = 'Provider key status unavailable; remote admission is unverified.';
+                return;
+            }
+            const key = response.data;
+            const money = value => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'unknown';
+            const states = {
+                ready: 'Remote admission currently eligible',
+                disabled: 'Remote use disabled',
+                key_missing: 'OpenRouter key missing',
+                key_disabled: 'OpenRouter key disabled',
+                key_exhausted: 'OpenRouter key cap exhausted',
+                key_cap_exceeds_local_threshold: 'Remote route blocked: key hard cap exceeds local threshold',
+                local_threshold_reached: 'Local admission threshold reached',
+                provider_unavailable: 'Provider status unavailable; remote admission unverified',
+                invalid_provider_data: 'Provider limit data invalid; remote admission unverified'
+            };
+            const label = states[key.state] || 'Provider status unknown; remote admission unverified';
+            const limit = key.key_limit_usd;
+            const reset = key.key_reset;
+            const detail = Number.isFinite(limit) && (reset === 'daily' || reset === 'monthly')
+                ? ` Provider hard cap ${money(limit)}/${reset}; ${money(key.key_remaining_usd)} currently remaining.`
+                : '';
+            status.textContent = label + '.' + detail +
+                ' Local daily/monthly values above are admission thresholds, not hard caps.';
+        }
+
+        async function saveRemotePolicy() {
+            if (remotePolicySavePending) return;
+            ++remotePolicyLoadSequence;
+            const button = document.getElementById('remote-policy-save');
+            const status = document.getElementById('remote-policy-status');
+            const enabled = document.getElementById('remote-policy-enabled').checked;
+            const daily_usd = Number(document.getElementById('remote-daily-usd').value);
+            const monthly_usd = Number(document.getElementById('remote-monthly-usd').value);
+            const override_ceiling = document.getElementById('remote-policy-override').checked;
+            if (!Number.isFinite(daily_usd) || daily_usd <= 0 ||
+                !Number.isFinite(monthly_usd) || monthly_usd <= 0) {
+                status.textContent = 'Enter positive finite daily and monthly thresholds.';
+                return;
+            }
+            if (enabled && !remotePolicyLoadedEnabled && !window.confirm(
+                'Allow ZDR OpenRouter to receive bounded raw transcript excerpts when local capacity is unavailable? ' +
+                'The provider-enforced key limit remains a separate requirement.')) return;
+            remotePolicySavePending = true;
+            button.disabled = true;
+            status.textContent = 'Saving audited local policy...';
+            try {
+                const response = await api('/history/secure/remote-policy', 'POST',
+                    { enabled, daily_usd, monthly_usd, override_ceiling });
+                if (response.error) {
+                    status.textContent = `Policy was not saved: ${response.error}`;
+                } else {
+                    remotePolicyLoadedEnabled = response.data.enabled === true;
+                    status.textContent = `Saved · ${remotePolicyLoadedEnabled ? 'enabled' : 'disabled'} · generation ${response.data.generation}. ` +
+                        'Already-admitted remote requests may finish.';
+                    await loadRemoteKeyStatus(remotePolicyLoadedEnabled);
+                }
+            } finally {
+                button.disabled = false;
+                remotePolicySavePending = false;
+            }
+        }
+
+        function clearHistoryTranscript() {
+            historyTranscriptSequence++;
+            historyTranscriptNextCursor = null;
+            historyTranscriptPageNumber = 0;
+            document.getElementById('history-transcript-viewer').hidden = true;
+            document.getElementById('history-transcript-page').textContent = '';
+            document.getElementById('history-transcript-status').textContent = '';
+            const next = document.getElementById('history-transcript-next');
+            next.hidden = true;
+            next.disabled = true;
+        }
+
+        function currentHistoryTranscript(searchSequence, viewerSequence) {
+            return searchSequence === historySearchSequence &&
+                viewerSequence === historyTranscriptSequence;
+        }
+
+        async function loadHistoryTranscriptPage(cursor, searchSequence, viewerSequence) {
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            const status = document.getElementById('history-transcript-status');
+            const next = document.getElementById('history-transcript-next');
+            next.hidden = true;
+            next.disabled = true;
+            status.textContent = 'Authenticating and loading one redacted page...';
+            const response = await api('/history/secure/transcript/page', 'POST', { cursor }, 30000);
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            const page = response.data;
+            if (response.error || !page || typeof page.redacted_text !== 'string' ||
+                    [...page.redacted_text].length > 4000 ||
+                    !(page.next_cursor == null || (typeof page.next_cursor === 'string' &&
+                        page.next_cursor.length > 0 && page.next_cursor.length <= 4096))) {
+                historyTranscriptNextCursor = null;
+                status.textContent = `Transcript page unavailable: ${response.error || 'invalid response'}. Search again to restart.`;
+                return;
+            }
+            historyTranscriptPageNumber++;
+            document.getElementById('history-transcript-page').textContent = page.redacted_text;
+            historyTranscriptNextCursor = page.next_cursor || null;
+            status.textContent = `Redacted transcript · page ${historyTranscriptPageNumber}` +
+                (historyTranscriptNextCursor ? ' · more available.' : ' · end of transcript.');
+            next.hidden = !historyTranscriptNextCursor;
+            next.disabled = !historyTranscriptNextCursor;
+        }
+
+        async function openHistoryTranscript(capability, searchSequence, label) {
+            clearHistoryTranscript();
+            const viewerSequence = historyTranscriptSequence;
+            const viewer = document.getElementById('history-transcript-viewer');
+            viewer.hidden = false;
+            document.getElementById('history-transcript-heading').textContent = `Redacted transcript · ${label}`;
+            const status = document.getElementById('history-transcript-status');
+            if (!capability) {
+                status.textContent = 'Transcript capability unavailable; search again.';
+                return;
+            }
+            status.textContent = 'Preparing authenticated transcript pages...';
+            const deadline = Date.now() + 180000;
+            let response = await api('/history/secure/transcript/start', 'POST', { capability }, 30000);
+            while (currentHistoryTranscript(searchSequence, viewerSequence) &&
+                    !response.error && response.data?.state === 'pending' && Date.now() < deadline) {
+                status.textContent = 'Preparing transcript in the background; this may take longer for large sources...';
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) break;
+                response = await api('/history/secure/transcript/poll', 'POST', { capability },
+                    Math.min(30000, remaining));
+            }
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            if (!response.error && response.data?.state === 'pending') {
+                historyTranscriptNextCursor = null;
+                status.textContent = 'Transcript preparation is still running. Search again later to resume.';
+                return;
+            }
+            if (response.error || response.data?.state !== 'ready' ||
+                    typeof response.data.cursor !== 'string' || !response.data.cursor) {
+                status.textContent = `Transcript unavailable: ${response.error || response.data?.state || 'invalid response'}. ` +
+                    'Search again to retry.';
+                return;
+            }
+            await loadHistoryTranscriptPage(response.data.cursor, searchSequence, viewerSequence);
+        }
+
+        function renderHistoryMatches(result, sequence) {
+            const container = document.getElementById('history-results');
+            container.replaceChildren();
+            const matches = Array.isArray(result.matches) ? result.matches : [];
+            const coverage = `${result.ready ?? '?'} of ${result.total ?? '?'} current snapshots indexed; ` +
+                `${result.missing ?? '?'} missing, ${result.overflow ?? '?'} overflow.`;
+            historyMessage(`${matches.length} matching sources. ${coverage} ` +
+                (result.complete === true ? 'Search complete.' : 'Partial search; some matches may be absent.'));
+            if (!matches.length) return;
+            for (const match of matches) {
+                const card = document.createElement('div');
+                card.className = 'result-item';
+                const heading = document.createElement('strong');
+                heading.textContent = `${match.provider || 'unknown'} · ${match.kind || 'source'} · ` +
+                    `${match.captured_day_utc || 'date unknown'}`;
+                card.appendChild(heading);
+                const provenance = document.createElement('p');
+                provenance.textContent = `Source ref ${match.ref || 'unknown'} · ` +
+                    `${match.size_bucket_kib ?? '?'} KiB bucket · ${match.versions ?? '?'} version(s)`;
+                card.appendChild(provenance);
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'btn-secondary';
+                button.textContent = 'Load sanitized excerpt';
+                const excerpt = document.createElement('pre');
+                excerpt.style.whiteSpace = 'pre-wrap';
+                excerpt.style.overflowWrap = 'anywhere';
+                const capability = match.fetch_capability;
+                button.addEventListener('click', async () => {
+                    if (sequence !== historySearchSequence) return;
+                    if (!capability) {
+                        excerpt.textContent = 'Excerpt capability unavailable; search again.';
+                        return;
+                    }
+                    button.disabled = true;
+                    excerpt.textContent = 'Authenticating and fetching bounded excerpt...';
+                    const fetched = await api('/history/secure/fetch', 'POST',
+                        { capability, max_chars: 3000 });
+                    if (sequence !== historySearchSequence) return;
+                    if (fetched.error) {
+                        excerpt.textContent = `Fetch unavailable: ${fetched.error}`;
+                        button.disabled = false;
+                        return;
+                    }
+                    const span = fetched.data || {};
+                    excerpt.textContent = `Sanitized excerpt — best-effort redaction${span.truncated ? ' (truncated)' : ''}:\n\n` +
+                        (typeof span.redacted_text === 'string' ? span.redacted_text : 'No text returned.');
+                });
+                card.appendChild(button);
+                const transcriptButton = document.createElement('button');
+                transcriptButton.type = 'button';
+                transcriptButton.className = 'btn-secondary';
+                transcriptButton.textContent = 'Open redacted transcript';
+                transcriptButton.addEventListener('click', () => {
+                    if (sequence !== historySearchSequence) return;
+                    transcriptButton.disabled = true;
+                    void openHistoryTranscript(capability, sequence, heading.textContent)
+                        .finally(() => { transcriptButton.disabled = false; });
+                });
+                card.appendChild(transcriptButton);
+                card.appendChild(excerpt);
+                container.appendChild(card);
+            }
+        }
+
+        async function handleEncryptedHistorySearch() {
+            const query = document.getElementById('history-query').value.trim();
+            if (!query) {
+                historyMessage('Enter a query first.');
+                return;
+            }
+            if (HISTORY_SECURITY_MODE !== 'strict') {
+                historyMessage('Encrypted history search is available only when strict history mode is active.');
+                return;
+            }
+            const sequence = ++historySearchSequence;
+            clearHistoryTranscript();
+            const previous = historySearchJobId;
+            historySearchJobId = null;
+            document.getElementById('history-results').replaceChildren();
+            historyMessage('Enqueuing local encrypted-index search...');
+            if (previous) await api(`/history/secure/search/jobs/${previous}`, 'DELETE');
+            if (sequence !== historySearchSequence) return;
+            const queued = await api('/history/secure/search/jobs', 'POST', { query, limit: 10 });
+            if (sequence !== historySearchSequence) {
+                if (queued.data?.job_id) {
+                    await api(`/history/secure/search/jobs/${queued.data.job_id}`, 'DELETE');
+                }
+                return;
+            }
+            if (queued.error || !queued.data?.job_id) {
+                historyMessage(`Search was not queued: ${queued.error || 'unexpected response'}`);
+                return;
+            }
+            const jobId = queued.data.job_id;
+            historySearchJobId = jobId;
+            for (let attempt = 0; attempt < 60; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (sequence !== historySearchSequence) return;
+                const polled = await api(`/history/secure/search/jobs/${jobId}`);
+                if (sequence !== historySearchSequence) return;
+                if (polled.error) {
+                    historyMessage(`Search status unavailable: ${polled.error}`);
+                    return;
+                }
+                const state = polled.data?.state || 'unknown';
+                if (state === 'succeeded') {
+                    historySearchJobId = null;
+                    renderHistoryMatches(polled.data.result || {}, sequence);
+                    return;
+                }
+                if (!['pending', 'running', 'retry'].includes(state)) {
+                    historySearchJobId = null;
+                    historyMessage(`Search ${state}; code ${polled.data?.error_code || 'not reported'}.`);
+                    return;
+                }
+                historyMessage(`Local search ${state}...`);
+            }
+            if (sequence !== historySearchSequence) return;
+            historyMessage('UI polling timed out after two minutes. The durable search job may still be running; search again later.');
         }
 
         async function handleSearch() {
@@ -706,7 +1445,7 @@
 
                 const content = document.createElement('div');
                 content.className = 'result-content';
-                content.innerHTML = r.content;
+                content.textContent = typeof r.content === 'string' ? r.content : '';
                 item.appendChild(content);
 
                 // --- Result Actions (Feedback) ---
@@ -784,6 +1523,7 @@
         }
 
         async function discoverLegacySources(useCache = true) {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             const btn = useCache ? document.getElementById('catalog-btn') : document.getElementById('scan-btn');
             const resDiv = document.getElementById('legacy-results');
             const originalText = btn.textContent;
@@ -875,6 +1615,7 @@
         }
 
         async function importAllLegacy() {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             const btn = document.getElementById('import-all-btn');
             if (!confirm(`This will discover and import ALL legacy sources into Muninn\'s memory. This may take several minutes. Proceed?`)) return;
 
@@ -918,6 +1659,7 @@
         }
 
         async function importLegacy(sourceId) {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             log(`Initiating parse for target ID: ${sourceId}`);
             const data = await api('/ingest/legacy/import', 'POST', { selected_source_ids: [sourceId] });
             const added = data.data ? data.data.added_memories : 0;
@@ -941,9 +1683,13 @@
             }
         }
 
-        function applyToken() {
-            AUTH_TOKEN = document.getElementById('server-token').value;
-            localStorage.setItem('muninn_token', AUTH_TOKEN);
+        async function applyToken() {
+            const candidate = document.getElementById('server-token').value.trim();
+            if (!(await acceptToken(candidate))) {
+                showToast('Authentication failed. Current session was not changed.', 'error');
+                return;
+            }
+            document.getElementById('server-token').value = '';
             log("Session authentication token updated.");
 
             // Clear prior error visuals
@@ -980,23 +1726,37 @@
         }
 
         async function checkHealth() {
-            if (!AUTH_TOKEN) return;
+            if (!AUTH_TOKEN && SECURITY_ENABLED) return;
             const data = await api('/health');
             const healthDot = document.getElementById('health-dot');
             const authDot = document.getElementById('auth-dot');
+            const service = document.getElementById('overview-service-status');
 
-            if (data.error) {
+            if (data.error || data.status !== 'ok') {
                 healthDot.className = 'status-dot offline';
                 authDot.className = 'status-dot offline';
+                service.textContent = data.error ? 'Service health unavailable; readiness unknown.' :
+                    `Service state: ${String(data.status || 'unknown')}; readiness not confirmed.`;
+                document.getElementById('legacy-section').style.display = 'none';
+                document.getElementById('strict-history-note').style.display = 'none';
             } else {
                 healthDot.className = 'status-dot online';
                 authDot.className = 'status-dot online';
+                HISTORY_SECURITY_MODE = data.history_security_mode || 'unknown';
+                service.textContent = `Service: ${String(data.backend || 'unknown')} reports ok; ` +
+                    `history security: ${HISTORY_SECURITY_MODE}. Running code revision: not reported.`;
+                document.getElementById('legacy-section').style.display =
+                    HISTORY_SECURITY_MODE === 'legacy' ? '' : 'none';
+                document.getElementById('strict-history-note').style.display =
+                    HISTORY_SECURITY_MODE === 'strict' ? '' : 'none';
                 updateStats(data);
             }
+            if (document.getElementById('tab-overview').classList.contains('active')) loadOverviewStatus();
         }
 
         async function updateScanBadge() {
-            if (!AUTH_TOKEN) return;
+            if (!AUTH_TOKEN && SECURITY_ENABLED) return;
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             const data = await api('/ingest/legacy/status');
             const badge = document.getElementById('ingest-badge');
             if (data && data.active_scans > 0) {
@@ -1015,8 +1775,8 @@
             if (!data) return;
             document.getElementById('stat-total').innerText = data.memory_count || 0;
             document.getElementById('stat-entities').innerText = data.graph_nodes || 0;
-            // Get profile from health or just use the UI defaults
-            const profileDisplay = (data.active_profile || 'Balanced').charAt(0).toUpperCase() + (data.active_profile || 'Balanced').slice(1);
+            const reportedProfile = data.active_profile || 'Not reported';
+            const profileDisplay = reportedProfile.charAt(0).toUpperCase() + reportedProfile.slice(1);
             document.getElementById('stat-profile').innerText = profileDisplay;
         }
 
@@ -1073,14 +1833,8 @@
             initParticles();
             animate();
 
-            // Auto-login logic if token was pre-filled or found in storage
+            // A bearer is never injected into or persisted by this page.
             checkAuthOnLoad();
-
-            if (AUTH_TOKEN || !SECURITY_ENABLED) {
-                updateScanBadge();
-                setInterval(checkHealth, 30000);
-                setInterval(updateScanBadge, 60000);
-            }
         };
 
         // Handle window resize for canvas

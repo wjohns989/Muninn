@@ -390,7 +390,7 @@ class TestMCPConfigPatcher:
         cfg_path = tmp_path / "config.json"
         self._write_config(cfg_path, {
             "mcpServers": {
-                "muninn": {"env": {"MUNINN_AUTH_TOKEN": "old"}},
+                "muninn": {"command": "python", "env": {"MUNINN_AUTH_TOKEN": "old"}},
             }
         })
         original = cfg_path.read_text(encoding="utf-8")
@@ -407,7 +407,7 @@ class TestMCPConfigPatcher:
             cfg_path = tmp_path / f"config_{server_name}.json"
             self._write_config(cfg_path, {
                 "mcpServers": {
-                    server_name: {"env": {"MUNINN_AUTH_TOKEN": "old"}},
+                    server_name: {"command": "python", "env": {"MUNINN_AUTH_TOKEN": "old"}},
                 }
             })
             result = _patch_mcp_config(cfg_path, "new")
@@ -429,8 +429,8 @@ class TestMCPConfigPatcher:
         cfg_path = tmp_path / "config.json"
         self._write_config(cfg_path, {
             "mcpServers": {
-                "muninn": {"env": {"MUNINN_AUTH_TOKEN": "old"}},
-                "muninn-dev": {"env": {"MUNINN_AUTH_TOKEN": "old-dev"}},
+                "muninn": {"command": "python", "env": {"MUNINN_AUTH_TOKEN": "old"}},
+                "muninn-dev": {"command": "python", "env": {"MUNINN_AUTH_TOKEN": "old-dev"}},
                 "context7": {"env": {"OTHER_KEY": "irrelevant"}},
             }
         })

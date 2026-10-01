@@ -239,9 +239,10 @@ class TestEnsureServerRunningStartupLock:
     - start_server is skipped if another process already started backend.
     """
 
-    def test_rechecks_health_inside_startup_lock_before_spawning(self):
+    def test_rechecks_health_inside_startup_lock_before_spawning(self, monkeypatch):
         from muninn.mcp.lifecycle import ensure_server_running
 
+        monkeypatch.setenv("MUNINN_MCP_AUTO_START", "1")
         checks = iter([False, True])  # outside lock -> down, inside lock -> up
 
         with patch("muninn.mcp.lifecycle.is_server_running", side_effect=lambda: next(checks)):
@@ -250,9 +251,10 @@ class TestEnsureServerRunningStartupLock:
                     assert ensure_server_running() is True
                     start_mock.assert_not_called()
 
-    def test_starts_server_once_when_still_unhealthy_inside_lock(self):
+    def test_starts_server_once_when_still_unhealthy_inside_lock(self, monkeypatch):
         from muninn.mcp.lifecycle import ensure_server_running
 
+        monkeypatch.setenv("MUNINN_MCP_AUTO_START", "1")
         checks = iter([False, False, True])  # outside, inside, post-spawn poll
 
         with patch("muninn.mcp.lifecycle.is_server_running", side_effect=lambda: next(checks)):

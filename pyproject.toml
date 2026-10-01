@@ -4,6 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 license-files = ["LICENSE", "NOTICE"]
+py-modules = ["muninn_hook_client", "muninn_mcp_bridge", "mcp_wrapper"]
 
 [tool.setuptools.packages.find]
 include = ["muninn*", "eval*", "assets*", "skills*", "models*"]
@@ -51,6 +52,12 @@ dependencies = [
     "kuzu==0.11.3",
     # v3.1.0: Cross-platform path resolution
     "platformdirs>=4.0.0",
+    # Portable operator preflight/reload verifies process and listener ownership.
+    "psutil>=5.9.0",
+    # Strict history and credential vault modules are imported by server.py.
+    "cryptography>=46.0.0",
+    # Strict history and private ACL enforcement require this on Windows.
+    "pywin32>=311; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -86,12 +93,14 @@ ingestion = [
     # Codex compresses older and archived rollouts with Zstandard.
     "zstandard>=0.23.0",
 ]
+# Compatibility extra: the encryption and ACL dependencies are now core.
+credential-vault = []
 sdk = [
     "requests>=2.31.0",
     "httpx>=0.24.0",
 ]
 all = [
-    "muninn-mcp[instructor,tray,dev,observability,conflict,ingestion,sdk]",
+    "muninn-mcp[instructor,tray,dev,observability,conflict,ingestion,credential-vault,sdk]",
 ]
 
 [project.scripts]

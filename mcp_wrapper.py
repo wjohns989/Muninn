@@ -64,6 +64,8 @@ from muninn.mcp.requests import (
 from muninn.mcp.lifecycle import (
     ensure_server_running,
     check_and_start_ollama,
+    is_server_running,
+    is_ollama_running,
     is_circuit_open as _backend_circuit_open
 )
 from muninn.mcp.definitions import (
@@ -357,11 +359,9 @@ def _dispatch_rpc_message_guarded(msg: Dict[str, Any]) -> None:
     try:
         _dispatch_rpc_message(msg)
     except Exception as exc:
-        import traceback
-        traceback.print_exc()
-        logger.exception("Internal error during dispatch: %s", exc)
-        if msg.get("id") and not _TRANSPORT_CLOSED.is_set():
-            _send_json_rpc_error(msg["id"], -32603, f"Internal error during request dispatch: {exc}")
+        logger.error("Internal error during dispatch: %s", type(exc).__name__)
+        if msg.get("id") is not None and not _TRANSPORT_CLOSED.is_set():
+            _send_json_rpc_error(msg["id"], -32603, "Internal error during request dispatch.")
 
 # Instantiate Singleton Server
 _server = McpServer(dispatch_fn=_dispatch_rpc_message_guarded)
@@ -378,19 +378,25 @@ def _submit_background_dispatch(msg: Dict[str, Any]) -> None:
         if msg.get("id"):
             _send_json_rpc_error(msg["id"], -32001, "Server busy: dispatch queue is saturated.")
 
-def _collect_startup_warnings(autostart_server=True, autostart_ollama=True) -> list:
+def _collect_startup_warnings(autostart_server=False, autostart_ollama=False) -> list:
+    """Initialization inspects readiness; lifecycle needs an explicit opt-in."""
     warnings = []
-    if autostart_server and not ensure_server_running():
+    server_ready = ensure_server_running if autostart_server else is_server_running
+    ollama_ready = check_and_start_ollama if autostart_ollama else is_ollama_running
+    if not server_ready():
         warnings.append("Muninn server is not reachable")
-    if autostart_ollama and not check_and_start_ollama():
+    if not ollama_ready():
         warnings.append("Ollama is not reachable")
     return warnings
 
 def _bootstrap_dependencies_on_launch():
-    if _env_flag("MUNINN_MCP_AUTOSTART_ON_LAUNCH", True):
-        srv = _env_flag("MUNINN_MCP_AUTOSTART_SERVER", True)
+    if _env_flag("MUNINN_MCP_AUTOSTART_ON_LAUNCH", False):
+        srv = _env_flag("MUNINN_MCP_AUTOSTART_SERVER", False)
         olm = _env_flag("MUNINN_MCP_AUTOSTART_OLLAMA", False)
-        _collect_startup_warnings(srv, olm)
+        if srv:
+            ensure_server_running()
+        if olm:
+            check_and_start_ollama()
 
 def _get_tool_call_deadline_seconds() -> Optional[float]:
     # Logic matching utils.py get_tool_call_deadline_epoch but returning seconds duration

@@ -101,6 +101,47 @@ def _iter_server_blocks(cfg: dict) -> list[dict]:
     return server_blocks
 
 
+def _bridge_profile_kind(server_cfg: dict, *, codex: bool = False) -> str | None:
+    """Classify the no-secret Windows stdio bridge without trusting its launch.
+
+    A bridge-looking near miss is never eligible for generic token injection.
+    """
+    command = server_cfg.get("command")
+    args = server_cfg.get("args")
+    mentions_bridge = ("muninn_mcp_bridge" in str(command).casefold() or
+                       (isinstance(args, list) and any(
+                           "muninn_mcp_bridge" in str(arg).casefold() for arg in args)))
+    if not mentions_bridge:
+        return None
+    allowed = {"command", "args", "env"}
+    if codex:
+        allowed.update({"startup_timeout_sec", "tool_timeout_sec"})
+    env = server_cfg.get("env")
+    executable = str(command).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if (set(server_cfg) <= allowed and executable in {"python.exe", "python"}
+            and args == ["-E", "-P", "-m", "muninn_mcp_bridge"]
+            and isinstance(env, dict)
+            and env == {"MUNINN_MCP_TOOLSET": "core"}):
+        return "exact"
+    return "near-miss"
+
+
+def _codex_bridge_profile_kind(text: str, section: list[str]) -> str | None:
+    if "muninn_mcp_bridge" not in "\n".join(section).casefold():
+        return None
+    try:
+        try:
+            import tomllib as toml_reader
+        except ModuleNotFoundError:
+            import tomli as toml_reader
+        profile = toml_reader.loads(text)["mcp_servers"]["muninn"]
+        if isinstance(profile, dict):
+            return _bridge_profile_kind(profile, codex=True) or "near-miss"
+    except (ImportError, KeyError, TypeError, ValueError):
+        pass
+    return "near-miss"
+
+
 def _patch_mcp_config_env(
     config_path: Path,
     *,
@@ -137,6 +178,22 @@ def _patch_mcp_config_env(
                 continue
             # Match any server whose name contains "muninn" (case-insensitive)
             if "muninn" not in server_name.lower():
+                continue
+            if _bridge_profile_kind(server_cfg) is not None:
+                # The bridge loads the user token at launch. Never serialize it
+                # into this config, including during rotate-token or --repair.
+                continue
+            # HTTP MCP profiles authenticate in their own headers, not stdio
+            # env. Injecting env here leaves the real auth unchanged and can
+            # corrupt host-specific schemas. Disabled/no-auth profiles are
+            # likewise not candidates for token rotation or doctor repair.
+            existing_env = server_cfg.get("env")
+            if ("url" in server_cfg or "serverUrl" in server_cfg
+                    or "headers" in server_cfg
+                    or server_cfg.get("disabled")
+                    or not isinstance(server_cfg.get("command"), str)
+                    or (isinstance(existing_env, dict)
+                        and str(existing_env.get("MUNINN_NO_AUTH", "")).lower() in {"1", "true"})):
                 continue
             env = server_cfg.setdefault("env", {})
             if not isinstance(env, dict):
@@ -224,9 +281,23 @@ def _patch_codex_toml(
         return existing, updated
 
     muninn_body = lines[muninn_idx + 1 : muninn_end]
+    if _codex_bridge_profile_kind(text, muninn_body) is not None:
+        return False
+    # The line-oriented writer understands bare TOML keys only. Quoted keys
+    # are valid TOML but appending a bare duplicate would invalidate the file.
+    if any(re.match(r"^\s*[\"']", line) for line in muninn_body):
+        return False
     is_streamable_http = any(re.match(r"^\s*url\s*=", line) for line in muninn_body)
 
     if is_streamable_http:
+        # A custom bearer reference belongs to the host operator. Generic
+        # rotation/repair must not silently replace it with our environment
+        # variable, even when the URL itself could be rewritten.
+        bearer_lines = [line for line in muninn_body
+                        if re.match(r"^\s*bearer_token_env_var\s*=", line)]
+        if any(not re.match(r'^\s*bearer_token_env_var\s*=\s*"MUNINN_AUTH_TOKEN"\s*$', line)
+               for line in bearer_lines):
+            return False
         changed = False
         if new_server_url is not None:
             mcp_url = new_server_url.rstrip("/")
@@ -295,6 +366,22 @@ class _DoctorServerEntry:
     server_name: str
     token: Optional[str]
     server_url: Optional[str]
+    token_check: bool = True
+    url_check: bool = True
+    note: Optional[str] = None
+
+
+def _mcp_base_url(value: object) -> Optional[str]:
+    if not isinstance(value, str) or not value:
+        return None
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(value)
+    if parsed.path.rstrip("/") == "/mcp" and not parsed.username and not parsed.password:
+        # Host-specific query parameters (for example agent identity) are not
+        # the server origin; never include them in drift comparison or output.
+        return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    return value.rstrip("/")
 
 
 def _collect_muninn_server_entries(config_path: Path) -> list[_DoctorServerEntry]:
@@ -313,6 +400,56 @@ def _collect_muninn_server_entries(config_path: Path) -> list[_DoctorServerEntry
             env = server_cfg.get("env", {}) if isinstance(server_cfg, dict) else {}
             if not isinstance(env, dict):
                 env = {}
+            if not isinstance(server_cfg, dict):
+                entries.append(_DoctorServerEntry(config_path, server_name, None, None,
+                                                  token_check=False, url_check=False,
+                                                  note="unsupported profile"))
+                continue
+            bridge_kind = _bridge_profile_kind(server_cfg)
+            if bridge_kind is not None:
+                entries.append(_DoctorServerEntry(
+                    config_path, server_name, None, None,
+                    token_check=False, url_check=False,
+                    note=("runtime-auth bridge; launch unverified" if bridge_kind == "exact"
+                          else "unsupported bridge-like profile"),
+                ))
+                continue
+            if server_cfg.get("disabled"):
+                entries.append(_DoctorServerEntry(config_path, server_name, None, None,
+                                                  token_check=False, url_check=False,
+                                                  note="disabled profile"))
+                continue
+            http_url = server_cfg.get("url") or server_cfg.get("serverUrl")
+            if http_url:
+                if server_cfg.get("command") or ("url" in server_cfg and "serverUrl" in server_cfg):
+                    entries.append(_DoctorServerEntry(config_path, server_name, None, None,
+                                                      token_check=False, url_check=False,
+                                                      note="unsupported mixed profile"))
+                    continue
+                headers = server_cfg.get("headers", {})
+                header = headers.get("Authorization", "") if isinstance(headers, dict) else ""
+                if not isinstance(header, str) or not header.startswith("Bearer "):
+                    token, token_check = None, False
+                elif "${" in header or "$MUNINN_AUTH_TOKEN" in header:
+                    token, token_check = None, False
+                else:
+                    token, token_check = header[7:].strip(), True
+                entries.append(_DoctorServerEntry(
+                    config_path, server_name, token, _mcp_base_url(http_url),
+                    token_check=token_check,
+                    note=None if token_check else "runtime token unverified",
+                ))
+                continue
+            if str(env.get("MUNINN_NO_AUTH", "")).lower() in {"1", "true"}:
+                entries.append(_DoctorServerEntry(config_path, server_name, None, None,
+                                                  token_check=False, url_check=False,
+                                                  note="local no-auth stdio profile"))
+                continue
+            if "headers" in server_cfg or not isinstance(server_cfg.get("command"), str):
+                entries.append(_DoctorServerEntry(config_path, server_name, None, None,
+                                                  token_check=False, url_check=False,
+                                                  note="unsupported profile"))
+                continue
             token = env.get("MUNINN_AUTH_TOKEN")
             server_url = env.get("MUNINN_SERVER_URL")
             entries.append(
@@ -350,6 +487,14 @@ def _collect_codex_muninn_entries(config_path: Path) -> list[_DoctorServerEntry]
         return len(lines)
 
     muninn_end = _section_end(muninn_idx)
+    bridge_kind = _codex_bridge_profile_kind(text, lines[muninn_idx + 1:muninn_end])
+    if bridge_kind is not None:
+        return [_DoctorServerEntry(
+            config_path, "codex.muninn", None, None,
+            token_check=False, url_check=False,
+            note=("runtime-auth bridge; launch unverified" if bridge_kind == "exact"
+                  else "unsupported bridge-like profile"),
+        )]
     server_url = None
     bearer_token_env_var = None
     for line in lines[muninn_idx + 1 : muninn_end]:
@@ -365,12 +510,15 @@ def _collect_codex_muninn_entries(config_path: Path) -> list[_DoctorServerEntry]
         normalized_url = server_url.rstrip("/")
         if normalized_url.endswith("/mcp"):
             normalized_url = normalized_url[:-4]
+        runtime_token = os.environ.get(bearer_token_env_var) if bearer_token_env_var else None
         return [
             _DoctorServerEntry(
                 config_path=config_path,
                 server_name="codex.muninn",
-                token=os.environ.get(bearer_token_env_var) if bearer_token_env_var else None,
+                token=runtime_token,
                 server_url=normalized_url or None,
+                token_check=False,
+                note="runtime token unverified" if bearer_token_env_var else "missing bearer reference",
             )
         ]
 
@@ -415,17 +563,68 @@ def _read_token_from_file(token_file: Path) -> Optional[str]:
         return None
 
 
-def _check_server_health(url: str, token: Optional[str], timeout_seconds: float) -> tuple[bool, str]:
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+def _read_windows_user_auth_token() -> Optional[str]:
+    """Read a user-scoped token when this process predates a Windows env update."""
+    if os.name != "nt":
+        return None
     try:
-        response = requests.get(f"{url}/health", headers=headers, timeout=timeout_seconds)
-        if response.status_code == 200:
-            return True, "ok"
-        return False, f"http_{response.status_code}"
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value = winreg.QueryValueEx(key, "MUNINN_AUTH_TOKEN")[0]
+        return (value.strip() or None) if isinstance(value, str) else None
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def _select_auth_token(token_file: Optional[Path]) -> tuple[Optional[str], str]:
+    """Explicit file > process env > user env > default file; no explicit-file fallback."""
+    if token_file is not None or os.environ.get("MUNINN_TOKEN_FILE"):
+        return _read_token_from_file(_resolve_token_file(token_file)), "file"
+    process = (os.environ.get("MUNINN_AUTH_TOKEN") or "").strip()
+    if process:
+        return process, "env"
+    user = _read_windows_user_auth_token()
+    if user:
+        return user, "user-env"
+    fallback = _read_token_from_file(_DEFAULT_TOKEN_FILE)
+    return fallback, "file" if fallback else "none"
+
+
+def _token_source_allowed_for_url(source: str, url: str) -> bool:
+    """Never implicitly send a Windows user-registry token off this computer."""
+    if source != "user-env":
+        return True
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+def _check_server_health(url: str, token: Optional[str], timeout_seconds: float) -> tuple[bool, str]:
+    """Prove token acceptance and auth enforcement; /health alone is public."""
+    if not token:
+        return False, "missing_token"
+    try:
+        response = requests.get(
+            f"{url}/auth/check", headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout_seconds, allow_redirects=False,
+        )
+        if response.status_code != 200:
+            return False, f"http_{response.status_code}"
+        invalid = secrets.token_urlsafe(32)
+        while invalid == token:
+            invalid = secrets.token_urlsafe(32)
+        negative = requests.get(
+            f"{url}/auth/check", headers={"Authorization": f"Bearer {invalid}"},
+            timeout=timeout_seconds, allow_redirects=False,
+        )
+        if negative.status_code != 401:
+            return False, "auth_not_enforced"
+        return True, "ok"
     except requests.RequestException as exc:
-        return False, str(exc)
+        # Requests may include Authorization values in exception messages.
+        return False, f"request_{type(exc).__name__}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -565,29 +764,33 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     target_url = _resolve_server_url(args.server_url)
     timeout = max(0.1, float(args.timeout_seconds))
 
-    token_from_file = _read_token_from_file(token_file)
-    token_from_env = os.environ.get("MUNINN_AUTH_TOKEN")
-    token_from_env = token_from_env.strip() if token_from_env else None
-    expected_token = token_from_file or token_from_env
+    expected_token, token_source = _select_auth_token(args.token_file)
 
     issues: list[str] = []
     warnings: list[str] = []
     critical = False
 
+    target_allowed = _token_source_allowed_for_url(token_source, target_url)
+    if not target_allowed:
+        critical = True
+        issues.append(
+            "Windows user-environment token cannot be sent to a non-loopback server; "
+            "select an explicit token file."
+        )
     if expected_token is None:
         critical = True
         issues.append(
-            f"No expected auth token found (missing token file '{token_file}' and MUNINN_AUTH_TOKEN env)."
+            f"No expected auth token found from selected source ({token_source}); token file path is '{token_file}'."
         )
 
     health_ok = False
     health_detail = "skipped"
-    if expected_token is not None:
+    if expected_token is not None and target_allowed:
         health_ok, health_detail = _check_server_health(target_url, expected_token, timeout)
         if not health_ok:
             critical = True
             issues.append(
-                f"Server health/auth check failed at {target_url}/health using expected token ({health_detail})."
+                f"Server authentication check failed at {target_url}/auth/check using expected token ({health_detail})."
             )
 
     entries: list[_DoctorServerEntry] = []
@@ -606,8 +809,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     missing_url_entries = []
 
     for entry in entries:
-        if expected_token is not None and entry.token != expected_token:
+        if entry.token_check and expected_token is not None and entry.token != expected_token:
             token_mismatches.append(entry)
+        if not entry.url_check:
+            continue
         if entry.server_url is None:
             missing_url_entries.append(entry)
         elif entry.server_url != target_url:
@@ -621,9 +826,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         warnings.append(f"{len(url_mismatches)} Muninn MCP server entry/entries have URL drift.")
     if missing_url_entries:
         warnings.append(f"{len(missing_url_entries)} Muninn MCP server entry/entries do not pin MUNINN_SERVER_URL.")
+    unverified_entries = [e for e in entries if e.note]
+    if unverified_entries:
+        warnings.append(
+            f"{len(unverified_entries)} Muninn MCP entry/entries are unverified or intentionally local-only."
+        )
 
     repaired_paths: list[Path] = []
-    if args.repair:
+    if args.repair and health_ok and expected_token is not None and target_allowed:
         for cfg_path in _MCP_CONFIG_PATHS:
             patched = _patch_mcp_config_env(
                 cfg_path,
@@ -633,13 +843,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
             if patched:
                 repaired_paths.append(cfg_path)
-        if _patch_codex_toml(
-            _CODEX_CONFIG_PATH,
-            new_token=expected_token,
-            new_server_url=target_url,
-            dry_run=False,
-        ):
-            repaired_paths.append(_CODEX_CONFIG_PATH)
+        codex_entries = _collect_codex_muninn_entries(_CODEX_CONFIG_PATH)
+        if not any(entry.note for entry in codex_entries):
+            if _patch_codex_toml(
+                _CODEX_CONFIG_PATH,
+                new_token=expected_token,
+                new_server_url=target_url,
+                dry_run=False,
+            ):
+                repaired_paths.append(_CODEX_CONFIG_PATH)
 
         # Re-evaluate drift after repair.
         refreshed_entries: list[_DoctorServerEntry] = []
@@ -649,10 +861,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         refreshed_entries.extend(_collect_codex_muninn_entries(_CODEX_CONFIG_PATH))
         entries = refreshed_entries
         token_mismatches = [
-            e for e in entries if expected_token is not None and e.token != expected_token
+            e for e in entries if e.token_check and expected_token is not None and e.token != expected_token
         ]
-        url_mismatches = [e for e in entries if e.server_url is not None and e.server_url != target_url]
-        missing_url_entries = [e for e in entries if e.server_url is None]
+        url_mismatches = [e for e in entries if e.url_check and e.server_url is not None
+                          and e.server_url != target_url]
+        missing_url_entries = [e for e in entries if e.url_check and e.server_url is None]
         warnings = [w for w in warnings if "drift" not in w and "do not pin" not in w]
         if token_mismatches:
             warnings.append(f"{len(token_mismatches)} token mismatches remain after repair.")
@@ -665,7 +878,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("=" * 50)
     print(f"Target server URL: {target_url}")
     print(f"Token file: {token_file.resolve()}")
-    print(f"Token source: {'file' if token_from_file else ('env' if token_from_env else 'none')}")
+    print(f"Token source: {token_source}")
     print(f"Health/auth check: {'PASS' if health_ok else 'FAIL'} ({health_detail})")
     print(f"Muninn MCP entries discovered: {len(entries)}")
     if repaired_paths:
@@ -695,16 +908,23 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def _admin_request(args: argparse.Namespace, method: str, path: str, **kwargs) -> dict:
     """Call an endpoint on the running Muninn server, with the token when one is configured."""
-    token = _read_token_from_file(_resolve_token_file(args.token_file)) or (
-        os.environ.get("MUNINN_AUTH_TOKEN") or ""
-    ).strip()
-    response = requests.request(
-        method,
-        f"{_resolve_server_url(args.server_url)}{path}",
-        headers={"Authorization": f"Bearer {token}"} if token else {},
-        timeout=args.timeout_seconds,
-        **kwargs,
-    )
+    token, source = _select_auth_token(args.token_file)
+    if source == "file" and not token:
+        raise SystemExit("Selected token file is missing or empty; no fallback token was sent.")
+    server_url = _resolve_server_url(args.server_url)
+    if not _token_source_allowed_for_url(source, server_url):
+        raise SystemExit("Windows user-environment token cannot be sent to a non-loopback server.")
+    try:
+        response = requests.request(
+            method,
+            f"{server_url}{path}",
+            headers={"Authorization": f"Bearer {token}"} if token else {},
+            timeout=args.timeout_seconds,
+            allow_redirects=False,
+            **kwargs,
+        )
+    except requests.RequestException as exc:
+        raise SystemExit(f"{method} {path} request failed ({type(exc).__name__})") from None
     if response.status_code >= 400:
         try:
             detail = response.json().get("detail")
@@ -720,10 +940,10 @@ def _admin_post(args: argparse.Namespace, path: str, payload: dict) -> dict:
 
 
 def cmd_hooks(args: argparse.Namespace) -> int:
-    """Install Muninn's session hooks into Claude Code and Codex (dry run unless --apply)."""
+    """Install local session hooks (dry run unless --apply)."""
     from muninn.history import hook_install
 
-    apps = args.app or ["claude", "codex"]
+    apps = args.app or ["claude", "codex", "gemini"]
     install = args.action == "install"
     server_url = _resolve_server_url(args.server_url)
     plans = []
@@ -731,6 +951,8 @@ def cmd_hooks(args: argparse.Namespace) -> int:
         plans.append(hook_install.claude_plan(server_url, install=install))
     if "codex" in apps:
         plans.append(hook_install.codex_plan(install=install))
+    if "gemini" in apps:
+        plans.append(hook_install.gemini_plan(server_url, install=install))
     for plan in plans:
         present = hook_install.installed(plan)
         print(f"{plan.app}: {plan.path}")
@@ -764,7 +986,8 @@ def _prompt_openrouter_key(*, first_run: bool) -> bool:
         print(
             "\nMuninn can use OpenRouter to understand your imported conversations: pull out decisions,\n"
             "preferences, fixes and open items, and summarize each thread. Every request requires\n"
-            "zero data retention (no storage, no training), and secrets are redacted before sending.\n"
+            "zero data retention (no storage, no training). With your local consent, remote\n"
+            "analysis may receive bounded raw transcript windows, including secrets they contain.\n"
             f"Default model: {llm_settings.DEFAULT_MODEL} (about $2 per 1,000 threads).\n"
             f"Get a key at {llm_settings.KEYS_PAGE}. Press Enter to skip and use local Ollama instead;\n"
             "you can add a key later with: python -m muninn.cli openrouter set\n"
@@ -779,8 +1002,8 @@ def _prompt_openrouter_key(*, first_run: bool) -> bool:
         ok, message = llm_settings.verify_key(key)
         print(("✓ " if ok else "✗ ") + message)
         if ok:
-            path = llm_settings.save_key(key)
-            print(f"Saved to {path} (readable only by you).")
+            llm_settings.save_key(key)
+            print("Available for this process only; set MUNINN_OPENROUTER_API_KEY in your environment for future runs.")
             return True
     return False
 
@@ -874,6 +1097,130 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_credentials(args: argparse.Namespace) -> int:
+    """Explicit local-only access to the separate encrypted credential vault."""
+    import getpass
+
+    from muninn.core.config import DEFAULT_DATA_DIR
+    from muninn.history.credential_store import CredentialStore
+
+    root = args.root or Path(os.environ.get("MUNINN_DATA_DIR", DEFAULT_DATA_DIR)) / "credential_vault"
+    if args.action == "search":
+        print(json.dumps(CredentialStore(root).search(args.query), indent=2))
+        return 0
+    if args.action == "review-status":
+        print(json.dumps(CredentialStore(root).ambiguity_status(), sort_keys=True))
+        return 0
+    if args.action == "review-list":
+        print(json.dumps(CredentialStore(root).list_ambiguities(status=args.review_state),
+                         sort_keys=True))
+        return 0
+    if args.action == "review-accept":
+        if not args.confirm_exact_candidate or args.backup_before is None:
+            raise SystemExit("Exact-candidate confirmation and --backup-before are required.")
+    if args.action == "review-reject":
+        if not args.confirm_not_credential or args.backup_before is None:
+            raise SystemExit("Not-a-credential confirmation and --backup-before are required.")
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise SystemExit("Credential unlock and reveal require an interactive local terminal.")
+    passphrase = getpass.getpass("Credential vault passphrase (hidden): ")
+    if args.action == "init":
+        if passphrase != getpass.getpass("Confirm passphrase (hidden): "):
+            raise SystemExit("Passphrases did not match; no vault created.")
+        CredentialStore.create(root, passphrase)
+        print(f"Encrypted credential vault created at {root}.")
+    elif args.action == "reveal":
+        # Reveal is intentionally printed only to an interactive local terminal.
+        print(CredentialStore(root).reveal(args.record_id, passphrase=passphrase))
+    elif args.action == "review-reveal":
+        # Explicit local-only reveal; never use inside a PowerShell transcript.
+        print(CredentialStore(root).reveal_ambiguity(args.record_id,
+                                                     passphrase=passphrase))
+    elif args.action == "review-accept":
+        store = CredentialStore(root)
+        backup_count = store.backup(args.backup_before, passphrase=passphrase)
+        print(json.dumps({"stage": "validated_pre_accept_backup",
+                          "records": backup_count}, sort_keys=True), flush=True)
+        record_id = store.accept_ambiguity(
+            args.record_id, passphrase=passphrase,
+            confirm_exact_candidate=True,
+        )
+        print(json.dumps({"stage": "accepted", "record_id": record_id},
+                         sort_keys=True))
+    elif args.action == "review-reject":
+        store = CredentialStore(root)
+        backup_count = store.backup(args.backup_before, passphrase=passphrase)
+        print(json.dumps({"stage": "validated_pre_reject_backup",
+                          "records": backup_count}, sort_keys=True), flush=True)
+        store.decide_ambiguity(args.record_id, passphrase=passphrase,
+                               decision="rejected", actor="local-user",
+                               reason="user-rejected")
+        print(json.dumps({"stage": "rejected", "ambiguity_id": args.record_id},
+                         sort_keys=True))
+    elif args.action == "backup":
+        count = CredentialStore(root).backup(args.destination, passphrase=passphrase)
+        print(f"Validated encrypted backup at {args.destination} ({count} records).")
+    elif args.action == "restore":
+        CredentialStore.restore(args.source, root, passphrase=passphrase)
+        print(f"Validated encrypted vault restored at {root}.")
+    elif args.action == "scan":
+        from muninn.history.credential_discovery import scan_archive, scan_project_files
+        from muninn.history.secure_archive import SecureHistoryArchive
+
+        store = CredentialStore(root)
+        if args.backup_before:
+            backup_count = store.backup(args.backup_before, passphrase=passphrase)
+            print(json.dumps({"stage": "validated_pre_scan_backup", "records": backup_count},
+                             sort_keys=True), flush=True)
+        with store.scan_session(passphrase) as session:
+            reports = []
+            for project_index, project in enumerate(args.project_root or [], start=1):
+                def project_progress(status):
+                    print(json.dumps({"stage": "project_scan", "project_index": project_index,
+                                      **status}, sort_keys=True), flush=True)
+
+                reports.append(scan_project_files(
+                    project, session, passphrase="", progress=project_progress,
+                ))
+            project_totals = {key: sum(int(report[key]) for report in reports) for key in (
+                "files", "succeeded", "errors", "walk_errors", "ambiguous",
+                "candidates", "queued", "inserted", "updated", "stale",
+            )}
+            project_totals["ambiguous_reasons"] = {
+                name: sum(int(report["ambiguous_reasons"].get(name, 0)) for report in reports)
+                for name in ("unparsed_value", "placeholder_like", "low_diversity", "unsafe_context")
+            }
+            project_totals["error_categories"] = {
+                name: sum(int(report["error_categories"][name]) for report in reports)
+                for name in ("root", "walk", "path", "metadata", "utf8", "unsupported_binary", "io",
+                             "source_changed", "other")
+            }
+            project_totals["complete"] = all(report["complete"] for report in reports)
+            project_totals["ambiguity_free"] = all(report["ambiguity_free"] for report in reports)
+            archive_report = None
+            if args.archive_root:
+                def progress(status):
+                    print(json.dumps({"stage": "archive_scan", **status}, sort_keys=True), flush=True)
+
+                archive_report = scan_archive(
+                    SecureHistoryArchive(args.archive_root), session, passphrase="",
+                    offset=args.archive_offset, max_snapshots=args.max_snapshots,
+                    expected_generation=args.archive_generation, progress=progress,
+                )
+        complete = project_totals["complete"] and (archive_report is None or archive_report["complete"])
+        queue_status = store.ambiguity_status()
+        print(json.dumps({"project": project_totals, "archive": archive_report,
+                          "review_queue": queue_status,
+                          "review_resolved": complete and queue_status.get("pending", 0) == 0
+                          and queue_status.get("deferred", 0) == 0
+                          and project_totals["ambiguity_free"]
+                          and (archive_report is None or archive_report["ambiguity_free"]),
+                          "complete": complete},
+                         sort_keys=True))
+        return 0 if complete else 2
+    return 0
+
+
 def cmd_reindex(args: argparse.Namespace) -> int:
     """Rebuild vectors/BM25 from metadata.db via the running server."""
     report = _admin_post(args, "/admin/reindex", {
@@ -900,16 +1247,42 @@ def _read_export(path: Path) -> list:
 
 def cmd_import(args: argparse.Namespace) -> int:
     """Import exported memories (JSONL, JSON array, or a Mem0 /memories response)."""
+    from muninn.core.maintenance import content_hash, normalize_legacy_record
+
     records = _read_export(args.file)
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be positive")
     totals: dict = {}
+    dry_run_seen: set[str] = set()
     for start in range(0, len(records), args.batch_size):
+        batch = records[start:start + args.batch_size]
+        cross_batch_duplicates = 0
+        if not args.apply:
+            filtered = []
+            for raw in batch:
+                item = normalize_legacy_record(
+                    raw, user_id=args.user_id, namespace=args.namespace, source=args.source
+                )
+                if item is None:
+                    filtered.append(raw)
+                    continue
+                digest = content_hash(item["content"])
+                if digest in dry_run_seen:
+                    cross_batch_duplicates += 1
+                    continue
+                dry_run_seen.add(digest)
+                filtered.append(raw)
+            batch = filtered
         report = _admin_post(args, "/admin/import", {
-            "records": records[start:start + args.batch_size],
+            "records": batch,
             "user_id": args.user_id,
             "namespace": args.namespace,
             "source": args.source,
             "dry_run": not args.apply,
         })
+        if not args.apply:
+            report["read"] += cross_batch_duplicates
+            report["duplicates"] += cross_batch_duplicates
         for key, value in report.items():
             if isinstance(value, int) and not isinstance(value, bool):
                 totals[key] = totals.get(key, 0) + value
@@ -1081,19 +1454,54 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--offset", type=int, default=0)
     history.add_argument("--limit", type=int, default=50)
 
+    credentials = subparsers.add_parser(
+        "credentials",
+        help="Manage the separate encrypted credential vault and scan approved local project files.",
+    )
+    credentials.add_argument("action", choices=["init", "search", "review-status",
+                                                "review-list", "review-reveal", "review-accept",
+                                                "review-reject",
+                                                "reveal", "backup", "restore", "scan"])
+    credentials.add_argument("query", nargs="?", help="Metadata-only query for 'search'.")
+    credentials.add_argument("--root", type=Path, help="Vault location (default: MUNINN_DATA_DIR/credential_vault).")
+    credentials.add_argument("--record-id", help="Record id for explicit 'reveal'.")
+    credentials.add_argument("--review-state", choices=["pending", "deferred", "accepted", "rejected"],
+                             default="pending", help="Queue status for 'review-list'.")
+    credentials.add_argument("--confirm-exact-candidate", action="store_true",
+                             help="For 'review-accept': I verified the entire candidate value locally.")
+    credentials.add_argument("--confirm-not-credential", action="store_true",
+                             help="For 'review-reject': I verified this candidate is not a credential.")
+    credentials.add_argument("--destination", type=Path, help="New directory for 'backup'.")
+    credentials.add_argument("--source", type=Path, help="Existing encrypted backup directory for 'restore'.")
+    credentials.add_argument("--project-root", type=Path, action="append",
+                             help="Approved project root for 'scan' (repeatable); streams supported text files including .env, config, source, and docs.")
+    credentials.add_argument("--archive-root", type=Path,
+                             help="Encrypted archive to scan as historical credential observations.")
+    credentials.add_argument("--archive-offset", type=int, default=0,
+                             help="Legacy fixed-generation range start. After manifest growth, restart at 0; authenticated receipts skip already-scanned snapshots.")
+    credentials.add_argument("--archive-generation", type=int,
+                             help="Required with nonzero --archive-offset; never reuse an offset after manifest growth.")
+    credentials.add_argument("--max-snapshots", type=int,
+                             help="Bound this archive scan; an unfinished range reports complete=false.")
+    credentials.add_argument("--backup-before", type=Path,
+                             help="For 'scan', make a new authenticated encrypted vault backup before any findings are written.")
+
     hooks = subparsers.add_parser(
         "hooks",
-        help="Add Muninn session hooks to Claude Code and Codex.",
+        help="Add Muninn session hooks to Claude Code, Codex, and Gemini CLI.",
         description=(
             "Session start: the agent receives the project briefing (goal, open handoffs, earlier\n"
-            "threads from every app). Before compaction and at session end: the transcript is copied\n"
-            "to the vault and imported, so nothing compaction drops is lost. Dry run unless --apply;\n"
+            "threads from every app). Before compaction and at session end: a strict-mode hook\n"
+            "durably queues transcript capture; archival and indexing finish asynchronously.\n"
+            "A successful hook receipt does not guarantee that source bytes were copied.\n"
+            "Dry run unless --apply;\n"
             "settings files are backed up; only Muninn's own entries are changed."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     hooks.add_argument("action", choices=["status", "install", "uninstall"])
-    hooks.add_argument("--app", action="append", choices=["claude", "codex"], help="Only this app (repeatable).")
+    hooks.add_argument("--app", action="append", choices=["claude", "codex", "gemini"],
+                       help="Only this app (repeatable).")
     hooks.add_argument("--server-url", default=None, help="Muninn server URL the hooks call.")
     hooks.add_argument("--apply", action="store_true", help="Write the settings.")
 
@@ -1102,10 +1510,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set up the OpenRouter key used to analyze imported conversations.",
         description=(
             "status  show which key and models are used (the key is masked)\n"
-            "set     save a key (prompted, hidden, verified with OpenRouter) and optionally --model\n"
-            "clear   remove the saved key; analysis falls back to local Ollama\n"
-            "Every request requires zero data retention. The key is stored in Muninn's config\n"
-            "directory with owner-only permissions; OPENROUTER_API_KEY in the environment wins."
+            "set     prompt for a key, verify it, use it in this process, and optionally save a model\n"
+            "clear   remove saved nonsecret model settings; analysis falls back to local Ollama\n"
+            "Every request requires zero data retention. Set MUNINN_OPENROUTER_API_KEY in the\n"
+            "process or Windows user environment for persistent use; no key is saved to config."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1130,6 +1538,18 @@ def main() -> int:
         return cmd_import(args)
     if args.command == "history":
         return cmd_history(args)
+    if args.command == "credentials":
+        if args.action == "search" and not args.query:
+            parser.error("credentials search requires a metadata query")
+        if args.action in {"reveal", "review-reveal", "review-accept", "review-reject"} and not args.record_id:
+            parser.error(f"credentials {args.action} requires --record-id")
+        if args.action == "backup" and not args.destination:
+            parser.error("credentials backup requires --destination")
+        if args.action == "restore" and not args.source:
+            parser.error("credentials restore requires --source")
+        if args.action == "scan" and not (args.project_root or args.archive_root):
+            parser.error("credentials scan requires --project-root or --archive-root")
+        return cmd_credentials(args)
     if args.command == "hooks":
         return cmd_hooks(args)
     if args.command == "openrouter":

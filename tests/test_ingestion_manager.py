@@ -79,6 +79,47 @@ async def test_ingestion_manager_can_skip_extraction_via_metadata_flag():
 
 
 @pytest.mark.asyncio
+async def test_ingestion_manager_rule_only_does_not_call_llm():
+    memory = _MemoryStub()
+    result = await IngestionManager(memory).process_add(
+        content="Python is used for the import.",
+        user_id="global_user", agent_id=None,
+        metadata={"muninn_rule_only_extraction": True}, namespace="global",
+        memory_type=MemoryType.EPISODIC, provenance=Provenance.INGESTED,
+    )
+    assert result["event"] == "PROCESS_COMPLETE"
+    assert memory.extract_called == 0
+    assert memory.embed_called == 1
+
+
+@pytest.mark.asyncio
+async def test_default_deferred_add_uses_cpu_rules_without_llm():
+    memory = _MemoryStub()
+    memory.config.extraction.defer_llm_on_add = True
+    result = await IngestionManager(memory).process_add(
+        content="Python is used for the import.", user_id="global_user", agent_id=None,
+        metadata={}, namespace="global", memory_type=MemoryType.EPISODIC,
+        provenance=Provenance.INGESTED,
+    )
+    assert result["event"] == "PROCESS_COMPLETE"
+    assert memory.extract_called == 0
+    assert memory.embed_called == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_add_can_still_request_llm_extraction():
+    memory = _MemoryStub()
+    memory.config.extraction.defer_llm_on_add = True
+    result = await IngestionManager(memory).process_add(
+        content="Explicit analysis", user_id="global_user", agent_id=None,
+        metadata={"muninn_force_llm_extraction": True}, namespace="global",
+        memory_type=MemoryType.EPISODIC, provenance=Provenance.INGESTED,
+    )
+    assert result["event"] == "PROCESS_COMPLETE"
+    assert memory.extract_called == 1
+
+
+@pytest.mark.asyncio
 async def test_ingestion_manager_runs_extraction_when_skip_flag_absent():
     memory = _MemoryStub()
     manager = IngestionManager(memory)
