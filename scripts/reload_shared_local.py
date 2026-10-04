@@ -447,15 +447,6 @@ def run(args):
     for path in databases:
         require_unlinked_path(path)
         verify_private(path)
-        target = destination / path.relative_to(archive)
-        if not target.parent.exists():
-            create_private_directory(target.parent)
-        create_private_file(target)
-        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as source:
-            with sqlite3.connect(target) as backup:
-                source.backup(backup)
-                require(backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "Database preimage failed")
-        verify_private(target)
     if user_before is not None:
         flags_path = destination / "capture-user-flags.json"
         create_private_file(flags_path)
@@ -480,6 +471,19 @@ def run(args):
                 "Queue changed before owned stop")
         if args.preserve_capture_auto:
             require(publication_queue_unclaimed(fence), "Durable publication gained a live lease")
+        # Keep the journal writer fence through the preimages. Otherwise a
+        # worker can claim the next job during a large encrypted DB backup.
+        for path in databases:
+            target = destination / path.relative_to(archive)
+            if not target.parent.exists():
+                create_private_directory(target.parent)
+            create_private_file(target)
+            with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as source:
+                with sqlite3.connect(target) as backup:
+                    source.backup(backup)
+                    require(backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok",
+                            "Database preimage failed")
+            verify_private(target)
         verify_stop_ownership(process, identity, repo=repo, port=args.port)
         print(json.dumps({"stage": "preimage_validated", "databases": len(databases), "inflight_jobs": 0,
                           "stop_method": "owned_windows_forced_termination"}), flush=True)

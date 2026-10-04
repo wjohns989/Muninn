@@ -156,7 +156,9 @@ current remote opt-in state.
 It copies the existing launch environment without reading or writing the User
 capture flags. Pending/retry jobs remain intact and resume after restart; active
 capture, search, analysis or publication work blocks the stop. A journal writer
-fence rechecks worker state through owned-process termination. Preservation
+fence rechecks worker state and covers the encrypted database preimages through
+owned-process termination; writes may briefly wait during this maintenance
+window. Backup failure releases the fence without stopping the service. Preservation
 cannot be combined with activation or activation finalization.
 An unclaimed `publication_pending` item is durable queued work and is retained;
 a live publication lease still blocks the stop.

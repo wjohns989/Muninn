@@ -143,10 +143,12 @@ def test_preserve_rejects_publication_pending_with_active_lease(tmp_path):
 
 
 @pytest.mark.skipif(reload.os.name != "nt", reason="Windows owned reload procedure")
-@pytest.mark.parametrize("claim_race,foreign_owner", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("claim_race,foreign_owner,backup_failure", [
+    (False, False, False), (True, False, False), (False, True, False),
+    (False, False, True)])
 @pytest.mark.parametrize("remote_enabled", [False, True])
 def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
-        tmp_path, monkeypatch, claim_race, foreign_owner, remote_enabled):
+        tmp_path, monkeypatch, claim_race, foreign_owner, backup_failure, remote_enabled):
     report, process = isolated_installation(tmp_path, monkeypatch)
     report["capture_enrichment"] = {"capture_enabled": True,
         "automatic_analysis_enabled": True, "automatic_remote_enabled": remote_enabled}
@@ -197,6 +199,18 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
     monkeypatch.setattr(reload, "inspect_runtime", inspect)
     monkeypatch.setattr(reload, "verify_private", lambda *args: None)
     monkeypatch.setattr(reload, "verify_stop_ownership", lambda *args, **kwargs: None)
+    created_preimages_under_fence = []
+    create_private_file = reload.create_private_file
+    def traced_create_private_file(path):
+        create_private_file(path)
+        if path.name == "capture-jobs.db":
+            with sqlite3.connect(journal, timeout=0) as competing:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    competing.execute("UPDATE jobs SET state='capturing'")
+            created_preimages_under_fence.append(True)
+            if backup_failure:
+                raise OSError("fixture preimage failure")
+    monkeypatch.setattr(reload, "create_private_file", traced_create_private_file)
     candidate_checks = []
 
     def candidate(*args):
@@ -218,6 +232,12 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
         with pytest.raises(RuntimeError, match="Queue changed"):
             reload.run(args)
         assert stopped == launched == []
+    elif backup_failure:
+        with pytest.raises(OSError, match="fixture preimage failure"):
+            reload.run(args)
+        assert stopped == launched == []
+        with sqlite3.connect(journal, timeout=0) as db:
+            db.execute("UPDATE jobs SET state='retry'")
     elif foreign_owner:
         with pytest.raises(RuntimeError, match="Candidate ownership differs"):
             reload.run(args)
@@ -225,6 +245,7 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
         assert stopped_child == ([True] if remote_enabled else [])
     else:
         reload.run(args)
+        assert created_preimages_under_fence == [True]
         assert stopped == [True] and launched == [environment]
         assert stopped_child == []
         with sqlite3.connect(journal) as db:
