@@ -55,6 +55,37 @@ class TestDockerDetection:
             result = is_running_in_docker()
             assert isinstance(result, bool)
 
+    def test_docker_dockerenv_file(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("muninn.platform.Path.exists", return_value=True):
+                assert is_running_in_docker() is True
+
+    def test_docker_cgroup_file_content(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("muninn.platform.Path.exists", return_value=False):
+                from unittest.mock import mock_open
+                with patch("builtins.open", mock_open(read_data="1:name=systemd:/docker/12345")):
+                    assert is_running_in_docker() is True
+
+    def test_docker_cgroup_no_docker(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("muninn.platform.Path.exists", return_value=False):
+                from unittest.mock import mock_open
+                with patch("builtins.open", mock_open(read_data="1:name=systemd:/init.scope")):
+                    assert is_running_in_docker() is False
+
+    def test_docker_cgroup_file_not_found(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("muninn.platform.Path.exists", return_value=False):
+                with patch("builtins.open", side_effect=FileNotFoundError):
+                    assert is_running_in_docker() is False
+
+    def test_docker_cgroup_permission_error(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("muninn.platform.Path.exists", return_value=False):
+                with patch("builtins.open", side_effect=PermissionError):
+                    assert is_running_in_docker() is False
+
 
 class TestDataDir:
     """Test data directory resolution."""
@@ -171,6 +202,36 @@ class TestPlatformInfo:
     def test_os_matches_sys(self):
         info = get_platform_info()
         assert info["os"] == sys.platform
+
+    @patch("muninn.platform.sys.platform", "mock-os")
+    @patch("muninn.platform.sys.version", "mock-version")
+    @patch("muninn.platform.IS_WINDOWS", True)
+    @patch("muninn.platform.IS_MACOS", False)
+    @patch("muninn.platform.IS_LINUX", False)
+    @patch("muninn.platform.is_running_in_docker", return_value=True)
+    @patch("muninn.platform.get_data_dir", return_value=Path("/mock/data"))
+    @patch("muninn.platform.get_config_dir", return_value=Path("/mock/config"))
+    @patch("muninn.platform.get_log_dir", return_value=Path("/mock/log"))
+    def test_get_platform_info_values(
+        self,
+        mock_log,
+        mock_config,
+        mock_data,
+        mock_docker,
+    ):
+        """Test get_platform_info returns correctly mocked values."""
+        info = get_platform_info()
+        assert info == {
+            "os": "mock-os",
+            "python": "mock-version",
+            "is_windows": True,
+            "is_macos": False,
+            "is_linux": False,
+            "is_docker": True,
+            "data_dir": "/mock/data",
+            "config_dir": "/mock/config",
+            "log_dir": "/mock/log",
+        }
 
 
 class TestEnsureDirectories:
