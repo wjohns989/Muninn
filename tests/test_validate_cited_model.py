@@ -3,6 +3,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from scripts import validate_cited_model as probe
 
 
@@ -75,10 +77,13 @@ def test_probe_bounds_only_local_request(monkeypatch, capsys, tmp_path):
     assert json.loads(capsys.readouterr().out)["max_output_tokens"] == 512
 
 
-def test_remote_probe_requires_screened_source_and_reports_only_metadata(monkeypatch, capsys, tmp_path):
+@pytest.mark.parametrize("token_parameter", ("max_completion_tokens", "max_tokens"))
+def test_remote_probe_requires_screened_source_and_reports_only_metadata(
+        monkeypatch, capsys, tmp_path, token_parameter):
     monkeypatch.setattr("sys.argv", ["validate_cited_model.py", "--root", str(tmp_path),
                                   "--query", "Muninn", "--provider", "openrouter",
-                                  "--acknowledge-private-zdr"])
+                                  "--acknowledge-private-zdr", "--remote-token-parameter",
+                                  token_parameter])
     monkeypatch.setattr(probe, "SecureHistoryArchive", lambda root: object())
     monkeypatch.setattr(probe, "SecureHistoryBlindIndex", lambda archive: type(
         "Index", (), {"search": lambda self, query, **kwargs: {"matches": [
@@ -106,7 +111,10 @@ def test_remote_probe_requires_screened_source_and_reports_only_metadata(monkeyp
         assert descriptor == {"opaque": "safe"}
         assert allow_remote and prefer_remote and expected_remote_generation == 2
         remote = probe.Provider("openrouter", "https://openrouter.ai/api/v1", ["model-y"])
-        assert remote.request_body([])["max_completion_tokens"] == 2048
+        body = remote.request_body([])
+        assert body[token_parameter] == 2048
+        assert ("max_tokens" if token_parameter == "max_completion_tokens" else
+                "max_completion_tokens") not in body
         return {"status": "ok", "provider": "openrouter", "model": "model-y",
                 "extraction": {"proposals": [{"text": "private model text"}]}}
 

@@ -49,6 +49,7 @@ def main() -> int:
         parser.error("--max-output-tokens must be between 1 and 2048")
     if args.provider == "ollama":
         os.environ["MUNINN_AUTO_LOCAL_MODEL_HINTS"] = args.model
+    original_request_body = None
     if args.no_think or args.max_output_tokens is not None or args.provider == "openrouter":
         original_request_body = Provider.request_body
 
@@ -65,6 +66,8 @@ def main() -> int:
                     body["models"] = [args.model]
                 # require_parameters rejects endpoints that would discard the
                 # selected completion bound; different providers name it differently.
+                body.pop("max_completion_tokens", None)
+                body.pop("max_tokens", None)
                 body[args.remote_token_parameter] = 2048
             return body
 
@@ -135,6 +138,9 @@ def main() -> int:
                 report["accounting_state"] = "unavailable"
         print(json.dumps(report, sort_keys=True), flush=True)
         return 1
+    finally:
+        if original_request_body is not None:
+            Provider.request_body = original_request_body
 
 
 if __name__ == "__main__":

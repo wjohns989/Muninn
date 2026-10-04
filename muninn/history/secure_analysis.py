@@ -431,7 +431,10 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
     # The selected ZDR route supports this parameter; require_parameters=True
     # makes incompatible fallbacks fail closed instead of dropping the bound.
     # The same 2048-token bound passed a real cited-archive smoke.
-    body["max_completion_tokens"] = 2048
+    if "max_tokens" in body:
+        body["max_tokens"] = 2048
+    else:
+        body["max_completion_tokens"] = 2048
     if body.get("provider") != {"zdr": True, "data_collection": "deny",
                                 "require_parameters": True}:
         raise RuntimeError("OpenRouter ZDR policy unavailable")
