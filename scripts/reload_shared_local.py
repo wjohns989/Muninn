@@ -231,9 +231,15 @@ def queue_states(db):
 
 def queues_idle(queues, *, preserve_queued=False):
     """Preserve-mode stops no claimed worker and leaves durable queued work intact."""
-    excluded = {"pending", "retry"} if preserve_queued else set()
+    excluded = {"pending", "retry", "publication_pending"} if preserve_queued else set()
     return not any(queues[table].get(state, 0)
                    for table in TABLES for state in ACTIVE[table] - excluded)
+
+
+def publication_queue_unclaimed(db):
+    """A deferred publication is durable only when it holds no live lease."""
+    return db.execute("SELECT 1 FROM history_analysis_jobs WHERE state='publication_pending' "
+                      "AND (lease_token IS NOT NULL OR lease_until IS NOT NULL) LIMIT 1").fetchone() is None
 
 
 def prepare_preimage_destination(archive):
@@ -400,6 +406,7 @@ def run(args):
     journal = archive / "capture-jobs.db"
     with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
         initial = queue_states(db)
+        initial_publication_unclaimed = publication_queue_unclaimed(db) if args.preserve_capture_auto else True
     print(json.dumps({"stage": "inspection", "queues": initial}), flush=True)
     if args.finalize_capture_auto:
         require(os.name == "nt", "Capture persistence is supported only on Windows")
@@ -418,6 +425,7 @@ def run(args):
         return
     require(os.name == "nt", "Owned forced reload is supported only on Windows")
     require(queues_idle(initial, preserve_queued=args.preserve_capture_auto), "Durable workers are not idle")
+    require(initial_publication_unclaimed, "Durable publication has a live lease")
     require(pre_reload_mode_matches(before, environment, preserve_capture_auto=args.preserve_capture_auto),
             "Existing capture mode differs from the requested reload procedure")
     verify_candidate(repo, args.expected_revision)
@@ -470,6 +478,8 @@ def run(args):
         fence.execute("BEGIN IMMEDIATE")
         require(queues_idle(queue_states(fence), preserve_queued=args.preserve_capture_auto),
                 "Queue changed before owned stop")
+        if args.preserve_capture_auto:
+            require(publication_queue_unclaimed(fence), "Durable publication gained a live lease")
         verify_stop_ownership(process, identity, repo=repo, port=args.port)
         print(json.dumps({"stage": "preimage_validated", "databases": len(databases), "inflight_jobs": 0,
                           "stop_method": "owned_windows_forced_termination"}), flush=True)

@@ -125,11 +125,21 @@ def test_preserve_preflight_accepts_matching_owned_remote_mode():
 
 def test_preserve_queues_allow_only_unclaimed_durable_work():
     queued = {table: {"pending": 2, "retry": 1} for table in reload.TABLES}
+    queued["history_analysis_jobs"]["publication_pending"] = 1
     assert not reload.queues_idle(queued)
     assert reload.queues_idle(queued, preserve_queued=True)
     for table, states in reload.ACTIVE.items():
-        for state in states - {"pending", "retry"}:
+        for state in states - {"pending", "retry", "publication_pending"}:
             assert not reload.queues_idle({**queued, table: {state: 1}}, preserve_queued=True)
+
+
+def test_preserve_rejects_publication_pending_with_active_lease(tmp_path):
+    with sqlite3.connect(tmp_path / "jobs.db") as db:
+        db.execute("CREATE TABLE history_analysis_jobs(state TEXT, lease_token TEXT, lease_until REAL)")
+        db.execute("INSERT INTO history_analysis_jobs VALUES('publication_pending',NULL,NULL)")
+        assert reload.publication_queue_unclaimed(db)
+        db.execute("INSERT INTO history_analysis_jobs VALUES('publication_pending','claim',123)")
+        assert not reload.publication_queue_unclaimed(db)
 
 
 @pytest.mark.skipif(reload.os.name != "nt", reason="Windows owned reload procedure")
@@ -148,6 +158,7 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
     with sqlite3.connect(journal) as db:
         for table in reload.TABLES:
             db.execute(f"INSERT INTO {table}(state) VALUES('pending')")
+        db.execute("INSERT INTO history_analysis_jobs(state) VALUES('publication_pending')")
         # Candidate startup also checks these schema fields; no private content.
         for column in ("sealed_window", "sealed_extraction", "extraction_id", "sealed_receipt",
                        "sealed_reuse", "cancel_requested", "publication_started"):
@@ -217,7 +228,9 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
         assert stopped == [True] and launched == [environment]
         assert stopped_child == []
         with sqlite3.connect(journal) as db:
-            assert reload.queue_states(db) == {table: {"pending": 1} for table in reload.TABLES}
+            expected = {table: {"pending": 1} for table in reload.TABLES}
+            expected["history_analysis_jobs"]["publication_pending"] = 1
+            assert reload.queue_states(db) == expected
 
 
 def test_enable_changes_only_two_copied_environment_flags():
@@ -361,7 +374,10 @@ def isolated_installation(tmp_path, monkeypatch):
     archive.mkdir()
     with sqlite3.connect(archive / "capture-jobs.db") as db:
         for table in reload.TABLES:
-            db.execute(f"CREATE TABLE {table}(state TEXT)")
+            if table == "history_analysis_jobs":
+                db.execute(f"CREATE TABLE {table}(state TEXT, lease_token TEXT, lease_until REAL)")
+            else:
+                db.execute(f"CREATE TABLE {table}(state TEXT)")
     report = {"anonymous_protected_http": 401, "authenticated_protected_http": 200,
               "history_http": 200, "archive_ready": True, "history_security": "strict",
               "anonymous_root_contains_token": False, "listener_owners": [123],
