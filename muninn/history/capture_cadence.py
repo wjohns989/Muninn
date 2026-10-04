@@ -31,15 +31,20 @@ class SmallCaptureCadence:
 
     def __init__(self, *, quiet_seconds: float = 300,
                  interval_seconds: float = 30,
+                 max_wait_seconds: float = 1800,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self.quiet_seconds = _duration(quiet_seconds, "quiet_seconds")
         self.interval_seconds = _duration(interval_seconds, "interval_seconds")
+        self.max_wait_seconds = _duration(max_wait_seconds, "max_wait_seconds")
+        if self.max_wait_seconds < self.quiet_seconds:
+            raise ValueError("max_wait_seconds must be at least quiet_seconds")
         if not callable(clock):
             raise ValueError("clock must be callable")
         self._clock = clock
         self._lock = threading.Lock()
         now = self._now()
         self._last_activity = now
+        self._last_attempt_or_start = now
         self._last_attempt: float | None = None
 
     def _now(self) -> float:
@@ -60,24 +65,28 @@ class SmallCaptureCadence:
             self._last_activity = self._now()
 
     def planning_ready(self) -> bool:
-        """Planning depends on quiet time, not model-attempt cooldown."""
+        """Plan after quiet time or bounded delay, independent of model cooldown."""
         with self._lock:
             now = self._now()
-            return max(0.0, now - self._last_activity) >= self.quiet_seconds
+            return (max(0.0, now - self._last_activity) >= self.quiet_seconds
+                    or max(0.0, now - self._last_attempt_or_start) >= self.max_wait_seconds)
 
     def analysis_ready(self) -> bool:
         """Analysis requires quiet time and an elapsed attempt interval."""
         with self._lock:
             now = self._now()
-            quiet = max(0.0, now - self._last_activity) >= self.quiet_seconds
+            ready = (max(0.0, now - self._last_activity) >= self.quiet_seconds
+                     or max(0.0, now - self._last_attempt_or_start) >= self.max_wait_seconds)
             cooldown = (self._last_attempt is None
                         or max(0.0, now - self._last_attempt) >= self.interval_seconds)
-            return quiet and cooldown
+            return ready and cooldown
 
     def note_attempt(self) -> None:
         """Start the cooldown when the owning worker begins an analysis attempt."""
         with self._lock:
-            self._last_attempt = self._now()
+            now = self._now()
+            self._last_attempt = now
+            self._last_attempt_or_start = now
 
     def snapshot(self) -> dict[str, bool | float]:
         """Return timing-only status; never exposes source or capture identity."""
@@ -85,16 +94,19 @@ class SmallCaptureCadence:
             now = self._now()
             quiet_elapsed = max(0.0, now - self._last_activity)
             quiet_remaining = max(0.0, self.quiet_seconds - quiet_elapsed)
+            max_wait_elapsed = max(0.0, now - self._last_attempt_or_start)
+            max_wait_remaining = max(0.0, self.max_wait_seconds - max_wait_elapsed)
             if self._last_attempt is None:
                 cooldown_remaining = 0.0
             else:
                 attempt_elapsed = max(0.0, now - self._last_attempt)
                 cooldown_remaining = max(0.0, self.interval_seconds - attempt_elapsed)
-            planning_ready = quiet_remaining == 0.0
+            planning_ready = quiet_remaining == 0.0 or max_wait_remaining == 0.0
             analysis_ready = planning_ready and cooldown_remaining == 0.0
             return {
                 "planning_ready": planning_ready,
                 "analysis_ready": analysis_ready,
                 "quiet_remaining_seconds": quiet_remaining,
+                "max_wait_remaining_seconds": max_wait_remaining,
                 "attempt_cooldown_remaining_seconds": cooldown_remaining,
             }

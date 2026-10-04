@@ -74,6 +74,10 @@ async def test_automatic_planner_requires_quiet_and_foreground_gate(monkeypatch,
     now[0] = 300.0
     search_id = journal.enqueue_search("chat")
     assert not await service._process_capture_plan_once(automatic=True)
+    now[0] = 1800.0
+    service._capture_cadence.note_activity()
+    assert service._capture_cadence.planning_ready()
+    assert not await service._process_capture_plan_once(automatic=True)
     assert calls == []
     assert journal.cancel_search(search_id)
     assert await service._process_capture_plan_once(automatic=True)
@@ -157,7 +161,8 @@ async def test_analysis_loop_preserves_disabled_search_lane(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("setting", ["MUNINN_CAPTURE_QUIET_SECONDS", "MUNINN_CAPTURE_INTERVAL_SECONDS"])
+@pytest.mark.parametrize("setting", ["MUNINN_CAPTURE_QUIET_SECONDS", "MUNINN_CAPTURE_INTERVAL_SECONDS",
+                                     "MUNINN_CAPTURE_MAX_WAIT_SECONDS"])
 async def test_invalid_cadence_cannot_leave_background_tasks(monkeypatch, tmp_path, setting):
     service, _archive, _source, _now = enabled_service(monkeypatch, tmp_path)
     monkeypatch.setenv(setting, "nan")
@@ -203,14 +208,26 @@ async def test_revoked_capture_flag_removes_capture_admission(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_timer_loops_publish_new_capture_without_manual_batch(monkeypatch, tmp_path):
+@pytest.mark.parametrize("continuous_capture", [False, True])
+async def test_timer_loops_publish_new_capture_without_manual_batch(monkeypatch, tmp_path,
+                                                                     continuous_capture):
     from muninn.history import secure_analysis
+    from muninn.history.capture_cadence import SmallCaptureCadence
     service, _archive, source_path, now = enabled_service(monkeypatch, tmp_path)
     source_path.write_text('{"type":"event_msg","payload":{"type":"user_message","message":"Remember this isolated project decision."}}\n')
     await service.capture(str(source_path), "codex")
     journal = service._require_capture_journal()
     receipt = journal.pending_enrichment()[0]
-    now[0] = 300.0
+    if continuous_capture:
+        service._capture_cadence = SmallCaptureCadence(
+            quiet_seconds=10, interval_seconds=4, max_wait_seconds=30,
+            clock=lambda: now[0])
+        for moment in (5, 10, 15, 20, 25, 30):
+            now[0] = float(moment)
+            service._capture_cadence.note_activity()
+        assert service._capture_cadence.analysis_ready()
+    else:
+        now[0] = 300.0
     calls = []
 
     def forbidden(*args, **kwargs):

@@ -740,7 +740,8 @@ class HistoryService:
             if self._capture_auto_enabled() and self._secure_capture_plan_task is None:
                 self._capture_cadence = SmallCaptureCadence(
                     quiet_seconds=float(os.environ.get("MUNINN_CAPTURE_QUIET_SECONDS", "300")),
-                    interval_seconds=float(os.environ.get("MUNINN_CAPTURE_INTERVAL_SECONDS", "30")))
+                    interval_seconds=float(os.environ.get("MUNINN_CAPTURE_INTERVAL_SECONDS", "30")),
+                    max_wait_seconds=float(os.environ.get("MUNINN_CAPTURE_MAX_WAIT_SECONDS", "1800")))
             self._require_capture_journal()
             if _flag("MUNINN_CAPTURE_ENRICHMENT"):
                 await asyncio.to_thread(self._configure_capture_enrichment)

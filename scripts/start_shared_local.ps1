@@ -99,7 +99,8 @@ $env:MUNINN_RERANKER_ENABLED = "false"
 foreach ($name in @("MUNINN_OLLAMA_MODEL", "MUNINN_AUTO_LOCAL_MODEL_HINTS",
                    "MUNINN_CAPTURE_ENRICHMENT", "MUNINN_CAPTURE_AUTO_ANALYSIS",
                    "MUNINN_CAPTURE_AUTO_REMOTE",
-                   "MUNINN_CAPTURE_QUIET_SECONDS", "MUNINN_CAPTURE_INTERVAL_SECONDS")) {
+                   "MUNINN_CAPTURE_QUIET_SECONDS", "MUNINN_CAPTURE_INTERVAL_SECONDS",
+                   "MUNINN_CAPTURE_MAX_WAIT_SECONDS")) {
     $userValue = [Environment]::GetEnvironmentVariable($name, "User")
     if ($userValue) { Set-Item -Path "Env:$name" -Value $userValue }
 }

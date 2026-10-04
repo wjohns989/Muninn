@@ -428,9 +428,11 @@ def run(args):
                        bool(launching.get(REMOTE_FLAG, "").strip().lower() in {"1", "true", "yes", "on"}))
     user_before = None
     remote_user_before = read_user_flag(REMOTE_FLAG) if args.enable_capture_remote else None
-    if args.enable_capture_auto:
+    if args.enable_capture_auto or args.preserve_capture_auto:
         SmallCaptureCadence(quiet_seconds=float(launching.get("MUNINN_CAPTURE_QUIET_SECONDS", "300")),
-                            interval_seconds=float(launching.get("MUNINN_CAPTURE_INTERVAL_SECONDS", "30")))
+                            interval_seconds=float(launching.get("MUNINN_CAPTURE_INTERVAL_SECONDS", "30")),
+                            max_wait_seconds=float(launching.get("MUNINN_CAPTURE_MAX_WAIT_SECONDS", "1800")))
+    if args.enable_capture_auto:
         user_before = {name: read_user_flag(name) for name in CAPTURE_FLAGS}
     destination = prepare_preimage_destination(archive)
     databases = preimage_databases(archive, journal)
