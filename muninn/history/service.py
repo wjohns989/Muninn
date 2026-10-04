@@ -25,7 +25,7 @@ import httpx
 from muninn.history.blind_index import SearchCancelled, SecureHistoryBlindIndex
 from muninn.history.blind_index import _terms as _search_terms
 from muninn.history.capture_journal import CaptureJournal, analysis_deferral_code
-from muninn.history.capture_cadence import SmallCaptureCadence
+from muninn.history.capture_cadence import CaptureBacklogDrain, SmallCaptureCadence
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.importer import import_history, read_thread
 from muninn.history.locations import app_data_dirs, export_candidates, history_homes, history_sources
@@ -109,6 +109,7 @@ class HistoryService:
         self._secure_capture_plan_task: Optional[asyncio.Task] = None
         self._secure_capture_plan_wakeup = asyncio.Event()
         self._capture_cadence = SmallCaptureCadence()
+        self._capture_drain = CaptureBacklogDrain()
         self._secure_scan_task: Optional[asyncio.Task] = None
         self.last_capture_scan: Optional[Dict[str, Any]] = None
         self.last_secure_capture: Optional[Dict[str, Any]] = None
@@ -128,6 +129,13 @@ class HistoryService:
             return False
         from muninn.history.auto_routing import remote_policy_snapshot
         return remote_policy_snapshot(self.data_dir).enabled
+
+    def _capture_drain_active(self) -> bool:
+        if not self._capture_drain.snapshot()["enabled"]:
+            return False
+        return self._capture_drain.active(
+            pending=self._require_capture_journal().enrichment_status()["pending_sources"],
+            remote_enabled=self._capture_remote_enabled())
 
     def _open_secure_archive(self) -> None:
         if self.secure_archive is not None:
@@ -725,6 +733,8 @@ class HistoryService:
                                     "automatic_analysis_enabled": self._capture_auto_enabled(),
                                     "automatic_remote_enabled": self._capture_remote_enabled(),
                                     "cadence": self._capture_cadence.snapshot(),
+                                    "backlog_drain": {**self._capture_drain.snapshot(),
+                                                      "active": self._capture_drain_active()},
                                     **self._capture_journal.enrichment_status(),
                                     "last_reconciliation": self.last_capture_enrichment}
                                    if strict and self._capture_journal is not None else None),
@@ -742,6 +752,8 @@ class HistoryService:
                     quiet_seconds=float(os.environ.get("MUNINN_CAPTURE_QUIET_SECONDS", "300")),
                     interval_seconds=float(os.environ.get("MUNINN_CAPTURE_INTERVAL_SECONDS", "30")),
                     max_wait_seconds=float(os.environ.get("MUNINN_CAPTURE_MAX_WAIT_SECONDS", "1800")))
+                self._capture_drain = CaptureBacklogDrain(
+                    float(os.environ.get("MUNINN_CAPTURE_BACKLOG_DRAIN_UNTIL", "0")))
             self._require_capture_journal()
             if _flag("MUNINN_CAPTURE_ENRICHMENT"):
                 await asyncio.to_thread(self._configure_capture_enrichment)
@@ -896,7 +908,9 @@ class HistoryService:
         """Prepare one fair, bounded batch; no provider call or activation here."""
         if type(automatic) is not bool:
             raise ValueError("Invalid automatic planning admission")
-        if automatic and (not self._capture_auto_enabled() or not self._capture_cadence.planning_ready()):
+        if automatic and (not self._capture_auto_enabled() or
+                          not (self._capture_cadence.planning_ready()
+                               or await asyncio.to_thread(self._capture_drain_active))):
             return False
         journal = self._require_capture_journal()
         if automatic and not await asyncio.to_thread(journal.capture_planning_ready):
@@ -942,15 +956,18 @@ class HistoryService:
         return True
 
     async def _process_secure_analysis_once(self, *, include_capture: bool = False,
-                                            include_search: bool = True) -> bool:
+                                            include_search: bool = True,
+                                            capture_remote_only: bool = False) -> bool:
         """Interpret one immutable target without occupying idle VRAM.
 
         Capture-window admission is opt-in and separate from both outbox
         capture and search analysis. The shared consumer selects its lanes.
         """
         journal = self._require_capture_journal()
-        job = await asyncio.to_thread(journal.claim_analysis, include_capture=include_capture,
-                                      include_search=include_search)
+        claim_kwargs = {"include_capture": include_capture, "include_search": include_search}
+        if capture_remote_only:
+            claim_kwargs["capture_remote_only"] = True
+        job = await asyncio.to_thread(journal.claim_analysis, **claim_kwargs)
         if job is None:
             return False
         cancelled = threading.Event()
@@ -1081,10 +1098,17 @@ class HistoryService:
                 expected_remote_generation=remote_generation,
                 remote_gate=capture_remote_gate if job.lane == 1 else None,
             )
+            if capture_remote_only and job.lane == 1 and not remote_enabled:
+                self._capture_drain.halt("remote_consent_revoked")
+                await asyncio.to_thread(journal.defer_analysis, job.job_id,
+                                        job.lease_token, "remote_consent_revoked")
+                return True
             outcome = await analyze_cited_window(self, source, descriptor,
                                                  **analysis_kwargs, **reuse_kwargs)
+            if capture_remote_only and outcome["status"] == "deferred":
+                self._capture_drain.halt(outcome.get("reason", "deferred"))
             if (job.lane == 1 and remote_enabled and outcome["status"] == "deferred"
-                    and remote_was_not_sent):
+                    and remote_was_not_sent and not capture_remote_only):
                 # A policy/budget/privacy denial before HTTP is safe to handle
                 # locally. An uncertain or sent POST must never be retried.
                 outcome = await analyze_cited_window(
@@ -1148,9 +1172,15 @@ class HistoryService:
         while True:
             try:
                 include_search = _flag("MUNINN_SECURE_AUTO_ANALYSIS")
-                include_capture = self._capture_auto_enabled() and self._capture_cadence.analysis_ready()
+                drain = await asyncio.to_thread(self._capture_drain_active)
+                include_capture = self._capture_auto_enabled() and (
+                    self._capture_cadence.analysis_ready()
+                    or drain and self._capture_cadence.attempt_ready())
+                kwargs = {"include_capture": include_capture, "include_search": include_search}
+                if drain:
+                    kwargs["capture_remote_only"] = True
                 processed = (await self._process_secure_analysis_once(
-                    include_capture=include_capture, include_search=include_search)
+                    **kwargs)
                     if include_search or include_capture else False)
             except asyncio.CancelledError:
                 raise

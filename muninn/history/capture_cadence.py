@@ -88,6 +88,12 @@ class SmallCaptureCadence:
             self._last_attempt = now
             self._last_attempt_or_start = now
 
+    def attempt_ready(self) -> bool:
+        """Keep the attempt interval when an explicit catch-up bypasses quiet time."""
+        with self._lock:
+            return (self._last_attempt is None
+                    or max(0.0, self._now() - self._last_attempt) >= self.interval_seconds)
+
     def snapshot(self) -> dict[str, bool | float]:
         """Return timing-only status; never exposes source or capture identity."""
         with self._lock:
@@ -110,3 +116,34 @@ class SmallCaptureCadence:
                 "max_wait_remaining_seconds": max_wait_remaining,
                 "attempt_cooldown_remaining_seconds": cooldown_remaining,
             }
+
+
+class CaptureBacklogDrain:
+    """Temporary remote catch-up; expiry survives reload without extending authority."""
+
+    HALT_REASONS = {"remote_cost_unresolved", "remote_consent_revoked", "remote_admission_busy",
+                    "remote_admission_threshold_reached", "daily_zdr_cap_unverified",
+                    "remote_accounting_unavailable", "remote_accounting_unconfigured"}
+
+    def __init__(self, deadline: float = 0, *, clock: Callable[[], float] = time.time):
+        now = clock()
+        if (isinstance(deadline, bool) or not isinstance(deadline, Real)
+                or not math.isfinite(deadline) or deadline < 0
+                or deadline > now + 10800):
+            raise ValueError("Backlog drain must expire within three hours")
+        self.deadline = float(deadline)
+        self._clock = clock
+        self.halted_reason: str | None = None
+
+    def active(self, *, pending: int, remote_enabled: bool) -> bool:
+        return (remote_enabled is True and type(pending) is int and pending >= 100
+                and self.halted_reason is None and self._clock() < self.deadline)
+
+    def halt(self, reason: str) -> None:
+        if reason in self.HALT_REASONS:
+            self.halted_reason = reason
+
+    def snapshot(self) -> dict[str, bool | float | str | None]:
+        remaining = max(0.0, self.deadline - self._clock())
+        return {"enabled": remaining > 0 and self.halted_reason is None,
+                "remaining_seconds": remaining, "halted_reason": self.halted_reason}

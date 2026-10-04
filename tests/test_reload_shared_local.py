@@ -274,6 +274,25 @@ def test_remote_opt_in_changes_only_remote_flag_in_copied_environment():
     assert updated == {**original, reload.REMOTE_FLAG: "1"}
 
 
+def test_backlog_drain_is_explicit_and_expiry_is_only_in_child_environment(monkeypatch):
+    for minutes in ("0", "181"):
+        with pytest.raises(SystemExit):
+            reload.parse_args(["--restart", "--preserve-capture-auto", "--enable-capture-remote",
+                               "--expected-revision", "abcdef0", "--backlog-drain-minutes", minutes])
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--restart", "--preserve-capture-auto", "--expected-revision", "abcdef0",
+                           "--backlog-drain-minutes", "60"])
+    args = reload.parse_args(["--restart", "--preserve-capture-auto", "--enable-capture-remote",
+                              "--expected-revision", "abcdef0", "--backlog-drain-minutes", "60"])
+    monkeypatch.setattr(reload.time, "time", lambda: 100.0)
+    original = {reload.REMOTE_FLAG: "1"}
+    updated = reload.launch_environment(original, enable_capture_auto=False,
+                                        enable_capture_remote=True,
+                                        backlog_drain_minutes=args.backlog_drain_minutes)
+    assert updated["MUNINN_CAPTURE_BACKLOG_DRAIN_UNTIL"] == "3700.0"
+    assert original == {reload.REMOTE_FLAG: "1"}
+
+
 def test_remote_flag_persistence_preserves_preimage_and_compensates_failure():
     before = None
     state, read, write = fake_registry({})

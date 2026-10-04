@@ -56,6 +56,7 @@ _ANALYSIS_RETRY_CODES = {
     "remote_consent_revoked", "daily_zdr_cap_unverified", "gpu_busy",
     "gpu_telemetry_unavailable", "no_eligible_model_fits", "no_chat_model_fits",
     "ollama_model_already_resident", "source_not_remote_safe",
+    "remote_admission_threshold_reached", "remote_admission_busy",
 }
 _LOCAL_OUTPUT_FAILURE_CODES = {
     "json": "local_output_json",
@@ -1123,8 +1124,10 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                     and self._capture_window_capacity(db) > 0)
 
     def claim_analysis(self, *, include_capture: bool = False,
-                       include_search: bool = True) -> AnalysisJob | None:
-        if type(include_capture) is not bool or type(include_search) is not bool:
+                       include_search: bool = True,
+                       capture_remote_only: bool = False) -> AnalysisJob | None:
+        if any(type(value) is not bool for value in
+               (include_capture, include_search, capture_remote_only)):
             raise ValueError("Invalid capture lane admission")
         now = time.time()
         with self._connect() as db:
@@ -1135,8 +1138,10 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
             minimum_lane = 0 if include_search else 1
             row = db.execute(
                 "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry','publication_pending') "
-                "AND due_at<=? AND lane>=? AND lane<=? ORDER BY lane,due_at,created_at LIMIT 1",
-                (now, minimum_lane, maximum_lane),
+                "AND due_at<=? AND lane>=? AND lane<=? "
+                "AND (?=0 OR lane=0 OR remote_policy_generation>0 OR publication_started=1) "
+                "ORDER BY lane,due_at,created_at LIMIT 1",
+                (now, minimum_lane, maximum_lane, int(capture_remote_only)),
             ).fetchone()
             if not row:
                 return None

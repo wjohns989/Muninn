@@ -75,6 +75,8 @@ def parse_args(argv=None):
                         help="Reload already enabled local capture without changing settings or queued work")
     parser.add_argument("--enable-capture-remote", action="store_true",
                         help="Opt in to managed ZDR for new capture windows on an existing auto-capture service")
+    parser.add_argument("--backlog-drain-minutes", type=int,
+                        help="Temporary remote-only catch-up (1-180 minutes), then ordinary cadence resumes")
     parser.add_argument("--expected-revision", help="Approved, tested Git commit hash")
     parser.add_argument("--finalize-capture-auto", action="store_true",
                         help="Persist an already running approved local activation; never restart")
@@ -88,6 +90,9 @@ def parse_args(argv=None):
         parser.error("capture preservation requires restart and cannot activate or finalize")
     if args.enable_capture_remote and not args.preserve_capture_auto:
         parser.error("remote capture requires restart with --preserve-capture-auto")
+    if args.backlog_drain_minutes is not None and (
+            not args.enable_capture_remote or not 1 <= args.backlog_drain_minutes <= 180):
+        parser.error("backlog drain requires remote capture and 1-180 minutes")
     if args.restart and not args.expected_revision:
         parser.error("restart requires an approved --expected-revision")
     if args.finalize_capture_auto and (args.restart or args.enable_capture_auto
@@ -98,12 +103,17 @@ def parse_args(argv=None):
     return args
 
 
-def launch_environment(original, *, enable_capture_auto, enable_capture_remote=False):
+def launch_environment(original, *, enable_capture_auto, enable_capture_remote=False,
+                       backlog_drain_minutes=None):
     copied = dict(original)
     if enable_capture_auto:
         copied.update({name: "1" for name in CAPTURE_FLAGS})
     if enable_capture_remote:
         copied[REMOTE_FLAG] = "1"
+    if backlog_drain_minutes is not None:
+        if not enable_capture_remote or type(backlog_drain_minutes) is not int or not 1 <= backlog_drain_minutes <= 180:
+            raise ValueError("Invalid temporary backlog drain")
+        copied["MUNINN_CAPTURE_BACKLOG_DRAIN_UNTIL"] = str(time.time() + 60 * backlog_drain_minutes)
     return copied
 
 
@@ -430,7 +440,8 @@ def run(args):
             "Existing capture mode differs from the requested reload procedure")
     verify_candidate(repo, args.expected_revision)
     launching = launch_environment(environment, enable_capture_auto=args.enable_capture_auto,
-                                   enable_capture_remote=args.enable_capture_remote)
+                                   enable_capture_remote=args.enable_capture_remote,
+                                   backlog_drain_minutes=args.backlog_drain_minutes)
     expected_auto = args.enable_capture_auto or args.preserve_capture_auto
     expected_remote = (args.enable_capture_remote or
                        bool(launching.get(REMOTE_FLAG, "").strip().lower() in {"1", "true", "yes", "on"}))
@@ -529,6 +540,9 @@ def run(args):
                         continue
                     require(mode_matches(report, enable=expected_auto, remote=expected_remote),
                             "Requested capture mode is not effective")
+                    if args.backlog_drain_minutes is not None:
+                        require(report.get("capture_enrichment", {}).get("backlog_drain", {}).get("enabled") is True,
+                                "Requested backlog drain is not effective")
                     with sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True) as db:
                         columns = {row[1] for row in db.execute("PRAGMA table_info(history_analysis_jobs)")}
                     require({"sealed_window", "sealed_extraction", "extraction_id", "sealed_receipt",

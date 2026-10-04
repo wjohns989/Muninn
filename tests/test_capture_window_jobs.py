@@ -447,8 +447,9 @@ async def test_opted_in_capture_worker_stages_remote_only_with_bound_generation(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remote_marked", [False, True])
+@pytest.mark.parametrize("drain", [False, True])
 async def test_remote_first_capture_falls_back_only_when_proven_unsent(
-        tmp_path, monkeypatch, remote_marked):
+        tmp_path, monkeypatch, remote_marked, drain):
     journal, archive, receipt = window_fixture(tmp_path)
     monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
     monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(archive.root))
@@ -475,7 +476,7 @@ async def test_remote_first_capture_falls_back_only_when_proven_unsent(
             if remote_marked:
                 assert await before_remote()
             return {"status": "deferred", "provider": None, "model": None,
-                    "reason": "remote_cost_unresolved" if remote_marked else "budget_exceeded"}
+                    "reason": "remote_cost_unresolved" if remote_marked else "remote_admission_threshold_reached"}
         assert not allow_remote and expected_remote_generation == -1
         result = {"status": "ok", "provider": "ollama", "model": "fixture-local",
                   "analysis": {"summary": "No supported claim.", "decisions": [],
@@ -485,12 +486,18 @@ async def test_remote_first_capture_falls_back_only_when_proven_unsent(
                                          "result": result}}
 
     monkeypatch.setattr(secure_analysis, "analyze_cited_window", analyze)
-    assert await service._process_secure_analysis_once(include_capture=True)
+    assert await service._process_secure_analysis_once(include_capture=True,
+                                                      capture_remote_only=drain)
     with journal._connect() as db:
         row = db.execute("SELECT state,provider,remote_dispatched FROM history_analysis_jobs").fetchone()
     if remote_marked:
         assert attempts == ["remote"]
         assert tuple(row) == ("outcome_unknown", None, 1)
+        assert journal.capture_window_status(receipt)["acknowledged"] == 0
+    elif drain:
+        assert attempts == ["remote"]
+        assert tuple(row) == ("retry", None, 0)
+        assert service._capture_drain.halted_reason == "remote_admission_threshold_reached"
         assert journal.capture_window_status(receipt)["acknowledged"] == 0
     else:
         assert attempts == ["remote", "local"]

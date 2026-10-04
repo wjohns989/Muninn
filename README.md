@@ -186,6 +186,18 @@ process. Existing local-only queued windows remain local-only. The opt-in does
 not clear unresolved cost admissions or guarantee that remote inference is
 available; ordinary captures and encrypted search continue locally.
 
+For temporary catch-up while chats remain active, add
+`--backlog-drain-minutes 60` to that remote-enabled reload (valid range: 1–180).
+It bypasses quiet time only while at least 100 enrichment sources remain, keeps
+the ordinary 30-second minimum attempt interval and single consumer, and selects
+remote-bound windows without local GPU fallback. Consent/generation changes,
+spending limits or uncertain accounting halt catch-up. Its absolute expiry is
+passed only to the child process, not saved as a permanent setting; normal
+capture cadence resumes afterward. Existing local-bound failures are not
+silently retried or converted. Status exposes the deadline and halt reason under
+`capture_enrichment.backlog_drain`; this mode alone does not prove full historical
+coverage or resolve credential ambiguity.
+
 Verify it's running:
 
 ```bash
