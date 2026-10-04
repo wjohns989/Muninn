@@ -131,6 +131,17 @@ sets strict history mode, deferred chat LLM use, zero Ollama residency, and
 consolidation dry-run; it does not import historical chats or send them to a
 remote model. Start the service explicitly before connecting MCP clients.
 
+On Windows, `scripts/check_or_start_local.ps1` is a health-aware desktop entry
+point. It uses the same secure single-instance launcher: an existing server is
+checked, not duplicated, and an absent server is started. It then checks
+authenticated access, strict encrypted-history readiness, and nonsecret counts
+of failed or unfinished capture/analysis jobs. Job problems are reported with a
+nonzero exit code even when the service itself is reachable; the script does
+not delete jobs, start Ollama, or enable remote inference. Pass `-RepoRoot` and
+`-PythonPath` for your installation. A desktop `.bat` may call this script and
+pause so warnings remain visible; its paths are local to each user, not part
+of the shared configuration.
+
 For an already running Windows installation, `python scripts/reload_shared_local.py`
 is read-only by default. An explicitly authorized reload requires `--restart`
 and `--expected-revision` with the tested Git commit hash. Use the same Python

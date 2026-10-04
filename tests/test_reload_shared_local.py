@@ -44,6 +44,23 @@ def test_shared_launcher_reads_persisted_remote_capture_flag():
     assert 'GetEnvironmentVariable($name, "User")' in launcher
 
 
+def test_analysis_preflight_reports_only_nonsecret_problem_counts(tmp_path, monkeypatch):
+    from muninn.history import auto_routing
+
+    archive = tmp_path / "history_secure_archive"
+    archive.mkdir()
+    with sqlite3.connect(archive / "capture-jobs.db") as db:
+        db.execute("CREATE TABLE history_analysis_jobs(state TEXT, error_code TEXT)")
+        db.executemany("INSERT INTO history_analysis_jobs VALUES(?,?)", [
+            ("failed", "private diagnostic"), ("failed", "another private diagnostic"),
+            ("retry", "retry code"), ("succeeded", ""),
+        ])
+    monkeypatch.setattr(auto_routing, "_local_setting", lambda name: (
+        str(archive) if name == "MUNINN_HISTORY_ARCHIVE_DIR" else None))
+    assert preflight.inspect_analysis_errors(tmp_path) == [
+        {"state": "failed", "count": 2}, {"state": "retry", "count": 1}]
+
+
 def test_reload_failure_code_never_exposes_unreviewed_exception_text():
     assert reload.safe_failure_code(RuntimeError("Candidate ownership differs")) == "candidate_ownership"
     assert reload.safe_failure_code(RuntimeError("private path or token")) == "unspecified"

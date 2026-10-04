@@ -118,6 +118,25 @@ def inspect_capture_errors(repo: Path) -> list[dict]:
             for provider, state, code, count in rows]
 
 
+def inspect_analysis_errors(repo: Path) -> list[dict]:
+    """Summarize unfinished/failed analysis jobs without reading sealed content."""
+    from muninn.history.auto_routing import _local_setting
+
+    configured = _local_setting("MUNINN_HISTORY_ARCHIVE_DIR")
+    data = Path(_local_setting("MUNINN_DATA_DIR") or repo / ".muninn_runtime")
+    archive = Path(configured) if configured else data / "history_secure_archive"
+    if not archive.is_absolute():
+        archive = repo / archive
+    path = archive / "capture-jobs.db"
+    if not path.is_file():
+        return []
+    with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+        rows = db.execute("SELECT state,COUNT(*) FROM history_analysis_jobs "
+                          "WHERE state IN ('failed','outcome_unknown','retry','publication_pending') "
+                          "GROUP BY state").fetchall()
+    return [{"state": state, "count": count} for state, count in rows]
+
+
 if __name__ == "__main__":
     import sys
 
@@ -127,6 +146,8 @@ if __name__ == "__main__":
         report["models"] = inspect_models()
     if "--capture-errors" in sys.argv:
         report["capture_errors"] = inspect_capture_errors(Path(__file__).resolve().parents[1])
+    if "--analysis-errors" in sys.argv:
+        report["analysis_errors"] = inspect_analysis_errors(Path(__file__).resolve().parents[1])
     if "--triage-workers" in sys.argv:
         report["triage_workers"] = inspect_triage_workers(Path(__file__).resolve().parents[1])
     print(json.dumps(report, sort_keys=True))
