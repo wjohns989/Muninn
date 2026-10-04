@@ -12,6 +12,7 @@ def fake_strict_remote_admission(monkeypatch):
     from muninn.history import secure_analysis
 
     class Permit:
+        identifier = "a" * 32
         def mark_unknown(self):
             pass
         def release_unsent(self):
