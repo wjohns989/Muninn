@@ -10,6 +10,25 @@ budgets are in `docs/architecture/local-operating-model-audit.md`. The audit's
 timings are targets, not claims. Preserve live data, untracked files, and the
 current service until a reviewed replacement and rollback are ready.
 
+## 2026-10-05 client-access acceptance delta
+
+The installed Windows core bridge was exercised outside the checkout against
+the existing authenticated service: initialization, all 20 core tool definitions,
+project context, and two distinct, bounded noncredential review pages from the
+real encrypted ledger. Pagination retained its snapshot anchor. The probe prints
+only aggregate results, never memory text, tokens, or cursor capabilities:
+
+```powershell
+python -B scripts/smoke_user_bridge_live.py --verify-installed-profiles --verify-review-queue
+```
+
+This proves the configured shared bridge can deliver readable review candidates
+and continuation to agents. It does **not** prove every host event, resolve the
+ambiguity queue, or prove the historical backlog complete. Current hook receipts
+include Codex and Claude capture-intent events; Gemini reply (`AfterAgent`) and
+compression (`PreCompress`) host-origin receipt proof remains open. Preserve all
+seven critical-path requirements below until each has its own acceptance evidence.
+
 ## Critical path and proof
 
 1. **Dashboard authentication:** remove bearer injection from anonymous HTML;

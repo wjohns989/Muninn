@@ -1,7 +1,8 @@
 """Probe the installed Windows MCP bridge against the one live local server.
 
 Runs the real stdio entry point outside the checkout, lists tools, and makes a
-read-only project-context call. Never prints the token or returned context.
+read-only project-context call, optionally followed by two review-queue pages.
+Never prints tokens, returned context, memory text, or continuation capabilities.
 """
 
 from __future__ import annotations
@@ -15,6 +16,52 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+
+def _review_page(result: dict, *, limit: int = 1) -> dict:
+    """Validate the actual wire response without reporting private payloads."""
+    if result.get("isError") is True:
+        raise RuntimeError("review_call_failed")
+    page = result.get("structuredContent")
+    if page is None:
+        content = result.get("content")
+        if (not isinstance(content, list) or len(content) != 1
+                or content[0].get("type") != "text"):
+            raise RuntimeError("review_response_invalid")
+        try:
+            page = json.loads(content[0]["text"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("review_response_invalid") from exc
+    if (not isinstance(page, dict) or page.get("limit") != limit
+            or page.get("credential_or_withheld_excluded") is not True
+            or not isinstance(page.get("matches"), list)
+            or len(page["matches"]) > limit
+            or type(page.get("has_more")) is not bool
+            or type(page.get("snapshot_events")) is not int
+            or (page["has_more"] and (not isinstance(page.get("next_cursor"), str)
+                                      or not page["next_cursor"] or not page["matches"]))
+            or (not page["has_more"] and page.get("next_cursor") is not None)):
+        raise RuntimeError("review_response_invalid")
+    ids = set()
+    for item in page["matches"]:
+        if (not isinstance(item, dict)
+                or not isinstance(item.get("id"), str) or not item["id"]
+                or item["id"] in ids
+                or not isinstance(item.get("source_ref"), str) or not item["source_ref"]
+                or item.get("state") not in {"provisional", "needs_user"}
+                or any(not isinstance(item.get(key), str) or not item[key]
+                       or len(item[key]) > 2048 for key in ("text", "quote"))):
+            raise RuntimeError("review_response_invalid")
+        ids.add(item["id"])
+    return page
+
+
+def _review_progress(previous: dict, current: dict) -> None:
+    if (current["snapshot_events"] != previous["snapshot_events"]
+            or current["next_cursor"] == previous["next_cursor"]
+            or {item["id"] for item in previous["matches"]}
+               & {item["id"] for item in current["matches"]}):
+        raise RuntimeError("review_continuation_invalid")
 
 
 def _installed_profiles_match() -> bool:
@@ -63,6 +110,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify-installed-profiles", action="store_true",
                         help="Require Codex, Claude Code/Desktop and Gemini configs to use this bridge")
+    parser.add_argument("--verify-review-queue", action="store_true",
+                        help="Read up to two noncredential ambiguity pages through the installed bridge")
     args = parser.parse_args()
     if os.name != "nt":
         print(json.dumps({"state": "unsupported_host"}))
@@ -137,10 +186,35 @@ def main() -> int:
         context = result_for(3)
         if context.get("isError") is True or not isinstance(context.get("content"), list):
             raise RuntimeError("context_call_failed")
+        review_proof = {}
+        if args.verify_review_queue:
+            if "search_cited_memories" not in names:
+                raise RuntimeError("review_tool_missing")
+            pages = []
+            cursor = None
+            for request_id in (4, 5):
+                arguments = {"review_only": True, "limit": 1}
+                if cursor is not None:
+                    arguments["cursor"] = cursor
+                send({"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {
+                    "name": "search_cited_memories", "arguments": arguments,
+                }})
+                page = _review_page(result_for(request_id))
+                if pages:
+                    _review_progress(pages[-1], page)
+                pages.append(page)
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+            review_proof = {"review_call_ok": True, "review_pages": len(pages),
+                            "review_items": sum(len(page["matches"]) for page in pages),
+                            "review_continuation_ok": len(pages) == 2,
+                            "review_snapshot_events": pages[0]["snapshot_events"]}
         print(json.dumps({"state": "passed", "tool_count": len(names),
                           "context_call_ok": True,
                           "installed_profiles_match": (True if args.verify_installed_profiles else None),
-                          "elapsed_ms": round((time.monotonic() - started) * 1000)}, sort_keys=True))
+                          "elapsed_ms": round((time.monotonic() - started) * 1000),
+                          **review_proof}, sort_keys=True))
         return 0
     except (BrokenPipeError, OSError, RuntimeError, TimeoutError, queue.Empty) as exc:
         print(json.dumps({"state": "failed", "reason": type(exc).__name__}, sort_keys=True))
