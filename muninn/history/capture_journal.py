@@ -845,8 +845,8 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
         return json.dumps(value, sort_keys=True, separators=(",", ":"),
                           ensure_ascii=False, allow_nan=False).encode("utf-8")
 
-    def _window_purpose(self, row):
-        target = self._validated_analysis_target(row)
+    def _window_purpose(self, row, db=None):
+        target = self._validated_analysis_target(row, db)
         return "analysis-window-v1:" + hashlib.sha256(self._stage_json(target)).hexdigest()
 
     def _read_analysis_window(self, row):

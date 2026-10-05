@@ -20,6 +20,11 @@ _TARGET_FIELDS = {"kind", "vault_id", "blob", "sha256", "version", "work_id",
 _SCHEDULE_ID = "0" * 32
 _PLANNING_CODES = {"io", "cancelled", "unsupported_source", "source_integrity", "preparation_error"}
 _PLANNING_BLOCKED = {"unsupported_source", "source_integrity", "preparation_error"}
+_RECOVERABLE_LOCAL_FAILURES = {
+    "model_unavailable", "local_output_invalid", "local_output_json",
+    "local_output_cited_schema", "local_output_citation", "local_output_quote",
+    "local_output_analysis_schema",
+}
 
 
 class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
@@ -303,6 +308,68 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                                       "AND NOT(lane=1 AND state='retry' "
                                       "AND error_code='source_not_remote_safe')").fetchone()
         return max(0, min(32 - total, 24 - automatic))
+
+    def retry_capture_window(self, job_id, *, expected_attempt, remote_policy_generation,
+                             expected_target_sha256=None):
+        """Explicitly re-admit one failed local window under reviewed remote consent.
+
+        This does not call a provider or acknowledge interpretation. The service
+        still checks the generation, source privacy and budget before dispatch.
+        Never reset a sent request, immutable extraction, or publication proof.
+        The expected attempt fences repeated/stale operator actions.
+        """
+        if (not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id)
+                or type(expected_attempt) is not int or not 0 <= expected_attempt < 2**31
+                or type(remote_policy_generation) is not int
+                or not 1 <= remote_policy_generation < 2**63
+                or expected_target_sha256 is not None and (
+                    not isinstance(expected_target_sha256, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", expected_target_sha256))):
+            raise ValueError("Invalid capture recovery request")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if (row is None or row["lane"] != 1 or row["state"] != "failed"
+                    or row["attempt"] != expected_attempt
+                    or row["error_code"] not in _RECOVERABLE_LOCAL_FAILURES
+                    or row["remote_dispatched"] != 0 or row["cancel_requested"] != 0
+                    or row["publication_started"] != 0
+                    or expected_target_sha256 is not None and not hmac.compare_digest(
+                        expected_target_sha256, hashlib.sha256(row["sealed_target"]).hexdigest())
+                    or any(row[key] is not None for key in (
+                        "lease_token", "lease_until", "sealed_extraction", "extraction_id",
+                        "sealed_receipt", "sealed_reuse", "sealed_result"))):
+                return "ineligible"
+            self._capture_schedule(db)
+            target = self._validated_analysis_target(row, db)
+            window = self._read_analysis_window(row)
+            source = db.execute("SELECT * FROM capture_enrichment_sources WHERE work_id=?",
+                                (target["work_id"],)).fetchone()
+            receipt = self._read_enrichment_receipt(source[:2], self._enrichment_baseline(db), db=db)
+            plans, entry = self._capture_plan_source(receipt)
+            descriptor = plans.window_at(entry, target["version"], target["plan_attempt"], target["ordinal"])
+            if (hashlib.sha256(self._stage_json(descriptor)).hexdigest() != target["descriptor_sha256"]
+                    or window is not None and window != descriptor):
+                raise VaultIntegrityError("Capture recovery descriptor differs from its source plan")
+            if self._capture_window_capacity(db) == 0:
+                return "queue_full"
+            target = {**target, "remote_policy_generation": remote_policy_generation}
+            dedup = hmac.new(self._key, b"capture-window-dedup-v1\0" + self._stage_json(target),
+                             hashlib.sha256).hexdigest()
+            db.execute("UPDATE history_analysis_jobs SET sealed_target=?,dedup_key=?,"
+                       "remote_policy_generation=?,state='pending',error_code='',due_at=0,"
+                       "updated_at=? WHERE job_id=?", (
+                self._seal_search(target, job_id, "analysis-target"), dedup,
+                remote_policy_generation, time.time(), job_id))
+            db.execute("UPDATE capture_enrichment_windows SET sealed_binding=? WHERE job_id=?", (
+                self._seal_search(target, job_id, "capture-window-binding-v1"), job_id))
+            if window is not None:
+                # Descriptor purpose includes the target hash (including consent).
+                # Rebind its seal, never change or discard its source coordinates.
+                rebound = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
+                db.execute("UPDATE history_analysis_jobs SET sealed_window=? WHERE job_id=?", (
+                    self._seal_search(window, job_id, self._window_purpose(rebound, db)), job_id))
+            return "queued"
 
     def _validated_analysis_target(self, row, db=None):
         target = self._open_search(row["sealed_target"], row["job_id"], "analysis-target")

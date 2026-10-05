@@ -241,6 +241,30 @@ helper exit means the requested batches committed, not that backlog processing
 has finished. This latest-only pass does not extract deleted text from older
 rewritten snapshots; those originals remain available for explicit retrieval.
 
+Failed local interpretation does not require resetting an entire source. The
+operator recovery helper previews eligible unsent local failures without writes:
+
+```bash
+python scripts/recover_capture_windows.py --archive-root /your/data/history_secure_archive --limit 4
+```
+
+To re-admit selected failures through the currently approved remote route, add
+`--apply --expected-generation N --backup-before /your/private/fresh-preimage`,
+using the consent generation shown in the preview. The helper first validates a
+private encrypted journal preimage, then rechecks each job and consent. It
+preserves source/window identity, completion counters and successful results;
+uncertain or dispatched requests, publication work and integrity failures are
+not reset. It never makes a model request itself, but the enabled service can
+consume the recovered work and incur charges under its existing privacy and
+budget controls. Outside Windows local unlock, add `--prompt-passphrase`.
+Capacity or changed preview/consent can leave some selected windows untouched;
+read the reported outcomes rather than assuming all were queued.
+
+This is selective recovery, **not OpenRouter batch support**. The current
+`:batch` model suffix still normalizes to synchronous requests. Historical batch
+requires a separate temporary-retention policy and durable submit/poll/import/
+cost/deletion handling; normal live ZDR settings must remain separate.
+
 Verify it's running:
 
 ```bash
