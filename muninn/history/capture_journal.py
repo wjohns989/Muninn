@@ -492,7 +492,8 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                      "(state='succeeded' AND publication_started=1 AND sealed_reuse IS NULL)")
         parameters = ()
         if job_ids is not None:
-            if (not isinstance(job_ids, list) or not 1 <= len(job_ids) <= 24
+            from muninn.history.historical_batch import MAX_ITEMS
+            if (not isinstance(job_ids, list) or not 1 <= len(job_ids) <= MAX_ITEMS
                     or any(not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{32}", ident)
                            for ident in job_ids)
                     or len(set(job_ids)) != len(job_ids)):
@@ -787,15 +788,12 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                 raw = json.dumps(target, sort_keys=True, separators=(",", ":")).encode()
                 dedup = hmac.new(self._key, b"analysis-dedup-v1\0" + raw, hashlib.sha256).hexdigest()
                 existing = db.execute("SELECT job_id FROM history_analysis_jobs WHERE dedup_key=?", (dedup,)).fetchone()
-                active = db.execute(
-                    "SELECT COUNT(*) FROM history_analysis_jobs WHERE state IN ('pending','running','retry','publishing','publication_pending')"
-                ).fetchone()[0]
                 if existing:
                     analysis_id = existing["job_id"]
                     analysis_state = db.execute(
                         "SELECT state FROM history_analysis_jobs WHERE job_id=?", (analysis_id,)
                     ).fetchone()[0]
-                elif active < 32:
+                elif self._foreground_analysis_capacity(db) > 0:
                     analysis_id = os.urandom(16).hex()
                     db.execute(
                         "INSERT INTO history_analysis_jobs(job_id,vault_id,dedup_key,sealed_target,state,created_at,updated_at,remote_policy_generation) VALUES(?,?,?,?,?,?,?,?)",

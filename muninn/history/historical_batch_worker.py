@@ -26,7 +26,7 @@ from muninn.history.historical_batch import (
 from muninn.history.remote_accounting import Admission, reserve
 
 _API = "https://openrouter.ai/api/v1/batches"
-_MAX_RESPONSE = 4 * 1024 * 1024  # Transport bound, never a transcript-size cutoff.
+_MAX_RESPONSE = 16 * 1024 * 1024  # Enough for bounded bulk results; not a source-size cutoff.
 
 
 def _pairs(pairs):
@@ -54,7 +54,7 @@ def _decode(raw):
 async def transport(method, provider_id=None, body=None):
     """Fixed origin, no redirects/proxies/retries; bound before JSON parsing."""
     from muninn.history import llm_settings
-    from muninn.history.historical_batch import _provider_id
+    from muninn.history.historical_batch import MAX_REQUEST_BYTES, _provider_id, _wire_json
     if (method not in {"GET", "POST"} or method == "GET" and not _provider_id(provider_id)
             or method == "POST" and provider_id is not None):
         raise BatchError("batch_transport_invalid")
@@ -63,7 +63,9 @@ async def transport(method, provider_id=None, body=None):
         raise BatchError("batch_key_missing")
     url = _API if method == "POST" else f"{_API}/{provider_id}"
     # Serialization preserves the required routing-field-before-requests order.
-    content = json.dumps(body, ensure_ascii=False, allow_nan=False).encode() if body is not None else None
+    content = _wire_json(body) if body is not None else None
+    if content is not None and len(content) > MAX_REQUEST_BYTES:
+        raise BatchError("batch_request_bound")
     async with asyncio.timeout(60):
         async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=5),
                                      trust_env=False, follow_redirects=False) as client:

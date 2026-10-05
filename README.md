@@ -273,10 +273,39 @@ budget controls. Outside Windows local unlock, add `--prompt-passphrase`.
 Capacity or changed preview/consent can leave some selected windows untouched;
 read the reported outcomes rather than assuming all were queued.
 
-This is selective recovery, **not OpenRouter batch support**. The current
-`:batch` model suffix still normalizes to synchronous requests. Historical batch
-requires a separate temporary-retention policy and durable submit/poll/import/
-cost/deletion handling; normal live ZDR settings must remain separate.
+That helper is selective recovery. Historical processing also has a separate
+OpenRouter Batch API route, not a `:batch` suffix on synchronous requests. It
+uses Luna on the pinned OpenAI provider and requires an explicit, revocable
+temporary-retention opt-in in addition to managed remote consent:
+
+```bash
+python scripts/configure_history_batch.py --root /your/data
+python scripts/configure_history_batch.py --root /your/data --enable --max-batches 1
+python scripts/configure_history_batch.py --root /your/data --disable
+```
+
+`--root` is the existing runtime directory containing `remote_policy` and
+`history_secure_archive`; it is not a model directory. The mutation commands
+verify the existing shared installation and take a private policy preimage.
+The default opt-in is one pilot batch. A larger `--max-batches` permits automatic
+catch-up under the same daily/monthly spending limits; it does not raise them.
+The next batch waits for the preceding batch's settled bill, validated exact
+source citations and durable publication checkpoint. An unknown submission is
+not blindly retried. Inputs and results remain encrypted locally; this code
+never deletes or cancels provider batches.
+
+Each batch holds at most 128 screened windows and an 8 MiB serialized request.
+Additional windows stay queued for later batches, without a source-size cutoff.
+While an unexhausted opt-in is enabled, CPU planning can prepare 128 runnable
+windows instead of the normal 24, preserving eight foreground analysis slots
+even after permission is revoked. CPU capture, transcript search and retrieval
+continue while the provider works; optional paid interpretation remains serial.
+Selection orders already planned historical windows by their source timestamps;
+this is not a guarantee of global chronology across unplanned sources.
+Credential/private input is excluded from this retained route; its separately
+authorized ZDR handling remains distinct. Batch is not ZDR: OpenRouter retains
+artifacts temporarily, and its completion window is 24 hours. Lower token rates
+do not guarantee a shorter elapsed time.
 
 Verify it's running:
 

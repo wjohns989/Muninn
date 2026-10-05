@@ -26,7 +26,8 @@ MODEL = "openai/gpt-6-luna-pro"
 # Verified live batch endpoint identity, not an arbitrary fallback/model family.
 MODEL_IDENTITIES = {MODEL, "openai/gpt-6-luna-pro-20260922"}
 PROVIDER = "openai"
-MAX_ITEMS = 24  # A bounded batch, not a whole-source or historical size limit.
+MAX_ITEMS = 128  # A bounded batch, not a whole-source or historical size limit.
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
 TERMINAL = {"completed", "failed", "expired", "cancelled"}
 _STATES = {"prepared", "submission_unknown", "submitted", "terminal_saved", "cleaned"}
 _MARKER = b"muninn-historical-batch-outbox-v1\n"
@@ -40,6 +41,14 @@ def _json(value):
     try:
         return json.dumps(value, ensure_ascii=False, allow_nan=False,
                           separators=(",", ":")).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        raise BatchError("batch_json_invalid") from exc
+
+
+def _wire_json(value):
+    """Exact serialization used for the POST envelope and its byte bound."""
+    try:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
         raise BatchError("batch_json_invalid") from exc
 
@@ -97,6 +106,8 @@ def payload(items):
     value = {"endpoint": "/v1/chat/completions", "model": MODEL,
              "provider": {"only": [PROVIDER]}, "completion_window": "24h",
              "requests": [{"custom_id": i["custom_id"], "body": i["body"]} for i in items]}
+    if len(_wire_json(value)) > MAX_REQUEST_BYTES:
+        raise BatchError("batch_request_bound")
     return json.loads(_json(value))
 
 

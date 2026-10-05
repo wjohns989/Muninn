@@ -931,14 +931,16 @@ class HistoryService:
             return False
         ticket = await asyncio.to_thread(journal.capture_planning_ticket, receipt)
         remote_generation = -1
-        if self._capture_remote_enabled():
+        from muninn.history.batch_activation import historical_queue_capacity
+        bulk_ready = await asyncio.to_thread(historical_queue_capacity, self.data_dir) > 24
+        if self._capture_remote_enabled() or bulk_ready:
             from muninn.history.auto_routing import remote_policy_snapshot
             remote_generation = remote_policy_snapshot(self.data_dir).generation
         cancelled = threading.Event()
         from muninn.history.secure_projection_store import ProjectionIntegrityError
         from muninn.history.structured_projector import ProjectionCancelled, UnsupportedTranscript
         in_flight = asyncio.create_task(asyncio.to_thread(
-            journal.queue_capture_windows, receipt, limit=4,
+            journal.queue_capture_windows, receipt, limit=32 if bulk_ready else 4,
             remote_policy_generation=remote_generation,
             should_cancel=lambda: cancelled.is_set() or should_cancel()))
         try:

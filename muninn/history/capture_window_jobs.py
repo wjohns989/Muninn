@@ -11,8 +11,8 @@ import os
 import re
 import time
 
-from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.capture_window_reuse import CaptureWindowReuseMixin
+from muninn.history.credential_crypto import VaultIntegrityError
 
 _ACTIVE = "('pending','running','retry','publishing','publication_pending')"
 _TARGET_FIELDS = {"kind", "vault_id", "blob", "sha256", "version", "work_id",
@@ -301,13 +301,30 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                 else "queued" if queued else "queue_full", "queued": queued,
                 "next_ordinal": state["next_ordinal"], "windows": count}
 
+    def _analysis_queue_limits(self):
+        from muninn.history.batch_activation import historical_queue_capacity
+        automatic = historical_queue_capacity(self.policy_root)
+        return automatic + 8, automatic
+
     @staticmethod
-    def _capture_window_capacity(db):
+    def _analysis_active_counts(db):
         total, automatic = db.execute(f"SELECT COUNT(*),COALESCE(SUM(lane=1),0) "
                                       f"FROM history_analysis_jobs WHERE state IN {_ACTIVE} "
                                       "AND NOT(lane=1 AND state='retry' "
                                       "AND error_code='source_not_remote_safe')").fetchone()
-        return max(0, min(32 - total, 24 - automatic))
+        return total, automatic
+
+    def _capture_window_capacity(self, db):
+        total, automatic = self._analysis_active_counts(db)
+        total_limit, automatic_limit = self._analysis_queue_limits()
+        return max(0, min(total_limit - total, automatic_limit - automatic))
+
+    def _foreground_analysis_capacity(self, db):
+        total, automatic = self._analysis_active_counts(db)
+        total_limit, _ = self._analysis_queue_limits()
+        # Revocation shrinks NEW automatic admission, not existing durable work.
+        # Keep eight foreground slots even while that larger backlog drains.
+        return max(0, min(32 - (total - automatic), max(total_limit, automatic + 8) - total))
 
     def retry_capture_window(self, job_id, *, expected_attempt, remote_policy_generation,
                              expected_target_sha256=None):
@@ -459,7 +476,8 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
             if state is None:
                 return {"state": "pending", **details}
             counts = dict(db.execute("SELECT j.state,COUNT(*) FROM capture_enrichment_windows w "
-                                     "JOIN history_analysis_jobs j ON w.job_id=j.job_id WHERE w.work_id=? GROUP BY j.state",
+                                     "JOIN history_analysis_jobs j ON w.job_id=j.job_id "
+                                     "WHERE w.work_id=? GROUP BY j.state",
                                      (row["work_id"],)))
             if (sum(counts.values()) != state["next_ordinal"]
                     or counts.get("succeeded", 0) + counts.get("reused", 0) != state["acknowledged"]):

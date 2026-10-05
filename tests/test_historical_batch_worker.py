@@ -244,8 +244,9 @@ def test_strict_transport_decoder(raw):
 
 
 def test_response_bound_before_decoding():
+    from muninn.history.historical_batch_worker import _MAX_RESPONSE
     with pytest.raises(BatchError, match="bound"):
-        _decode(b" " * (4 * 1024 * 1024 + 1))
+        _decode(b" " * (_MAX_RESPONSE + 1))
 
 
 @pytest.mark.asyncio

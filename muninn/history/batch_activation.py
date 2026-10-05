@@ -70,6 +70,17 @@ def configure_batch(root, *, enabled, max_batches=1):
     return read_batch_policy(root)
 
 
+def historical_queue_capacity(root):
+    """More CPU-only queue slots only under a live, unexhausted batch opt-in.
+
+    This is NOT inference authority. Existing paid guards still bind the actual
+    immutable payload immediately before its one permitted POST.
+    """
+    policy = read_batch_policy(root)
+    remote = remote_policy_snapshot(root)
+    return MAX_ITEMS if policy["enabled"] and policy["remaining_batches"] and remote.enabled else 24
+
+
 def _binding(record):
     return hashlib.sha256(_json(record["items"])).hexdigest()
 
@@ -207,6 +218,13 @@ def prepare_next_batch(journal):
     bindings = []
     for _, binding in sorted(checked):
         job_id, _descriptor = binding
+        from muninn.history.historical_batch import payload
+        try:
+            payload([prepared[ident] for ident, _ in bindings] + [prepared[job_id]])
+        except BatchError as exc:
+            if str(exc) != "batch_request_bound":
+                raise
+            continue  # This item's state is unchanged; another batch can take it.
         if job_id in retry_proofs:
             attempt, digest = retry_proofs[job_id]
             if journal.retry_capture_window(job_id, expected_attempt=attempt,
