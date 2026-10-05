@@ -327,6 +327,7 @@
                         Hook counts are accepted endpoint invocations, not proof of unique host events or completed archival.</p>
                     <p id="history-coverage-status" role="status" aria-live="polite">Enter the main local token to inspect coverage.</p>
                     <p id="history-capture-status" role="status" aria-live="polite">Capture queue not loaded.</p>
+                    <p id="history-interpretation-status" role="status" aria-live="polite">Interpretation status not loaded.</p>
                     <p id="history-hook-receipts" class="history-hook-receipts">Hook receipts not loaded.</p>
                 </div>
                 <div class="card">
@@ -893,6 +894,8 @@
             if (response.error || !response.data) {
                 coverage.textContent = `Coverage unavailable: ${response.error || 'unexpected response'}`;
                 capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+                document.getElementById('history-interpretation-status').textContent =
+                    'Interpretation status unavailable; pending and parked counts are unknown.';
                 hooks.textContent = 'Hook receipts unavailable; no delivery conclusion can be drawn.';
                 return;
             }
@@ -913,6 +916,37 @@
                 `${count(index.ready)}/${count(index.total)} ready, ${count(index.missing)} missing; ` +
                 `current archive fully indexed: ${caughtUp}.`;
             const queue = data.capture_queue;
+            const interpretation = document.getElementById('history-interpretation-status');
+            const enrichment = data.capture_enrichment;
+            const countStatus = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            if (!enrichment || typeof enrichment !== 'object' || Array.isArray(enrichment)) {
+                interpretation.textContent = 'Interpretation status unavailable; pending and parked counts are unknown.';
+            } else {
+                const pending = countStatus(enrichment.pending_sources);
+                const parked = countStatus(enrichment.parked_private_windows);
+                const drain = enrichment.backlog_drain;
+                let drainText = 'catch-up status unknown';
+                if (drain && typeof drain === 'object' && !Array.isArray(drain) &&
+                    typeof drain.active === 'boolean') {
+                    drainText = drain.active ? 'catch-up active' : 'catch-up inactive';
+                    const haltReasons = new Set(['remote_cost_unresolved', 'remote_consent_revoked',
+                        'remote_admission_threshold_reached', 'daily_zdr_cap_unverified',
+                        'remote_accounting_unavailable', 'remote_accounting_unconfigured']);
+                    if (haltReasons.has(drain.halted_reason))
+                        drainText += ` (halt: ${drain.halted_reason.replaceAll('_', ' ')})`;
+                }
+                const enrollment = enrichment.historical_enrollment;
+                let enrollmentText = 'historical enrollment not reported';
+                if (enrollment && typeof enrollment === 'object' && !Array.isArray(enrollment)) {
+                    enrollmentText = `enrollment ${enrollment.complete === true ? 'complete' :
+                        enrollment.complete === false ? 'incomplete' : 'status unknown'}; ` +
+                        `queued ${countStatus(enrollment.queued)}, existing ${countStatus(enrollment.existing)}, ` +
+                        `excluded ${countStatus(enrollment.excluded)}`;
+                }
+                interpretation.textContent = `Interpretation: ${pending} pending source versions; ` +
+                    `${parked} parked private windows; ${drainText}. ${enrollmentText}. ` +
+                    'Enrollment is not interpretation completion.';
+            }
             if (queue && typeof queue === 'object' && !Array.isArray(queue)) {
                 const queued = state => Object.prototype.hasOwnProperty.call(queue, state) ?
                     count(queue[state]) : '0';
@@ -1093,7 +1127,10 @@
             const detail = Number.isFinite(limit) && (reset === 'daily' || reset === 'monthly')
                 ? ` Provider hard cap ${money(limit)}/${reset}; ${money(key.key_remaining_usd)} currently remaining.`
                 : '';
-            status.textContent = label + '.' + detail +
+            const spend = ` Dedicated-key usage: $${Number.isFinite(key.usage_daily_usd) ?
+                key.usage_daily_usd.toFixed(6) : 'unknown'} today, $${Number.isFinite(key.usage_monthly_usd) ?
+                key.usage_monthly_usd.toFixed(6) : 'unknown'} this month (provider-reported; not this run or app-ledger spend).`;
+            status.textContent = label + '.' + detail + spend +
                 ' Local daily/monthly values above are admission thresholds, not hard caps.';
         }
 

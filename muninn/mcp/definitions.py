@@ -248,7 +248,11 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
     },
     {
         "name": "search_memory",
-        "description": "Search for memories relevant to a query. Uses hybrid search with optional reranking for precision.",
+        "description": (
+            "Search explicitly stored memories with project-scoped hybrid retrieval. Encrypted historical cited "
+            "memories are not federated here: also use search_cited_memories for earlier conversations, then "
+            "get_cited_memory_source when original evidence is needed."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1111,6 +1115,7 @@ CORE_TOOLS = (
     "add_memory", "search_memory", "search_secure_history", "start_secure_history_search",
     "poll_secure_history_search", "fetch_secure_history",
     "start_secure_history_transcript",
+    "poll_secure_history_transcript",
     "read_secure_history_transcript_page",
     "poll_secure_history_analysis",
     "analyze_secure_history",

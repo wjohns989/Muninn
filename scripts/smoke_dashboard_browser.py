@@ -43,6 +43,8 @@ def main() -> int:
                         help="Exercise every sidebar action with Enter or Space")
     parser.add_argument("--home-status", action="store_true",
                         help="Check authenticated service, archive, queue, and hook status on Home")
+    parser.add_argument("--operating-status", action="store_true",
+                        help="Check interpretation progress and actual provider-key usage display")
     parser.add_argument("--credential-query", help="Nonsecret metadata query; prints only match count")
     parser.add_argument("--candidate-html", action="store_true",
                         help="Render checked-out dashboard HTML against the real loopback backend")
@@ -144,6 +146,14 @@ def main() -> int:
             result = {"authenticated_history_visible": True,
                       "capture_status_visible": page.locator("#history-capture-status").is_visible(),
                       "resources_checked": False, "candidate_html": args.candidate_html}
+            if args.operating_status:
+                expect(page.locator("#history-interpretation-status")).to_contain_text(
+                    "pending source versions", timeout=15000)
+                expect(page.locator("#history-interpretation-status")).to_contain_text(
+                    "Enrollment is not interpretation completion.")
+                expect(page.locator("#remote-key-status")).to_contain_text(
+                    "Dedicated-key usage", timeout=15000)
+                result["operating_status_checked"] = True
             if args.keyboard_nav:
                 result["keyboard_nav_checked"] = keyboard_nav_checked
             if args.home_status:

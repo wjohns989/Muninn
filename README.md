@@ -989,13 +989,18 @@ Agents can pass an ID from `poll_secure_history_analysis.memory_refs` to
 For evidence beyond the claim, call `get_cited_memory_source`; it returns exact
 source-version/unit/fragment coordinates and bounded context when the complete
 unit passes the privacy check. Use its short-lived `transcript_capability` with
-`start_secure_history_transcript`, then follow page cursors until exhausted.
+`start_secure_history_transcript`; if the projection is pending, check
+`poll_secure_history_transcript`, then read the relevant page cursors. Reading
+one page does not establish coverage of the complete transcript.
 An unsafe unit returns metadata and access to the redacted projection, not raw
 context. These tools require the main local token, stay loopback-only, use no
 model, and do not change a provisional claim into verified truth. Keep private
 context and capabilities out of logs/publication. Search is lexical over safe
 candidate text/type, not a plaintext index or a full historical claim backfill.
-The compact `core` profile remains at 20 tools; `update_memory`,
+The compact `core` profile exposes 21 tools, including the transcript-build poll
+needed to finish a pending full-transcript read. Its startup instructions explain
+the separate stored-memory, cited-history, transcript and credential-metadata
+recall paths. `update_memory`,
 `set_project_goal`, and `correct_fact` are available in `full` instead of loading
 those mutation schemas into every ordinary retrieval session.
 
