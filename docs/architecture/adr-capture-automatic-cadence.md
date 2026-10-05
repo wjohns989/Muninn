@@ -25,6 +25,23 @@ source. The affected scheduler/automatic-service/transport suite passed 53 tests
 The historical original decision is retained below, not asserted as the current
 remote policy or an unresolved activation gate.
 
+## October 5 local-opportunity fairness revision
+
+Remote attempts update the shared minimum-attempt cooldown, but no longer reset
+the local maximum-wait timer. Otherwise continuous remote traffic during active
+chat can indefinitely postpone privacy-parked/local-only windows. A local-primary
+path or permitted pre-send local fallback resets local max-wait. This records an
+opportunity, including resource deferral, not a guarantee of inference or permission
+to occupy a busy GPU. Remote-only refusals do not become local fallbacks.
+
+No queue, lease, publication, spending, provider, opt-in or temporary-drain
+authority changes. Startup still starts the full grace and local max-wait period;
+foreground requests remain independent. The new behavioral regression failed
+against the prior service timer reset. The affected cadence/automatic-service/
+backlog-drain/window-queue suite passed 111 checks, including continuous remote
+activity, local-only jobs with remote opt-in, private fallback, GPU deferral and
+unchanged cooldown. Installation and actual runtime evidence follow separately.
+
 ## Decision
 
 Use the existing encrypted post-enable-watermark outbox and one shared analysis

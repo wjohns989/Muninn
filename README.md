@@ -1018,6 +1018,11 @@ chat activity after the existing attempt cooldown, selecting only remotely
 admitted windows and retaining foreground search priority. CPU planning likewise
 need not wait for quiet when remote consent is active. Privacy failures remain
 local; a remote refusal during chat activity does not silently run a GPU model.
+Remote attempts do not restart the local maximum-wait timer: private/local-only
+work gets an opportunity after quiet time or the configured maximum wait, still
+subject to foreground priority, queue capacity and GPU availability. A resource-
+deferred local opportunity resets that wait; this is not a promise to force GPU
+work while another application needs it.
 These workers default off; enabling both capture flags above activates local
 cadence without a manual batch command. No temporary catch-up deadline or budget
 is extended by persistent remote scheduling.

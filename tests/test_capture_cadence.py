@@ -118,3 +118,33 @@ def test_snapshot_reports_only_bounded_nonsecret_timing_state():
         "max_wait_remaining_seconds": 27.0,
         "attempt_cooldown_remaining_seconds": 1.0,
     }
+
+
+def test_remote_attempts_cannot_restart_private_local_max_wait():
+    clock = FakeClock(now=0)
+    cadence = SmallCaptureCadence(quiet_seconds=10, interval_seconds=4,
+                                  max_wait_seconds=30, clock=clock)
+    for moment in (0, 5, 10, 15, 20, 25):
+        clock.now = moment
+        cadence.note_activity()
+        cadence.note_attempt(local_opportunity=False)
+        assert not cadence.attempt_ready()
+        assert not cadence.analysis_ready()
+    clock.now = 30
+    cadence.note_activity()
+    assert cadence.analysis_ready()
+    assert cadence.snapshot()["max_wait_remaining_seconds"] == 0
+    cadence.note_local_opportunity()
+    assert cadence.attempt_ready()  # Marking local fallback adds no second cooldown.
+    assert not cadence.analysis_ready()
+    assert cadence.snapshot()["max_wait_remaining_seconds"] == 30
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "false"])
+def test_local_opportunity_flag_requires_boolean_without_changing_timers(value):
+    clock = FakeClock()
+    cadence = SmallCaptureCadence(clock=clock)
+    before = cadence.snapshot()
+    with pytest.raises(ValueError):
+        cadence.note_attempt(local_opportunity=value)
+    assert cadence.snapshot() == before

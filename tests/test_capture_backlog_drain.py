@@ -175,3 +175,47 @@ async def test_remote_scheduling_is_independent_of_quiet_but_not_consent_or_cool
     with pytest.raises(asyncio.CancelledError):
         await service._secure_analysis_loop()
     assert calls == ([] if expected is None else [expected])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_only,remote_bound,expected_calls,wait_remaining", [
+    (True, True, 1, 0),
+    (False, True, 2, 30),
+    (False, False, 1, 30),
+])
+async def test_worker_tracks_local_opportunity_not_remote_activity(
+        monkeypatch, tmp_path, remote_only, remote_bound, expected_calls, wait_remaining):
+    from muninn.history.remote_policy import write_policy
+
+    service, _archive, source, now = enabled_service(monkeypatch, tmp_path)
+    service._capture_cadence = SmallCaptureCadence(
+        quiet_seconds=10, interval_seconds=4, max_wait_seconds=30,
+        clock=lambda: now[0])
+    monkeypatch.setenv("MUNINN_CAPTURE_AUTO_REMOTE", "1" if remote_bound else "0")
+    write_policy(service.data_dir, enabled=True, daily_usd=5, monthly_usd=50,
+                 override_ceiling=False, fallback=lambda: (False, 1, 30, False))
+    source.write_text('{"type":"event_msg","payload":{"type":"user_message",'
+                      '"message":"An isolated scheduling observation."}}\n')
+    await service.capture(str(source), "codex")
+    await service._process_capture_plan_once()
+    monkeypatch.setenv("MUNINN_CAPTURE_AUTO_REMOTE", "1")
+    now[0] = 30
+    service._capture_cadence.note_activity()
+    calls = []
+
+    async def deferred(_history, _source, _descriptor, **kwargs):
+        calls.append(kwargs["allow_remote"])
+        return {"status": "deferred", "provider": None, "model": None,
+                "reason": "source_not_remote_safe" if kwargs["allow_remote"] else "gpu_busy"}
+
+    monkeypatch.setattr("muninn.history.secure_analysis.analyze_cited_window", deferred)
+    assert await service._process_secure_analysis_once(
+        include_capture=True, include_search=False, capture_remote_only=remote_only)
+    assert len(calls) == expected_calls
+    assert calls == ([True] if remote_only else [True, False] if remote_bound else [False])
+    status = service._capture_cadence.snapshot()
+    assert status["max_wait_remaining_seconds"] == wait_remaining
+    assert status["attempt_cooldown_remaining_seconds"] == 4
+    with service._require_capture_journal()._connect() as db:
+        row = db.execute("SELECT state,error_code,remote_dispatched FROM history_analysis_jobs").fetchone()
+    assert tuple(row) == ("retry", "source_not_remote_safe" if remote_only else "gpu_busy", 0)

@@ -81,12 +81,20 @@ class SmallCaptureCadence:
                         or max(0.0, now - self._last_attempt) >= self.interval_seconds)
             return ready and cooldown
 
-    def note_attempt(self) -> None:
-        """Start the cooldown when the owning worker begins an analysis attempt."""
+    def note_attempt(self, *, local_opportunity: bool = True) -> None:
+        """Rate-limit all attempts; only local opportunities reset local max-wait."""
+        if type(local_opportunity) is not bool:
+            raise ValueError("local_opportunity must be boolean")
         with self._lock:
             now = self._now()
             self._last_attempt = now
-            self._last_attempt_or_start = now
+            if local_opportunity:
+                self._last_attempt_or_start = now
+
+    def note_local_opportunity(self) -> None:
+        """Record a pre-send local fallback without a second attempt cooldown."""
+        with self._lock:
+            self._last_attempt_or_start = self._now()
 
     def attempt_ready(self) -> bool:
         """Keep the attempt interval when an explicit catch-up bypasses quiet time."""

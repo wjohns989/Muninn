@@ -1108,7 +1108,9 @@ class HistoryService:
                 # Rate-limit attempts, not foreground requests. This includes
                 # resource-deferred and reuse attempts; staged recovery above
                 # needs no new model attempt.
-                self._capture_cadence.note_attempt()
+                # Remote network work must not perpetually reset the maximum
+                # wait for private/local work during ongoing chat activity.
+                self._capture_cadence.note_attempt(local_opportunity=False)
             analysis_kwargs = dict(
                 allow_remote=remote_enabled, prefer_remote=job.lane == 1 and remote_enabled,
                 should_cancel=cancelled.is_set,
@@ -1121,6 +1123,8 @@ class HistoryService:
                 await asyncio.to_thread(journal.defer_analysis, job.job_id,
                                         job.lease_token, "remote_consent_revoked")
                 return True
+            if job.lane == 1 and not remote_enabled:
+                self._capture_cadence.note_local_opportunity()
             outcome = await analyze_cited_window(self, source, descriptor,
                                                  **analysis_kwargs, **reuse_kwargs)
             if capture_remote_only and outcome["status"] == "deferred":
@@ -1129,6 +1133,7 @@ class HistoryService:
                     and remote_was_not_sent and not capture_remote_only):
                 # A policy/budget/privacy denial before HTTP is safe to handle
                 # locally. An uncertain or sent POST must never be retried.
+                self._capture_cadence.note_local_opportunity()
                 outcome = await analyze_cited_window(
                     self, source, descriptor, allow_remote=False,
                     should_cancel=cancelled.is_set, expected_remote_generation=-1,
