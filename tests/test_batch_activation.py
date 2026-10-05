@@ -24,6 +24,40 @@ def test_disabled_by_default_does_not_create_outbox(tmp_path):
     assert not (archive.root / "historical-batches.db").exists()
 
 
+def test_partial_gathering_does_not_consume_consent_or_own_jobs(tmp_path):
+    journal, archive = history(tmp_path)
+    configure_batch(journal.policy_root, enabled=True)
+    before = read_batch_policy(journal.policy_root)
+    assert prepare_next_batch(journal, min_items=128) is None
+    assert journal.historical_batch_owner() is None
+    assert read_batch_policy(journal.policy_root) == before
+    assert not (archive.root / "historical-batches.db").exists()
+    assert prepare_next_batch(journal, min_items=1)
+
+
+def test_gathering_threshold_applies_after_payload_bound(tmp_path, monkeypatch):
+    from muninn.history import historical_batch
+    journal, archive = history(tmp_path)
+    configure_batch(journal.policy_root, enabled=True)
+    original = historical_batch.payload
+    def one_item_only(items):
+        if len(items) > 1:
+            raise historical_batch.BatchError("batch_request_bound")
+        return original(items)
+    monkeypatch.setattr(historical_batch, "payload", one_item_only)
+    assert prepare_next_batch(journal, min_items=2) is None
+    assert journal.historical_batch_owner() is None
+    ident = prepare_next_batch(journal, min_items=1)
+    assert len(BatchOutbox(archive).read(ident)["items"]) == 1
+
+
+@pytest.mark.parametrize("value", [0,129,True,1.5])
+def test_gathering_threshold_is_bounded(tmp_path, value):
+    journal, _archive = history(tmp_path)
+    with pytest.raises(ValueError):
+        prepare_next_batch(journal, min_items=value)
+
+
 def test_exact_binding_and_revoke_reenable_does_not_revive_old_batch(tmp_path):
     journal, archive = history(tmp_path)
     configure_batch(journal.policy_root, enabled=True)

@@ -107,6 +107,7 @@ class HistoryService:
         self._secure_analysis_wakeup = asyncio.Event()
         self._secure_analysis_active: tuple[str, threading.Event] | None = None
         self._historical_batch_worker = None
+        self._historical_batch_gather_deadline = None
         self._secure_capture_plan_task: Optional[asyncio.Task] = None
         self._secure_capture_plan_wakeup = asyncio.Event()
         self._capture_cadence = SmallCaptureCadence()
@@ -1241,8 +1242,21 @@ class HistoryService:
         if owner is None or owner["phase"] == "passed":
             policy = await asyncio.to_thread(read_batch_policy, journal.policy_root)
             if not policy["enabled"]:
+                self._historical_batch_gather_deadline = None
                 return False
-            preparation = asyncio.create_task(asyncio.to_thread(prepare_next_batch, journal))
+            from muninn.history.auto_routing import remote_policy_snapshot
+            remote = await asyncio.to_thread(remote_policy_snapshot, journal.policy_root)
+            if not remote.enabled:
+                self._historical_batch_gather_deadline = None
+                if self._historical_batch_worker is not None:
+                    self._historical_batch_worker.status = {"state": "remote_disabled"}
+                return True  # Keep unowned historical sync inference parked.
+            now = time.monotonic()
+            if getattr(self, "_historical_batch_gather_deadline", None) is None:
+                self._historical_batch_gather_deadline = now + 90
+            from muninn.history.historical_batch import MAX_ITEMS
+            min_items = MAX_ITEMS if now < self._historical_batch_gather_deadline else 1
+            preparation = asyncio.create_task(asyncio.to_thread(prepare_next_batch, journal, min_items=min_items))
             try:
                 ident = await asyncio.shield(preparation)
             except asyncio.CancelledError:
@@ -1257,8 +1271,14 @@ class HistoryService:
                         authorize_transaction=authorize_transaction,
                         authorize_submit=lambda generation: authorize_batch(journal, generation))
                 self._historical_batch_worker.status = {"state": "pilot_complete" if not policy["remaining_batches"]
-                                                        else "awaiting_screened_windows"}
+                                                        else ("gathering_batch" if min_items > 1
+                                                              else "awaiting_screened_windows"),
+                    "gather_remaining_seconds": max(0, self._historical_batch_gather_deadline - time.monotonic())}
                 return True
+            self._historical_batch_gather_deadline = None
+        else:
+            # A paid or owned checkpoint always bypasses gathering immediately.
+            self._historical_batch_gather_deadline = None
         if self._historical_batch_worker is None:
             from muninn.history.historical_batch_worker import HistoricalBatchWorker
             self._historical_batch_worker = HistoricalBatchWorker(journal,

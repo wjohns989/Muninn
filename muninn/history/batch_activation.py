@@ -147,8 +147,10 @@ def _park_refusal(journal, job_id, descriptor):
         return True
 
 
-def prepare_next_batch(journal):
+def prepare_next_batch(journal, *, min_items=1):
     """One checkpoint at a time; completed, dispatched and private work excluded."""
+    if type(min_items) is not int or not 1 <= min_items <= MAX_ITEMS:
+        raise ValueError("Invalid batch gathering threshold")
     policy = read_batch_policy(journal.policy_root)
     remote = remote_policy_snapshot(journal.policy_root)
     owner = journal.historical_batch_owner()
@@ -233,7 +235,7 @@ def prepare_next_batch(journal):
         bindings.append(binding)
         if len(bindings) == MAX_ITEMS:
             break
-    if not bindings:
+    if len(bindings) < min_items:
         return None
     outbox = BatchOutbox(journal.archive)
     ident = outbox.prepare([prepared[job_id] for job_id, _ in bindings], consent_generation=remote.generation)

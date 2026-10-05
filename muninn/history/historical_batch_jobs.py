@@ -276,6 +276,17 @@ class HistoricalBatchJobsMixin:
                     or [(i["job_id"], i["window"]) for i in stored["items"]] != [
                         (i["job_id"], i["window"]) for i in owner["members"]]):
                 raise VaultIntegrityError("Historical batch outbox binding differs")
+            if owner["phase"] != "owned":
+                from muninn.history.remote_accounting import AdmissionError, settled_response, unknown_response
+                try:
+                    settled = settled_response(self.policy_root, owner["admission_id"],
+                                               owner["generation"], batch_owner=owner["id"])
+                    valid = settled or (owner["phase"] == "sent" and unknown_response(
+                        self.policy_root, owner["admission_id"], owner["generation"], batch_owner=owner["id"]))
+                except AdmissionError as exc:
+                    raise VaultIntegrityError("Historical batch accounting is unavailable") from exc
+                if not valid:
+                    raise VaultIntegrityError("Historical batch accounting binding differs")
             expected = self._historical_batch_expected(stored) if owner["phase"] == "passed" else None
             for member in owner["members"]:
                 row = self._historical_batch_member_row(db, owner, member)

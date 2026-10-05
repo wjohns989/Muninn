@@ -296,6 +296,11 @@ never deletes or cancels provider batches.
 
 Each batch holds at most 128 screened windows and an 8 MiB serialized request.
 Additional windows stay queued for later batches, without a source-size cutoff.
+The service gathers screened work for at most 90 seconds, submits a full batch
+immediately, then releases a partial batch at the deadline. Gathering never
+delays recovery of an already owned or submitted checkpoint, and revoking either
+permission resets the gathering cycle. This reduces tiny submissions without
+making a full batch a prerequisite for progress.
 While an unexhausted opt-in is enabled, CPU planning can prepare 128 runnable
 windows instead of the normal 24, preserving eight foreground analysis slots
 even after permission is revoked. CPU capture, transcript search and retrieval
@@ -891,9 +896,20 @@ never replaced. Finalization currently supports Windows and Linux with
 `renameat2(RENAME_NOREPLACE)`; unsupported systems/filesystems fail closed.
 The journal and encrypted sidecars use SQLite online snapshots, not raw live DB
 copies. These checks establish reference consistency, not a single snapshot time
-across all writers. This archive command does **not** include the separate
-credential vault or remote-policy/accounting directory: back those up separately
-until a full-installation backup coordinator is available. See
+across all writers. When managed remote accounting exists, this command creates
+a self-contained runtime bundle: `history_secure_archive/`, a disabled
+`remote_policy/`, and an authenticated encrypted accounting snapshot bound to
+the history recovery key. Paid publication receipts, exact batch ownership,
+settled costs and unresolved billing holds are verified together. Restore uses
+the encrypted accounting, not the plaintext sibling database; both remote and
+batch permissions remain disabled until explicit reconsent. For this format,
+`restore --root` names the new **runtime directory**, and its archive is inside
+`history_secure_archive/`. Managed-accounting recovery requires SQLite
+serialization support (normally Python 3.11+); unsupported runtimes fail before
+copying. Archives without managed accounting retain the legacy archive-root
+format. This is not a full-installation backup: the separate credential vault,
+API keys, environment/model settings and older stores are **not** included.
+Ensure sufficient space for both backup and restore before a recovery drill. See
 [the recovery decision](docs/architecture/adr-archive-backup-reference-integrity.md).
 Keep the recovery passphrase outside both the archive and its backups.
 Existing older gzip history copies and source transcripts are **not**

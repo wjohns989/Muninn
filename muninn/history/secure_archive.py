@@ -613,7 +613,8 @@ class SecureHistoryArchive:
             verify_private(self._header_path)
 
     @classmethod
-    def _copy_archive_files(cls, source_root: Path, destination: Path, *, copy_journal: bool = True) -> None:
+    def _copy_archive_files(cls, source_root: Path, destination: Path, *, copy_journal: bool = True,
+                            copy_accounting: bool = True) -> None:
         """Copy ciphertext only into a new owner-only root; never mutate source."""
         source_root = Path(source_root)
         destination = Path(destination)
@@ -643,6 +644,11 @@ class SecureHistoryArchive:
             copy_sealed(source, destination / source.name)
         for source in (source_root / "blobs").glob("*.enc"):
             copy_sealed(source, destination / "blobs" / source.name)
+        from muninn.history.portable_accounting import SNAPSHOT
+        accounting = source_root / SNAPSHOT
+        if copy_accounting and (accounting.exists() or _is_link(accounting)):
+            verify_private(accounting)
+            copy_sealed(accounting, destination / SNAPSHOT)
         journal = source_root / "capture-jobs.db"
         if copy_journal and (journal.exists() or _is_link(journal)):
             import sqlite3
@@ -721,89 +727,147 @@ class SecureHistoryArchive:
 
     @classmethod
     def restore_from_backup(cls, backup_root: Path, destination: Path,
-                            passphrase: str) -> "SecureHistoryArchive":
-        """Portable restore to a new private root; verify all snapshots."""
+                            passphrase: str, *, on_staging=None) -> "SecureHistoryArchive":
+        """Restore a legacy archive or self-contained runtime to a new root.
+
+        Runtime bundles return the archive inside destination/history_secure_archive.
+        Their accounting is reconstructed from authenticated ciphertext with all
+        provider policies disabled. Never write to the destination's parent.
+        """
+        from muninn.history.portable_accounting import (
+            MAGIC,
+            MARKER,
+            SNAPSHOT,
+            _marker,
+            require_snapshot_support,
+            restore_into,
+        )
+        backup_root = Path(backup_root)
+        runtime = ((backup_root / MARKER).exists() or _is_link(backup_root / MARKER)
+                   or (backup_root / "history_secure_archive").exists())
+        source = backup_root
+        if runtime:
+            require_snapshot_support()
+            _marker(backup_root / MARKER, MAGIC)
+            source = backup_root / "history_secure_archive"
+            verify_private(source / SNAPSHOT)
+            if (backup_root / "header.json").exists():
+                raise VaultIntegrityError("History backup format is ambiguous")
+        elif (source / SNAPSHOT).exists():
+            raise VaultIntegrityError("Accounting recovery requires the full runtime bundle")
         destination = Path(destination)
         staging = cls._staging_destination(destination)
-        cls._copy_archive_files(backup_root, staging)
-        restored = cls(staging, passphrase)
+        if on_staging is not None:
+            on_staging(staging)
+        if runtime:
+            create_private_directory(staging)
+        archive_staging = staging / "history_secure_archive" if runtime else staging
+        cls._copy_archive_files(source, archive_staging)
+        restored = cls(archive_staging, passphrase)
+        if runtime:
+            restore_into(restored, staging)
         restored.verify_all()
-        if (staging / "historical-batches-managed").exists():
+        if (archive_staging / "historical-batches-managed").exists():
             from muninn.history.historical_batch import BatchOutbox
 
             BatchOutbox(restored).verify_all()
-        if (staging / "capture-jobs.db").exists():
+        if (archive_staging / "capture-jobs.db").exists():
             from muninn.history.capture_journal import CaptureJournal
 
             journal = CaptureJournal(restored, recover=False)
             journal.verify_all()
             journal.verify_publications()
-        if (staging / "source-evidence").exists():
+        if (archive_staging / "source-evidence").exists():
             from muninn.history.source_evidence import SourceEvidenceStore
 
             SourceEvidenceStore(restored).verify_all()
-        if (staging / "credential-context").exists():
+        if (archive_staging / "credential-context").exists():
             from muninn.history.credential_context import CredentialContextStore
 
             CredentialContextStore(restored).verify_all()
-        if (staging / "memory-ledger").exists():
+        if (archive_staging / "memory-ledger").exists():
             from muninn.history.memory_ledger import MemoryLedger
 
             MemoryLedger(restored).verify_all()
-        if (staging / "cited-windows").exists():
+        if (archive_staging / "cited-windows").exists():
             from muninn.history.cited_windows import CitedWindowPlanStore
 
             CitedWindowPlanStore(restored).verify_all()
         # Rebase the already authenticated object before the final publication.
         # No second unlock or fallible filesystem operation follows success.
-        restored.root = destination
-        restored._header_path = destination / "header.json"
-        restored._lock_path = destination / "archive.lock"
-        restored._blobs = destination / "blobs"
+        restored.root = destination / "history_secure_archive" if runtime else destination
+        restored._header_path = restored.root / "header.json"
+        restored._lock_path = restored.root / "archive.lock"
+        restored._blobs = restored.root / "blobs"
         cls._publish_staging(staging, destination)
         return restored
 
-    def backup_to(self, destination: Path) -> dict[str, int]:
+    def backup_to(self, destination: Path, *, policy_root=None, on_staging=None) -> dict[str, int]:
         """Copy ciphertext and cross-check references, then publish a private backup.
 
-        This is not a single instant across independently written stores, nor
-        a backup of the separate credential vault or remote-policy directory.
+        Managed accounting produces a self-contained runtime bundle. Its copied
+        remote/batch permissions are disabled and its billing snapshot encrypted
+        under this archive's portable key. The separate credential vault and
+        environment/model configuration are deliberately not included.
+        Independent stores may have different snapshot times; cross-checks reject
+        inconsistent references instead of claiming a globally atomic snapshot.
         """
         if os.name != "nt":
             raise VaultIntegrityError("Local unattended backup requires Windows user protection")
         destination = Path(destination)
         staging = self._staging_destination(destination)
+        from muninn.history.portable_accounting import (
+            has_accounting,
+            require_snapshot_support,
+            snapshot_into,
+            verify_snapshot,
+        )
+        policy_root = Path(policy_root) if policy_root is not None else self.root.parent
+        runtime = has_accounting(policy_root)
+        if runtime:
+            require_snapshot_support()
+        if on_staging is not None:
+            on_staging(staging)
+        if runtime:
+            create_private_directory(staging)
+        archive_staging = staging / "history_secure_archive" if runtime else staging
         with self._write_lock():
             self._load_manifest()
-            self._copy_archive_files(self.root, staging, copy_journal=False)
+            self._copy_archive_files(self.root, archive_staging, copy_journal=False, copy_accounting=False)
             from muninn.history.capture_journal import CaptureJournal
 
-            CaptureJournal(self, recover=False).backup_to(staging / "capture-jobs.db")
-            backup = SecureHistoryArchive(staging)
+            CaptureJournal(self, recover=False, policy_root=policy_root).backup_to(archive_staging / "capture-jobs.db")
+            backup = SecureHistoryArchive(archive_staging)
+            if runtime:
+                snapshot_into(backup, policy_root, staging)
+                verify_snapshot(backup, staging)
+            elif has_accounting(policy_root):
+                raise VaultIntegrityError("History accounting changed during backup; retry is required")
             if backup.vault_id != self.vault_id:
                 raise VaultIntegrityError("History backup identity mismatch")
             report = backup.verify_all()
-            if (staging / "historical-batches-managed").exists():
+            report["runtime_bundle"] = int(runtime)
+            if (archive_staging / "historical-batches-managed").exists():
                 from muninn.history.historical_batch import BatchOutbox
 
                 report["historical_batches_verified"] = BatchOutbox(backup).verify_all()["batches"]
             journal = CaptureJournal(backup, recover=False)
             journal.verify_all()
             report["publication_receipts_verified"] = journal.verify_publications()
-            if (staging / "source-evidence").exists():
+            if (archive_staging / "source-evidence").exists():
                 from muninn.history.source_evidence import SourceEvidenceStore
 
                 report["evidence_snapshots_verified"] = SourceEvidenceStore(backup).verify_all()["snapshots"]
-            if (staging / "credential-context").exists():
+            if (archive_staging / "credential-context").exists():
                 from muninn.history.credential_context import CredentialContextStore
 
                 report["credential_context_snapshots_verified"] = (
                     CredentialContextStore(backup).verify_all()["snapshots"])
-            if (staging / "memory-ledger").exists():
+            if (archive_staging / "memory-ledger").exists():
                 from muninn.history.memory_ledger import MemoryLedger
 
                 report["memory_candidates_verified"] = MemoryLedger(backup).verify_all()["candidates"]
-            if (staging / "cited-windows").exists():
+            if (archive_staging / "cited-windows").exists():
                 from muninn.history.cited_windows import CitedWindowPlanStore
 
                 report["cited_windows_verified"] = CitedWindowPlanStore(backup).verify_all()["windows"]
