@@ -1097,6 +1097,74 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memories(args: argparse.Namespace) -> int:
+    """Passphrase-authenticated local review, never a shared-bearer API role."""
+    import getpass
+
+    from muninn.history.credential_crypto import VaultIntegrityError
+    from muninn.history.memory_ledger import (
+        MemoryLedger, MemoryLedgerIntegrityError, _REVIEW_REASONS,
+    )
+    from muninn.history.secure_archive import SecureHistoryArchive
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise SystemExit("Memory review requires an interactive local terminal.")
+    if args.action not in {"status", "get", "review"} or args.archive_root is None:
+        raise SystemExit("A memory action and --archive-root are required.")
+    if args.action in {"get", "review"} and not args.record_id:
+        raise SystemExit("Exact --record-id is required.")
+    if args.action == "review" and (
+        args.state not in _REVIEW_REASONS
+        or args.reason not in _REVIEW_REASONS[args.state]
+        or args.expected_state not in {"provisional", "filed", "needs_user", "rejected"}
+        or args.backup_before is None
+    ):
+        raise SystemExit("Review requires a state-specific reason, expected state and --backup-before.")
+    passphrase = getpass.getpass("History archive recovery passphrase (hidden): ")
+    try:
+        archive = SecureHistoryArchive(args.archive_root, passphrase)
+        # Drop the prompt result after the portable envelope is authenticated.
+        del passphrase
+        ledger = MemoryLedger(archive)
+        if args.action == "status":
+            print(json.dumps(ledger.review_status(), sort_keys=True))
+            return 0
+        view = ledger.source(args.record_id, max_chars=2000)
+        if view is None:
+            raise SystemExit("Memory reference not found.")
+        # Never print the expiring transcript capability into terminal logs.
+        shown = {key: value for key, value in view.items()
+                 if key not in {"transcript_capability", "transcript_tool"}}
+        if args.action == "get":
+            print(json.dumps(shown, sort_keys=True))
+            return 0
+        if view["memory"]["state"] != args.expected_state:
+            raise SystemExit("Memory review state changed; inspect the current candidate first.")
+        if "text" not in view["memory"] or view["context_state"] != "available":
+            raise SystemExit("Private or unscreened memories require the credential-vault workflow.")
+        print(json.dumps(shown, sort_keys=True), flush=True)
+        confirmation = f"{args.state} {args.record_id}"
+        if input(f"Type '{confirmation}' to confirm this exact candidate: ") != confirmation:
+            print(json.dumps({"stage": "cancelled", "changed": False}, sort_keys=True))
+            return 2
+        backup = ledger.backup_review_preimage(args.backup_before)
+        print(json.dumps({"stage": "validated_ledger_only_preimage", **backup},
+                         sort_keys=True), flush=True)
+        ledger.resolve_review(args.record_id, state=args.state,
+                              expected_state=args.expected_state, reason=args.reason)
+        current = ledger.get(args.record_id)
+        if current is None or current["state"] != args.state:
+            raise MemoryLedgerIntegrityError("Review readback failed")
+        print(json.dumps({"stage": "review_recorded", "id": args.record_id,
+                          "state": current["state"], "truth_status": current["truth_status"]},
+                         sort_keys=True))
+        return 0
+    except (VaultIntegrityError, MemoryLedgerIntegrityError, PermissionError,
+            OSError, ValueError) as exc:
+        # No provider body, passphrase, source path or private payload in errors.
+        raise SystemExit(f"Memory operation failed ({type(exc).__name__}).") from None
+
+
 def cmd_credentials(args: argparse.Namespace) -> int:
     """Explicit local-only access to the separate encrypted credential vault."""
     import getpass
@@ -1454,6 +1522,21 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--offset", type=int, default=0)
     history.add_argument("--limit", type=int, default=50)
 
+    memories = subparsers.add_parser(
+        "memories", help="Inspect and resolve noncredential cited memories in a local terminal.",
+    )
+    memories.add_argument("action", choices=["status", "get", "review"])
+    memories.add_argument("--archive-root", type=Path, required=True,
+                          help="Existing encrypted history archive; portable recovery passphrase prompted locally.")
+    memories.add_argument("--record-id", help="Exact cited-memory id returned by agent search.")
+    memories.add_argument("--state", choices=["filed", "rejected", "needs_user"])
+    memories.add_argument("--expected-state", choices=["provisional", "filed", "rejected", "needs_user"],
+                          help="Current state you inspected; stale changes are rejected.")
+    memories.add_argument("--reason", choices=["user_confirmed", "source_supported", "user_rejected",
+                                              "not_reliable", "insufficient_context", "possible_contradiction"])
+    memories.add_argument("--backup-before", type=Path,
+                          help="New private directory outside the archive for a verified encrypted ledger-only preimage.")
+
     credentials = subparsers.add_parser(
         "credentials",
         help="Manage the separate encrypted credential vault and scan approved local project files.",
@@ -1538,6 +1621,8 @@ def main() -> int:
         return cmd_import(args)
     if args.command == "history":
         return cmd_history(args)
+    if args.command == "memories":
+        return cmd_memories(args)
     if args.command == "credentials":
         if args.action == "search" and not args.query:
             parser.error("credentials search requires a metadata query")

@@ -57,6 +57,49 @@ def enabled_service(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome_kind", ["private", "denied", "dispatched"])
+async def test_remote_only_cooldown_tracks_dispatch_not_private_screening(monkeypatch, tmp_path, outcome_kind):
+    from types import SimpleNamespace
+    from muninn.history import secure_analysis
+
+    service, _archive, source, now = enabled_service(monkeypatch, tmp_path)
+    text = ("SERVICE_API_KEY=sk-synthetic-only-secret" if outcome_kind == "private"
+            else "Ordinary isolated capture.")  # gitleaks:allow synthetic canary
+    import json
+    source.write_text(json.dumps({"type": "event_msg", "payload": {
+        "type": "user_message", "message": text}}) + "\n", encoding="utf-8")
+    await service.capture(str(source), "codex")
+    monkeypatch.setattr(service, "_capture_remote_enabled", lambda: True)
+    monkeypatch.setattr("muninn.history.auto_routing.remote_policy_snapshot",
+                        lambda _: SimpleNamespace(enabled=True, generation=1))
+    journal = service._require_capture_journal()
+    receipt = journal.pending_enrichment()[0]
+    journal.queue_capture_windows(receipt, limit=1, remote_policy_generation=1)
+    now[0] = 300.0
+
+    async def analyze(history, cited_source, descriptor, **kwargs):
+        assert kwargs["allow_remote"] is True
+        if outcome_kind == "private":
+            assert cited_source.remote_input(descriptor) is None
+            return {"status": "deferred", "reason": "source_not_remote_safe"}
+        if outcome_kind == "dispatched":
+            assert await kwargs["before_remote"]()
+            # A sent request remains throttled even when its outcome is uncertain.
+            assert not service._capture_cadence.attempt_ready()
+            return {"status": "deferred", "reason": "remote_cost_unresolved"}
+        return {"status": "deferred", "reason": "daily_zdr_cap_unverified"}
+
+    monkeypatch.setattr(secure_analysis, "analyze_cited_window", analyze)
+    assert await service._process_secure_analysis_once(
+        include_capture=True, include_search=False, capture_remote_only=True)
+    assert service._capture_cadence.attempt_ready() is (outcome_kind == "private")
+    with journal._connect() as db:
+        row = db.execute("SELECT state,remote_dispatched FROM history_analysis_jobs WHERE lane=1").fetchone()
+    assert row["remote_dispatched"] == (outcome_kind == "dispatched")
+    assert row["state"] == ("outcome_unknown" if outcome_kind == "dispatched" else "retry")
+
+
+@pytest.mark.asyncio
 async def test_automatic_planner_requires_quiet_and_foreground_gate(monkeypatch, tmp_path):
     service, archive, source, now = enabled_service(monkeypatch, tmp_path)
     source.write_text('{"type":"event_msg","payload":{"type":"user_message","message":"Actual isolated chat."}}\n')

@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
@@ -35,6 +36,13 @@ TYPES = {"observation", "fact", "preference", "decision", "task", "procedure",
 _ZERO = "0" * 64
 _LIMIT = 65536
 _USER_HOME = re.compile(r"(?i)(?:\b[a-z]:[\\/]+users[\\/]+|(?<!\w)/home/)[^\\/\s\"']+")
+_REVIEW_STATES = {"filed", "rejected", "needs_user"}
+_REVIEWABLE_STATES = _REVIEW_STATES | {"provisional"}
+_REVIEW_REASONS = {
+    "filed": {"user_confirmed", "source_supported"},
+    "rejected": {"user_rejected", "not_reliable"},
+    "needs_user": {"insufficient_context", "possible_contradiction"},
+}
 
 
 class MemoryLedgerIntegrityError(RuntimeError):
@@ -393,13 +401,36 @@ class MemoryLedger:
                         raise MemoryLedgerIntegrityError("Duplicate memory candidate")
                     self._check_candidate(payload)
                     candidate, state = payload, payload["state"]
-                elif payload.get("event") == "decision" and candidate is not None:
-                    if payload.get("state") != "needs_user":
-                        raise MemoryLedgerIntegrityError("Invalid memory review decision")
-                    state = payload["state"]
+                elif candidate is not None and payload.get("event") in ("decision", "human_review"):
+                    state = self._apply_review_event(ident, candidate, state, payload)
                 else:
                     raise MemoryLedgerIntegrityError("Memory review has no candidate")
         return candidate, state
+
+    def _apply_review_event(self, ident, candidate, current_state, payload):
+        """Validate a review transition while retaining legacy policy events."""
+        if payload.get("event") == "decision":
+            if payload.get("state") != "needs_user":
+                raise MemoryLedgerIntegrityError("Invalid memory review decision")
+            return "needs_user"
+        required = {"event", "state", "expected_state", "reason", "actor",
+                    "candidate_sha256", "citation_sha256"}
+        state = payload.get("state")
+        if (set(payload) != required or payload.get("event") != "human_review"
+                or type(state) is not str
+                or state not in _REVIEW_STATES
+                or payload.get("expected_state") != current_state
+                or current_state not in _REVIEWABLE_STATES
+                or type(payload.get("reason")) is not str
+                or payload.get("reason") not in _REVIEW_REASONS[state]
+                or payload.get("actor") != "local-user"
+                or candidate.get("credential_risk") is not False
+                or candidate.get("screening") != "complete_unit"
+                or not isinstance(candidate.get("citation"), dict)
+                or payload.get("candidate_sha256") != hashlib.sha256(_json(candidate)).hexdigest()
+                or payload.get("citation_sha256") != hashlib.sha256(_json(candidate["citation"])).hexdigest()):
+            raise MemoryLedgerIntegrityError("Memory review decision authentication failed")
+        return state
 
     def _public_candidate(self, ident, candidate, state):
         if candidate is None: return None
@@ -443,11 +474,16 @@ class MemoryLedger:
         terms = list(dict.fromkeys(_terms(query)))
         if not 1 <= len(terms) <= 8:
             raise ValueError("Invalid cited memory query")
-        selected, total = OrderedDict(), 0
+        candidates, current_states, matching = {}, {}, OrderedDict()
         with self._connect() as db:
             db.execute("BEGIN")
             for ref, payload in self._walk(db):
                 if payload.get("event") == "candidate":
+                    if ref in candidates:
+                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
+                    self._check_candidate(payload)
+                    candidates[ref] = payload
+                    current_states[ref] = payload["state"]
                     # Never match private credential text, even if the caller
                     # happens to know it. Exact refs use metadata-only get.
                     if payload["credential_risk"] or payload["screening"] != "complete_unit":
@@ -455,21 +491,19 @@ class MemoryLedger:
                     safe_text = sanitize_agent_span(payload["text"], max_chars=2048)
                     searchable = (safe_text + ' ' + payload["type"]).casefold()
                     if not all(term in searchable for term in terms): continue
-                    self._check_candidate(payload)
-                    public = self._public_candidate(ref, payload, payload["state"])
+                    public = self._public_candidate(ref, payload, current_states[ref])
                     if "text" not in public: continue
-                    if ref in selected:
-                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
-                    total += 1
-                    selected[ref] = public
-                    if len(selected) > limit: selected.popitem(last=False)
-                elif payload.get("event") == "decision":
-                    if payload.get("state") != "needs_user":
-                        raise MemoryLedgerIntegrityError("Invalid memory review decision")
-                    if ref in selected: selected[ref]["state"] = "needs_user"
+                    matching[ref] = public
+                elif payload.get("event") in ("decision", "human_review") and ref in candidates:
+                    current_states[ref] = self._apply_review_event(
+                        ref, candidates[ref], current_states[ref], payload)
+                    if ref in matching:
+                        matching[ref]["state"] = current_states[ref]
                 else:
                     raise MemoryLedgerIntegrityError("Invalid memory event sequence")
-        return {"matches": list(reversed(selected.values())), "total_matches": total,
+        eligible = [item for item in matching.values() if item["state"] != "rejected"]
+        total = len(eligible)
+        return {"matches": list(reversed(eligible[-limit:])), "total_matches": total,
                 "truncated": total > limit, "ordering": "newest_publication_first"}
 
     def source(self, ident, *, max_chars=3000):
@@ -513,20 +547,138 @@ class MemoryLedger:
         self._append(ident, {"event": "decision", "state": "needs_user",
                              "reason": reason, "actor": "local-evidence-policy"})
 
-    def _verify_snapshot(self, db):
+    def resolve_review(self, ident, *, state, expected_state, reason):
+        """Append an operator decision; this API is for an explicitly unlocked local CLI."""
+        if not getattr(self.archive, "_unlocked_with_passphrase", False):
+            raise PermissionError("Memory review requires a portable passphrase unlock")
+        if (not self._hex(ident) or type(state) is not str or state not in _REVIEW_STATES
+                or type(expected_state) is not str
+                or expected_state not in _REVIEWABLE_STATES
+                or type(reason) is not str
+                or reason not in _REVIEW_REASONS[state]):
+            raise ValueError("Invalid bounded memory review decision")
+        # Do the expensive full-unit privacy/source check before taking the
+        # ledger writer. The immutable candidate/citation binding is rechecked
+        # again inside the CAS transaction below.
+        candidate, observed_state = self._read_candidate(ident)
+        if candidate is None or observed_state != expected_state:
+            raise ValueError("Memory review state changed")
+        if (candidate.get("credential_risk") is not False
+                or candidate.get("screening") != "complete_unit"
+                or not self._public_text_safe(candidate)):
+            raise ValueError("Only safe noncredential cited memories can be reviewed")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current, current_state = None, None
+            for ref, payload in self._walk(db):
+                if ref != ident:
+                    continue
+                if payload.get("event") == "candidate":
+                    if current is not None:
+                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
+                    self._check_candidate(payload)
+                    current, current_state = payload, payload["state"]
+                elif current is not None and payload.get("event") in ("decision", "human_review"):
+                    current_state = self._apply_review_event(ref, current, current_state, payload)
+                else:
+                    raise MemoryLedgerIntegrityError("Memory review has no candidate")
+            if (current is None or current_state != expected_state
+                    or _json(current) != _json(candidate)
+                    or current.get("credential_risk") is not False):
+                raise ValueError("Memory review state changed")
+            event = {"event": "human_review", "state": state,
+                     "expected_state": expected_state, "reason": reason,
+                     "actor": "local-user",
+                     "candidate_sha256": hashlib.sha256(_json(current)).hexdigest(),
+                     "citation_sha256": hashlib.sha256(_json(current["citation"])).hexdigest()}
+            head = self._head(db)
+            seq = head["seq"] + 1
+            sealed = self._seal({"previous": head["digest"], "payload": event}, "event", seq, ident)
+            db.execute("INSERT INTO events VALUES(?,?,?)", (seq, ident, sealed))
+            self._set_head(db, seq, self._digest(seq, ident, sealed))
+        self._screen_cache.clear()
+        return ident
+
+    def review_status(self):
+        """Return aggregate state counts, excluding credential-risk candidates."""
+        with self._connect() as db:
+            db.execute("BEGIN")
+            _report, candidates, states = self._review_snapshot(db)
+        counts = {state: 0 for state in ("provisional", "filed", "needs_user", "rejected")}
+        for ref, candidate in candidates.items():
+            if candidate.get("credential_risk") is False and candidate.get("screening") == "complete_unit":
+                counts[states[ref]] += 1
+        return counts
+
+    def backup_review_preimage(self, destination):
+        """Create a verified, encrypted ledger-only rollback preimage in a new private directory.
+
+        This file depends on the original archive key and cited source archive;
+        it is deliberately not a standalone portable archive backup.
+        """
+        if not getattr(self.archive, "_unlocked_with_passphrase", False):
+            raise PermissionError("Review preimage requires a portable passphrase unlock")
+        destination = Path(os.path.abspath(destination))
+        if not destination.parent.is_dir() or destination.exists() or destination.is_symlink():
+            raise ValueError("Review preimage destination must be a new directory")
+        archive_root = Path(self.archive.root).resolve()
+        try:
+            if os.path.commonpath((os.path.normcase(str(destination)),
+                                   os.path.normcase(str(archive_root)))) == os.path.normcase(str(archive_root)):
+                raise ValueError("Review preimage must be outside the archive")
+        except ValueError as exc:
+            if str(exc) == "Review preimage must be outside the archive":
+                raise
+            raise ValueError("Invalid review preimage destination") from exc
+        current = Path(destination.anchor)
+        for part in destination.parts[1:]:
+            current = current / part
+            if current.exists():
+                details = current.lstat()
+                reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                if stat.S_ISLNK(details.st_mode) or getattr(details, "st_file_attributes", 0) & reparse:
+                    raise ValueError("Review preimage path contains a reparse point")
+        verify_private(destination.parent)
+        create_private_directory(destination)
+        snapshot_path = destination / "memory-ledger.sqlite3"
+        create_private_file(snapshot_path)
+        with self._connect() as source:
+            source.execute("BEGIN")
+            before = self._verify_snapshot(source)
+            source_head = self._head(source)
+            copied = sqlite3.connect(snapshot_path)
+            try:
+                source.backup(copied)
+                if copied.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise MemoryLedgerIntegrityError("Review preimage database integrity failed")
+                after = self._verify_snapshot(copied)
+                copied_head = self._head(copied)
+                if before != after or source_head != copied_head:
+                    raise MemoryLedgerIntegrityError("Review preimage does not match the verified ledger")
+            finally:
+                copied.close()
+        verify_private(snapshot_path)
+        return {"path": str(snapshot_path), **before}
+
+    def _review_snapshot(self, db):
         report = {"events": 0, "candidates": 0, "decisions": 0}
-        candidates = set()
+        candidates, states = {}, {}
         for ref, payload in self._walk(db):
             report["events"] += 1
             if payload.get("event") == "candidate" and ref not in candidates:
                 self._check_candidate(payload)
-                candidates.add(ref)
+                candidates[ref] = payload
+                states[ref] = payload["state"]
                 report["candidates"] += 1
-            elif (payload.get("event") == "decision" and ref in candidates
-                  and payload.get("state") == "needs_user"):
+            elif payload.get("event") in ("decision", "human_review") and ref in candidates:
+                states[ref] = self._apply_review_event(ref, candidates[ref], states[ref], payload)
                 report["decisions"] += 1
             else:
                 raise MemoryLedgerIntegrityError("Invalid memory event sequence")
+        return report, candidates, states
+
+    def _verify_snapshot(self, db):
+        report, _candidates, _states = self._review_snapshot(db)
         return report
 
     def verify_all(self):

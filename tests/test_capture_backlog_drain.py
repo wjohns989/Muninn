@@ -241,7 +241,7 @@ async def test_worker_tracks_local_opportunity_not_remote_activity(
     assert calls == ([True] if remote_only else [True, False] if remote_bound else [False])
     status = service._capture_cadence.snapshot()
     assert status["max_wait_remaining_seconds"] == wait_remaining
-    assert status["attempt_cooldown_remaining_seconds"] == 4
+    assert status["attempt_cooldown_remaining_seconds"] == (0 if remote_only else 4)
     with service._require_capture_journal()._connect() as db:
         row = db.execute("SELECT state,error_code,remote_dispatched FROM history_analysis_jobs").fetchone()
     assert tuple(row) == ("retry", "source_not_remote_safe" if remote_only else "gpu_busy", 0)

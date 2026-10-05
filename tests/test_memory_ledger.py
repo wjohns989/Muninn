@@ -8,6 +8,7 @@ import pytest
 from muninn.history.memory_ledger import MemoryLedger, MemoryLedgerIntegrityError
 from muninn.history.secure_archive import SecureHistoryArchive
 from muninn.history.source_evidence import SourceEvidenceStore
+from muninn.history.private_acl import create_private_directory
 
 
 PHRASE = "synthetic portable recovery phrase"
@@ -313,6 +314,133 @@ def test_review_decision_appends_without_erasing_observation(tmp_path):
     assert result["state"] == "needs_user" and result["text"] == "I want source citations kept."
     assert result["truth_status"] == "unverified_assertion"
     assert ledger.verify_all() == {"events": 2, "candidates": 1, "decisions": 1}
+
+
+def test_human_review_requires_portable_unlock_and_never_verifies_truth(tmp_path, monkeypatch):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    ident = record(ledger, entry, attempt, page)
+    before = ledger.get(ident)
+    monkeypatch.setattr(archive, "_unlocked_with_passphrase", False)
+    with pytest.raises(PermissionError):
+        ledger.resolve_review(ident, state="filed", expected_state="filed", reason="user_confirmed")
+    assert ledger.verify_all() == {"events": 1, "candidates": 1, "decisions": 0}
+    monkeypatch.setattr(archive, "_unlocked_with_passphrase", True)
+    ledger.resolve_review(ident, state="rejected", expected_state="filed", reason="user_rejected")
+    after = MemoryLedger(archive).get(ident)
+    assert after["state"] == "rejected"
+    for key in ("type", "truth_status", "epistemic_kind", "text", "quote", "source_ref",
+                "event_at", "time_basis", "project_ref", "project_basis"):
+        assert after[key] == before[key]
+    assert after["truth_status"] == "unverified_assertion"
+    assert ledger.verify_all() == {"events": 2, "candidates": 1, "decisions": 1}
+
+
+def test_human_review_rejects_credentials_and_stale_compare_without_appending(tmp_path):
+    archive, entry, attempt, page = fixture(tmp_path, text="SERVICE_API_KEY=synthetic-only-value")
+    ledger = MemoryLedger(archive)
+    ident = record(ledger, entry, attempt, page, text="SERVICE_API_KEY=synthetic-only-value",
+                   type="possible_credential")
+    before = ledger.verify_all()
+    with pytest.raises(ValueError):
+        ledger.resolve_review(ident, state="filed", expected_state="pending", reason="user_confirmed")
+    assert ledger.verify_all() == before
+
+    stale_root = tmp_path / "stale"
+    stale_root.mkdir()
+    archive, entry, attempt, page = fixture(stale_root)
+    ledger = MemoryLedger(archive)
+    ident = record(ledger, entry, attempt, page)
+    ledger.resolve_review(ident, state="needs_user", expected_state="filed",
+                          reason="insufficient_context")
+    before = ledger.verify_all()
+    with pytest.raises(ValueError):
+        ledger.resolve_review(ident, state="filed", expected_state="filed", reason="user_confirmed")
+    assert ledger.verify_all() == before
+
+
+def test_rejected_human_memory_is_hidden_from_search_but_available_by_exact_reference(tmp_path):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    ident = record(ledger, entry, attempt, page)
+    ledger.resolve_review(ident, state="rejected", expected_state="filed", reason="not_reliable")
+    assert ledger.search("citations")["matches"] == []
+    result = ledger.get(ident)
+    assert result["state"] == "rejected" and result["text"] == "I want source citations kept."
+    assert ledger.review_status() == {"provisional": 0, "filed": 0, "needs_user": 0, "rejected": 1}
+
+
+def test_human_review_chain_binding_is_verified_and_legacy_needs_user_still_works(tmp_path):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    ident = record(ledger, entry, attempt, page)
+    ledger.mark_needs_user(ident, reason="possible_contradiction")
+    assert ledger.get(ident)["state"] == "needs_user"
+    ledger.resolve_review(ident, state="filed", expected_state="needs_user", reason="source_supported")
+    assert ledger.get(ident)["state"] == "filed"
+    assert ledger.verify_all() == {"events": 3, "candidates": 1, "decisions": 2}
+
+    invalid_root = tmp_path / "invalid"
+    invalid_root.mkdir()
+    archive, entry, attempt, page = fixture(invalid_root)
+    ledger = MemoryLedger(archive)
+    ident = record(ledger, entry, attempt, page)
+    ledger._append(ident, {"event": "human_review", "state": "filed",
+        "expected_state": "provisional", "reason": "user_confirmed", "actor": "local-user",
+        "candidate_sha256": "0" * 64, "citation_sha256": "0" * 64})
+    with pytest.raises(MemoryLedgerIntegrityError):
+        ledger.verify_all()
+    with pytest.raises(MemoryLedgerIntegrityError):
+        ledger.get(ident)
+
+
+def test_failed_human_review_head_update_rolls_back_transition(tmp_path, monkeypatch):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    ident = record(ledger, entry, attempt, page)
+    before = ledger.verify_all()
+
+    def fail(*_args):
+        raise RuntimeError("isolated head interruption")
+
+    monkeypatch.setattr(ledger, "_set_head", fail)
+    with pytest.raises(RuntimeError):
+        ledger.resolve_review(ident, state="rejected", expected_state="filed",
+                              reason="user_rejected")
+    reopened = MemoryLedger(archive)
+    assert reopened.verify_all() == before
+    assert reopened.get(ident)["state"] == "filed"
+
+
+def test_review_preimage_is_new_private_encrypted_and_verified_before_return(tmp_path):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    ident = record(ledger, entry, attempt, page)
+    ledger.resolve_review(ident, state="needs_user", expected_state="filed",
+                          reason="possible_contradiction")
+    private_parent = tmp_path / "private-preimages"
+    create_private_directory(private_parent)
+    result = ledger.backup_review_preimage(private_parent / "review-preimage")
+    snapshot = private_parent / "review-preimage" / "memory-ledger.sqlite3"
+    assert result["path"] == str(snapshot)
+    assert result["events"] == 2 and result["candidates"] == 1 and result["decisions"] == 1
+    assert b"I want source citations kept." not in snapshot.read_bytes()
+    with sqlite3.connect(snapshot) as db:
+        assert ledger._verify_snapshot(db) == {"events": 2, "candidates": 1, "decisions": 1}
+    assert MemoryLedger(archive).get(ident)["truth_status"] == "unverified_assertion"
+
+
+@pytest.mark.parametrize("destination_kind", ["existing", "inside_archive"])
+def test_review_preimage_rejects_overwrite_and_archive_paths(tmp_path, destination_kind):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+    if destination_kind == "existing":
+        destination = tmp_path / "existing"
+        destination.mkdir()
+    else:
+        destination = archive.root / "review-preimage"
+    with pytest.raises(ValueError):
+        ledger.backup_review_preimage(destination)
 
 
 def test_bounded_batch_authenticates_old_chain_once_and_preserves_idempotency(tmp_path, monkeypatch):

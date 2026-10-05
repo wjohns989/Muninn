@@ -35,8 +35,11 @@ not authority to submit and HTTP 200 is not accepted memory or a source ACK.
 Exclusive capture ownership; separately revocable batch retention consent;
 verified aggregate budget escrow shared with synchronous admission; authenticated
 HTTP submission/polling; idempotent publication and recovery; automatic outbox
-backup/restore inclusion; then a small actual-window pilot with cost and deletion
-receipts. Existing synchronous admission has no per-call upper charge reservation,
+backup/restore inclusion; then a small actual-window pilot with cost and retained
+result receipts. W's latest instruction prohibits deleting anything, especially
+batches: no automatic or operator-script DELETE is authorized. Retain encrypted
+input/results locally; provider-managed expiry remains an external limitation.
+Existing synchronous admission has no per-call upper charge reservation,
 so simply adding a batch hold beside it is not a proven shared-budget guarantee.
 Do not silently treat a daily provider limit as protection for monthly escrow.
 

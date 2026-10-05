@@ -1032,6 +1032,11 @@ class HistoryService:
                 )
                 if marked:
                     remote_was_not_sent = False
+                    if job.lane == 1 and capture_remote_only:
+                        # A private-source screening refusal is not a model
+                        # attempt. Start the remote cooldown only at the fenced
+                        # dispatch boundary, before any HTTP request can begin.
+                        self._capture_cadence.note_attempt(local_opportunity=False)
                 return marked
 
             async def remote_not_sent() -> bool:
@@ -1105,7 +1110,7 @@ class HistoryService:
                             await asyncio.gather(in_flight, return_exceptions=True)
                             raise
                     reuse_kwargs["reuse_remote_completed"] = reuse_remote_completed
-            if job.lane == 1:
+            if job.lane == 1 and not capture_remote_only:
                 # Rate-limit attempts, not foreground requests. This includes
                 # resource-deferred and reuse attempts; staged recovery above
                 # needs no new model attempt.
@@ -1128,6 +1133,17 @@ class HistoryService:
                 self._capture_cadence.note_local_opportunity()
             outcome = await analyze_cited_window(self, source, descriptor,
                                                  **analysis_kwargs, **reuse_kwargs)
+            if job.lane == 1 and capture_remote_only and remote_was_not_sent:
+                if (outcome.get("status") == "deferred"
+                        and outcome.get("reason") == "source_not_remote_safe"):
+                    # Keep private windows parked, but do not make every safe
+                    # window behind them wait a full model-attempt interval.
+                    # Yield briefly so CPU-only screening cannot hot-spin.
+                    await asyncio.sleep(1)
+                else:
+                    # Retain backoff for admission/policy/provider failures
+                    # and reuse. Only proved pre-send privacy denials bypass it.
+                    self._capture_cadence.note_attempt(local_opportunity=False)
             if capture_remote_only and outcome["status"] == "deferred":
                 self._capture_drain.halt(outcome.get("reason", "deferred"))
             if (job.lane == 1 and remote_enabled and outcome["status"] == "deferred"
