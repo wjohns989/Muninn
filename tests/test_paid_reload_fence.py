@@ -96,3 +96,26 @@ def test_tampered_outbox_is_not_trusted_from_plaintext_state(tmp_path):
     with pytest.raises(VaultIntegrityError):
         with paid_stop_fence(journal.policy_root, archive.root, journal.path):
             pytest.fail('unauthenticated submitted state must not reach process stop')
+
+
+def test_stop_proof_only_decrypts_current_paid_batch(tmp_path, monkeypatch):
+    journal, archive, outbox, ident, _, _ = submitted(tmp_path)
+    retained = deepcopy(outbox.read(ident))
+    with sqlite3.connect(outbox.path) as db:
+        for _ in range(40):
+            retained['id'] = uuid4().hex
+            retained['state'] = 'terminal_saved'
+            db.execute('INSERT INTO batches VALUES(?,?,?,?)', (
+                retained['id'], retained['revision'], retained['state'], outbox._seal(retained)))
+    from muninn.history.historical_batch import BatchOutbox
+    decrypted = []
+    original = BatchOutbox._read
+
+    def tracked(self, row):
+        decrypted.append(row[0])
+        return original(self, row)
+
+    monkeypatch.setattr(BatchOutbox, '_read', tracked)
+    with paid_stop_fence(journal.policy_root, archive.root, journal.path):
+        pass
+    assert decrypted == [ident]

@@ -103,23 +103,26 @@ def paid_stop_fence(data, archive, journal):
                 batch_path.as_uri() + "?mode=rw", uri=True, timeout=2)))
             batches.execute("BEGIN IMMEDIATE")
             reader = ReadOnlyJournal(unlocked)
-            records = {row[0]: outbox._read(row) for row in batches.execute("SELECT * FROM batches")}
-            require(not any(record["state"] == "submission_unknown" for record in records.values()),
+            # Plaintext state is rejection-only. Acceptance below authenticates
+            # the exact paid record, not every retained request/result body.
+            require(batches.execute("SELECT 1 FROM batches WHERE state='submission_unknown' LIMIT 1").fetchone() is None,
                     "Paid submission identity is uncertain")
         else:
             require(not (archive / "historical-batches-managed").exists(), "Paid batch stores are incomplete")
-            records = {}
         fence = stack.enter_context(closing(sqlite3.connect(journal.as_uri() + "?mode=rw", uri=True, timeout=2)))
         fence.row_factory = sqlite3.Row
         fence.execute("BEGIN IMMEDIATE")
         if remote is not None:
             # A reservation is also left alone, rather than making startup
             # wait for its timeout after killing the in-flight authorization.
-            pending = remote.execute("SELECT * FROM remote_admissions WHERE state IN ('reserved','unknown')").fetchall()
+            pending = remote.execute(
+                "SELECT * FROM remote_admissions WHERE state IN ('reserved','unknown') LIMIT 2").fetchall()
+            require(len(pending) <= 1, "Paid authorization is in flight")
             for admission in pending:
                 require(admission["state"] == "unknown" and "batch_owner" in admission.keys(),
                         "Paid authorization is in flight")
-                record = records.get(admission["batch_owner"])
+                row = batches.execute("SELECT * FROM batches WHERE id=?", (admission["batch_owner"],)).fetchone() if batches else None
+                record = outbox._read(row) if row is not None else None
                 require(record is not None and record["state"] in {"submitted", "terminal_saved", "cleaned"}
                         and _provider_id(record["provider_id"]), "Paid submission identity is uncertain")
                 owner = reader._historical_batch_head(fence)[1]
@@ -127,7 +130,8 @@ def paid_stop_fence(data, archive, journal):
                         and owner["generation"] == admission["generation"] == record["consent_generation"],
                         "Paid batch admission binding differs")
                 if record.get("repair_parent"):
-                    parent = records.get(owner["id"])
+                    parent_row = batches.execute("SELECT * FROM batches WHERE id=?", (owner["id"],)).fetchone()
+                    parent = outbox._read(parent_row) if parent_row is not None else None
                     require(record["repair_parent"] == owner["id"] and parent is not None
                             and parent.get("repairs", []) and parent["repairs"][-1] == record["id"]
                             and record.get("repair_admission") == admission["id"],
