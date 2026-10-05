@@ -7,26 +7,27 @@ full source authentication; source-unit metadata and text are ciphertext too.
 
 from __future__ import annotations
 
-import json
 import hashlib
 import hmac
+import json
 import os
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.exceptions import InvalidTag
 
+from muninn.history import streaming_redaction
 from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
 from muninn.history.secure_projection_store import ProjectionIntegrityError, SecureProjectionStore, _j
-from muninn.history import streaming_redaction
-from muninn.history.transcript_units import PARSER_VERSION, SourceUnit, UnitFragment, transcript_units
 from muninn.history.structured_projector import ProjectionCancelled
+from muninn.history.transcript_units import PARSER_VERSION, SourceUnit, UnitFragment, transcript_units
 
 
 class SourceEvidenceStore(SecureProjectionStore):
@@ -34,11 +35,42 @@ class SourceEvidenceStore(SecureProjectionStore):
     # Size the encrypted envelope for worst-case escaping, not ordinary prose.
     max_page_chars = 65536
 
-    def __init__(self, archive: Any, root: Path | None = None):
+    def __init__(self, archive: Any, root: Path | None = None, *, read_only=False):
+        self.read_only = read_only
+        if read_only:
+            self.archive = archive
+            self.root = Path(root) if root is not None else Path(archive.root) / "source-evidence"
+            self.db_path = self.root / "projections.sqlite3"
+            self.lock_path = self.root / "projection.lock"
+            verify_private(self.root)
+            verify_private(self.db_path)
+            with self._connect() as db:
+                try:
+                    db.execute("SELECT attempt,vault,blob,sha,size,version,state,count,digest,completion "
+                               "FROM attempts LIMIT 0")
+                    db.execute("SELECT attempt,ordinal,length,ciphertext FROM pages LIMIT 0")
+                    db.execute("SELECT ref,ciphertext FROM unit_screens LIMIT 0")
+                except sqlite3.DatabaseError as exc:
+                    raise ProjectionIntegrityError("Source evidence schema is unavailable") from exc
+            return
         super().__init__(archive, root or Path(archive.root) / "source-evidence")
         with self._connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS unit_screens("
                        "ref TEXT PRIMARY KEY, ciphertext BLOB NOT NULL)")
+
+    @contextmanager
+    def _connect(self):
+        if not self.read_only:
+            with super()._connect() as db:
+                yield db
+            return
+        verify_private(self.db_path)
+        db = sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True, timeout=30)
+        try:
+            db.execute("PRAGMA query_only=ON")
+            yield db
+        finally:
+            db.close()
 
     def _screen_key(self):
         return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,

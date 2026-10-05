@@ -57,7 +57,10 @@ Historical recall (use only tools exposed by this connection): search_memory sea
 stored memories; encrypted historical memories are not federated into it. For earlier conversations,
 also use search_cited_memories. Its provisional assertions are not verified facts: preserve uncertainty,
 project attribution and timestamps. Follow an item's id with get_cited_memory_source when evidence
-is needed. If these summaries do not answer the question, use start_secure_history_search and
+is needed. To browse unresolved noncredential items, call search_cited_memories with review_only=true
+and no query; continue with next_cursor at the same limit. Ask the user about consequential uncertainty;
+reading a queue item does not approve or resolve it. Decisions require the authenticated local review CLI.
+If these summaries do not answer the question, use start_secure_history_search and
 poll_secure_history_search to locate original transcripts. Use fetch_secure_history for a bounded
 redacted span, or start_secure_history_transcript, poll_secure_history_transcript and
 read_secure_history_transcript_page to read relevant pages. Pending is not an empty result;

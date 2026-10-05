@@ -1044,6 +1044,20 @@ updated code before this behavior is active.
 
 Agents can pass an ID from `poll_secure_history_analysis.memory_refs` to
 `get_cited_memory`, or discover safe claims with `search_cited_memories`.
+To browse unresolved noncredential candidates, use `search_cited_memories`
+with `review_only: true` and no `query`. Continue with its opaque `next_cursor`
+and the same `limit` (1–20). Pages keep a stable candidate prefix while applying
+current review decisions; newly appended candidates join a fresh traversal.
+Credential-risk and withheld text are excluded. Reading does not approve a
+claim or resolve an ambiguity. The queue opens existing stores read-only and
+checks the complete authenticated ledger chain; output is bounded, but the
+verification cost grows with the ledger.
+Local users can browse the same queue with `python -m muninn.cli memories
+review-list --archive-root '<your-private-data-dir>\\history_secure_archive'`
+and resolve an exact candidate with the existing `memories review` command.
+That separate mutation requires local passphrase authentication, confirmation,
+the expected current state and an encrypted ledger preimage. Agents cannot
+make that decision through the read-only queue.
 For evidence beyond the claim, call `get_cited_memory_source`; it returns exact
 source-version/unit/fragment coordinates and bounded context when the complete
 unit passes the privacy check. Use its short-lived `transcript_capability` with

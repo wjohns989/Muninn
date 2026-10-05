@@ -342,11 +342,14 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
     },
     {
         "name": "search_cited_memories",
-        "description": "Search encrypted source-cited memories locally without inference. Returns bounded safe text, provenance and uncertainty labels; provisional memories are not verified facts. Credential values are never searched or returned. Private context, not safe for publication.",
+        "description": "Search encrypted source-cited memories locally without inference. Set review_only=true without query to browse unresolved noncredential items; continue with next_cursor at the same limit. Preserves source/time and uncertainty labels, never credential values. Provisional memories are not verified facts. Private context, not safe for publication.",
         "inputSchema": {"type": "object", "properties": {
             "query": {"type": "string", "maxLength": 512},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10}},
-            "required": ["query"]},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10},
+            "review_only": {"type": "boolean", "default": False},
+            "cursor": {"type": "string", "maxLength": 2048}},
+            "anyOf": [{"required": ["query"]},
+                      {"required": ["review_only"], "properties": {"review_only": {"const": True}}}]},
     },
     {
         "name": "get_cited_memory",

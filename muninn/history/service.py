@@ -649,6 +649,12 @@ class HistoryService:
         from muninn.history.memory_ledger import MemoryLedger
         return MemoryLedger(self._require_secure_archive()).get(memory_ref)
 
+    def list_cited_memory_reviews(self, *, limit=20, cursor=None) -> Dict[str, Any]:
+        if not strict_history_mode():
+            raise RuntimeError("Cited memory access requires strict history mode")
+        from muninn.history.memory_ledger import MemoryLedger
+        return MemoryLedger(self._require_secure_archive(), read_only=True).review_page(limit=limit, cursor=cursor)
+
     def get_cited_memory_source(self, memory_ref: str, *, max_chars: int = 3000) -> Dict[str, Any] | None:
         if not strict_history_mode():
             raise RuntimeError("Cited memory access requires strict history mode")

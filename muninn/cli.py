@@ -1109,7 +1109,7 @@ def cmd_memories(args: argparse.Namespace) -> int:
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SystemExit("Memory review requires an interactive local terminal.")
-    if args.action not in {"status", "get", "review"} or args.archive_root is None:
+    if args.action not in {"status", "get", "review", "review-list"} or args.archive_root is None:
         raise SystemExit("A memory action and --archive-root are required.")
     if args.action in {"get", "review"} and not args.record_id:
         raise SystemExit("Exact --record-id is required.")
@@ -1125,9 +1125,13 @@ def cmd_memories(args: argparse.Namespace) -> int:
         archive = SecureHistoryArchive(args.archive_root, passphrase)
         # Drop the prompt result after the portable envelope is authenticated.
         del passphrase
-        ledger = MemoryLedger(archive)
+        ledger = MemoryLedger(archive, read_only=args.action == "review-list")
         if args.action == "status":
             print(json.dumps(ledger.review_status(), sort_keys=True))
+            return 0
+        if args.action == "review-list":
+            print(json.dumps(ledger.review_page(limit=getattr(args, "limit", 20),
+                                                cursor=getattr(args, "cursor", None)), sort_keys=True))
             return 0
         view = ledger.source(args.record_id, max_chars=2000)
         if view is None:
@@ -1525,10 +1529,12 @@ def build_parser() -> argparse.ArgumentParser:
     memories = subparsers.add_parser(
         "memories", help="Inspect and resolve noncredential cited memories in a local terminal.",
     )
-    memories.add_argument("action", choices=["status", "get", "review"])
+    memories.add_argument("action", choices=["status", "get", "review", "review-list"])
     memories.add_argument("--archive-root", type=Path, required=True,
                           help="Existing encrypted history archive; portable recovery passphrase prompted locally.")
     memories.add_argument("--record-id", help="Exact cited-memory id returned by agent search.")
+    memories.add_argument("--limit", type=int, default=20, help="Review page size (1-20).")
+    memories.add_argument("--cursor", help="Opaque next_cursor from review-list; keep the same page size.")
     memories.add_argument("--state", choices=["filed", "rejected", "needs_user"])
     memories.add_argument("--expected-state", choices=["provisional", "filed", "rejected", "needs_user"],
                           help="Current state you inspected; stale changes are rejected.")

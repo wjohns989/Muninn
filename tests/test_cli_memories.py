@@ -88,6 +88,22 @@ def test_status_and_get_keep_truth_provenance_and_hide_capabilities(tmp_path, mo
     assert PHRASE not in out.getvalue()
 
 
+def test_review_list_is_authenticated_read_only_and_keeps_the_compact_cursor(tmp_path, monkeypatch):
+    archive, ledger, ident = candidate(tmp_path)
+    before = ledger.verify_all()
+    out = terminal(monkeypatch)
+    assert cli.cmd_memories(args(archive.root, "review-list", limit=1, cursor=None)) == 0
+    result = json.loads(out.getvalue())
+    assert result["matches"][0]["id"] == ident
+    assert result["matches"][0]["state"] == "provisional"
+    assert not result["has_more"] and result["limit"] == 1
+    assert PHRASE not in out.getvalue() and "transcript_capability" not in out.getvalue()
+    assert ledger.verify_all() == before
+    parsed = cli.build_parser().parse_args(["memories", "review-list", "--archive-root", "archive",
+                                           "--limit", "1", "--cursor", "opaque"])
+    assert parsed.cursor == "opaque" and parsed.limit == 1
+
+
 @pytest.mark.parametrize("state,reason", [("filed", "source_supported"), ("rejected", "user_rejected")])
 def test_review_typed_confirmation_backup_then_cas(tmp_path, monkeypatch, state, reason):
     archive, ledger, ident = candidate(tmp_path)

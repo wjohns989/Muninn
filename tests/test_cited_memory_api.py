@@ -11,6 +11,46 @@ from muninn.history.service import HistoryService
 
 
 @pytest.mark.asyncio
+async def test_review_queue_uses_existing_private_guard_without_decisions_or_attestations(tmp_path,monkeypatch):
+    archive,entry,attempt,page=fixture(tmp_path,role="assistant")
+    ledger=MemoryLedger(archive);ident=record(ledger,entry,attempt,page)
+    before=ledger.verify_all()
+    token="synthetic-main-token-aaaaaaaaaaaaaaaaaaaa"
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN",token)
+    monkeypatch.setenv("MUNINN_API_KEY","different-generic-token-bbbbbbbbbbbbb")
+    monkeypatch.setenv("MUNINN_NO_AUTH","0")
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY","strict")
+    monkeypatch.setattr(server,"is_security_enabled",lambda:True)
+    service=HistoryService(None,tmp_path/'unused',home=tmp_path,secure_archive_root=archive.root,
+                           archive_passphrase="synthetic portable recovery phrase")
+    monkeypatch.setattr(server,"_require_history",lambda:service)
+    monkeypatch.setattr(server,"_secure_history_fetch_slots",asyncio.Semaphore(1))
+    server._cited_memory_read_times.clear()
+    from muninn.history.source_evidence import SourceEvidenceStore
+    monkeypatch.setattr(SourceEvidenceStore,"_store_screen_info",lambda *a,**kw:pytest.fail("read wrote attestation"))
+    headers={"Authorization":"Bearer "+token};route='/history/secure/memories/review-queue'
+    transport=httpx.ASGITransport(app=server.app,client=("127.0.0.1",1234))
+    try:
+        async with httpx.AsyncClient(transport=transport,base_url="http://localhost") as client:
+            assert (await client.post(route,json={})).status_code==401
+            assert (await client.post(route,json={},headers={'Authorization':'Bearer different-generic-token-bbbbbbbbbbbbb'})).status_code==401
+            response=await client.post(route,json={'limit':1},headers=headers)
+            assert response.status_code==200 and response.headers['cache-control']=='no-store'
+            assert response.json()['data']['matches'][0]['id']==ident
+            assert response.json()['data']['matches'][0]['state']=='provisional'
+            invalid=await client.post(route,json={'cursor':{'secret':'PRIVATE_INPUT_CANARY'}},headers=headers)
+            assert invalid.status_code==422 and 'PRIVATE_INPUT_CANARY' not in invalid.text
+            assert (await client.post(route,json={'limit':True},headers=headers)).status_code==422
+            assert (await client.post(route,json={'cursor':'tampered'},headers=headers)).status_code==400
+            assert (await client.post(route,json={'query':'PRIVATE_INPUT_CANARY'},headers=headers)).status_code==422
+        remote=httpx.ASGITransport(app=server.app,client=('192.168.1.2',1234))
+        async with httpx.AsyncClient(transport=remote,base_url='http://localhost') as client:
+            assert (await client.post(route,json={},headers=headers)).status_code==404
+        assert ledger.verify_all()==before
+    finally:await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_agent_lookup_search_and_exact_source_follow_to_full_redacted_transcript(tmp_path,monkeypatch):
     archive,entry,attempt,page=fixture(tmp_path)
     ledger=MemoryLedger(archive)

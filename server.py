@@ -1711,6 +1711,12 @@ class CitedMemoryRequest(BaseModel):
     max_chars: int = 3000
 
 
+class CitedMemoryReviewQueueRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    limit: int = Field(default=20, strict=True, ge=1, le=20)
+    cursor: Optional[str] = Field(default=None, strict=True, max_length=2048)
+
+
 _cited_memory_read_times: deque = deque()
 
 
@@ -1771,6 +1777,12 @@ async def search_cited_memories_endpoint(req: SecureHistorySearchRequest):
 @app.post("/history/secure/memories/get", dependencies=[Depends(verify_main_local_token)])
 async def get_cited_memory_endpoint(req: CitedMemoryRequest):
     return await _cited_memory_read(lambda: _require_history().get_cited_memory(req.memory_ref))
+
+
+@app.post("/history/secure/memories/review-queue", dependencies=[Depends(verify_main_local_token)])
+async def cited_memory_review_queue_endpoint(req: CitedMemoryReviewQueueRequest):
+    return await _cited_memory_read(lambda: _require_history().list_cited_memory_reviews(
+        limit=req.limit, cursor=req.cursor))
 
 
 @app.post("/history/secure/memories/source", dependencies=[Depends(verify_main_local_token)])

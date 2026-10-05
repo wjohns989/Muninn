@@ -766,6 +766,13 @@ def _do_poll_secure_history_analysis(args: Dict[str, Any], deadline: Optional[fl
 
 
 def _do_search_cited_memories(args: Dict[str, Any], deadline: Optional[float]) -> Dict[str, Any]:
+    review_only = args.get("review_only", False)
+    if type(review_only) is not bool or review_only and "query" in args or not review_only and "cursor" in args:
+        raise ValueError("Ambiguous cited memory mode")
+    if review_only:
+        return make_request_with_retry("POST", f"{SERVER_URL}/history/secure/memories/review-queue",
+            deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
+            json={"limit": args.get("limit", 10), "cursor": args.get("cursor")}).json()
     return make_request_with_retry("POST", f"{SERVER_URL}/history/secure/memories/search",
         deadline_epoch=deadline, timeout=DEFAULT_HTTP_TIMEOUT,
         json={"query": args.get("query"), "limit": args.get("limit", 10)}).json()

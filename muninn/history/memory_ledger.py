@@ -7,6 +7,7 @@ interpretations remain provisional. Whole-database rollback is not detected.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -24,9 +25,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
+from muninn.history.safe_span import sanitize_agent_span
 from muninn.history.secure_projection_store import ProjectionIntegrityError
 from muninn.history.source_evidence import SourceEvidenceStore
-from muninn.history.safe_span import sanitize_agent_span
 from muninn.history.streaming_redaction import redacted_fragments
 from muninn.history.transcript_units import PARSER_VERSION, SourceUnit
 
@@ -55,24 +56,32 @@ def _json(value) -> bytes:
 
 
 class MemoryLedger:
-    def __init__(self, archive):
+    def __init__(self, archive, *, read_only=False):
         self.archive = archive
+        self.read_only = read_only
         self.root = Path(archive.root) / "memory-ledger"
-        if not self.root.exists():
+        if not self.root.exists() and not read_only:
             create_private_directory(self.root)
         verify_private(self.root)
         self.db_path = self.root / "ledger.sqlite3"
-        if not self.db_path.exists():
+        if not self.db_path.exists() and not read_only:
             create_private_file(self.db_path)
         verify_private(self.db_path)
         self._key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
                          info=b"muninn memory ledger key v1").derive(archive._key)
-        self.units = SourceEvidenceStore(archive)
+        self.units = SourceEvidenceStore(archive, read_only=read_only)
         self._screen_cache = OrderedDict()
         self._entries = {(e["blob"], version): e
                          for versions in archive._load_manifest()["files"].values()
                          for version, e in enumerate(versions)}
         with self._connect() as db:
+            if read_only:
+                try:
+                    db.execute("SELECT seq,ref,ciphertext FROM events LIMIT 0")
+                    self._head(db)
+                except sqlite3.DatabaseError as exc:
+                    raise MemoryLedgerIntegrityError("Ledger schema is unavailable") from exc
+                return
             db.executescript("CREATE TABLE IF NOT EXISTS events("
                              "seq INTEGER PRIMARY KEY,ref TEXT NOT NULL,ciphertext BLOB NOT NULL);"
                              "CREATE INDEX IF NOT EXISTS event_ref ON events(ref,seq);"
@@ -87,8 +96,13 @@ class MemoryLedger:
     @contextmanager
     def _connect(self):
         verify_private(self.db_path)
-        db = sqlite3.connect(self.db_path, timeout=30)
+        db = (sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True, timeout=30)
+              if self.read_only else sqlite3.connect(self.db_path, timeout=30))
         try:
+            if self.read_only:
+                db.execute("PRAGMA query_only=ON")
+                yield db
+                return
             db.execute("PRAGMA journal_mode=DELETE")
             db.execute("PRAGMA synchronous=FULL")
             db.execute("PRAGMA secure_delete=ON")
@@ -205,7 +219,7 @@ class MemoryLedger:
         except (ProjectionIntegrityError, ValueError, TypeError, KeyError) as exc:
             raise MemoryLedgerIntegrityError("Ledger citation is not authenticated") from exc
 
-    def _unit_info(self, entry, version, attempt, unit, *, use_persisted=True):
+    def _unit_info(self, entry, version, attempt, unit, *, use_persisted=True, persist_screen=True):
         """Stream the WHOLE source unit so labels/quotes cannot hide in other chunks.
 
         Only bounded raw/redacted digest state is retained. Within one worker,
@@ -249,6 +263,11 @@ class MemoryLedger:
         except ProjectionIntegrityError as exc:
             raise MemoryLedgerIntegrityError("Ledger context is not authenticated") from exc
         info = raw.digest() == screened.digest(), body_length, body.digest()
+        if not persist_screen:
+            self._screen_cache[cache_key] = info
+            if len(self._screen_cache) > 128:
+                self._screen_cache.popitem(last=False)
+            return info
         try:
             self.units._store_screen_info(entry, version, attempt, unit,
                 raw_sha=raw.hexdigest(), screened_sha=screened.hexdigest(),
@@ -432,19 +451,19 @@ class MemoryLedger:
             raise MemoryLedgerIntegrityError("Memory review decision authentication failed")
         return state
 
-    def _public_candidate(self, ident, candidate, state):
+    def _public_candidate(self, ident, candidate, state, *, persist_screen=True):
         if candidate is None: return None
         public = {k: candidate[k] for k in ("type", "epistemic_kind", "truth_status",
                   "event_at", "time_basis", "project_ref", "project_basis")}
         public.update(id=ident, state=state, source_ref=hmac.new(
             self._key, b"citation\0" + _json(candidate["citation"]), hashlib.sha256).hexdigest())
         public["proposal_origin"] = candidate.get("proposal_origin", "legacy_unrecorded")
-        if self._public_text_safe(candidate):
+        if self._public_text_safe(candidate, persist_screen=persist_screen):
             public.update(text=sanitize_agent_span(candidate["text"], max_chars=2048),
                           quote=sanitize_agent_span(candidate["quote"], max_chars=2048))
         return public
 
-    def _public_text_safe(self, candidate):
+    def _public_text_safe(self, candidate, *, persist_screen=True):
         if candidate["credential_risk"] or candidate["screening"] != "complete_unit":
             return False
         cite = candidate["citation"]
@@ -454,7 +473,8 @@ class MemoryLedger:
         # freshly authenticate the whole cited unit, including unselected pages.
         # Cross-worker reuse only attests the original immutable unit for worker
         # preparation; it must not silently relax this public-read guarantee.
-        return (self._unit_info(entry, cite["version"], cite["attempt"], unit, use_persisted=False)[0]
+        return (self._unit_info(entry, cite["version"], cite["attempt"], unit,
+                               use_persisted=False, persist_screen=persist_screen)[0]
                 and self._screen({"window": data["text"], "claim": candidate["text"],
                                   "quote": candidate["quote"]}))
 
@@ -598,6 +618,70 @@ class MemoryLedger:
             self._set_head(db, seq, self._digest(seq, ident, sealed))
         self._screen_cache.clear()
         return ident
+
+    def review_page(self, *, limit=20, cursor=None):
+        """Browse a stable candidate prefix using current decisions, without writes.
+
+        Every call verifies the full current chain, including its tail. Only the
+        returned page and a lookahead receive fresh whole-unit privacy checks.
+        This is bounded output, not constant-time or deadline-bounded retrieval.
+        """
+        if type(limit) is not int or not 1 <= limit <= 20:
+            raise ValueError("Invalid review page bound")
+        states = ["provisional", "needs_user"]
+        anchor = None
+        after = 0
+        if cursor is not None:
+            if type(cursor) is not str or not 1 <= len(cursor) <= 2048:
+                raise ValueError("Invalid review cursor")
+            try:
+                sealed = base64.b64decode(cursor.encode("ascii"), altchars=b"-_", validate=True)
+                anchor = self._open(sealed, "review-cursor", 0, "queue")
+            except (ValueError, UnicodeError, MemoryLedgerIntegrityError) as exc:
+                raise ValueError("Invalid review cursor") from exc
+            if (set(anchor) != {"format", "seq", "digest", "after", "limit", "states"}
+                    or type(anchor["format"]) is not int or anchor["format"] != 1
+                    or type(anchor["seq"]) is not int or not 0 <= anchor["seq"] < 2**63
+                    or not self._hex(anchor["digest"])
+                    or type(anchor["after"]) is not int or not 0 <= anchor["after"] <= anchor["seq"]
+                    or type(anchor["limit"]) is not int or anchor["limit"] != limit
+                    or anchor["states"] != states):
+                raise ValueError("Invalid review cursor")
+            after = anchor["after"]
+        self._screen_cache.clear()
+        matches, has_more = [], False
+        with self._connect() as db:
+            db.execute("BEGIN")
+            head = self._head(db)
+            if anchor is None:
+                anchor = {"format": 1, **head, "after": 0, "limit": limit, "states": states}
+            _report, candidates, current_states = self._review_snapshot(db)
+            row = db.execute("SELECT ref,ciphertext FROM events WHERE seq=?", (anchor["seq"],)).fetchone()
+            digest = _ZERO if anchor["seq"] == 0 else (self._digest(anchor["seq"], *row) if row else None)
+            if anchor["seq"] > head["seq"] or digest != anchor["digest"]:
+                raise ValueError("Review cursor prefix changed")
+            positions = db.execute("SELECT MIN(seq),ref FROM events WHERE seq<=? GROUP BY ref "
+                                   "HAVING MIN(seq)>? ORDER BY MIN(seq)", (anchor["seq"], after))
+            for seq, ref in positions:
+                candidate = candidates[ref]
+                if (current_states[ref] not in states or candidate["credential_risk"]
+                        or candidate["screening"] != "complete_unit"):
+                    continue
+                public = self._public_candidate(ref, candidate, current_states[ref], persist_screen=False)
+                if "text" not in public:
+                    continue
+                if len(matches) == limit:
+                    has_more = True
+                    break
+                matches.append(public)
+                after = seq
+        next_cursor = None
+        if has_more:
+            next_cursor = base64.urlsafe_b64encode(self._seal(
+                {**anchor, "after": after}, "review-cursor", 0, "queue")).decode("ascii")
+        return {"matches": matches, "next_cursor": next_cursor, "has_more": has_more,
+                "snapshot_events": anchor["seq"], "current_events": head["seq"],
+                "limit": limit, "states": states, "credential_or_withheld_excluded": True}
 
     def review_status(self):
         """Return aggregate state counts, excluding credential-risk candidates."""
