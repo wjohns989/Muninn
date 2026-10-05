@@ -215,6 +215,32 @@ provider budget on a hit. Source rewrites and changed interpretation contracts
 remain misses. This direct-parent optimization does not yet reuse through chains
 of reused snapshots or merge separate sources/events with similar wording.
 
+Older archives without commit-generation markers are not silently enrolled by
+the new-capture worker. To explicitly queue historical work, use the latest-only
+enrollment helper with your configured archive directory:
+
+```bash
+python scripts/enroll_history_backlog.py --archive-root /your/data/history_secure_archive
+python scripts/enroll_history_backlog.py --archive-root /your/data/history_secure_archive --apply --max-batches 1
+```
+
+The first command previews at most 128 sources without migrating or writing the
+journal. The second commits one bounded batch; increase `--max-batches` or repeat
+it to finish enrollment. It pins an authenticated manifest and selects one latest
+snapshot per source, preserving older raw snapshots and the independent live
+capture baseline/cursor. Resume is idempotent; missing or altered pin/grant evidence
+fails closed, including on portable restore. Windows can use the existing local
+archive unlock; elsewhere add `--prompt-passphrase` for a hidden local prompt.
+
+This helper does not call models, relax credential screening, or change provider
+consent/budgets/cadence. If automatic interpretation is enabled, the existing
+worker consumes enrolled windows under those controls. Status exposes
+`capture_enrichment.historical_enrollment`; its `complete` flag means enrollment
+finished, **not** that every window was interpreted successfully. A successful
+helper exit means the requested batches committed, not that backlog processing
+has finished. This latest-only pass does not extract deleted text from older
+rewritten snapshots; those originals remain available for explicit retrieval.
+
 Verify it's running:
 
 ```bash

@@ -10,13 +10,14 @@ import re
 import time
 
 from muninn.history.credential_crypto import VaultIntegrityError
+from muninn.history.capture_historical_enrollment import HistoricalEnrollmentMixin
 
 _FIELDS = {"vault_id", "blob", "sha256", "version", "commit_generation", "provider", "kind"}
 _CONTROL_ID = "0" * 32
 _PROVIDERS = {"codex", "claude_code", "gemini_cli"}
 
 
-class CaptureEnrichmentMixin:
+class CaptureEnrichmentMixin(HistoricalEnrollmentMixin):
     def _init_enrichment(self, db):
         db.execute("CREATE TABLE IF NOT EXISTS capture_enrichment_control ("
                    "id INTEGER PRIMARY KEY CHECK(id=1), sealed_config BLOB NOT NULL)")
@@ -24,6 +25,7 @@ class CaptureEnrichmentMixin:
                    "work_id TEXT PRIMARY KEY, sealed_receipt BLOB NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS capture_enrichment_progress ("
                    "id INTEGER PRIMARY KEY CHECK(id=1), sealed_cursor BLOB NOT NULL)")
+        self._init_historical_enrollment(db)
 
     @staticmethod
     def _enrichment_limit(limit):
@@ -76,12 +78,18 @@ class CaptureEnrichmentMixin:
         return hmac.new(self._key, b"capture-enrichment-source-v1\0" + json.dumps(
             receipt, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
 
-    def _store_enrichment_receipt(self, db, receipt, baseline):
+    def _store_enrichment_receipt(self, db, receipt, baseline, *, historical=None):
         ident = self._enrichment_id(receipt)
-        if receipt["commit_generation"] is None or receipt["commit_generation"] <= baseline:
+        old = receipt["commit_generation"] is None or receipt["commit_generation"] <= baseline
+        if old and historical is None:
             return "before_watermark"
-        if db.execute("SELECT 1 FROM capture_enrichment_sources WHERE work_id=?", (ident,)).fetchone():
+        prior = db.execute("SELECT work_id,sealed_receipt FROM capture_enrichment_sources WHERE work_id=?", (ident,)).fetchone()
+        if prior is not None:
+            if self._read_enrichment_receipt(prior, baseline, db=db) != receipt:
+                raise VaultIntegrityError("Existing enrichment receipt differs")
             return "existing"
+        if old:
+            self._store_historical_grant(db, ident, historical)
         sealed = self._seal_search(receipt, ident, "capture-enrichment-receipt-v1")
         db.execute("INSERT INTO capture_enrichment_sources(work_id,sealed_receipt,created_at,sealed_planning_state) "
                    "VALUES(?,?,?,?)", (ident, sealed, time.time(), self._new_capture_planning_state(ident)))
@@ -182,14 +190,19 @@ class CaptureEnrichmentMixin:
                 self._seal_search(cursor, _CONTROL_ID, "capture-enrichment-progress-v1"),))
         return queued
 
-    def _read_enrichment_receipt(self, row, baseline):
+    def _read_enrichment_receipt(self, row, baseline, *, db=None):
         ident, sealed = row
         if not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{64}", ident):
             raise VaultIntegrityError("Capture enrichment identity is invalid")
         value = self._open_search(sealed, ident, "capture-enrichment-receipt-v1")
-        if (self._enrichment_id(value) != ident or baseline is None
-                or value["commit_generation"] is None or value["commit_generation"] <= baseline):
+        if self._enrichment_id(value) != ident or baseline is None:
             raise VaultIntegrityError("Capture enrichment identity is invalid")
+        if value["commit_generation"] is None or value["commit_generation"] <= baseline:
+            if db is None:
+                with self._connect() as other:
+                    self._historical_grant(other, ident)
+            else:
+                self._historical_grant(db, ident)
         return value
 
     def pending_enrichment(self, *, limit=128):
@@ -201,7 +214,7 @@ class CaptureEnrichmentMixin:
             for row in db.execute("SELECT * FROM capture_enrichment_sources WHERE resolved=0 "
                                   "ORDER BY created_at,work_id LIMIT ?", (limit,)):
                 self._capture_plan_state(row)
-                result.append(self._read_enrichment_receipt(row[:2], baseline))
+                result.append(self._read_enrichment_receipt(row[:2], baseline, db=db))
             return result
 
     def enrichment_status(self):
@@ -210,11 +223,16 @@ class CaptureEnrichmentMixin:
             count = self._capture_schedule(db)["pending"]
             parked = db.execute("SELECT COUNT(*) FROM history_analysis_jobs WHERE lane=1 "
                                 "AND state='retry' AND error_code='source_not_remote_safe'").fetchone()[0]
-        return {"configured": baseline is not None, "pending_sources": count,
-                "parked_private_windows": parked}
+            _seal, historical = self._historical_progress(db)
+        result = {"configured": baseline is not None, "pending_sources": count,
+                  "parked_private_windows": parked}
+        if historical is not None:
+            result["historical_enrollment"] = {k: v for k, v in historical.items() if k != "manifest_sha"}
+        return result
 
     def _verify_enrichment(self, db):
         baseline = self._enrichment_baseline(db)
+        historical = self._verify_historical_enrollment(db, baseline)
         if baseline is None:
             if (db.execute("SELECT 1 FROM capture_enrichment_sources LIMIT 1").fetchone()
                     or db.execute("SELECT 1 FROM capture_enrichment_progress LIMIT 1").fetchone()):
@@ -231,7 +249,8 @@ class CaptureEnrichmentMixin:
         committed = {self._enrichment_id(receipt): receipt for receipt in
             self.archive.iter_committed_receipts(after_generation=baseline if baseline is not None else 0)
             if receipt["provider"] in _PROVIDERS and receipt["kind"] == "transcript"}
+        committed.update(historical)
         for row in db.execute("SELECT work_id,sealed_receipt FROM capture_enrichment_sources"):
-            value = self._read_enrichment_receipt(row, baseline)
+            value = self._read_enrichment_receipt(row, baseline, db=db)
             if committed.get(row[0]) != value:
                 raise VaultIntegrityError("Capture enrichment commit is unavailable")

@@ -52,7 +52,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                 raise VaultIntegrityError("Capture scheduling totals are missing")
             # One migration pass authenticates existing state, not mirror counts.
             for row in db.execute("SELECT * FROM capture_enrichment_sources"):
-                self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db))
+                self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db), db=db)
                 self._capture_plan_state(row)
             pending, planning = self._capture_schedule_counts(db)
             self._write_capture_schedule(db, {"format": 2, "pending": pending, "planning": planning})
@@ -68,7 +68,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
     def _initialize_capture_planning(self, db):
         # Constructor owns one transaction: v1 absence is legitimate only here.
         for row in db.execute("SELECT * FROM capture_enrichment_sources"):
-            self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db))
+            self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db), db=db)
             self._capture_plan_state(row)
             if row["sealed_planning_state"] is not None:
                 raise VaultIntegrityError("Legacy capture planning state is inconsistent")
@@ -170,7 +170,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
         row = db.execute("SELECT * FROM capture_enrichment_sources "
                          "WHERE work_id=?", (ident,)).fetchone()
         baseline = self._enrichment_baseline(db)
-        if row is None or self._read_enrichment_receipt(row[:2], baseline) != receipt:
+        if row is None or self._read_enrichment_receipt(row[:2], baseline, db=db) != receipt:
             raise VaultIntegrityError("Capture window has no authenticated outbox source")
         return row
 
@@ -203,7 +203,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                                   "ORDER BY last_planned_at,created_at,work_id"):
                 self._capture_plan_state(row)
                 state = self._capture_planning_state(row)
-                receipt = self._read_enrichment_receipt(row[:2], baseline)
+                receipt = self._read_enrichment_receipt(row[:2], baseline, db=db)
                 if not state["blocked"] and state["due_at"] <= time.time():
                     return receipt
             return None
@@ -351,7 +351,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                 or mapping["ordinal"] != target["ordinal"]
                 or self._open_search(mapping["sealed_binding"], job["job_id"], "capture-window-binding-v1") != target):
             raise VaultIntegrityError("Capture window lacks trusted outbox binding")
-        receipt = self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db))
+        receipt = self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db), db=db)
         state = self._capture_plan_state(row)
         if (any(target[k] != receipt[k] for k in ("vault_id", "blob", "sha256", "version"))
                 or state is None or target["plan_attempt"] != state["attempt"]
@@ -410,7 +410,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
     def _verify_capture_window_jobs(self, db):
         self._capture_schedule(db)
         for row in db.execute("SELECT * FROM capture_enrichment_sources"):
-            receipt = self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db))
+            receipt = self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db), db=db)
             state = self._capture_plan_state(row)
             self._capture_planning_state(row)
             mappings = db.execute("SELECT * FROM capture_enrichment_windows WHERE work_id=? ORDER BY ordinal",
