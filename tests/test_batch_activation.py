@@ -125,3 +125,8 @@ def test_one_serialized_request_refusal_does_not_block_safe_siblings(tmp_path, m
     ident = prepare_next_batch(journal)
     assert ident
     assert rejected not in {item["job_id"] for item in BatchOutbox(archive).read(ident)["items"]}
+    with journal._connect() as db:
+        row = db.execute("SELECT state,error_code,remote_dispatched FROM history_analysis_jobs "
+                         "WHERE job_id=?", (rejected,)).fetchone()
+        assert tuple(row) == ("retry", "source_not_remote_safe", 0)
+        assert journal._capture_window_capacity(db) > 0

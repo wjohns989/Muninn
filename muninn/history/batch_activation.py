@@ -117,6 +117,25 @@ def authorize_transaction(db, ident, digest):
                 and binding == (policy[1], remote[1], digest))
 
 
+def _park_refusal(journal, job_id, descriptor):
+    """Leave proved-unsent private input visible, without consuming runnable slots."""
+    with journal._connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if (row is None or row["state"] not in {"pending", "retry"} or row["remote_dispatched"]
+                or row["lease_token"] is not None or row["lease_until"] is not None
+                or row["publication_started"] or row["cancel_requested"]
+                or any(row[k] is not None for k in ("sealed_extraction", "sealed_receipt", "sealed_reuse"))
+                or job_id in journal._historical_batch_blocked_jobs(db)):
+            return False
+        target = journal._validated_analysis_target(row, db)
+        if hashlib.sha256(journal._stage_json(descriptor)).hexdigest() != target["descriptor_sha256"]:
+            raise PolicyError("Screening descriptor changed")
+        db.execute("UPDATE history_analysis_jobs SET state='retry',error_code='source_not_remote_safe',"
+                   "due_at=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
+        return True
+
+
 def prepare_next_batch(journal):
     """One checkpoint at a time; completed, dispatched and private work excluded."""
     policy = read_batch_policy(journal.policy_root)
@@ -170,12 +189,16 @@ def prepare_next_batch(journal):
         descriptor = plans.window_at(entry, target["version"], target["plan_attempt"], target["ordinal"])
         window = source.remote_input(descriptor)
         if window is None or not window["text"].strip():
+            if job_id not in retry_proofs and window is None:
+                _park_refusal(journal, job_id, descriptor)
             continue
         try:
             prepared[job_id] = prepare_items(source, [(job_id, descriptor)])[0]
         except BatchError as exc:
             if str(exc) != "source_not_remote_safe":
                 raise
+            if job_id not in retry_proofs:
+                _park_refusal(journal, job_id, descriptor)
             continue  # Serialized request screening is stricter than span screening.
         checked.append(((window["event_at"] is None, window["event_at"] or 0,
                          target["ordinal"], target["work_id"], job_id), (job_id, descriptor)))
