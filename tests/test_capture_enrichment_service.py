@@ -72,7 +72,8 @@ async def test_disabled_capture_preserves_existing_contract_and_leaves_outbox_un
     source.write_text("CPU-only saved chat.", encoding="utf-8")
     assert (await service.capture(str(source), "codex"))["captured"]
     await service.scan_capture_sources()
-    assert service._capture_journal.enrichment_status() == {"configured": False, "pending_sources": 0}
+    assert service._capture_journal.enrichment_status() == {
+        "configured": False, "pending_sources": 0, "parked_private_windows": 0}
     assert service.status()["capture_enrichment"]["capture_enabled"] is False
     assert archive.status()["snapshots"] == 1
 
