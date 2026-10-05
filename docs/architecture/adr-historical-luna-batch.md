@@ -1,6 +1,7 @@
 # Historical Luna batch: separate retention and recovery boundary
 
-Status: implementation contract; not activated or represented as installed.
+Status: encrypted recovery/transport contract implemented and tested; dispatch,
+budget escrow and capture ownership not connected or activated.
 
 ## Context and decision
 
@@ -90,3 +91,40 @@ forecast for the full backlog. A 50% token-price discount does not prove faster
 completion or the cost per accepted, cited result.
 
 Catalog contract: [user-filtered models](https://openrouter.ai/docs/api/api-reference/models/list-models-filtered-by-user-provider-preferences-privacy-settings-and-guardrails).
+
+## Eligibility correction and implementation checkpoint (October 5)
+
+After W fixed the account guardrail, a fresh authenticated `/models/user` check
+returned 453 models, including 73 batch variants and Luna Pro batch. The pinned
+batch endpoint reported OpenAI (`openai`) and $0.05/M input, $0.25/M output. This
+supersedes the catalog-level concern above; it does not prove a private batch
+submission or accepted historical results. No batch POST was made.
+
+`historical_batch.py` now supplies the separately encrypted archive-key outbox,
+FULL-synchronous compare-and-swap submission marker, immutable source/item
+bindings, ordered provider-pinned payload, exact unordered result reconciliation,
+aggregate cost validation, exact cited-output validation, and durable terminal /
+cleanup receipts. Unknown submissions cannot be retried through this API. Invalid
+results and missing costs stay stored for recovery; HTTP success is not accepted
+memory and never acknowledges capture coverage. The module exposes no HTTP or
+service activation, so it cannot bypass the remaining gates.
+
+Focused isolated tests cover restart, concurrent submit markers, tampering,
+missing storage, failed/expired/cancelled batches, duplicate/missing/extra IDs,
+wrong model, malformed schema/quotes/truncation, missing/BYOK cost, and cleanup
+ordering. An in-memory mutation that allows unknown resubmission fails the
+restart test. Existing synchronous code and live policy are unchanged.
+
+Remaining before private dispatch: atomic exclusive capture ownership, durable
+aggregate escrow shared with normal budgets (without reusing the synchronous
+unknown semaphore), separately revocable retention consent, HTTP polling and
+publication integration, automatic backup/restore inclusion, then the small
+real-window pilot. The outbox's local preparation metadata is not itself consent.
+
+OpenAI's [API privacy commitments](https://openai.com/enterprise-privacy/) exclude
+training by default, unless sharing is explicitly opted into. Batch is still
+temporary-storage processing, not ZDR or guaranteed anonymity. OpenRouter keeps
+batch artifacts up to 30 days unless deleted sooner. Its deletion response can
+report the OpenAI batch record as unsupported for deletion while removing input
+and output files; retain and report that distinction, not a blanket upstream
+deletion claim. Normal live requests must keep their explicit ZDR controls.
