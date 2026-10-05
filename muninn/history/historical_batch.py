@@ -67,7 +67,7 @@ def prepare_items(source, bindings):
         window = source.remote_input(descriptor)
         if window is None:
             raise BatchError("source_not_remote_safe")
-        body = {"messages": _cited_prompt(window), "max_completion_tokens": 2048,
+        body = {"messages": _cited_prompt(window), "max_tokens": 2048,
                 "response_format": {"type": "json_schema", "json_schema": {
                     "name": "secure_excerpt_analysis", "strict": True, "schema": _CITED_SCHEMA}}}
         if not _request_safe(body):

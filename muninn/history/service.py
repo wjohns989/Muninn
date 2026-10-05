@@ -772,7 +772,9 @@ class HistoryService:
                 self._secure_capture_plan_task = asyncio.create_task(self._secure_capture_plan_loop())
             batch_owner = await asyncio.to_thread(self._require_capture_journal().historical_batch_owner)
             recover_batch = batch_owner is not None and batch_owner["phase"] != "passed"
-            if ((_flag("MUNINN_SECURE_AUTO_ANALYSIS") or self._capture_auto_enabled() or recover_batch)
+            from muninn.history.batch_activation import read_batch_policy
+            batch_enabled = (await asyncio.to_thread(read_batch_policy, self.data_dir))["enabled"]
+            if ((_flag("MUNINN_SECURE_AUTO_ANALYSIS") or self._capture_auto_enabled() or recover_batch or batch_enabled)
                     and self._secure_analysis_task is None):
                 self._secure_analysis_task = asyncio.create_task(self._secure_analysis_loop())
             if _flag("MUNINN_HISTORY_INDEX_AUTO") and self._secure_index_task is None:
@@ -1223,17 +1225,43 @@ class HistoryService:
     async def _process_secure_batch_once(self) -> bool:
         """Recover a durable batch in the SAME serial inference consumer.
 
-        This does not select/create a batch or enable temporary retention. New
-        submissions remain denied until the separate consent/scheduling path
-        is installed. Already paid results remain recoverable after revocation.
+        New work requires separately revocable retained-batch consent. Already
+        paid results remain recoverable after revocation.
         """
         journal = self._require_capture_journal()
+        from muninn.history.batch_activation import (
+            authorize_batch,
+            authorize_transaction,
+            prepare_next_batch,
+            read_batch_policy,
+        )
         owner = await asyncio.to_thread(journal.historical_batch_owner)
         if owner is None or owner["phase"] == "passed":
-            return False
+            policy = await asyncio.to_thread(read_batch_policy, journal.policy_root)
+            if not policy["enabled"]:
+                return False
+            preparation = asyncio.create_task(asyncio.to_thread(prepare_next_batch, journal))
+            try:
+                ident = await asyncio.shield(preparation)
+            except asyncio.CancelledError:
+                await asyncio.gather(preparation, return_exceptions=True)
+                raise
+            if ident is None:
+                # Keep historical sync calls parked while batch capture is
+                # selected, including a deliberately exhausted pilot quota.
+                if self._historical_batch_worker is None:
+                    from muninn.history.historical_batch_worker import HistoricalBatchWorker
+                    self._historical_batch_worker = HistoricalBatchWorker(journal,
+                        authorize_transaction=authorize_transaction,
+                        authorize_submit=lambda generation: authorize_batch(journal, generation))
+                self._historical_batch_worker.status = {"state": "pilot_complete" if not policy["remaining_batches"]
+                                                        else "awaiting_screened_windows"}
+                return True
         if self._historical_batch_worker is None:
             from muninn.history.historical_batch_worker import HistoricalBatchWorker
-            self._historical_batch_worker = HistoricalBatchWorker(journal)
+            self._historical_batch_worker = HistoricalBatchWorker(journal,
+                authorize_transaction=authorize_transaction,
+                authorize_submit=lambda generation: authorize_batch(journal, generation))
         task = asyncio.create_task(self._historical_batch_worker.step())
         try:
             await asyncio.shield(task)

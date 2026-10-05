@@ -189,12 +189,14 @@ class Admission:
     identifier: str
     generation: int
 
-    def mark_unknown(self):
+    def mark_unknown(self, *, policy_guard=None):
         with _db(self.root) as (db, _):
             # Upgrade before any reads so concurrent policy edits/admissions serialize.
             db.rollback()
             db.execute("BEGIN IMMEDIATE")
             _policy(db, self.generation)
+            if policy_guard is not None and not policy_guard(db):
+                raise AdmissionError("remote_consent_revoked")
             changed = db.execute("UPDATE remote_admissions SET state='unknown' "
                                  "WHERE id=? AND generation=? AND state='reserved'",
                                  (self.identifier, self.generation)).rowcount

@@ -90,9 +90,10 @@ class HistoricalBatchWorker:
     already committed. Publication may resume after consent/budget revocation.
     """
     def __init__(self, journal, *, authorize_submit=lambda generation: False,
-                 send=transport, provider_status=None, clock=time.monotonic):
+                 authorize_transaction=None, send=transport, provider_status=None, clock=time.monotonic):
         self.journal = journal
         self.authorize_submit = authorize_submit
+        self.authorize_transaction = authorize_transaction
         self.send = send
         self.provider_status = provider_status
         self.clock = clock
@@ -147,7 +148,13 @@ class HistoricalBatchWorker:
                 # Shield/drain all durable fences; cancelling a to_thread does
                 # not cancel its transaction. No POST until all three commit.
                 async def fence():
-                    await asyncio.to_thread(admitted.mark_unknown)
+                    import hashlib
+
+                    from muninn.history.historical_batch import _json
+                    digest = hashlib.sha256(_json(record["items"])).hexdigest()
+                    guard = (None if self.authorize_transaction is None else
+                             lambda db: self.authorize_transaction(db, owner["id"], digest))
+                    await asyncio.to_thread(admitted.mark_unknown, policy_guard=guard)
                     await asyncio.to_thread(outbox.begin_submission, owner["id"], record["revision"])
                     await asyncio.to_thread(self.journal.mark_historical_batch_dispatched,
                                             owner["id"], admitted.identifier)
