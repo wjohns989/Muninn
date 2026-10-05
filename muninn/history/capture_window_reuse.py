@@ -37,29 +37,47 @@ class CaptureWindowReuseMixin:
             parent_target = self._validated_analysis_target(parent, db)
         return plans, parent_window, parent, parent_target
 
-    def _capture_reuse_material(self, row):
+    def _capture_reuse_material(self, row, *, provider="ollama"):
         found = self._capture_reuse_parent(row)
         if found is None:
             return None
         plans, parent_window, parent, parent_target = found
-        # Direct originals only. Reused parents, cloud calls, legacy result-only
+        # Direct originals only. Reused parents and legacy result-only
         # completions and interrupted publication are not original analysis ACKs.
         if (parent["state"] != "succeeded" or parent["lane"] != 1
-                or parent["sealed_reuse"] is not None or parent["remote_dispatched"]
-                or parent["provider"] != "ollama"):
+                or parent["sealed_reuse"] is not None
+                or parent["remote_dispatched"] != (provider == "openrouter")
+                or parent["provider"] != provider):
             return None
         stage = self._read_extraction(parent)
         ack = self._read_publication_receipt(parent)
         if stage is None or ack is None:
             return None
         if (stage["window"] != parent_window or self._read_analysis_window(parent) != parent_window
-                or stage["result"]["provider"] != "ollama"
+                or stage["result"]["provider"] != provider
                 or parent["model"] != stage["result"]["model"]):
             raise VaultIntegrityError("Reuse parent analysis binding changed")
         return plans, parent_window, parent, parent_target, stage, ack
 
     def acknowledge_capture_reuse(self, job_id, lease_token, *, model, weights_digest,
                                   request_options=None, identity_guard=None):
+        return self._acknowledge_capture_reuse(job_id, lease_token, provider="ollama",
+            model=model, weights_digest=weights_digest, request_options=request_options,
+            identity_guard=identity_guard)
+
+    def acknowledge_remote_capture_reuse(self, job_id, lease_token, *, models,
+                                         identity_guard=None):
+        """Reuse historical settled coverage, not equivalence of mutable cloud weights."""
+        if (not isinstance(models, (tuple, list)) or not 1 <= len(models) <= 32
+                or any(not isinstance(model, str) or not 1 <= len(model) <= 128 for model in models)):
+            raise ValueError("Invalid historical remote reuse models")
+        return self._acknowledge_capture_reuse(job_id, lease_token, provider="openrouter",
+            model=None, weights_digest=None, allowed_models=tuple(models),
+            identity_guard=identity_guard)
+
+    def _acknowledge_capture_reuse(self, job_id, lease_token, *, provider, model,
+                                  weights_digest, request_options=None, identity_guard=None,
+                                  allowed_models=()):
         """Trusted worker admission; caller must read fresh installed weights.
 
         No public API accepts a digest or reuse authority. Source/ledger proof
@@ -67,13 +85,16 @@ class CaptureWindowReuseMixin:
         This component does not call a provider, start a cadence, or infer reuse
         across chains. A miss remains ordinary unfinished work.
         """
-        if (not isinstance(model, str) or not 1 <= len(model) <= 128
+        if provider == "ollama" and (not isinstance(model, str) or not 1 <= len(model) <= 128
                 or not isinstance(weights_digest, str)
                 or re.fullmatch(r"[0-9a-f]{64}", weights_digest) is None):
             raise ValueError("Invalid local reuse identity")
         if identity_guard is not None and not callable(identity_guard):
             raise ValueError("Invalid reuse identity guard")
         before = self._publication_row(job_id)
+        if provider == "openrouter" and (before is None or before["remote_policy_generation"] < 1
+                                         or before["remote_dispatched"]):
+            return False
         if (before is None or before["lane"] != 1 or before["state"] != "running"
                 or before["lease_token"] != lease_token or before["lease_until"] <= time.time()
                 or before["cancel_requested"] or before["publication_started"]
@@ -82,14 +103,18 @@ class CaptureWindowReuseMixin:
         window = self._read_analysis_window(before)
         if window is None:
             return False
-        found = self._capture_reuse_material(before)
+        found = self._capture_reuse_material(before, provider=provider)
         if found is None:
             return False
         plans, parent_window, parent, parent_target, stage, ack = found
+        if provider == "openrouter":
+            model = stage["result"]["model"]
+            if model not in allowed_models:
+                return False
         if stage["result"]["model"] != model:
             return False
         from muninn.history.secure_analysis import _cited_model_identity
-        if _cited_model_identity(plans.source.reopen(window), "ollama", model,
+        if _cited_model_identity(plans.source.reopen(window), provider, model,
                                  weights_digest, request_options=request_options) != stage["model_identity"]:
             return False
         self._verify_reuse_refs(parent_window, stage, ack)
@@ -101,6 +126,8 @@ class CaptureWindowReuseMixin:
                  "parent_window": parent_window, "parent_extraction_id": parent["extraction_id"],
                  "model_identity": stage["model_identity"], "weights_digest": weights_digest,
                  "refs": ack["refs"]}
+        if provider == "openrouter":
+            proof.update(format=2, provider=provider, basis="historical_acked_analysis")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -121,9 +148,9 @@ class CaptureWindowReuseMixin:
                 raise VaultIntegrityError("Reuse original ACK changed")
             self._validated_analysis_target(original, db)
             self._ack_capture_window(db, row)
-            db.execute("UPDATE history_analysis_jobs SET state='reused',sealed_reuse=?,provider='ollama',model=?,"
+            db.execute("UPDATE history_analysis_jobs SET state='reused',sealed_reuse=?,provider=?,model=?,"
                        "lease_token=NULL,lease_until=NULL,error_code='',updated_at=? WHERE job_id=?", (
-                self._seal_search(proof, job_id, self._capture_reuse_purpose(row)), model, time.time(), job_id))
+                self._seal_search(proof, job_id, self._capture_reuse_purpose(row)), provider, model, time.time(), job_id))
         return True
 
     def _verify_reuse_refs(self, window, stage, ack):
@@ -150,14 +177,19 @@ class CaptureWindowReuseMixin:
         proof = self._open_search(row["sealed_reuse"], row["job_id"], self._capture_reuse_purpose(row))
         fields = {"format", "target", "window", "parent_job", "parent_target", "parent_window",
                   "parent_extraction_id", "model_identity", "weights_digest", "refs"}
+        provider = "openrouter" if isinstance(proof, dict) and proof.get("format") == 2 else "ollama"
+        if provider == "openrouter":
+            fields |= {"provider", "basis"}
         if (not isinstance(proof, dict) or set(proof) != fields
-                or type(proof["format"]) is not int or proof["format"] != 1
-                or not isinstance(proof["weights_digest"], str)
-                or re.fullmatch(r"[0-9a-f]{64}", proof["weights_digest"]) is None
+                or type(proof["format"]) is not int or proof["format"] not in {1, 2}
+                or (provider == "ollama" and (not isinstance(proof["weights_digest"], str)
+                    or re.fullmatch(r"[0-9a-f]{64}", proof["weights_digest"]) is None))
+                or (provider == "openrouter" and (proof["weights_digest"] is not None
+                    or proof["provider"] != provider or proof["basis"] != "historical_acked_analysis"))
                 or proof["target"] != self._validated_analysis_target(row)
                 or proof["window"] != self._read_analysis_window(row)):
             raise VaultIntegrityError("Reuse receipt binding is invalid")
-        found = self._capture_reuse_material(row)
+        found = self._capture_reuse_material(row, provider=provider)
         if found is None:
             raise VaultIntegrityError("Reuse original analysis is unavailable")
         plans, parent_window, parent, parent_target, stage, ack = found
@@ -165,7 +197,7 @@ class CaptureWindowReuseMixin:
                 or proof["parent_window"] != parent_window
                 or proof["parent_extraction_id"] != parent["extraction_id"]
                 or proof["model_identity"] != stage["model_identity"] or proof["refs"] != ack["refs"]
-                or row["model"] != stage["result"]["model"] or row["provider"] != "ollama"):
+                or row["model"] != stage["result"]["model"] or row["provider"] != provider):
             raise VaultIntegrityError("Reuse original publication binding is invalid")
         # Historical coverage records the admitted contract. Do not compare it
         # with today's installed model/options or dispatch a model during restore.

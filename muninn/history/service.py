@@ -1086,6 +1086,23 @@ class HistoryService:
                         await asyncio.gather(in_flight, return_exceptions=True)
                         raise
                 reuse_kwargs["reuse_completed"] = reuse_completed
+                if remote_enabled:
+                    async def reuse_remote_completed():
+                        from muninn.history import llm_settings
+                        models = tuple(llm_settings.models())  # Nonsecret configuration only.
+                        def identity_guard():
+                            return (not cancelled.is_set() and capture_remote_gate()
+                                    and tuple(llm_settings.models()) == models)
+                        in_flight = asyncio.create_task(asyncio.to_thread(
+                            journal.acknowledge_remote_capture_reuse, job.job_id, job.lease_token,
+                            models=models, identity_guard=identity_guard))
+                        try:
+                            return await asyncio.shield(in_flight)
+                        except asyncio.CancelledError:
+                            cancelled.set()
+                            await asyncio.gather(in_flight, return_exceptions=True)
+                            raise
+                    reuse_kwargs["reuse_remote_completed"] = reuse_remote_completed
             if job.lane == 1:
                 # Rate-limit attempts, not foreground requests. This includes
                 # resource-deferred and reuse attempts; staged recovery above

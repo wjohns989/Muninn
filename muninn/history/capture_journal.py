@@ -1278,7 +1278,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
         reuse = self._read_capture_reuse(row)
         if reuse is not None:
             response["memory_refs"] = list(reuse["refs"])
-            response["coverage_basis"] = "preserved_parent_analysis"
+            response["coverage_basis"] = reuse.get("basis", "preserved_parent_analysis")
         return response
 
     def fail_search(self, job_id: str, lease_token: str, error_code: str = "unknown") -> bool:

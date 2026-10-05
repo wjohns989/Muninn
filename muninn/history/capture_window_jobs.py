@@ -323,7 +323,9 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                 or row["remote_dispatched"] not in ((0, 1) if remote_bound else (0,))
                 or row["provider"] not in ((None, "ollama", "openrouter") if remote_bound
                                             else (None, "ollama"))
-                or (row["provider"] == "openrouter" and row["remote_dispatched"] != 1)
+                or (row["provider"] == "openrouter" and row["remote_dispatched"] != 1
+                    and not (row["state"] == "reused" and row["remote_dispatched"] == 0
+                             and row["sealed_reuse"] is not None))
                 or (row["provider"] == "ollama" and row["remote_dispatched"] != 0)
                 or any(not isinstance(target[k], str) or not re.fullmatch(r"[0-9a-f]{64}", target[k])
                        for k in ("work_id", "sha256", "descriptor_sha256"))

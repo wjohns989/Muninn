@@ -350,7 +350,7 @@ async def analyze_cited_window(history, source, descriptor, **kwargs):
 async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=False,
                           should_cancel=None, before_remote=None, remote_not_sent=None,
                           expected_remote_generation=None, source=None, descriptor=None, cited=False,
-                          reuse_completed=None, remote_gate=None):
+                          reuse_completed=None, remote_gate=None, reuse_remote_completed=None):
     if prefer_remote and not allow_remote:
         raise ValueError("A remote preference requires an explicit remote allowance")
     def ensure_active() -> None:
@@ -368,6 +368,11 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
         return {"status": "insufficient_context", "provider": None, "model": None}
     reason = "remote_requested"
     output_failure = None
+    if cited and prefer_remote and reuse_remote_completed is not None:
+        ensure_active()
+        if await reuse_remote_completed():
+            return {"status": "reused", "provider": "openrouter", "model": None}
+        ensure_active()
     if not prefer_remote:
         base = _loopback_ollama_url()
         from muninn.extraction.ollama_slot import async_ollama_slot

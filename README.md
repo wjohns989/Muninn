@@ -198,6 +198,16 @@ silently retried or converted. Status exposes the deadline and halt reason under
 `capture_enrichment.backlog_drain`; this mode alone does not prove full historical
 coverage or resolve credential ambiguity.
 
+Exact unchanged windows may reuse a direct earlier acknowledged interpretation
+locally before a model call. OpenRouter reuse is explicitly historical coverage,
+not a claim that a mutable cloud model would produce the same answer today. It
+requires the same authenticated source occurrence, text, role, timestamp,
+prompt/schema and an allowed original model, with settled billing and durable
+original citations. It creates no new memory entries and reads no API key or
+provider budget on a hit. Source rewrites and changed interpretation contracts
+remain misses. This direct-parent optimization does not yet reuse through chains
+of reused snapshots or merge separate sources/events with similar wording.
+
 Verify it's running:
 
 ```bash

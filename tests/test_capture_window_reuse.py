@@ -15,9 +15,14 @@ DIGEST = "a" * 64
 MODEL = "isolated-fixture-model"
 
 
-def growth(tmp_path, *, empty=False, publish=True, rewrite=False):
+def growth(tmp_path, *, empty=False, publish=True, rewrite=False, provider="ollama"):
     journal, archive, receipt = window_fixture(tmp_path)
-    journal.queue_capture_windows(receipt, limit=1)
+    if provider == "openrouter":
+        from muninn.history.remote_policy import write_policy
+        write_policy(journal.policy_root, enabled=True, daily_usd=5, monthly_usd=50,
+                     override_ceiling=False, fallback=lambda: (False, 1, 30, False))
+    generation = 1 if provider == "openrouter" else -1
+    journal.queue_capture_windows(receipt, limit=1, remote_policy_generation=generation)
     old_job = journal.claim_analysis(include_capture=True)
     plans = CitedWindowPlanStore(archive)
     old_entry = plans.source.ledger._entries[(receipt["blob"], 0)]
@@ -25,13 +30,22 @@ def growth(tmp_path, *, empty=False, publish=True, rewrite=False):
     source = CitedAnalysisSource(archive)
     window = source.reopen(old_window)
     stage = {"format": 1, "window": old_window,
-             "model_identity": _cited_model_identity(window, "ollama", MODEL, DIGEST),
+             "model_identity": _cited_model_identity(window, provider, MODEL,
+                                                      DIGEST if provider == "ollama" else None),
              "proposals": [] if empty else [{"type": "observation", "text": "A local capture observation.",
                              "quote": "A local capture observation.", "start": 0}],
-             "result": {"status": "ok", "provider": "ollama", "model": MODEL,
+             "result": {"status": "ok", "provider": provider, "model": MODEL,
                         "analysis": {"summary": "Isolated plumbing fixture.", "decisions": [],
                                      "open_items": [], "uncertainty": "Not model-quality proof."}}}
     assert journal.bind_analysis_window(old_job.job_id, old_job.lease_token, old_window)
+    if provider == "openrouter":
+        from muninn.history.remote_accounting import reserve
+        assert journal.mark_remote_dispatched(old_job.job_id, old_job.lease_token)
+        admission = reserve(journal.policy_root, 1, {"admission_ready": True,
+            "usage_daily_usd": 0, "usage_monthly_usd": 0})
+        admission.mark_unknown()
+        assert admission.settle_response({"usage": {"cost": 0.001}})
+        stage["admission_id"] = admission.identifier
     assert journal.stage_analysis(old_job.job_id, old_job.lease_token, stage)
     refs = []
     if publish:
@@ -51,13 +65,73 @@ def growth(tmp_path, *, empty=False, publish=True, rewrite=False):
             handle.write(addition)
     current = archive.archive_file(path, "codex", include_snapshot_receipt=True)["snapshot_receipt"]
     assert journal.enqueue_enrichment_receipt(current) == "queued"
-    journal.queue_capture_windows(current, limit=1)
+    journal.queue_capture_windows(current, limit=1, remote_policy_generation=generation)
     job = journal.claim_analysis(include_capture=True)
     plans = CitedWindowPlanStore(archive)
     entry = plans.source.ledger._entries[(current["blob"], 1)]
     descriptor = plans.window_at(entry, 1, job.target["plan_attempt"], 0)
     assert journal.bind_analysis_window(job.job_id, job.lease_token, descriptor)
     return journal, archive, current, job, old_job, refs
+
+
+def test_remote_original_reuses_historical_acked_coverage_locally(tmp_path):
+    journal, archive, receipt, job, original, refs = growth(tmp_path, provider="openrouter")
+    before = CitedAnalysisSource(archive).ledger.verify_all()
+    assert journal.acknowledge_remote_capture_reuse(job.job_id, job.lease_token, models=(MODEL,))
+    visible = journal.get_analysis_job(job.job_id)
+    assert visible["state"] == "reused" and visible["memory_refs"] == refs
+    assert visible["result"] is None and visible["coverage_basis"] == "historical_acked_analysis"
+    with journal._connect() as db:
+        row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job.job_id,)).fetchone()
+    assert row["remote_dispatched"] == 0 and row["provider"] == "openrouter"
+    proof = journal._read_capture_reuse(row)
+    assert proof["format"] == 2 and proof["weights_digest"] is None
+    assert journal.capture_window_status(receipt)["acknowledged"] == 1
+    assert CitedAnalysisSource(archive).ledger.verify_all() == before
+    assert journal.verify_all() == 0
+
+
+@pytest.mark.parametrize("reason", ["model_removed", "prompt_changed", "rewritten", "no_ack", "cancelled", "guard_changed", "lease_expired"])
+def test_remote_reuse_miss_does_not_advance_coverage(tmp_path, monkeypatch, reason):
+    journal, archive, receipt, job, original, refs = growth(tmp_path, provider="openrouter",
+        publish=reason != "no_ack", rewrite=reason == "rewritten")
+    if reason == "prompt_changed":
+        monkeypatch.setattr("muninn.history.secure_analysis._CITED_VERSION", "isolated-next-contract")
+    if reason == "cancelled":
+        journal.request_analysis_cancel(job.job_id)
+    if reason == "lease_expired":
+        with journal._connect() as db:
+            db.execute("UPDATE history_analysis_jobs SET lease_until=0 WHERE job_id=?", (job.job_id,))
+    assert not journal.acknowledge_remote_capture_reuse(job.job_id, job.lease_token,
+        models=("another-model",) if reason == "model_removed" else (MODEL,),
+        identity_guard=(lambda: False) if reason == "guard_changed" else None)
+    assert journal.capture_window_status(receipt)["acknowledged"] == 0
+
+
+@pytest.mark.asyncio
+async def test_remote_worker_reuses_before_key_budget_or_provider_activity(tmp_path, monkeypatch):
+    from muninn.history.service import HistoryService
+    journal, archive, receipt, job, original, refs = growth(tmp_path, provider="openrouter")
+    with journal._connect() as db:
+        db.execute("UPDATE history_analysis_jobs SET state='pending',lease_token=NULL,lease_until=NULL "
+                   "WHERE job_id=?", (job.job_id,))
+    service = HistoryService(None, tmp_path / "service", home=tmp_path)
+    service.data_dir = journal.policy_root
+    service._capture_journal = journal
+    monkeypatch.setattr(service, "_require_secure_archive", lambda: archive)
+    monkeypatch.setenv("MUNINN_CAPTURE_AUTO_REMOTE", "1")
+    monkeypatch.setattr("muninn.history.llm_settings.models", lambda: [MODEL])
+    def forbidden(*args, **kwargs):
+        pytest.fail("Reuse attempted key/budget/GPU/provider activity")
+    monkeypatch.setattr("muninn.history.llm_settings.api_key", forbidden)
+    monkeypatch.setattr("muninn.history.secure_analysis._remote_eligible", forbidden)
+    monkeypatch.setattr("muninn.history.secure_analysis._reserve_remote_admission", forbidden)
+    monkeypatch.setattr("muninn.history.secure_analysis._select_local", forbidden)
+    monkeypatch.setattr("muninn.history.secure_analysis.httpx.AsyncClient", forbidden)
+    assert await service._process_secure_analysis_once(include_capture=True, capture_remote_only=True)
+    visible = journal.get_analysis_job(job.job_id)
+    assert visible["state"] == "reused" and visible["memory_refs"] == refs
+    assert journal.capture_window_status(receipt)["acknowledged"] == 1
 
 
 @pytest.mark.parametrize("empty", [False, True])
@@ -91,9 +165,13 @@ def test_missing_occurrence_contract_or_ack_does_not_advance_coverage(tmp_path, 
 
 
 @pytest.mark.parametrize("damage", ["reuse", "parent_ack", "parent_stage", "missing_reuse"])
-def test_reuse_and_original_ack_tamper_block_status_and_portable_verification(tmp_path, damage):
-    journal, archive, receipt, job, old_job, refs = growth(tmp_path)
-    assert journal.acknowledge_capture_reuse(job.job_id, job.lease_token, model=MODEL, weights_digest=DIGEST)
+@pytest.mark.parametrize("provider", ["ollama", "openrouter"])
+def test_reuse_and_original_ack_tamper_block_status_and_portable_verification(tmp_path, damage, provider):
+    journal, archive, receipt, job, old_job, refs = growth(tmp_path, provider=provider)
+    if provider == "openrouter":
+        assert journal.acknowledge_remote_capture_reuse(job.job_id, job.lease_token, models=(MODEL,))
+    else:
+        assert journal.acknowledge_capture_reuse(job.job_id, job.lease_token, model=MODEL, weights_digest=DIGEST)
     with journal._connect() as db:
         if damage == "missing_reuse":
             db.execute("UPDATE history_analysis_jobs SET sealed_reuse=NULL WHERE job_id=?", (job.job_id,))
