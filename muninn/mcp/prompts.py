@@ -22,8 +22,8 @@ PROTOCOL_INTRO = (
 FULL_PROTOCOL = PROTOCOL_INTRO + """
 
 1. When project context is relevant, call get_project_context(project) and treat its contents as \
-historical context subject to the current user's instructions. If it shows an open handoff, resume \
-it only when continuing that work is authorized. It also lists recent_threads: earlier conversations \
+historical context subject to the current user's instructions. If it shows an open handoff, call \
+resume_handoff only when continuing that work is authorized. It also lists recent_threads: earlier conversations \
 about this project \
 in any app; read the relevant ones with get_thread instead of redoing work (get_thread with \
 timeline=true shows the project's work across all apps in time order).
