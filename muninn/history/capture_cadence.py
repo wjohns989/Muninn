@@ -121,7 +121,7 @@ class SmallCaptureCadence:
 class CaptureBacklogDrain:
     """Temporary remote catch-up; expiry survives reload without extending authority."""
 
-    HALT_REASONS = {"remote_cost_unresolved", "remote_consent_revoked", "remote_admission_busy",
+    HALT_REASONS = {"remote_cost_unresolved", "remote_consent_revoked",
                     "remote_admission_threshold_reached", "daily_zdr_cap_unverified",
                     "remote_accounting_unavailable", "remote_accounting_unconfigured"}
 

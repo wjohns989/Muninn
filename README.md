@@ -759,13 +759,20 @@ requires the main local token and does not expose the API key or key label.
 Strict ZDR analysis additionally uses a private durable admission journal in
 the managed policy database. One unresolved request blocks all further strict
 paid admissions for that data directory, even across process restarts or UTC
-rollovers. Complete responses settle their reported `usage.cost`, rounded upward
+rollovers. A pre-send reservation alone expires after 15 minutes, atomically
+fencing its old worker before another admission can proceed. A reservation that
+has reached the pre-POST unknown marker never expires automatically. Failed
+queue cleanup cannot strand a pre-send reservation; uncertain billing still
+requires explicit reconciliation. Temporary admission contention defers
+catch-up instead of permanently stopping it.
+
+Complete responses settle their reported `usage.cost`, rounded upward
 to micro-USD without first converting its JSON decimal to a binary float, before
 model output validation. The daily/monthly admission floor is the greater of
 reported key usage and this journal's settled cost, not their sum. Calls crossing
 a day/month boundary count conservatively in both periods. Proven-unsent calls
 release their admission; timeout, cancellation after POST, missing billing data
-or ambiguous dispatch markers remain blocking, never assumed free. Revocation
+or unknown billing markers remain blocking, never assumed free. Revocation
 stops new admissions but does not prevent settlement or proven-unsent cleanup.
 This is not a verified per-request upper cost reservation, does not cover legacy
 analysis/direct external clients, and does not activate paid capture fallback.

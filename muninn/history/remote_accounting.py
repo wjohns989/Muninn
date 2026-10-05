@@ -22,6 +22,7 @@ from muninn.history.remote_policy import _paths
 
 _MARKER = b"muninn-managed-remote-admission-v1\n"
 _MAX = 2**63 - 1
+_RESERVED_TIMEOUT = 900.0
 
 
 class AdmissionError(RuntimeError):
@@ -160,6 +161,13 @@ def reserve(root, generation, provider_status, *, now=None):
     day, month = _periods(when)
     with _db(root, initialize=True, generation=generation) as (db, _):
         caps = _policy(db, generation)
+        # reserved is strictly pre-POST: mark_unknown must win its CAS before
+        # transport may send. Expiry fences a stalled old worker, never guesses
+        # that an unknown request was free. Serialize with the next reservation.
+        db.execute("UPDATE remote_admissions SET state='released',finished=?,"
+                   "end_day=?,end_month=?,resolution='unsent' "
+                   "WHERE state='reserved' AND started<=?",
+                   (when, day, month, when - _RESERVED_TIMEOUT))
         if db.execute("SELECT 1 FROM remote_admissions WHERE state IN ('reserved','unknown') LIMIT 1").fetchone():
             raise AdmissionError("remote_admission_busy")
         spent = _spent(db, day, month)
@@ -191,6 +199,24 @@ class Admission:
 
     def release_unsent(self):
         _finish(self.root, self.identifier, None, "unsent")
+
+    def release_reserved(self):
+        """Release only a pre-send slot; unknown/settled charges stay intact."""
+        when = time.time()
+        day, month = _periods(when)
+        with _db(self.root) as (db, _):
+            db.rollback()
+            db.execute("BEGIN IMMEDIATE")
+            changed = db.execute("UPDATE remote_admissions SET state='released',"
+                "finished=?,end_day=?,end_month=?,resolution='unsent' "
+                "WHERE id=? AND generation=? AND state='reserved'",
+                (when, day, month, self.identifier, self.generation)).rowcount
+            if changed:
+                return True
+            row = db.execute("SELECT state,resolution,cost_micro FROM remote_admissions "
+                             "WHERE id=? AND generation=?",
+                             (self.identifier, self.generation)).fetchone()
+            return row == ("released", "unsent", None)
 
     def settle_response(self, data):
         usage = data.get("usage") if isinstance(data, dict) else None

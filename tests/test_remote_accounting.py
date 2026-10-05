@@ -165,3 +165,39 @@ def test_operator_cli_preserves_decimal_cost_lexeme(tmp_path, capsys):
     assert status(tmp_path)["daily_cost_usd"] == 5
     with pytest.raises(AdmissionError, match="threshold_reached"):
         reserve(tmp_path, 1, READY)
+
+
+def test_stale_reserved_is_fenced_before_new_admission(tmp_path):
+    policy(tmp_path)
+    old = reserve(tmp_path, 1, READY, now=1000)
+    with pytest.raises(AdmissionError, match="admission_busy"):
+        reserve(tmp_path, 1, READY, now=1899.999)
+    new = reserve(tmp_path, 1, READY, now=1900)
+    with pytest.raises(AdmissionError, match="conflict"):
+        old.mark_unknown()
+    new.mark_unknown()
+    assert status(tmp_path, now=1900)["unresolved"] == 1
+
+
+def test_unknown_never_expires_even_after_reserved_timeout(tmp_path):
+    policy(tmp_path)
+    old = reserve(tmp_path, 1, READY, now=1000)
+    old.mark_unknown()
+    with pytest.raises(AdmissionError, match="admission_busy"):
+        reserve(tmp_path, 1, READY, now=100000)
+    assert old.release_reserved() is False
+    assert status(tmp_path)["unresolved"] == 1
+
+
+def test_reserved_release_is_idempotent_and_preserves_billed_cost(tmp_path):
+    policy(tmp_path)
+    old = reserve(tmp_path, 1, READY)
+    assert old.release_reserved() is True
+    assert old.release_reserved() is True
+    with pytest.raises(AdmissionError, match="conflict"):
+        old.mark_unknown()
+    paid = reserve(tmp_path, 1, READY)
+    paid.mark_unknown()
+    paid.settle_response({"usage": {"cost": 0.2}})
+    assert paid.release_reserved() is False
+    assert status(tmp_path)["daily_cost_usd"] == 0.2

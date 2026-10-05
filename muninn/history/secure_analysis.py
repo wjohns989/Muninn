@@ -499,6 +499,10 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
         # Before post_started, every exit is proven unsent. After that point an
         # interruption may have reached the provider, so retain unknown status.
         if not post_started:
+            # This CAS uses transport truth independently of journal cleanup.
+            # A refused/failed/cancelled cleanup callback must not strand a
+            # reserved slot. If already unknown, it remains blocking below.
+            admission.release_reserved()
             proven_unsent = not marker_attempted
             if marker_attempted and remote_not_sent is not None:
                 proven_unsent = await remote_not_sent()

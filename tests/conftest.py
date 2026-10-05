@@ -17,6 +17,8 @@ def fake_strict_remote_admission(monkeypatch):
             pass
         def release_unsent(self):
             pass
+        def release_reserved(self):
+            return True
         def settle_response(self, data):
             return True
 

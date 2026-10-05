@@ -150,6 +150,50 @@ async def test_capture_opt_out_after_marker_still_prevents_remote_post(tmp_path,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup", ["false", "error", "cancelled"])
+async def test_failed_presend_queue_cleanup_cannot_strand_reservation(tmp_path, monkeypatch, cleanup):
+    async def post():
+        pytest.fail("a vetoed marker cannot POST")
+    history = route(tmp_path, monkeypatch, post)
+    async def marker():
+        return False
+    async def not_sent():
+        if cleanup == "error":
+            raise RuntimeError("fixture cleanup failure")
+        if cleanup == "cancelled":
+            raise asyncio.CancelledError
+        return False
+    expected = asyncio.CancelledError if cleanup == "cancelled" else RuntimeError
+    with pytest.raises(expected):
+        await run(history, before_remote=marker, remote_not_sent=not_sent)
+    assert status(tmp_path)["unresolved"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("billing_marked", [False, True])
+async def test_successful_queue_marker_cancellation_respects_billing_state(tmp_path, monkeypatch, billing_marked):
+    from muninn.history.remote_accounting import Admission
+    cancelled = [False]
+    async def post():
+        pytest.fail("cancellation before POST must not send")
+    history = route(tmp_path, monkeypatch, post)
+    original = Admission.mark_unknown
+    def mark_unknown(self):
+        original(self)
+        cancelled[0] = True
+    monkeypatch.setattr(Admission, "mark_unknown", mark_unknown)
+    async def marker():
+        cancelled[0] = not billing_marked
+        return True
+    async def not_sent():
+        return False
+    with pytest.raises(RuntimeError, match="cancelled"):
+        await run(history, before_remote=marker, remote_not_sent=not_sent,
+                  should_cancel=lambda: cancelled[0])
+    assert status(tmp_path)["unresolved"] == int(billing_marked)
+
+
+@pytest.mark.asyncio
 async def test_revocation_during_post_still_settles_returned_cost(tmp_path, monkeypatch):
     async def post():
         write_policy(tmp_path, enabled=False, daily_usd=5, monthly_usd=50,
@@ -183,7 +227,7 @@ async def test_revocation_during_lease_marker_proven_unsent_releases(tmp_path, m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("confirmed", [True, False])
-async def test_lease_exception_releases_only_if_dispatch_marker_confirmed_unsent(tmp_path, monkeypatch, confirmed):
+async def test_lease_exception_releases_reserved_independent_of_queue_marker(tmp_path, monkeypatch, confirmed):
     async def post():
         pytest.fail("A failed lease must not dispatch")
     history = route(tmp_path, monkeypatch, post)
@@ -193,7 +237,9 @@ async def test_lease_exception_releases_only_if_dispatch_marker_confirmed_unsent
         return confirmed
     with pytest.raises(RuntimeError, match="ambiguous lease"):
         await run(history, before_remote=marker, remote_not_sent=unsent)
-    assert status(tmp_path)["unresolved"] == (0 if confirmed else 1)
+    # The billing marker is still reserved, so transport cannot have sent.
+    # Queue ambiguity alone must not consume all future paid capacity.
+    assert status(tmp_path)["unresolved"] == 0
 
 
 @pytest.mark.asyncio

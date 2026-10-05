@@ -4,6 +4,14 @@ import asyncio
 import pytest
 
 from muninn.history.capture_cadence import CaptureBacklogDrain, SmallCaptureCadence
+
+
+def test_busy_admission_does_not_permanently_stop_catchup():
+    drain = CaptureBacklogDrain(160.0, clock=lambda: 100.0)
+    drain.halt("remote_admission_busy")
+    assert drain.active(pending=100, remote_enabled=True)
+    drain.halt("remote_cost_unresolved")
+    assert not drain.active(pending=100, remote_enabled=True)
 from tests.test_capture_automatic_service import enabled_service
 from tests.test_capture_window_jobs import window_fixture
 
