@@ -69,6 +69,43 @@ def test_archive_commit_before_journal_finish_replays_without_duplicate_snapshot
     assert archive.status()["snapshots"] == 1
 
 
+def test_restart_replays_raw_capture_interrupted_during_encrypted_write(tmp_path, monkeypatch):
+    journal, archive = _journal(tmp_path)
+    source = tmp_path / "session.jsonl"
+    original = b"Previously committed isolated evidence."
+    source.write_bytes(original)
+    archive.archive_file(source, "codex")
+    latest = original + b"\nsynthetic-new-capture-marker" * 90000
+    source.write_bytes(latest)
+    journal.enqueue(source, "codex", force=True)
+    claimed = journal.claim_due()
+    assert claimed is not None
+    write_chunk = archive._write_chunk
+
+    def interrupted(*args, **kwargs):
+        write_chunk(*args, **kwargs)
+        raise KeyboardInterrupt("isolated process interruption")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(archive, "_write_chunk", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            archive.archive_file(source, "codex")
+    assert list((archive.root / "blobs").glob("*.tmp"))
+    reopened = SecureHistoryArchive(archive.root, "test-only portable passphrase")
+    assert reopened.read_file(source) == original
+    assert reopened.status()["snapshots"] == 1
+    restarted = CaptureJournal(reopened)
+    replay = restarted.claim_due()
+    assert replay is not None and replay.revision == claimed.revision
+    assert replay.path == source.resolve()
+    assert reopened.archive_file(replay.path, replay.provider)["status"] == "captured"
+    assert restarted.finish(replay, archived=True)
+    assert reopened.read_file(source) == latest
+    assert reopened.read_file(source, version=0) == original
+    assert reopened.status()["snapshots"] == 2
+    assert restarted.status() == {"archived": 1}
+
+
 def test_deleted_source_remains_retryable_without_false_completion(tmp_path):
     journal, archive = _journal(tmp_path)
     source = tmp_path / "session.jsonl"

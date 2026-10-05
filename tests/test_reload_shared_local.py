@@ -133,6 +133,31 @@ def test_preserve_queues_allow_only_unclaimed_durable_work():
             assert not reload.queues_idle({**queued, table: {state: 1}}, preserve_queued=True)
 
 
+def test_active_raw_capture_recovery_requires_explicit_preserve_mode():
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--recover-active-capture"])
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--restart", "--recover-active-capture", "--expected-revision", "abcdef0"])
+    args = reload.parse_args(["--restart", "--preserve-capture-auto", "--recover-active-capture",
+                              "--expected-revision", "abcdef0"])
+    assert args.recover_active_capture
+
+
+def test_active_raw_capture_recovery_never_permits_model_search_or_multiple_captures():
+    queued = {table: {"pending": 1} for table in reload.TABLES}
+    queued["jobs"]["capturing"] = 1
+    assert not reload.queues_idle(queued, preserve_queued=True)
+    assert reload.queues_idle(queued, preserve_queued=True, allow_active_capture=True)
+    assert not reload.queues_idle(queued, allow_active_capture=True)
+    assert not reload.queues_idle({**queued, "jobs": {"capturing": 2}},
+                                 preserve_queued=True, allow_active_capture=True)
+    for table, states in (("history_search_jobs", ("running",)),
+                           ("history_analysis_jobs", ("running", "publishing"))):
+        for state in states:
+            assert not reload.queues_idle({**queued, table: {state: 1}},
+                                         preserve_queued=True, allow_active_capture=True)
+
+
 def test_preserve_rejects_publication_pending_with_active_lease(tmp_path):
     with sqlite3.connect(tmp_path / "jobs.db") as db:
         db.execute("CREATE TABLE history_analysis_jobs(state TEXT, lease_token TEXT, lease_until REAL)")
@@ -147,8 +172,9 @@ def test_preserve_rejects_publication_pending_with_active_lease(tmp_path):
     (False, False, False), (True, False, False), (False, True, False),
     (False, False, True)])
 @pytest.mark.parametrize("remote_enabled", [False, True])
+@pytest.mark.parametrize("active_capture", [False, True])
 def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
-        tmp_path, monkeypatch, claim_race, foreign_owner, backup_failure, remote_enabled):
+        tmp_path, monkeypatch, claim_race, foreign_owner, backup_failure, remote_enabled, active_capture):
     report, process = isolated_installation(tmp_path, monkeypatch)
     report["capture_enrichment"] = {"capture_enabled": True,
         "automatic_analysis_enabled": True, "automatic_remote_enabled": remote_enabled}
@@ -161,6 +187,8 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
         for table in reload.TABLES:
             db.execute(f"INSERT INTO {table}(state) VALUES('pending')")
         db.execute("INSERT INTO history_analysis_jobs(state) VALUES('publication_pending')")
+        if active_capture:
+            db.execute("INSERT INTO jobs(state) VALUES('capturing')")
         # Candidate startup also checks these schema fields; no private content.
         for column in ("sealed_window", "sealed_extraction", "extraction_id", "sealed_receipt",
                        "sealed_reuse", "cancel_requested", "publication_started"):
@@ -227,7 +255,8 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
     monkeypatch.setattr(reload, "read_user_flag", forbidden)
     monkeypatch.setattr(reload, "persist_capture_flags", forbidden)
     args = reload.parse_args(["--repo", str(tmp_path), "--restart", "--preserve-capture-auto",
-                              "--expected-revision", "abcdef0"])
+                              "--expected-revision", "abcdef0", *(["--recover-active-capture"]
+                                                                   if active_capture else [])])
     if claim_race:
         with pytest.raises(RuntimeError, match="Queue changed"):
             reload.run(args)
@@ -251,6 +280,8 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
         with sqlite3.connect(journal) as db:
             expected = {table: {"pending": 1} for table in reload.TABLES}
             expected["history_analysis_jobs"]["publication_pending"] = 1
+            if active_capture:
+                expected["jobs"]["capturing"] = 1  # Preserved for startup's tested replay.
             assert reload.queue_states(db) == expected
 
 

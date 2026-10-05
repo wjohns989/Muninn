@@ -201,6 +201,15 @@ silently retried or converted. Status exposes the deadline and halt reason under
 `capture_enrichment.backlog_drain`; this mode alone does not prove full historical
 coverage or resolve credential ambiguity.
 
+An explicitly authorized operator reload normally requires every worker to be
+idle. If continuous raw transcript capture prevents that, the opt-in
+`--recover-active-capture` option on `scripts/reload_shared_local.py` requires
+`--restart --preserve-capture-auto` and permits at most one interrupted CPU
+archive capture. Model, search and publication claims still block the reload.
+Encrypted preimages and the second writer-fenced check precede the owned stop;
+startup requeues the raw capture and preserves committed snapshots. Unfinished
+encrypted staging files remain unreferenced and are not deleted.
+
 Capture windows deferred as `source_not_remote_safe` remain durable and parked
 while automatic remote mode is enabled. They become eligible for ordinary/local
 processing when remote mode is turned off and local capacity is available. They

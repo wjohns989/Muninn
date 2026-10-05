@@ -73,6 +73,8 @@ def parse_args(argv=None):
     parser.add_argument("--enable-capture-auto", action="store_true", help="Enable local-only new-capture processing")
     parser.add_argument("--preserve-capture-auto", action="store_true",
                         help="Reload already enabled local capture without changing settings or queued work")
+    parser.add_argument("--recover-active-capture", action="store_true",
+                        help="Replay at most one interrupted CPU archive capture; model/search workers must be idle")
     parser.add_argument("--enable-capture-remote", action="store_true",
                         help="Opt in to managed ZDR for new capture windows on an existing auto-capture service")
     parser.add_argument("--backlog-drain-minutes", type=int,
@@ -90,6 +92,8 @@ def parse_args(argv=None):
         parser.error("capture preservation requires restart and cannot activate or finalize")
     if args.enable_capture_remote and not args.preserve_capture_auto:
         parser.error("remote capture requires restart with --preserve-capture-auto")
+    if args.recover_active_capture and not (args.restart and args.preserve_capture_auto):
+        parser.error("active capture recovery requires restart with --preserve-capture-auto")
     if args.backlog_drain_minutes is not None and (
             not args.enable_capture_remote or not 1 <= args.backlog_drain_minutes <= 180):
         parser.error("backlog drain requires remote capture and 1-180 minutes")
@@ -239,11 +243,14 @@ def queue_states(db):
     return {table: dict(db.execute(f"SELECT state,COUNT(*) FROM {table} GROUP BY state")) for table in TABLES}
 
 
-def queues_idle(queues, *, preserve_queued=False):
-    """Preserve-mode stops no claimed worker and leaves durable queued work intact."""
+def queues_idle(queues, *, preserve_queued=False, allow_active_capture=False):
+    """Default stops no claim; explicit recovery permits one replayable CPU capture."""
     excluded = {"pending", "retry", "publication_pending"} if preserve_queued else set()
+    recover_capture = (preserve_queued and allow_active_capture
+                       and queues["jobs"].get("capturing", 0) in (0, 1))
     return not any(queues[table].get(state, 0)
-                   for table in TABLES for state in ACTIVE[table] - excluded)
+                   for table in TABLES for state in ACTIVE[table] - excluded
+                   if not (recover_capture and table == "jobs" and state == "capturing"))
 
 
 def publication_queue_unclaimed(db):
@@ -434,7 +441,8 @@ def run(args):
     if not args.restart:
         return
     require(os.name == "nt", "Owned forced reload is supported only on Windows")
-    require(queues_idle(initial, preserve_queued=args.preserve_capture_auto), "Durable workers are not idle")
+    require(queues_idle(initial, preserve_queued=args.preserve_capture_auto,
+                        allow_active_capture=args.recover_active_capture), "Durable workers are not idle")
     require(initial_publication_unclaimed, "Durable publication has a live lease")
     require(pre_reload_mode_matches(before, environment, preserve_capture_auto=args.preserve_capture_auto),
             "Existing capture mode differs from the requested reload procedure")
@@ -478,7 +486,9 @@ def run(args):
     verify_candidate(repo, args.expected_revision)
     with sqlite3.connect(journal.as_uri() + "?mode=rw", uri=True, timeout=2) as fence:
         fence.execute("BEGIN IMMEDIATE")
-        require(queues_idle(queue_states(fence), preserve_queued=args.preserve_capture_auto),
+        fenced_queues = queue_states(fence)
+        require(queues_idle(fenced_queues, preserve_queued=args.preserve_capture_auto,
+                            allow_active_capture=args.recover_active_capture),
                 "Queue changed before owned stop")
         if args.preserve_capture_auto:
             require(publication_queue_unclaimed(fence), "Durable publication gained a live lease")
@@ -496,7 +506,9 @@ def run(args):
                             "Database preimage failed")
             verify_private(target)
         verify_stop_ownership(process, identity, repo=repo, port=args.port)
-        print(json.dumps({"stage": "preimage_validated", "databases": len(databases), "inflight_jobs": 0,
+        captures = fenced_queues["jobs"].get("capturing", 0)
+        print(json.dumps({"stage": "preimage_validated", "databases": len(databases),
+                          "inflight_jobs": captures, "recoverable_cpu_captures": captures,
                           "stop_method": "owned_windows_forced_termination"}), flush=True)
         process.terminate()
         process.wait(timeout=15)

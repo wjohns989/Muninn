@@ -60,6 +60,16 @@ now exposes only a validated numeric HTTP status, never response/exception text,
 URL, headers or body. Five HTTP cases reproduced the missing diagnostic before
 the fix; all 23 isolated triage checks passed. Local triage remains stopped.
 
+Continuous raw capture blocked the idle-only reload. The narrow explicit
+`--recover-active-capture` path requires preservation mode, permits only one CPU
+raw capture, and retains model/search/publication idle checks, encrypted database
+preimages, the second writer fence and exact owned-process checks. A new isolated
+interruption-during-encrypted-write test preserves the old committed snapshot,
+reopens/requeues the same raw claim, replays the complete source and verifies both
+versions while leaving the unreferenced encrypted staging file untouched. Two
+new admission tests failed before implementation; helper/capture-journal checks:
+100 passed, including model-claim races, backup failure and competing owners.
+
 The service is running in strict authenticated encrypted-history mode. Capture
 and automatic local/remote interpretation are enabled; enrollment completion is
 not backlog completion. Existing local failures are not trusted facts. One
