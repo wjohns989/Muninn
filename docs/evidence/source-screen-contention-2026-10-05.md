@@ -24,7 +24,17 @@ full, and I/O error cases still fail. The focused ledger, source-evidence, and
 cited-transport suites passed: 105 tests. These are isolated regression checks,
 not a claim that the historical backlog or ambiguity review is complete.
 
-Independent design review found this bounded fallback preserves the privacy
-decision; integration still requires review of the actual diff and an owned
-service reload with existing encrypted preimages. Rollback is the previous code
-candidate; no data or schema rollback is required.
+Independent design and integration reviews returned CLEAR. Candidate `6db0e40`
+was loaded into the single existing service on port 42069 after an idle window
+and six validated encrypted database preimages; strict archive readiness and
+automatic remote mode were verified. No active model/publication was terminated.
+Rollback is the previous code candidate; no data or schema rollback is required.
+
+A subsequent no-model replay of a real unsent failure passed the contested
+cache-write path and returned `source_not_remote_safe`, preserving the privacy
+denial rather than misreporting a model/storage failure. The installed bridge
+also passed a real read-only project-context call and matched Codex, Claude
+Code/Desktop, and Gemini client profiles (20 core tools). This is bridge/config
+proof, not proof of every host hook event, full backlog success, or resolved
+credential ambiguity. Existing OpenRouter budgets and retention policy were not
+changed. Automatic backlog work remains remote-only.
