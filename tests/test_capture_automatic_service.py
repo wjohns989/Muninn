@@ -56,7 +56,7 @@ def enabled_service(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome_kind", ["private", "denied", "dispatched"])
+@pytest.mark.parametrize("outcome_kind", ["private", "empty", "denied", "dispatched"])
 async def test_remote_only_cooldown_tracks_dispatch_not_private_screening(monkeypatch, tmp_path, outcome_kind):
     from types import SimpleNamespace
 
@@ -82,6 +82,8 @@ async def test_remote_only_cooldown_tracks_dispatch_not_private_screening(monkey
         if outcome_kind == "private":
             assert cited_source.remote_input(descriptor) is None
             return {"status": "deferred", "reason": "source_not_remote_safe"}
+        if outcome_kind == "empty":
+            return {"status": "insufficient_context", "provider": None, "model": None}
         if outcome_kind == "dispatched":
             assert await kwargs["before_remote"]()
             assert service._capture_cadence.snapshot()["attempt_cooldown_remaining_seconds"] == 5
@@ -93,13 +95,14 @@ async def test_remote_only_cooldown_tracks_dispatch_not_private_screening(monkey
     monkeypatch.setattr(secure_analysis, "analyze_cited_window", analyze)
     assert await service._process_secure_analysis_once(
         include_capture=True, include_search=False, capture_remote_only=True)
-    assert service._capture_cadence.attempt_ready() is (outcome_kind == "private")
+    assert service._capture_cadence.attempt_ready() is (outcome_kind in {"private", "empty"})
     assert service._capture_cadence.snapshot()["attempt_cooldown_remaining_seconds"] == (
-        0 if outcome_kind == "private" else 30)
+        0 if outcome_kind in {"private", "empty"} else 30)
     with journal._connect() as db:
         row = db.execute("SELECT state,remote_dispatched FROM history_analysis_jobs WHERE lane=1").fetchone()
     assert row["remote_dispatched"] == (outcome_kind == "dispatched")
-    assert row["state"] == ("outcome_unknown" if outcome_kind == "dispatched" else "retry")
+    assert row["state"] == ("outcome_unknown" if outcome_kind == "dispatched"
+                            else "failed" if outcome_kind == "empty" else "retry")
 
 
 @pytest.mark.asyncio

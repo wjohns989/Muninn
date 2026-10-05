@@ -55,5 +55,19 @@ of an existing durable owner without enabling new work. The final affected
 worker/automatic-service rerun including its startup regression passed 41 tests
 in 22.82 seconds; Ruff and whitespace checks passed. Independent review of this
 startup correction is required before installation.
+
+Independent follow-up review cleared the startup correction and the default-deny
+recovery integration. New-retention activation remains outside this installed
+candidate's claim. The final empty-window regression run passed 23 automatic
+service tests in 15.20 seconds; independent review cleared its narrow pre-send
+allowlist. All changed Python files passed Ruff and whitespace checks.
+
+Further live diagnosis found fifteen pre-send `insufficient_context` results in
+the latest ten-minute journal slice. `_analyze_window` returns this only for an
+empty span, before routing/reservation/POST. These also now yield one second
+without a model-attempt interval. Their failed outcome remains visible; they
+are not counted as interpreted coverage or model successes. Budget denials and
+uncertain/sent calls retain backoff. The parameterized regression distinguishes
+private, empty, budget-denied and dispatched/uncertain paths.
 These isolated tests do not establish live batch activation or portable recovery
 of the separate remote-accounting store.

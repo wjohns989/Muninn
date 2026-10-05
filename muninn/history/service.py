@@ -1146,10 +1146,11 @@ class HistoryService:
                 # Provider/billing failures retain the original full backoff.
                 self._capture_cadence.note_attempt(local_opportunity=False)
             if job.lane == 1 and capture_remote_only and remote_was_not_sent:
-                if (outcome.get("status") == "deferred"
+                if (outcome.get("status") == "insufficient_context"
+                        or outcome.get("status") == "deferred"
                         and outcome.get("reason") == "source_not_remote_safe"):
-                    # Keep private windows parked, but do not make every safe
-                    # window behind them wait a full model-attempt interval.
+                    # Private and empty windows made NO provider request; do
+                    # not impose a model interval on the safe work behind them.
                     # Yield briefly so CPU-only screening cannot hot-spin.
                     await asyncio.sleep(1)
                 else:
