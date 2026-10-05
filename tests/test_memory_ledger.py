@@ -1,5 +1,7 @@
 """Isolated synthetic evidence; no provider call or live vault access."""
 import json
+import sqlite3
+from contextlib import contextmanager
 
 import pytest
 
@@ -10,6 +12,64 @@ from muninn.history.source_evidence import SourceEvidenceStore
 
 PHRASE = "synthetic portable recovery phrase"
 MODEL = "a" * 64
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_screen_cache_writer_contention_does_not_replace_source_proof(tmp_path, monkeypatch, private):
+    text = ("Keep citations. SERVICE_API_KEY=sk-synthetic-only-secret" if private
+            else "I want source citations kept.")  # gitleaks:allow synthetic canary
+    archive, entry, attempt, page = fixture(tmp_path, text=text)
+    ledger = MemoryLedger(archive)
+    original = ledger.units._connect
+
+    @contextmanager
+    def fast_connections():
+        with original() as db:
+            db.execute("PRAGMA busy_timeout=50")
+            yield db
+
+    monkeypatch.setattr(ledger.units, "_connect", fast_connections)
+    with original() as reader:
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM pages").fetchone()
+        result = ledger.remote_input(entry, 0, attempt, page)
+        assert (result is None) is private
+        unit, _ = ledger._source(entry, 0, attempt, page)
+        assert ledger.units.screen_info(entry, 0, attempt, unit) is None
+        # A second reader must reauthenticate the source, not invent or reuse
+        # an attestation whose commit failed.
+        reopened = MemoryLedger(archive)
+        monkeypatch.setattr(reopened.units, "_connect", fast_connections)
+        calls = []
+        fragments = reopened.units.unit_fragments
+
+        def checked_fragments(*args, **kwargs):
+            calls.append(True)
+            return fragments(*args, **kwargs)
+
+        monkeypatch.setattr(reopened.units, "unit_fragments", checked_fragments)
+        assert (reopened.remote_input(entry, 0, attempt, page) is None) is private
+        assert calls == [True]
+    # Once contention ends, the ordinary encrypted cache can be committed.
+    fresh = MemoryLedger(archive)
+    assert (fresh.remote_input(entry, 0, attempt, page) is None) is private
+    assert fresh.units.screen_info(entry, 0, attempt, unit) is not None
+
+
+@pytest.mark.parametrize("code", [sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_FULL, sqlite3.SQLITE_IOERR])
+def test_screen_cache_noncontention_errors_remain_fatal(tmp_path, monkeypatch, code):
+    archive, entry, attempt, page = fixture(tmp_path)
+    ledger = MemoryLedger(archive)
+
+    def fail(*args, **kwargs):
+        error = sqlite3.OperationalError("synthetic failure")
+        error.sqlite_errorcode = code
+        raise error
+
+    monkeypatch.setattr(ledger.units, "_store_screen_info", fail)
+    with pytest.raises(sqlite3.OperationalError):
+        ledger.remote_input(entry, 0, attempt, page)
+    assert not ledger._screen_cache
 
 
 def fixture(tmp_path, text="I want source citations kept.", role="user", timestamp=True, cwd=True):

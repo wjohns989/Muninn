@@ -109,6 +109,10 @@ class SourceEvidenceStore(SecureProjectionStore):
             nonce, _j(record), b"unit-screen-v1\0" + ref.encode("ascii"))
         self._decode_screen(ref, ciphertext)  # Validate before any durable write.
         with self._connect() as db:
+            # Optional cache writes must not stall paid interpretation behind
+            # long-lived source readers. Durable source/ledger writes retain
+            # their ordinary timeout and strict transaction behavior.
+            db.execute("PRAGMA busy_timeout=100")
             db.execute("BEGIN IMMEDIATE")
             self._authenticated_count(db, binding["source"], attempt)
             db.execute("INSERT OR IGNORE INTO unit_screens VALUES(?,?)", (ref, ciphertext))

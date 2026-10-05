@@ -247,6 +247,14 @@ class MemoryLedger:
                 body_length=body_length, body_sha=body.hexdigest())
         except ProjectionIntegrityError as exc:
             raise MemoryLedgerIntegrityError("Ledger context is not authenticated") from exc
+        except sqlite3.OperationalError as exc:
+            # The full immutable unit was authenticated and screened above.
+            # Persistence is only a cross-worker optimization: a competing
+            # reader may prevent its DELETE-journal commit. Keep this proof in
+            # memory and rescan next time; never soften source/integrity errors.
+            code = getattr(exc, "sqlite_errorcode", None)
+            if type(code) is not int or code & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
         self._screen_cache[cache_key] = info
         if len(self._screen_cache) > 128:
             self._screen_cache.popitem(last=False)
