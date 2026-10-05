@@ -328,6 +328,8 @@
                     <p id="history-coverage-status" role="status" aria-live="polite">Enter the main local token to inspect coverage.</p>
                     <p id="history-capture-status" role="status" aria-live="polite">Capture queue not loaded.</p>
                     <p id="history-interpretation-status" role="status" aria-live="polite">Interpretation status not loaded.</p>
+                    <p id="history-window-status" role="status" aria-live="polite">Window counts not loaded.</p>
+                    <p id="history-batch-status" role="status" aria-live="polite">Batch status not loaded.</p>
                     <p id="history-hook-receipts" class="history-hook-receipts">Hook receipts not loaded.</p>
                 </div>
                 <div class="card">
@@ -896,6 +898,8 @@
                 capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
                 document.getElementById('history-interpretation-status').textContent =
                     'Interpretation status unavailable; pending and parked counts are unknown.';
+                document.getElementById('history-window-status').textContent = 'Window counts unavailable.';
+                document.getElementById('history-batch-status').textContent = 'Batch status unavailable.';
                 hooks.textContent = 'Hook receipts unavailable; no delivery conclusion can be drawn.';
                 return;
             }
@@ -919,6 +923,10 @@
             const interpretation = document.getElementById('history-interpretation-status');
             const enrichment = data.capture_enrichment;
             const countStatus = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            const windowStatus = document.getElementById('history-window-status');
+            const batchStatus = document.getElementById('history-batch-status');
+            windowStatus.textContent = 'Recorded window counts unknown; remaining window total unknown.';
+            batchStatus.textContent = 'Batch status unknown.';
             if (!enrichment || typeof enrichment !== 'object' || Array.isArray(enrichment)) {
                 interpretation.textContent = 'Interpretation status unavailable; pending and parked counts are unknown.';
             } else {
@@ -946,6 +954,52 @@
                 interpretation.textContent = `Interpretation: ${pending} pending source versions; ` +
                     `${parked} parked private windows; ${drainText}. ${enrollmentText}. ` +
                     'Enrollment is not interpretation completion.';
+                const windows = enrichment.window_jobs;
+                const labels = ['succeeded', 'reused', 'pending', 'retry', 'failed',
+                    'outcome_unknown', 'running', 'publishing', 'publication_pending',
+                    'cancelled', 'not_queued', 'not_applicable'];
+                const states = windows?.states;
+                if (windows?.basis === 'all_capture_lane_jobs' &&
+                    Number.isSafeInteger(windows.total) && windows.total >= 0 &&
+                    states && typeof states === 'object' && !Array.isArray(states) &&
+                    Object.entries(states).every(([key, value]) => labels.includes(key) &&
+                        Number.isSafeInteger(value) && value >= 0) &&
+                    Object.values(states).reduce((total, value) => total + value, 0) === windows.total &&
+                    Number.isSafeInteger(enrichment.parked_private_windows) &&
+                    enrichment.parked_private_windows >= 0 &&
+                    enrichment.parked_private_windows <= (states.retry || 0)) {
+                    windowStatus.textContent = `Recorded windows (all capture jobs): ${windows.total} total; ` +
+                        labels.map(key => `${states[key] || 0} ${key.replaceAll('_', ' ')}`).join(', ') +
+                        `. Retry includes ${parked} privacy-parked windows, not runnable work. ` +
+                        'These are recorded job states, not independent publication verification. ' +
+                        'Because some sources are unplanned, the remaining window total unknown; no overall completion percentage.';
+                }
+                const batch = enrichment.historical_batch;
+                const batchLabels = {awaiting_provider: 'waiting for provider', submitted: 'submitted',
+                    working: 'checking or publishing results', passed: 'checkpoint passed',
+                    checkpoint_unresolved: 'checkpoint validation unresolved',
+                    recovery_deferred: 'recovery deferred', submission_unknown: 'submission outcome unknown',
+                    awaiting_provider_identity: 'waiting for identity proof',
+                    repair_admission_unresolved: 'retry accounting unresolved',
+                    repair_limit_reached: 'retry limit reached', consent_required: 'consent required',
+                    remote_disabled: 'remote processing disabled', pilot_complete: 'batch quota exhausted',
+                    gathering_batch: 'gathering screened windows',
+                    awaiting_screened_windows: 'waiting for screened windows', idle: 'idle', inactive: 'inactive'};
+                if (batch && typeof batch === 'object' && !Array.isArray(batch)) {
+                    const state = Object.prototype.hasOwnProperty.call(batchLabels, batch.state) ?
+                        batchLabels[batch.state] : 'unknown';
+                    const items = Number.isSafeInteger(batch.items) && batch.items >= 1 && batch.items <= 128 ?
+                        String(batch.items) : 'unknown';
+                    batchStatus.textContent = `Current batch: ${items} windows; ${state}. `;
+                    if (batch.repair_only === true && Number.isSafeInteger(batch.parent_items) &&
+                        batch.parent_items >= 1 && batch.parent_items <= 128 &&
+                        Number.isSafeInteger(batch.repair_round) && batch.repair_round >= 1 && batch.repair_round <= 2) {
+                        batchStatus.textContent += `Retry within a ${batch.parent_items}-window checkpoint; ` +
+                            `round ${batch.repair_round}. Successful siblings are not resent. `;
+                    }
+                    batchStatus.textContent += 'Up to 128 windows per batch, each up to 3,000 characters. ' +
+                        'The next unrelated batch waits for checkpoint validation and publication.';
+                }
             }
             if (queue && typeof queue === 'object' && !Array.isArray(queue)) {
                 const queued = state => Object.prototype.hasOwnProperty.call(queue, state) ?

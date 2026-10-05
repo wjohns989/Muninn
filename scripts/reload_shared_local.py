@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
@@ -17,6 +16,8 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import ExitStack, closing, contextmanager
+from pathlib import Path
 
 REPO_DEFAULT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DEFAULT))
@@ -52,6 +53,10 @@ _SAFE_FAILURE_CODES = {
     "Requested capture mode is not effective": "capture_mode",
     "Candidate publication schema is incomplete": "publication_schema",
     "Candidate startup deadline reached; private preimages and logs preserved": "startup_deadline",
+    "Paid batch stores are incomplete": "paid_stores_incomplete",
+    "Paid submission identity is uncertain": "paid_submission_unknown",
+    "Paid authorization is in flight": "paid_authorization_busy",
+    "Paid batch admission binding differs": "paid_binding_mismatch",
 }
 
 
@@ -63,6 +68,74 @@ def safe_failure_code(exc):
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+@contextmanager
+def paid_stop_fence(data, archive, journal):
+    """Exclude new paid POSTs and refuse any unsaved submission identity.
+
+    Lock order follows paid authorization, outbox and journal. Existing rows
+    are authenticated under the locks; no schema or permission is changed.
+    The caller keeps this context until the owned process has actually stopped.
+    """
+    from muninn.history.historical_batch import BatchOutbox, _provider_id
+    from muninn.history.secure_archive import SecureHistoryArchive
+    from scripts.enroll_history_backlog import ReadOnlyJournal
+
+    policy_path = data / "remote_policy" / "policy.sqlite3"
+    batch_path = archive / "historical-batches.db"
+    with ExitStack() as stack:
+        remote = batches = outbox = reader = None
+        if policy_path.exists():
+            require_unlinked_path(policy_path)
+            verify_private(policy_path)
+            remote = stack.enter_context(closing(sqlite3.connect(
+                policy_path.as_uri() + "?mode=rw", uri=True, timeout=2)))
+            remote.row_factory = sqlite3.Row
+            remote.execute("BEGIN IMMEDIATE")
+        if batch_path.exists():
+            require(remote is not None, "Paid batch stores are incomplete")
+            unlocked = SecureHistoryArchive(archive)
+            # Existing pair required: constructor cannot initialize a new pair.
+            require((archive / "historical-batches-managed").is_file(), "Paid batch stores are incomplete")
+            outbox = BatchOutbox(unlocked)
+            batches = stack.enter_context(closing(sqlite3.connect(
+                batch_path.as_uri() + "?mode=rw", uri=True, timeout=2)))
+            batches.execute("BEGIN IMMEDIATE")
+            reader = ReadOnlyJournal(unlocked)
+            records = {row[0]: outbox._read(row) for row in batches.execute("SELECT * FROM batches")}
+            require(not any(record["state"] == "submission_unknown" for record in records.values()),
+                    "Paid submission identity is uncertain")
+        else:
+            require(not (archive / "historical-batches-managed").exists(), "Paid batch stores are incomplete")
+            records = {}
+        fence = stack.enter_context(closing(sqlite3.connect(journal.as_uri() + "?mode=rw", uri=True, timeout=2)))
+        fence.row_factory = sqlite3.Row
+        fence.execute("BEGIN IMMEDIATE")
+        if remote is not None:
+            # A reservation is also left alone, rather than making startup
+            # wait for its timeout after killing the in-flight authorization.
+            pending = remote.execute("SELECT * FROM remote_admissions WHERE state IN ('reserved','unknown')").fetchall()
+            for admission in pending:
+                require(admission["state"] == "unknown" and "batch_owner" in admission.keys(),
+                        "Paid authorization is in flight")
+                record = records.get(admission["batch_owner"])
+                require(record is not None and record["state"] in {"submitted", "terminal_saved", "cleaned"}
+                        and _provider_id(record["provider_id"]), "Paid submission identity is uncertain")
+                owner = reader._historical_batch_head(fence)[1]
+                require(owner is not None and owner["phase"] == "sent"
+                        and owner["generation"] == admission["generation"] == record["consent_generation"],
+                        "Paid batch admission binding differs")
+                if record.get("repair_parent"):
+                    parent = records.get(owner["id"])
+                    require(record["repair_parent"] == owner["id"] and parent is not None
+                            and parent.get("repairs", []) and parent["repairs"][-1] == record["id"]
+                            and record.get("repair_admission") == admission["id"],
+                            "Paid batch admission binding differs")
+                else:
+                    require(owner["id"] == record["id"] and owner["admission_id"] == admission["id"],
+                            "Paid batch admission binding differs")
+        yield fence
 
 
 def parse_args(argv=None):
@@ -492,8 +565,7 @@ def run(args):
     require(command and Path(command[0]).resolve() == Path(sys.executable).resolve(), "Owned launch command differs")
     # No registry mutation or process stop precedes all destination checks.
     verify_candidate(repo, args.expected_revision)
-    with sqlite3.connect(journal.as_uri() + "?mode=rw", uri=True, timeout=2) as fence:
-        fence.execute("BEGIN IMMEDIATE")
+    with paid_stop_fence(data, archive, journal) as fence:
         fenced_queues = queue_states(fence)
         require(queues_idle(fenced_queues, preserve_queued=args.preserve_capture_auto,
                             allow_active_capture=args.recover_active_capture,

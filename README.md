@@ -1032,6 +1032,16 @@ truth. Excerpts and typed model interpretations remain provisional, and possible
 secrets remain pending without public text. Screening streams the entire source
 unit before releasing a selected window, including across chunk boundaries.
 The ledger is included in portable archive backup/restore verification.
+The authenticated History dashboard reports source-version coverage separately
+from recorded transcript-window job states. A model window is at most 3,000
+characters; a retained batch contains up to 128 windows and can be smaller.
+Retry totals include privacy-parked work, which is not runnable remote work.
+Counts cover all capture-lane jobs, not just the current run, and do not prove
+independently verified publication or the size of unplanned history. Linked
+repair batches show their own item count alongside the original checkpoint size.
+The explicit Windows reload helper fences paid admission, batch storage and the
+journal before stopping the owned service. An uncertain submission or in-flight
+authorization blocks reload; known authenticated provider IDs resume after it.
 Worker preparation can reuse an encrypted whole-unit screening attestation
 across worker instances, bound to the exact archived version, sealed parser
 attempt, unit metadata and screening-policy version. It contains hashes, not

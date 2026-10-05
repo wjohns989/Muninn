@@ -62,7 +62,8 @@ def test_reconciliation_is_bounded_and_resumable(tmp_path):
     assert journal.reconcile_enrichment(limit=2) == 0
     assert len(journal.pending_enrichment(limit=2)) == 2
     assert journal.enrichment_status() == {
-        "configured": True, "pending_sources": 5, "parked_private_windows": 0}
+        "configured": True, "pending_sources": 5, "parked_private_windows": 0,
+        "window_jobs": {"basis": "all_capture_lane_jobs", "total": 0, "states": {}}}
 
 
 def test_checkpoint_resumes_without_revisiting_completed_receipts_and_finds_new_earlier_path(tmp_path, monkeypatch):
@@ -185,7 +186,8 @@ def test_disabled_outbox_and_default_archive_result_do_not_change_capture_contra
     assert archive.archive_file(path, "codex") == {"status": "unchanged", "versions": 1}
     assert journal.reconcile_enrichment() == 0
     assert journal.enrichment_status() == {
-        "configured": False, "pending_sources": 0, "parked_private_windows": 0}
+        "configured": False, "pending_sources": 0, "parked_private_windows": 0,
+        "window_jobs": {"basis": "all_capture_lane_jobs", "total": 0, "states": {}}}
 
 
 def test_legacy_unchanged_receipt_is_not_reclassified_as_new_work(tmp_path):

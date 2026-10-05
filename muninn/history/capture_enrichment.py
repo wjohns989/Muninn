@@ -223,9 +223,15 @@ class CaptureEnrichmentMixin(HistoricalEnrollmentMixin):
             count = self._capture_schedule(db)["pending"]
             parked = db.execute("SELECT COUNT(*) FROM history_analysis_jobs WHERE lane=1 "
                                 "AND state='retry' AND error_code='source_not_remote_safe'").fetchone()[0]
+            states = dict(db.execute("SELECT state,COUNT(*) FROM history_analysis_jobs "
+                                     "WHERE lane=1 GROUP BY state"))
             _seal, historical = self._historical_progress(db)
         result = {"configured": baseline is not None, "pending_sources": count,
-                  "parked_private_windows": parked}
+                  "parked_private_windows": parked,
+                  # Operational journal hints, not independently verified
+                  # publication receipts or a count of unplanned source windows.
+                  "window_jobs": {"basis": "all_capture_lane_jobs",
+                                  "total": sum(states.values()), "states": states}}
         if historical is not None:
             result["historical_enrollment"] = {k: v for k, v in historical.items() if k != "manifest_sha"}
         return result

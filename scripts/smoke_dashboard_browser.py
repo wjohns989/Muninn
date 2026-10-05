@@ -16,9 +16,6 @@ from pathlib import Path
 from tempfile import mkstemp
 from urllib.parse import urlsplit
 
-from playwright.sync_api import expect, sync_playwright
-
-
 def _token() -> str | None:
     value = os.environ.get("MUNINN_AUTH_TOKEN")
     if value or os.name != "nt":
@@ -33,7 +30,30 @@ def _token() -> str | None:
         return None
 
 
+def _assert_window_counts(report: dict, text: str) -> None:
+    """Compare complete numeric fields, never count-containing substrings."""
+    matched = re.match(r'^Recorded windows \(all capture jobs\): (\d+) total; (.*?)\. Retry includes ', text)
+    try:
+        actual = {}
+        for field in matched.group(2).split(', '):
+            number, label = field.split(' ', 1)
+            key = label.replace(' ', '_')
+            if key in actual or not number.isdecimal():
+                raise ValueError
+            actual[key] = int(number)
+        expected = report['states']
+        if (report.get('basis') != 'all_capture_lane_jobs'
+                or int(matched.group(1)) != report['total']
+                or any(actual.get(key, 0) != expected.get(key, 0)
+                       for key in set(actual) | set(expected))):
+            raise ValueError
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError('Rendered window counts differ from their backend response') from exc
+
+
 def main() -> int:
+    from playwright.sync_api import expect, sync_playwright
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="http://127.0.0.1:42069")
     parser.add_argument("--width", type=int, default=1280)
@@ -45,6 +65,8 @@ def main() -> int:
                         help="Check authenticated service, archive, queue, and hook status on Home")
     parser.add_argument("--operating-status", action="store_true",
                         help="Check interpretation progress and actual provider-key usage display")
+    parser.add_argument("--window-status", action="store_true",
+                        help="Compare rendered window counts with their actual backend response")
     parser.add_argument("--credential-query", help="Nonsecret metadata query; prints only match count")
     parser.add_argument("--candidate-html", action="store_true",
                         help="Render checked-out dashboard HTML against the real loopback backend")
@@ -88,6 +110,14 @@ def main() -> int:
 
             context.route("**/*", local_only)
             page = context.new_page()
+            window_reports = []
+            if args.window_status:
+                def collect_status(response):
+                    if response.url == args.base + '/history/status' and response.status == 200:
+                        data = response.json().get('data', {}).get('capture_enrichment')
+                        if isinstance(data, dict) and isinstance(data.get('window_jobs'), dict):
+                            window_reports.append(data)
+                page.on('response', collect_status)
             page.goto(args.base, wait_until="domcontentloaded", timeout=15000)
             expect(page.get_by_placeholder("Paste your Auth Token here...")).to_be_visible()
             page.get_by_placeholder("Paste your Auth Token here...").fill(token)
@@ -154,6 +184,17 @@ def main() -> int:
                 expect(page.locator("#remote-key-status")).to_contain_text(
                     "Dedicated-key usage", timeout=15000)
                 result["operating_status_checked"] = True
+            if args.window_status:
+                expect(page.locator('#history-window-status')).to_contain_text(
+                    'Recorded windows (all capture jobs)', timeout=15000)
+                expect(page.locator('#history-batch-status')).to_contain_text('Up to 128 windows per batch')
+                if not window_reports:
+                    raise RuntimeError('Rendered window counts have no backend response')
+                report = window_reports[-1]['window_jobs']
+                text = page.locator('#history-window-status').inner_text()
+                _assert_window_counts(report, text)
+                result['window_status_checked'] = True
+                result['recorded_window_jobs'] = report['total']
             if args.keyboard_nav:
                 result["keyboard_nav_checked"] = keyboard_nav_checked
             if args.home_status:

@@ -73,7 +73,8 @@ async def test_disabled_capture_preserves_existing_contract_and_leaves_outbox_un
     assert (await service.capture(str(source), "codex"))["captured"]
     await service.scan_capture_sources()
     assert service._capture_journal.enrichment_status() == {
-        "configured": False, "pending_sources": 0, "parked_private_windows": 0}
+        "configured": False, "pending_sources": 0, "parked_private_windows": 0,
+        "window_jobs": {"basis": "all_capture_lane_jobs", "total": 0, "states": {}}}
     assert service.status()["capture_enrichment"]["capture_enabled"] is False
     assert archive.status()["snapshots"] == 1
 

@@ -34,6 +34,10 @@ const state = {vault: {ready: true, archive: {generation: 1, snapshots: 0, sourc
     last_secure_index: {archive_generation: 1, ready: 0, total: 0, missing: 0, complete: true},
     capture_queue: {}, hook_receipts: [], hook_receipts_error: null,
     capture_enrichment: {configured: true, pending_sources: 0, parked_private_windows: 0,
+        window_jobs: {basis: 'all_capture_lane_jobs', total: 4,
+            states: {succeeded: 2, reused: 1, pending: 1}},
+        historical_batch: {state: 'awaiting_provider', items: 1, repair_only: true,
+            parent_items: 9, repair_round: 1},
         backlog_drain: {active: false, halted_reason: null},
         historical_enrollment: {queued: 2, existing: 3, excluded: 1, complete: false}}};
 let failStatus = false;
@@ -48,6 +52,18 @@ context.api = async path => { assert.equal(path, '/history/status');
     assert.match(text, /catch-up inactive/);
     assert.match(text, /queued 2, existing 3, excluded 1/);
     assert.match(text, /Enrollment is not interpretation completion/);
+    let windows = document.getElementById('history-window-status').textContent;
+    assert.match(windows, /all capture jobs/);
+    assert.match(windows, /2 succeeded.*1 reused.*1 pending/);
+    assert.match(windows, /remaining window total unknown/);
+    let batch = document.getElementById('history-batch-status').textContent;
+    assert.match(batch, /1 window.*9.window checkpoint.*round 1/);
+    assert.match(batch, /waiting for provider/);
+    state.capture_enrichment.window_jobs.states.pending = '<img>';
+    state.capture_enrichment.historical_batch = {state: '<img>', items: '<script>'};
+    await vm.runInContext('loadHistoryStatus()', context);
+    assert.match(document.getElementById('history-window-status').textContent, /unknown/);
+    assert.doesNotMatch(document.getElementById('history-batch-status').textContent, /<img|<script/);
     state.capture_enrichment = {configured: true, pending_sources: 4, parked_private_windows: 7,
         backlog_drain: {active: true, halted_reason: '<img>'},
         historical_enrollment: {queued: 2, existing: 3, excluded: 1, complete: true}};
@@ -75,6 +91,8 @@ context.api = async path => { assert.equal(path, '/history/status');
     text = document.getElementById('history-interpretation-status').textContent;
     assert.match(text, /unavailable.*pending and parked counts are unknown/);
     assert.doesNotMatch(text, /9 pending|8 parked|catch-up active|queued 7/);
+    assert.match(document.getElementById('history-window-status').textContent, /unavailable/);
+    assert.match(document.getElementById('history-batch-status').textContent, /unavailable/);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """.replace("__SOURCE__", json.dumps(source))
     checked = subprocess.run([node, "-"], input=harness.encode("utf-8"),
