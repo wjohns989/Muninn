@@ -39,6 +39,14 @@ Scope: finish existing local operating paths, not batch-provider activation.
 
 ## Retained operational limits
 
+Catch-up scheduling correction: active drain previously forced remote-only
+claims even when the ordinary local quiet/max-wait gate was ready. Two new
+isolated clock tests reproduced that defect before the one-line correction.
+The corrected gate permits ordinary claims only at an existing local opportunity;
+GPU admission, privacy, cooldown, foreground priority, consent and the original
+drain deadline remain unchanged. Focused scheduler/automatic-service/cadence
+validation: 76 passed. Independent examination of the actual diff: CLEAR.
+
 The service is running in strict authenticated encrypted-history mode. Capture
 and automatic local/remote interpretation are enabled; enrollment completion is
 not backlog completion. Existing local failures are not trusted facts. One

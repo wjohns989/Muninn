@@ -1203,7 +1203,7 @@ class HistoryService:
                     quiet_ready or remote_ready
                     or drain and self._capture_cadence.attempt_ready())
                 kwargs = {"include_capture": include_capture, "include_search": include_search}
-                if drain or remote_ready and not quiet_ready:
+                if (drain or remote_ready) and not quiet_ready:
                     # Remote network work needs no quiet GPU. Existing consent,
                     # interval, foreground priority and dispatch guards still apply.
                     # Private/local jobs wait for the ordinary resource/quiet gate.

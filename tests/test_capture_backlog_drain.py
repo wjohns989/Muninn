@@ -102,6 +102,30 @@ async def test_drain_consumer_claims_only_remote_windows_during_activity(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("opportunity", ["quiet", "max_wait"])
+async def test_drain_preserves_local_opportunities(monkeypatch, tmp_path, opportunity):
+    service, _archive, _source, now = enabled_service(monkeypatch, tmp_path)
+    service._capture_cadence = SmallCaptureCadence(
+        quiet_seconds=10, interval_seconds=4, max_wait_seconds=30,
+        clock=lambda: now[0])
+    now[0] = 10 if opportunity == "quiet" else 30
+    if opportunity == "max_wait":
+        service._capture_cadence.note_activity()
+    assert service._capture_cadence.analysis_ready()
+    monkeypatch.setattr(service, "_capture_drain_active", lambda: True)
+    calls = []
+
+    async def once(**kwargs):
+        calls.append(kwargs)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(service, "_process_secure_analysis_once", once)
+    with pytest.raises(asyncio.CancelledError):
+        await service._secure_analysis_loop()
+    assert calls == [{"include_capture": True, "include_search": False}]
+
+
+@pytest.mark.asyncio
 async def test_generation_revocation_halts_drain_without_inference(monkeypatch, tmp_path):
     from muninn.history.remote_policy import write_policy
 
