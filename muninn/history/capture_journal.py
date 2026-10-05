@@ -24,11 +24,12 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from muninn.history.blind_index import _terms as _search_terms
-from muninn.history.credential_crypto import VaultIntegrityError
-from muninn.history.private_acl import create_private_file, verify_private
-from muninn.history.secure_archive import SecureHistoryArchive
 from muninn.history.capture_enrichment import CaptureEnrichmentMixin
 from muninn.history.capture_window_jobs import CaptureWindowJobsMixin
+from muninn.history.credential_crypto import VaultIntegrityError
+from muninn.history.historical_batch_jobs import HistoricalBatchJobsMixin
+from muninn.history.private_acl import create_private_file, verify_private
+from muninn.history.secure_archive import SecureHistoryArchive
 
 _SESSION_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
 _ERROR_CODES = {"missing", "changed", "permission", "disk", "archive", "locked", "unknown"}
@@ -140,7 +141,7 @@ class AnalysisJob:
         )
 
 
-class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
+class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalBatchJobsMixin):
     def __init__(self, archive: SecureHistoryArchive, *, recover: bool = True,
                  policy_root: Path | None = None):
         self.archive = archive
@@ -238,6 +239,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                 db.execute("UPDATE jobs SET state='pending', due_at=0 WHERE state='capturing'")
             self._init_enrichment(db)
             self._init_capture_window_jobs(db)
+            self._init_historical_batch_jobs(db)
 
     @contextmanager
     def _connect(self, *, initialize: bool = False) -> Iterator[sqlite3.Connection]:
@@ -447,6 +449,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                 raise VaultIntegrityError("Capture journal integrity check failed")
             self._verify_enrichment(db)
             self._verify_capture_window_jobs(db)
+            self._verify_historical_batch_jobs(db)
             count = 0
             for row in db.execute("SELECT source_key, sealed_locator, provider FROM jobs"):
                 path = self._open(row["sealed_locator"], row["provider"])
@@ -478,7 +481,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
                 self._capture_reuse_state(row)
             return count
 
-    def verify_publications(self) -> int:
+    def verify_publications(self, *, job_ids=None) -> int:
         """Cross-check ACKs in a staged backup; never publish or run inference.
 
         This supplements, rather than replaces, verify_all(). Components can
@@ -487,8 +490,17 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
         """
         selection = ("sealed_receipt IS NOT NULL OR "
                      "(state='succeeded' AND publication_started=1 AND sealed_reuse IS NULL)")
+        parameters = ()
+        if job_ids is not None:
+            if (not isinstance(job_ids, list) or not 1 <= len(job_ids) <= 24
+                    or any(not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{32}", ident)
+                           for ident in job_ids)
+                    or len(set(job_ids)) != len(job_ids)):
+                raise ValueError("Invalid publication verification scope")
+            selection = "(" + selection + ") AND job_id IN (" + ",".join("?" for _ in job_ids) + ")"
+            parameters = tuple(job_ids)
         with self._connect() as db:
-            if db.execute(f"SELECT 1 FROM history_analysis_jobs WHERE {selection} LIMIT 1").fetchone() is None:
+            if db.execute(f"SELECT 1 FROM history_analysis_jobs WHERE {selection} LIMIT 1", parameters).fetchone() is None:
                 return 0
         if not (self.archive.root / "memory-ledger" / "ledger.sqlite3").is_file():
             raise VaultIntegrityError("History publication ledger is missing")
@@ -500,7 +512,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
             with self._connect() as db, source.ledger.verified_reference_reader() as (contains, _):
                 db.execute("BEGIN")
                 count = 0
-                for row in db.execute(f"SELECT * FROM history_analysis_jobs WHERE {selection}"):
+                for row in db.execute(f"SELECT * FROM history_analysis_jobs WHERE {selection}", parameters):
                     stage = self._read_extraction(row)
                     receipt = self._read_publication_receipt(row)
                     if (row["state"] != "succeeded" or not row["publication_started"]
@@ -863,7 +875,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
 
     def _validate_extraction(self, stage, *, authenticate=False):
         from muninn.history.cited_analysis_source import CitedAnalysisSource
-        from muninn.history.memory_ledger import MemoryLedger, TYPES
+        from muninn.history.memory_ledger import TYPES, MemoryLedger
         try:
             if (not isinstance(stage, dict)
                     or set(stage) not in ({"format", "window", "proposals", "model_identity", "result"},
@@ -1057,6 +1069,9 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
 
     def request_analysis_cancel(self, job_id):
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if job_id in self._historical_batch_blocked_jobs(db):
+                return False
             cur = db.execute("UPDATE history_analysis_jobs SET cancel_requested=1,"
                              "state=CASE WHEN state='running' THEN state ELSE 'cancelled' END,updated_at=? "
                              "WHERE job_id=? AND publication_started=0 AND state IN ('pending','retry','running')",
@@ -1136,15 +1151,17 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
             foreground = self._foreground_search_pending(db, now)
             maximum_lane = 1 if include_capture and not foreground else 0
             minimum_lane = 0 if include_search else 1
+            blocked = sorted(self._historical_batch_blocked_jobs(db))
+            exclusion = " AND job_id NOT IN (" + ",".join("?" for _ in blocked) + ") " if blocked else " "
             row = db.execute(
                 "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry','publication_pending') "
                 "AND due_at<=? AND lane>=? AND lane<=? "
                 "AND (?=0 OR lane=0 OR publication_started=1 OR (remote_policy_generation>0 "
                 "AND NOT(state='retry' AND error_code='source_not_remote_safe'))) "
                 "AND (?=1 OR NOT(lane=1 AND state='retry' AND error_code='source_not_remote_safe')) "
-                "ORDER BY lane,due_at,created_at LIMIT 1",
+                + exclusion + "ORDER BY lane,due_at,created_at LIMIT 1",
                 (now, minimum_lane, maximum_lane, int(capture_remote_only),
-                 int(self._capture_window_capacity(db) > 0)),
+                 int(self._capture_window_capacity(db) > 0), *blocked),
             ).fetchone()
             if not row:
                 return None
@@ -1250,6 +1267,9 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
 
     def cancel_analysis(self, job_id: str) -> bool:
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if job_id in self._historical_batch_blocked_jobs(db):
+                return False
             cur = db.execute(
                 "UPDATE history_analysis_jobs SET cancel_requested=1,state=CASE WHEN remote_dispatched=1 AND sealed_extraction IS NULL AND state='running' THEN 'outcome_unknown' ELSE 'cancelled' END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND publication_started=0 AND state IN ('pending','retry','running')",
                 (time.time(), job_id),

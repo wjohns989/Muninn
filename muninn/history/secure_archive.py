@@ -657,6 +657,27 @@ class SecureHistoryArchive:
             finally:
                 source_db.close()
                 target_db.close()
+        batch_marker = source_root / "historical-batches-managed"
+        batch_db = source_root / "historical-batches.db"
+        has_batch_marker = batch_marker.exists() or _is_link(batch_marker)
+        has_batch_db = batch_db.exists() or _is_link(batch_db)
+        if has_batch_marker != has_batch_db:
+            raise VaultIntegrityError("History batch recovery pair is incomplete")
+        if has_batch_marker:
+            import sqlite3
+
+            verify_private(batch_marker)
+            verify_private(batch_db)
+            copy_sealed(batch_marker, destination / batch_marker.name)
+            target = destination / batch_db.name
+            create_private_file(target)
+            source_db = sqlite3.connect(batch_db.resolve().as_uri() + "?mode=ro", uri=True)
+            target_db = sqlite3.connect(target)
+            try:
+                source_db.backup(target_db)
+            finally:
+                source_db.close()
+                target_db.close()
         for evidence_name, db_name in (("source-evidence", "projections.sqlite3"),
                                       ("credential-context", "projections.sqlite3"),
                                       ("cited-windows", "projections.sqlite3"),
@@ -707,6 +728,10 @@ class SecureHistoryArchive:
         cls._copy_archive_files(backup_root, staging)
         restored = cls(staging, passphrase)
         restored.verify_all()
+        if (staging / "historical-batches-managed").exists():
+            from muninn.history.historical_batch import BatchOutbox
+
+            BatchOutbox(restored).verify_all()
         if (staging / "capture-jobs.db").exists():
             from muninn.history.capture_journal import CaptureJournal
 
@@ -758,6 +783,10 @@ class SecureHistoryArchive:
             if backup.vault_id != self.vault_id:
                 raise VaultIntegrityError("History backup identity mismatch")
             report = backup.verify_all()
+            if (staging / "historical-batches-managed").exists():
+                from muninn.history.historical_batch import BatchOutbox
+
+                report["historical_batches_verified"] = BatchOutbox(backup).verify_all()["batches"]
             journal = CaptureJournal(backup, recover=False)
             journal.verify_all()
             report["publication_receipts_verified"] = journal.verify_publications()
@@ -768,7 +797,8 @@ class SecureHistoryArchive:
             if (staging / "credential-context").exists():
                 from muninn.history.credential_context import CredentialContextStore
 
-                report["credential_context_snapshots_verified"] = CredentialContextStore(backup).verify_all()["snapshots"]
+                report["credential_context_snapshots_verified"] = (
+                    CredentialContextStore(backup).verify_all()["snapshots"])
             if (staging / "memory-ledger").exists():
                 from muninn.history.memory_ledger import MemoryLedger
 

@@ -32,11 +32,16 @@ not authority to submit and HTTP 200 is not accepted memory or a source ACK.
 
 ## Still required before real batch use
 
-Exclusive capture ownership; separately revocable batch retention consent;
-verified aggregate budget escrow shared with synchronous admission; authenticated
-HTTP submission/polling; idempotent publication and recovery; automatic outbox
-backup/restore inclusion; then a small actual-window pilot with cost and retained
-result receipts. W's latest instruction prohibits deleting anything, especially
+The subsequent [ownership and recovery proof](historical-batch-ownership-2026-10-05.md)
+closes persistent member exclusion, exact batch/admission association,
+all-members publication checkpointing, and outbox inclusion in archive backup.
+These remain inactive until the provider/scheduling/consent integration below.
+
+Still needed: installed chronological checkpoint scheduling; separately revocable
+batch retention consent; verified aggregate budget escrow shared with synchronous
+admission; authenticated HTTP submission/polling; integrated accounting recovery;
+then a small actual-window pilot with cost and retained result receipts.
+W's latest instruction prohibits deleting anything, especially
 batches: no automatic or operator-script DELETE is authorized. Retain encrypted
 input/results locally; provider-managed expiry remains an external limitation.
 Existing synchronous admission has no per-call upper charge reservation,

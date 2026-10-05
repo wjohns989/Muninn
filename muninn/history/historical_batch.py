@@ -276,6 +276,48 @@ class BatchOutbox:
         with self._db() as db:
             return self._read(db.execute("SELECT * FROM batches WHERE id=?", (ident,)).fetchone())
 
+    def verify_all(self):
+        """Authenticate retained batches before accepting a portable backup."""
+        with self._db() as db:
+            if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise VaultIntegrityError("Batch outbox integrity failed")
+            count = 0
+            for row in db.execute("SELECT * FROM batches"):
+                record = self._read(row)
+                if (set(record) != {"id", "revision", "state", "retention", "consent_generation",
+                                    "items", "provider_id", "terminal", "deletion"}
+                        or record["retention"] != "temporary_nontraining"
+                        or type(record["consent_generation"]) is not int or record["consent_generation"] < 1):
+                    raise VaultIntegrityError("Batch outbox record is invalid")
+                try:
+                    payload(record["items"])
+                except ValueError as exc:
+                    raise VaultIntegrityError("Batch outbox binding is invalid") from exc
+                if record["state"] in {"prepared", "submission_unknown"}:
+                    if (record["provider_id"] is not None or record["terminal"] is not None
+                            or record["deletion"] is not None):
+                        raise VaultIntegrityError("Batch outbox state is invalid")
+                elif not _provider_id(record["provider_id"]):
+                    raise VaultIntegrityError("Batch outbox provider identity is invalid")
+                if record["state"] in {"terminal_saved", "cleaned"}:
+                    terminal = record["terminal"]
+                    if (not isinstance(terminal, dict) or terminal.get("id") != record["provider_id"]
+                            or terminal.get("model") != MODEL or terminal.get("status") not in TERMINAL
+                            or terminal.get("endpoint") != "/v1/chat/completions"):
+                        raise VaultIntegrityError("Batch outbox terminal is invalid")
+                elif record["terminal"] is not None or record["deletion"] is not None:
+                    raise VaultIntegrityError("Batch outbox terminal is premature")
+                if record["state"] == "cleaned":
+                    deletion = record["deletion"]
+                    if (not isinstance(deletion, dict) or deletion.get("id") != record["provider_id"]
+                            or not isinstance(deletion.get("deletion"), dict)
+                            or deletion["deletion"].get("openrouter") != "deleted"):
+                        raise VaultIntegrityError("Batch outbox historical cleanup receipt is invalid")
+                elif record["deletion"] is not None:
+                    raise VaultIntegrityError("Batch outbox historical cleanup is premature")
+                count += 1
+        return {"batches": count}
+
     def _transition(self, ident, expected_revision, before, after, change):
         if type(expected_revision) is not int or expected_revision < 0:
             raise BatchError("batch_revision_invalid")

@@ -14,10 +14,10 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
 
-from muninn.history.private_acl import create_private_file, verify_private, VaultPermissionError
+from muninn.history.private_acl import VaultPermissionError, create_private_file, verify_private
 from muninn.history.remote_policy import _paths
 
 _MARKER = b"muninn-managed-remote-admission-v1\n"
@@ -112,6 +112,8 @@ def _db(root, *, initialize=False, generation=None):
                 raise AdmissionError()
         if managed != (1,):
             raise AdmissionError()
+        if initialize and "batch_owner" not in {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}:
+            db.execute("ALTER TABLE remote_admissions ADD COLUMN batch_owner TEXT")
         # Querying required columns detects missing/incompatible ledger tables.
         db.execute("SELECT id,generation,state,started,start_day,start_month,finished,"
                    "end_day,end_month,cost_micro,resolution FROM remote_admissions LIMIT 0")
@@ -152,10 +154,12 @@ def _spent(db, day, month):
     return daily, monthly
 
 
-def reserve(root, generation, provider_status, *, now=None):
+def reserve(root, generation, provider_status, *, now=None, batch_owner=None):
     """Reserve all remaining admission capacity, allowing one paid call at a time."""
     if not isinstance(provider_status, dict) or provider_status.get("admission_ready") is not True:
         raise AdmissionError("daily_zdr_cap_unverified")
+    if batch_owner is not None:
+        _check_id(batch_owner)
     reported = tuple(_micros(provider_status.get(k)) for k in ("usage_daily_usd", "usage_monthly_usd"))
     when = time.time() if now is None else now
     day, month = _periods(when)
@@ -174,8 +178,8 @@ def reserve(root, generation, provider_status, *, now=None):
         if any(max(local, remote) >= cap for local, remote, cap in zip(spent, reported, caps)):
             raise AdmissionError("remote_admission_threshold_reached")
         identifier = uuid.uuid4().hex
-        db.execute("INSERT INTO remote_admissions(id,generation,state,started,start_day,start_month) "
-                   "VALUES(?,?,'reserved',?,?,?)", (identifier, generation, when, day, month))
+        db.execute("INSERT INTO remote_admissions(id,generation,state,started,start_day,start_month,batch_owner) "
+                   "VALUES(?,?,'reserved',?,?,?,?)", (identifier, generation, when, day, month, batch_owner))
     return Admission(Path(root), identifier, generation)
 
 
@@ -261,14 +265,43 @@ def status(root, *, now=None, local_details=False):
         return result
 
 
-def settled_response(root, identifier, generation):
-    """Authenticate one settled provider response for durable publication."""
+def unknown_response(root, identifier, generation, *, batch_owner=None):
+    """Check a durable pre-send uncertainty fence without releasing capacity."""
     _check_id(identifier)
+    if batch_owner is not None:
+        _check_id(batch_owner)
     if type(generation) is not int or generation < 1:
         return False
     with _db(root) as (db, managed):
         if not managed:
             return False
+        if batch_owner is not None:
+            if "batch_owner" not in {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}:
+                return False
+            bound = db.execute("SELECT batch_owner FROM remote_admissions WHERE id=?", (identifier,)).fetchone()
+            if bound != (batch_owner,):
+                return False
+        row = db.execute("SELECT state,resolution,cost_micro FROM remote_admissions "
+                         "WHERE id=? AND generation=?", (identifier, generation)).fetchone()
+        return row == ("unknown", None, None)
+
+
+def settled_response(root, identifier, generation, *, batch_owner=None):
+    """Authenticate one settled provider response for durable publication."""
+    _check_id(identifier)
+    if batch_owner is not None:
+        _check_id(batch_owner)
+    if type(generation) is not int or generation < 1:
+        return False
+    with _db(root) as (db, managed):
+        if not managed:
+            return False
+        if batch_owner is not None:
+            if "batch_owner" not in {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}:
+                return False
+            bound = db.execute("SELECT batch_owner FROM remote_admissions WHERE id=?", (identifier,)).fetchone()
+            if bound != (batch_owner,):
+                return False
         row = db.execute(
             "SELECT state,resolution,cost_micro FROM remote_admissions WHERE id=? AND generation=?",
             (identifier, generation),
