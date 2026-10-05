@@ -208,7 +208,10 @@ class CaptureEnrichmentMixin:
         with self._connect() as db:
             baseline = self._enrichment_baseline(db)
             count = self._capture_schedule(db)["pending"]
-        return {"configured": baseline is not None, "pending_sources": count}
+            parked = db.execute("SELECT COUNT(*) FROM history_analysis_jobs WHERE lane=1 "
+                                "AND state='retry' AND error_code='source_not_remote_safe'").fetchone()[0]
+        return {"configured": baseline is not None, "pending_sources": count,
+                "parked_private_windows": parked}
 
     def _verify_enrichment(self, db):
         baseline = self._enrichment_baseline(db)

@@ -1139,9 +1139,12 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin):
             row = db.execute(
                 "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry','publication_pending') "
                 "AND due_at<=? AND lane>=? AND lane<=? "
-                "AND (?=0 OR lane=0 OR remote_policy_generation>0 OR publication_started=1) "
+                "AND (?=0 OR lane=0 OR publication_started=1 OR (remote_policy_generation>0 "
+                "AND NOT(state='retry' AND error_code='source_not_remote_safe'))) "
+                "AND (?=1 OR NOT(lane=1 AND state='retry' AND error_code='source_not_remote_safe')) "
                 "ORDER BY lane,due_at,created_at LIMIT 1",
-                (now, minimum_lane, maximum_lane, int(capture_remote_only)),
+                (now, minimum_lane, maximum_lane, int(capture_remote_only),
+                 int(self._capture_window_capacity(db) > 0)),
             ).fetchone()
             if not row:
                 return None

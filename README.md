@@ -198,6 +198,13 @@ silently retried or converted. Status exposes the deadline and halt reason under
 `capture_enrichment.backlog_drain`; this mode alone does not prove full historical
 coverage or resolve credential ambiguity.
 
+Capture windows deferred as `source_not_remote_safe` remain durable and eligible
+for ordinary/local processing when runnable capacity is available. They do not
+occupy planning slots or get retried by the remote-only catch-up consumer. Status
+reports them separately as `parked_private_windows`; this is scheduling only and
+does not grant permission to send their contents remotely. Other deferred work
+still counts against the existing runnable-work limits.
+
 Exact unchanged windows may reuse a direct earlier acknowledged interpretation
 locally before a model call. OpenRouter reuse is explicitly historical coverage,
 not a claim that a mutable cloud model would produce the same answer today. It
@@ -987,16 +994,20 @@ copying; interrupted cold parsing still restarts, and no whole-backlog speedup i
 claimed from isolated regression tests.
 
 The internal capture worker can acknowledge an unchanged window as `reused`
-instead of calling Ollama again. Admission requires the direct parent to have an
-original completed local analysis, an authenticated publication ACK and matching
-durable memory refs. Source occurrence, window partition, selected model weights,
-prompt/schema and actual generation options must match. The job keeps its current
-source target but exposes the original memory refs/citations, creates no duplicate
-ledger events and reports reuse separately from new inference. It rechecks model
-weights after source/ledger proof and commits its receipt/coverage together under
-the current lease. Interrupted, rewritten, changed-model, cloud or already-reused
-parents do not qualify. Portable verification revalidates the original evidence;
-later model settings do not invalidate historically admitted coverage. This
+instead of calling a model again. Admission requires the direct parent to have an
+original completed analysis, an authenticated publication ACK and matching durable
+memory refs. Source occurrence, window partition and prompt/schema must match.
+Local reuse also requires matching selected model weights and generation options;
+OpenRouter reuse requires an allowed original model, settled accounting and current
+remote consent, and records historical coverage rather than current-model equivalence.
+The job keeps its current source target but exposes the original memory refs/citations,
+creates no duplicate ledger events and reports reuse separately from new inference.
+Local weights are rechecked after source/ledger proof; either receipt and its coverage
+commit together under the current lease. Interrupted, rewritten, changed-contract or
+already-reused parents do not qualify. Portable verification revalidates original
+evidence, including the policy/accounting ledger for remote originals; a standalone
+archive copy without that ledger is not a proved remote-history recovery. Later
+model settings do not invalidate historically admitted coverage. This
 default-off capture lane has quiet-time cadence, but multi-growth reuse and
 measured historical backlog scaling remain incomplete; these source changes
 are not new live-model tests or automatic historical-backfill activation.

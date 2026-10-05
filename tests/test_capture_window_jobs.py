@@ -48,6 +48,43 @@ def test_automatic_capacity_reserves_foreground_slots_without_consuming_cursor(t
         assert db.execute("SELECT COUNT(*) FROM history_analysis_jobs WHERE lane=1").fetchone()[0] == 24
 
 
+@pytest.mark.parametrize("reason", ["source_not_remote_safe", "gpu_busy", "remote_admission_threshold_reached"])
+def test_privacy_parked_windows_do_not_block_other_remote_planning(tmp_path, reason):
+    journal, _archive, receipt = window_fixture(tmp_path, text="Long ordinary message. " * 4500)
+    assert journal.queue_capture_windows(receipt, limit=32, remote_policy_generation=2)["queued"] == 24
+    parked = []
+    for _ in range(24):
+        job = journal.claim_analysis(include_capture=True, include_search=False)
+        assert job is not None
+        parked.append(job.job_id)
+        assert journal.defer_analysis(job.job_id, job.lease_token, reason)
+    with journal._connect() as db:
+        db.execute("UPDATE history_analysis_jobs SET due_at=0 WHERE state='retry'")
+        assert journal._capture_window_capacity(db) == (24 if reason == "source_not_remote_safe" else 0)
+    more = journal.queue_capture_windows(receipt, limit=4, remote_policy_generation=2)
+    if reason == "source_not_remote_safe":
+        assert more["queued"] == 4
+        selected = journal.claim_analysis(include_capture=True, include_search=False, capture_remote_only=True)
+        assert selected.job_id not in parked
+        local = journal.claim_analysis(include_capture=True, include_search=False)
+        assert local.job_id in parked  # Parked evidence still has an ordinary/local route.
+        assert journal.enrichment_status()["parked_private_windows"] == 23
+        # Reopening parked work cannot exceed the automatic/total runnable limits.
+        assert journal.queue_capture_windows(receipt, limit=32, remote_policy_generation=2)["queued"] == 19
+        with journal._connect() as db:
+            assert journal._capture_window_capacity(db) == 0
+        selected = journal.claim_analysis(include_capture=True, include_search=False)
+        assert selected.job_id not in parked
+        while (selected := journal.claim_analysis(
+                include_capture=True, include_search=False, capture_remote_only=True)) is not None:
+            assert selected.job_id not in parked
+        assert journal.claim_analysis(include_capture=True, include_search=False) is None
+        assert journal.enrichment_status()["parked_private_windows"] == 23
+    else:
+        assert more["state"] == "queue_full"
+    assert journal.verify_all() == 0
+
+
 def test_receipt_not_in_authenticated_outbox_cannot_create_automatic_jobs(tmp_path):
     journal, _archive, receipt = window_fixture(tmp_path)
     forged = {**receipt, "blob": "f" * 32}

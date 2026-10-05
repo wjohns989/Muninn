@@ -119,6 +119,8 @@ async def test_remote_worker_reuses_before_key_budget_or_provider_activity(tmp_p
     service.data_dir = journal.policy_root
     service._capture_journal = journal
     monkeypatch.setattr(service, "_require_secure_archive", lambda: archive)
+    monkeypatch.setenv("MUNINN_CAPTURE_ENRICHMENT", "1")
+    monkeypatch.setenv("MUNINN_CAPTURE_AUTO_ANALYSIS", "1")
     monkeypatch.setenv("MUNINN_CAPTURE_AUTO_REMOTE", "1")
     monkeypatch.setattr("muninn.history.llm_settings.models", lambda: [MODEL])
     def forbidden(*args, **kwargs):

@@ -299,7 +299,9 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
     @staticmethod
     def _capture_window_capacity(db):
         total, automatic = db.execute(f"SELECT COUNT(*),COALESCE(SUM(lane=1),0) "
-                                      f"FROM history_analysis_jobs WHERE state IN {_ACTIVE}").fetchone()
+                                      f"FROM history_analysis_jobs WHERE state IN {_ACTIVE} "
+                                      "AND NOT(lane=1 AND state='retry' "
+                                      "AND error_code='source_not_remote_safe')").fetchone()
         return max(0, min(32 - total, 24 - automatic))
 
     def _validated_analysis_target(self, row, db=None):
