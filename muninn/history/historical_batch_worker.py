@@ -14,7 +14,7 @@ import httpx
 
 from muninn.history.cited_analysis_source import CitedAnalysisSource
 from muninn.history.historical_batch import (
-    MODEL,
+    MODEL_IDENTITIES,
     TERMINAL,
     BatchError,
     BatchOutbox,
@@ -123,8 +123,20 @@ class HistoricalBatchWorker:
         outbox = await asyncio.to_thread(BatchOutbox, self.journal.archive)
         record = await asyncio.to_thread(outbox.read, owner["id"])
         if record["state"] == "submission_unknown":
-            self.status["state"] = "submission_unknown"
-            return True  # Block advance, without hot polling or blind retry.
+            candidate = record.get("recovery_candidate")
+            if candidate is None:
+                self.status["state"] = "submission_unknown"
+                return True  # Block advance, without hot polling or blind retry.
+            reply = await self.send("GET", provider_id=candidate)
+            if reply.get("id") != candidate:
+                raise BatchError("batch_poll_identity_invalid")
+            if reply.get("status") != "completed":
+                self.status["state"] = "awaiting_provider_identity"
+                return True  # Candidate metadata alone never establishes ownership.
+            await asyncio.to_thread(outbox.recover_submission, owner["id"], record["revision"], reply)
+            record = await asyncio.to_thread(outbox.read, owner["id"])
+            await asyncio.to_thread(outbox.save_terminal, owner["id"], record["revision"], reply)
+            record = await asyncio.to_thread(outbox.read, owner["id"])
         if record["state"] == "prepared":
             if not self.authorize_submit(owner["generation"]):
                 self.status["state"] = "consent_required"
@@ -179,7 +191,7 @@ class HistoricalBatchWorker:
                 return True
             self.next_poll = self.clock() + 60
             reply = await self.send("GET", provider_id=record["provider_id"])
-            if (reply.get("id") != record["provider_id"] or reply.get("model") != MODEL
+            if (reply.get("id") != record["provider_id"] or reply.get("model") not in MODEL_IDENTITIES
                     or reply.get("endpoint") != "/v1/chat/completions"
                     or reply.get("status") not in {"validating", "in_progress", "finalizing", *TERMINAL}):
                 raise BatchError("batch_poll_identity_invalid")

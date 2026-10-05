@@ -23,6 +23,8 @@ from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.private_acl import create_private_file, verify_private
 
 MODEL = "openai/gpt-6-luna-pro"
+# Verified live batch endpoint identity, not an arbitrary fallback/model family.
+MODEL_IDENTITIES = {MODEL, "openai/gpt-6-luna-pro-20260922"}
 PROVIDER = "openai"
 MAX_ITEMS = 24  # A bounded batch, not a whole-source or historical size limit.
 TERMINAL = {"completed", "failed", "expired", "cancelled"}
@@ -47,7 +49,7 @@ def _opaque(value):
 
 
 def _provider_id(value):
-    return isinstance(value, str) and re.fullmatch(r"batch_[A-Za-z0-9_-]{1,160}", value) is not None
+    return isinstance(value, str) and re.fullmatch(r"batch[-_][A-Za-z0-9_-]{1,160}", value) is not None
 
 
 def prepare_items(source, bindings):
@@ -126,7 +128,7 @@ def terminal_results(items, response):
                 raise BatchError("batch_result_invalid")
             if reply["status_code"] == 200:
                 body = reply.get("body")
-                if not isinstance(body, dict) or body.get("model") != MODEL:
+                if not isinstance(body, dict) or body.get("model") not in MODEL_IDENTITIES:
                     raise BatchError("batch_result_model_mismatch")
                 succeeded += 1
         elif not isinstance(error, dict):
@@ -155,7 +157,7 @@ def validate_item(source, item, row):
             or type(reply.get("status_code")) is not int or reply["status_code"] != 200):
         raise BatchError("batch_item_failed")
     body = reply.get("body")
-    if not isinstance(body, dict) or body.get("model") != MODEL:
+    if not isinstance(body, dict) or body.get("model") not in MODEL_IDENTITIES:
         raise BatchError("batch_result_model_mismatch")
     choices = body.get("choices")
     if (not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict)
@@ -284,11 +286,14 @@ class BatchOutbox:
             count = 0
             for row in db.execute("SELECT * FROM batches"):
                 record = self._read(row)
-                if (set(record) != {"id", "revision", "state", "retention", "consent_generation",
-                                    "items", "provider_id", "terminal", "deletion"}
+                if (set(record) - {"recovery_candidate"} != {
+                        "id", "revision", "state", "retention", "consent_generation",
+                        "items", "provider_id", "terminal", "deletion"}
                         or record["retention"] != "temporary_nontraining"
                         or type(record["consent_generation"]) is not int or record["consent_generation"] < 1):
                     raise VaultIntegrityError("Batch outbox record is invalid")
+                if "recovery_candidate" in record and not _provider_id(record["recovery_candidate"]):
+                    raise VaultIntegrityError("Batch recovery candidate is invalid")
                 try:
                     payload(record["items"])
                 except ValueError as exc:
@@ -302,7 +307,7 @@ class BatchOutbox:
                 if record["state"] in {"terminal_saved", "cleaned"}:
                     terminal = record["terminal"]
                     if (not isinstance(terminal, dict) or terminal.get("id") != record["provider_id"]
-                            or terminal.get("model") != MODEL or terminal.get("status") not in TERMINAL
+                            or terminal.get("model") not in MODEL_IDENTITIES or terminal.get("status") not in TERMINAL
                             or terminal.get("endpoint") != "/v1/chat/completions"):
                         raise VaultIntegrityError("Batch outbox terminal is invalid")
                 elif record["terminal"] is not None or record["deletion"] is not None:
@@ -338,7 +343,7 @@ class BatchOutbox:
     def save_submission(self, ident, expected_revision, response):
         def change(record):
             if (not isinstance(response, dict) or not _provider_id(response.get("id"))
-                    or response.get("model") != MODEL
+                    or response.get("model") not in MODEL_IDENTITIES
                     or response.get("endpoint") != "/v1/chat/completions"
                     or response.get("completion_window") != "24h"
                     or response.get("status") not in {"validating", "in_progress", "finalizing", *TERMINAL}
@@ -351,7 +356,7 @@ class BatchOutbox:
     def save_terminal(self, ident, expected_revision, response):
         def change(record):
             if (not isinstance(response, dict) or response.get("id") != record["provider_id"]
-                    or response.get("model") != MODEL or response.get("status") not in TERMINAL
+                    or response.get("model") not in MODEL_IDENTITIES or response.get("status") not in TERMINAL
                     or response.get("endpoint") != "/v1/chat/completions"):
                 raise BatchError("batch_terminal_identity_invalid")
             # Save full evidence even if item mapping, billing or schema fails.
@@ -359,6 +364,28 @@ class BatchOutbox:
         revision = self._transition(ident, expected_revision, "submitted", "terminal_saved", change)
         self.read(ident)  # Verify durable local ciphertext before any deletion.
         return revision
+
+    def recover_submission(self, ident, expected_revision, response):
+        """Reconnect a lost receipt ONLY with complete exact opaque request IDs.
+
+        Matching model/count/time/list metadata alone is insufficient. This
+        does not POST, settle billing, publish, or remove any retained evidence.
+        """
+        record = self.read(ident)
+        if record["state"] != "submission_unknown" or record["revision"] != expected_revision:
+            raise BatchError("batch_state_conflict")
+        terminal_results(record["items"], response)
+        return self.save_submission(ident, expected_revision, response)
+
+    def set_recovery_candidate(self, ident, expected_revision, provider_id):
+        """Operator-selected GET target, NOT proof of ownership or resubmit consent."""
+        if not _provider_id(provider_id):
+            raise BatchError("batch_recovery_candidate_invalid")
+        def change(record):
+            if record.get("recovery_candidate", provider_id) != provider_id:
+                raise BatchError("batch_recovery_candidate_conflict")
+            record["recovery_candidate"] = provider_id
+        return self._transition(ident, expected_revision, "submission_unknown", "submission_unknown", change)
 
     def save_cleanup(self, ident, expected_revision, response):
         def change(record):

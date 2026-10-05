@@ -40,6 +40,70 @@ def ready(**kwargs):
     return {"admission_ready": True, "usage_daily_usd": 0, "usage_monthly_usd": 0}
 
 
+def provider_format(submitted, terminal):
+    for response in (submitted, terminal):
+        response.update(id="batch-1791231469-liveformat", model="openai/gpt-6-luna-pro-20260922")
+    for row in terminal["results"]:
+        row["response"]["body"]["model"] = "openai/gpt-6-luna-pro-20260922"
+    return submitted, terminal
+
+
+@pytest.mark.asyncio
+async def test_live_provider_id_and_pinned_canonical_model_format(tmp_path):
+    journal, archive, outbox, ident, _bindings = fixture(tmp_path)
+    journal.reserve_historical_batch(ident)
+    submitted, terminal = provider_format(*responses(archive, outbox, ident))
+    clock = [0]
+    async def send(method, **kwargs):
+        return submitted if method == "POST" else terminal
+    worker = HistoricalBatchWorker(journal, authorize_submit=lambda _: True,
+                                   send=send, provider_status=ready, clock=lambda: clock[0])
+    await worker.step()
+    assert outbox.read(ident)["state"] == "submitted"
+    clock[0] = 61
+    await worker.step()
+    assert worker.status["state"] == "passed"
+    assert outbox.verify_all() == {"batches": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_ids", [False, True])
+async def test_candidate_requires_completed_exact_random_ids_and_never_posts(tmp_path, wrong_ids):
+    from tests.test_historical_batch_jobs import admission
+    journal, archive, outbox, ident, _bindings = fixture(tmp_path)
+    journal.reserve_historical_batch(ident)
+    paid = admission(journal, ident)
+    outbox.begin_submission(ident, 0)
+    journal.mark_historical_batch_dispatched(ident, paid.identifier)
+    submitted, terminal = provider_format(*responses(archive, outbox, ident))
+    outbox.set_recovery_candidate(ident, 1, submitted["id"])
+    clock = [0]
+    calls = []
+    async def send(method, provider_id=None, **kwargs):
+        assert method == "GET" and provider_id == submitted["id"]
+        calls.append(method)
+        return submitted if len(calls) == 1 else terminal
+    worker = HistoricalBatchWorker(journal, send=send, clock=lambda: clock[0])
+    await worker.step()
+    assert worker.status["state"] == "awaiting_provider_identity"
+    assert outbox.read(ident)["state"] == "submission_unknown"
+    assert status(journal.policy_root)["unresolved"] == 1
+    if wrong_ids:
+        terminal["results"][0]["custom_id"] = "f" * 32
+    clock[0] = 61
+    if wrong_ids:
+        with pytest.raises(BatchError):
+            await worker.step()
+        assert outbox.read(ident)["state"] == "submission_unknown"
+        assert status(journal.policy_root)["unresolved"] == 1
+    else:
+        await worker.step()
+        assert worker.status["state"] == "passed"
+        assert outbox.read(ident)["state"] == "terminal_saved"
+    assert calls == ["GET", "GET"]
+    assert outbox.verify_all() == {"batches": 1}
+
+
 @pytest.mark.asyncio
 async def test_submit_restart_poll_settle_publish_without_reconsent_or_resend(tmp_path):
     journal, archive, outbox, ident, bindings = fixture(tmp_path)
