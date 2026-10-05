@@ -1,6 +1,29 @@
 # Automatic new-capture processing cadence
 
-Status: implemented in source; local activation and real inference proof pending.
+Status: original local-only cadence implemented and activated; remote scheduling
+revision below is implemented and focused-tested. Installed proof is tracked in
+`docs/evidence/capture-window-recovery-2026-10-05.md`.
+
+## October 5 remote scheduling revision
+
+The original local-only design below predates managed remote capture consent and
+accounting. Preserve one consumer and existing capacity/foreground controls.
+When persistent remote capture opt-in and managed consent are active, permit
+remote-only attempts during ongoing chat after the existing cooldown; permit
+CPU planning through the same opt-in. Quiet-ready processing retains the normal
+local/resource-gated lane. Remote generation, source privacy, accounting and
+budget checks remain immediately before dispatch. Do not extend or reset the
+separate temporary catch-up deadline.
+
+This removes an observed contradiction: accepted chats should postpone GPU use,
+not block already approved remote network work. No second inference consumer,
+unbounded queue, faster attempt interval or temporary-retention batch policy is
+introduced. Five added cases cover busy planning, foreground priority, remote
+opt-in, cooldown and quiet gating; two behavior cases failed against the prior
+source. The affected scheduler/automatic-service/transport suite passed 53 tests.
+
+The historical original decision is retained below, not asserted as the current
+remote policy or an unresolved activation gate.
 
 ## Decision
 

@@ -53,3 +53,11 @@ path passed its targeted check, and both final operator regression checks passed
 The independent review cleared the exact journal transaction and post-preimage
 preview comparison for a bounded application. It did not perform the operation
 or claim backlog completion.
+
+The first bounded live recovery command reported `queue_full` and changed no
+jobs or source counters; no unnecessary preimage was created. This exposed the
+next scheduling dependency, rather than proving recovery completion. The
+separate remote scheduling revision permits currently opted-in remote network
+work during chat activity, preserving quiet GPU work, foreground priority and
+all dispatch controls. Its affected suite passed 53 tests and independent
+design/diff inspection cleared it. Installed verification follows separately.

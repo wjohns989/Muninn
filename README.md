@@ -1011,9 +1011,16 @@ per batch; old/unsupported entries also consume that examination bound. It does
 not invoke models or prove processing coverage, and a zero-insert batch is not
 necessarily complete. Its internal typed-window queue authenticates exact plan
 ordinals, reserves foreground search capacity and acknowledges coverage only after
-durable publication. Automatic capture jobs are local-only. The quiet-time
-planner and shared analysis consumer are implemented but default off; enabling
-both capture flags above activates the cadence without a manual batch command.
+durable publication. Automatic capture is local-only unless the separate remote
+capture flag and managed remote consent are both enabled. Local/GPU processing
+uses the quiet/resource gate. Approved remote processing can continue during
+chat activity after the existing attempt cooldown, selecting only remotely
+admitted windows and retaining foreground search priority. CPU planning likewise
+need not wait for quiet when remote consent is active. Privacy failures remain
+local; a remote refusal during chat activity does not silently run a GPU model.
+These workers default off; enabling both capture flags above activates local
+cadence without a manual batch command. No temporary catch-up deadline or budget
+is extended by persistent remote scheduling.
 Completed and no-context sources leave pending selectors without deleting their
 encrypted receipts. Sealed scheduler totals and per-source plans detect inconsistent
 exclusion hints. New strictly appended snapshots can carry an encrypted,

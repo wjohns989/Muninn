@@ -910,6 +910,7 @@ class HistoryService:
             raise ValueError("Invalid automatic planning admission")
         if automatic and (not self._capture_auto_enabled() or
                           not (self._capture_cadence.planning_ready()
+                               or self._capture_remote_enabled()
                                or await asyncio.to_thread(self._capture_drain_active))):
             return False
         journal = self._require_capture_journal()
@@ -1190,11 +1191,17 @@ class HistoryService:
             try:
                 include_search = _flag("MUNINN_SECURE_AUTO_ANALYSIS")
                 drain = await asyncio.to_thread(self._capture_drain_active)
+                quiet_ready = self._capture_cadence.analysis_ready()
+                remote_ready = (self._capture_remote_enabled()
+                                and self._capture_cadence.attempt_ready())
                 include_capture = self._capture_auto_enabled() and (
-                    self._capture_cadence.analysis_ready()
+                    quiet_ready or remote_ready
                     or drain and self._capture_cadence.attempt_ready())
                 kwargs = {"include_capture": include_capture, "include_search": include_search}
-                if drain:
+                if drain or remote_ready and not quiet_ready:
+                    # Remote network work needs no quiet GPU. Existing consent,
+                    # interval, foreground priority and dispatch guards still apply.
+                    # Private/local jobs wait for the ordinary resource/quiet gate.
                     kwargs["capture_remote_only"] = True
                 processed = (await self._process_secure_analysis_once(
                     **kwargs)

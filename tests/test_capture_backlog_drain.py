@@ -128,3 +128,50 @@ async def test_generation_revocation_halts_drain_without_inference(monkeypatch, 
     with service._require_capture_journal()._connect() as db:
         row = db.execute("SELECT state,error_code,remote_dispatched FROM history_analysis_jobs").fetchone()
     assert tuple(row) == ("retry", "remote_consent_revoked", 0)
+
+
+@pytest.mark.asyncio
+async def test_persistent_remote_opt_in_can_plan_during_chat_activity(monkeypatch, tmp_path):
+    service, _archive, source, now = enabled_service(monkeypatch, tmp_path)
+    from muninn.history.remote_policy import write_policy
+    monkeypatch.setenv("MUNINN_CAPTURE_AUTO_REMOTE", "1")
+    write_policy(service.data_dir, enabled=True, daily_usd=5, monthly_usd=50,
+                 override_ceiling=False, fallback=lambda: (False, 1, 30, False))
+    source.write_text('{"type":"event_msg","payload":{"type":"user_message","message":"Ordinary ongoing chat observation."}}\n')
+    await service.capture(str(source), "codex")
+    assert now[0] == 0 and not service._capture_cadence.planning_ready()
+    journal = service._require_capture_journal()
+    search = journal.enqueue_search("chat")
+    assert not await service._process_capture_plan_once(automatic=True)
+    assert journal.cancel_search(search)
+    assert await service._process_capture_plan_once(automatic=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote,quiet,cooldown,expected", [
+    (True, False, True, {"include_capture": True, "include_search": False, "capture_remote_only": True}),
+    (False, False, True, None),
+    (True, False, False, None),
+    (True, True, True, {"include_capture": True, "include_search": False}),
+])
+async def test_remote_scheduling_is_independent_of_quiet_but_not_consent_or_cooldown(
+        monkeypatch, tmp_path, remote, quiet, cooldown, expected):
+    service, _archive, _source, _now = enabled_service(monkeypatch, tmp_path)
+    monkeypatch.setattr(service, "_capture_remote_enabled", lambda: remote)
+    monkeypatch.setattr(service._capture_cadence, "analysis_ready", lambda: quiet)
+    monkeypatch.setattr(service._capture_cadence, "attempt_ready", lambda: cooldown)
+    calls = []
+
+    async def once(**kwargs):
+        calls.append(kwargs)
+        raise asyncio.CancelledError
+
+    async def end_wait(*args, **kwargs):
+        args[0].close()  # No coroutine leak from the intentionally stopped loop.
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(service, "_process_secure_analysis_once", once)
+    monkeypatch.setattr("muninn.history.service.asyncio.wait_for", end_wait)
+    with pytest.raises(asyncio.CancelledError):
+        await service._secure_analysis_loop()
+    assert calls == ([] if expected is None else [expected])
