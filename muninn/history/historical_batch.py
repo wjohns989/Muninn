@@ -194,6 +194,41 @@ def billed_cost(response):
     return amount
 
 
+def resolved_extractions(outbox, parent, source, policy_root, admission_id):
+    """Shared reply, source, admission proof for publication and recovery.
+
+    Only schema/quote/provider-item failures are repairable; bindings, source
+    integrity, model identity and unknown billing never authorize a retry.
+    """
+    from muninn.history.remote_accounting import settled_response
+    from muninn.history.secure_analysis import ModelOutputInvalid
+    resolved = {}
+    unresolved = {item["job_id"] for item in parent["items"]}
+    for index, record in enumerate([parent, *outbox.repair_records(parent)]):
+        if record["state"] not in {"terminal_saved", "cleaned"}:
+            break
+        paid_id = admission_id if index == 0 else record.get("repair_admission")
+        if not paid_id or not settled_response(policy_root, paid_id, record["consent_generation"],
+                                               batch_owner=record["id"]):
+            raise BatchError("batch_cost_unresolved")
+        billed_cost(record["terminal"])
+        rows = terminal_results(record["items"], record["terminal"])
+        for item in record["items"]:
+            if item["job_id"] not in unresolved:
+                raise BatchError("batch_repair_repeated_success")
+            try:
+                outcome = validate_item(source, item, rows[item["custom_id"]])
+            except ModelOutputInvalid:
+                continue
+            except BatchError as exc:
+                if str(exc) in {"batch_item_failed", "batch_item_output_invalid"}:
+                    continue
+                raise
+            resolved[item["job_id"]] = {**outcome["extraction"], "admission_id": paid_id}
+            unresolved.remove(item["job_id"])
+    return resolved, unresolved
+
+
 class BatchOutbox:
     """FULL-synchronous encrypted CAS records, portable with the archive key.
 
@@ -289,6 +324,64 @@ class BatchOutbox:
         with self._db() as db:
             return self._read(db.execute("SELECT * FROM batches WHERE id=?", (ident,)).fetchone())
 
+    def prepare_repair(self, parent_id, items):
+        """Atomically retain a failed-only child and its authenticated parent link."""
+        payload(items)
+        with self._db() as db:
+            parent = self._read(db.execute("SELECT * FROM batches WHERE id=?", (parent_id,)).fetchone())
+            repairs = parent.get("repairs", [])
+            if parent["state"] != "terminal_saved" or parent.get("repair_parent") or len(repairs) >= 2:
+                raise BatchError("batch_repair_limit")
+            if repairs:
+                previous = self._read(db.execute("SELECT * FROM batches WHERE id=?", (repairs[-1],)).fetchone())
+                if previous["state"] != "terminal_saved":
+                    raise BatchError("batch_repair_pending")
+            originals = {i["job_id"]: i for i in parent["items"]}
+            used_ids = {i["custom_id"] for i in parent["items"]}
+            for previous_id in repairs:
+                previous = self._read(db.execute("SELECT * FROM batches WHERE id=?", (previous_id,)).fetchone())
+                used_ids.update(i["custom_id"] for i in previous["items"])
+            if any(i["custom_id"] in used_ids or i["job_id"] not in originals or any(i[k] != originals[i["job_id"]][k]
+                    for k in ("window", "body")) for i in items):
+                raise BatchError("batch_repair_binding_invalid")
+            ident = uuid.uuid4().hex
+            child = {"id": ident, "revision": 0, "state": "prepared",
+                     "retention": parent["retention"], "consent_generation": parent["consent_generation"],
+                     "items": json.loads(_json(items)), "provider_id": None, "terminal": None,
+                     "deletion": None, "repair_parent": parent_id, "repair_admission": None}
+            db.execute("INSERT INTO batches VALUES(?,?,?,?)", (ident, 0, "prepared", self._seal(child)))
+            parent.update(repairs=[*repairs, ident], revision=parent["revision"] + 1)
+            db.execute("UPDATE batches SET revision=?,sealed=? WHERE id=?",
+                       (parent["revision"], self._seal(parent), parent_id))
+        return ident
+
+    def bind_repair_admission(self, ident, revision, admission_id):
+        if not _opaque(admission_id):
+            raise BatchError("batch_repair_admission_invalid")
+        def change(record):
+            if not record.get("repair_parent") or record.get("repair_admission") is not None:
+                raise BatchError("batch_repair_admission_invalid")
+            record["repair_admission"] = admission_id
+        return self._transition(ident, revision, "prepared", "prepared", change)
+
+    def repair_records(self, parent):
+        ids = parent.get("repairs", [])
+        if (not isinstance(ids, list) or len(ids) > 2 or len(set(ids)) != len(ids)
+                or any(not _opaque(i) for i in ids)):
+            raise VaultIntegrityError("Batch repair linkage is invalid")
+        originals = {i["job_id"]: i for i in parent["items"]}
+        records = []
+        for ident in ids:
+            child = self.read(ident)
+            if (child.get("repair_parent") != parent["id"] or child.get("repairs")
+                    or child["consent_generation"] != parent["consent_generation"]
+                    or not (child.get("repair_admission") is None or _opaque(child["repair_admission"]))
+                    or any(i["job_id"] not in originals or any(i[k] != originals[i["job_id"]][k]
+                           for k in ("window", "body")) for i in child["items"])):
+                raise VaultIntegrityError("Batch repair binding differs")
+            records.append(child)
+        return records
+
     def verify_all(self):
         """Authenticate retained batches before accepting a portable backup."""
         with self._db() as db:
@@ -297,7 +390,7 @@ class BatchOutbox:
             count = 0
             for row in db.execute("SELECT * FROM batches"):
                 record = self._read(row)
-                if (set(record) - {"recovery_candidate"} != {
+                if (set(record) - {"recovery_candidate", "repairs", "repair_parent", "repair_admission"} != {
                         "id", "revision", "state", "retention", "consent_generation",
                         "items", "provider_id", "terminal", "deletion"}
                         or record["retention"] != "temporary_nontraining"
@@ -332,6 +425,15 @@ class BatchOutbox:
                 elif record["deletion"] is not None:
                     raise VaultIntegrityError("Batch outbox historical cleanup is premature")
                 count += 1
+        # Traverse outside the outbox transaction; read() takes the same writer fence.
+        with self._db() as db:
+            records = [self._read(row) for row in db.execute("SELECT * FROM batches")]
+        for record in records:
+            self.repair_records(record)
+            if record.get("repair_parent"):
+                parent = self.read(record["repair_parent"])
+                if record["id"] not in parent.get("repairs", []):
+                    raise VaultIntegrityError("Batch repair parent is missing")
         return {"batches": count}
 
     def _transition(self, ident, expected_revision, before, after, change):

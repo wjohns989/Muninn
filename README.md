@@ -295,6 +295,13 @@ not blindly retried. Inputs and results remain encrypted locally; this code
 never deletes or cancels provider batches.
 
 Each batch holds at most 128 screened windows and an 8 MiB serialized request.
+If individual returned items fail schema or citation validation, Muninn retains
+the original batch and successful publications, and retries only the failed
+items in an encrypted, linked child batch. There are at most two repair rounds
+per checkpoint, each with fresh consent/quota/budget checks and a separate bill.
+Unknown submissions are never blindly resent. The parent checkpoint cannot
+advance until every item has a validated, billed and durably published result;
+exhausted repairs remain visibly held. No batch is deleted or cancelled.
 Additional windows stay queued for later batches, without a source-size cutoff.
 The service gathers screened work for at most 90 seconds, submits a full batch
 immediately, then releases a partial batch at the deadline. Gathering never

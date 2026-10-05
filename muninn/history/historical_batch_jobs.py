@@ -219,22 +219,27 @@ class HistoricalBatchJobsMixin:
             row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
         return self._analysis_row(row)
 
-    def _historical_batch_expected(self, outbox):
-        from muninn.history.historical_batch import billed_cost, terminal_results, validate_item
+    def _historical_batch_expected(self, outbox, owner):
+        from muninn.history.historical_batch import resolved_extractions
         if outbox["state"] not in {"terminal_saved", "cleaned"}:
             raise VaultIntegrityError("Historical batch terminal reply is missing")
-        matched = terminal_results(outbox["items"], outbox["terminal"])
-        billed_cost(outbox["terminal"])
         from muninn.history.cited_analysis_source import CitedAnalysisSource
         source = CitedAnalysisSource(self.archive)
-        return {item["job_id"]: validate_item(source, item, matched[item["custom_id"]])["extraction"]
-                for item in outbox["items"]}
+        resolved, unresolved = resolved_extractions(BatchOutbox(self.archive), outbox, source,
+                                                    self.policy_root, owner["admission_id"])
+        if unresolved:
+            raise BatchError("batch_checkpoint_unresolved")
+        return resolved
 
     def finish_historical_batch(self, ident):
         outbox = BatchOutbox(self.archive).read(ident)
         if outbox["state"] not in {"terminal_saved", "cleaned"}:
             return False
-        expected = self._historical_batch_expected(outbox)
+        with self._connect() as db:
+            owner = self._historical_batch_head(db)[1]
+        if owner is None or owner["id"] != ident:
+            return False
+        expected = self._historical_batch_expected(outbox, owner)
         # Expensive cross-store reference validation precedes the writer lock.
         self.verify_publications(job_ids=[item["job_id"] for item in outbox["items"]])
         with self._connect() as db:
@@ -252,7 +257,7 @@ class HistoricalBatchJobsMixin:
                 row = self._historical_batch_member_row(db, owner, member)
                 if row["state"] != "succeeded" or self._read_publication_receipt(row) is None:
                     return False
-                if self._read_extraction(row) != {**expected[member["job_id"]], "admission_id": owner["admission_id"]}:
+                if self._read_extraction(row) != expected[member["job_id"]]:
                     raise VaultIntegrityError("Historical batch publication differs from its reply")
             self._save_historical_batch_owner(db, {**owner, "phase": "passed"})
             return True
@@ -287,17 +292,28 @@ class HistoricalBatchJobsMixin:
                     raise VaultIntegrityError("Historical batch accounting is unavailable") from exc
                 if not valid:
                     raise VaultIntegrityError("Historical batch accounting binding differs")
-            expected = self._historical_batch_expected(stored) if owner["phase"] == "passed" else None
+            expected = self._historical_batch_expected(stored, owner) if owner["phase"] == "passed" else None
+            repairs = outbox.repair_records(stored)
+            for repair in repairs:
+                admission_id = repair.get("repair_admission")
+                if admission_id is None and repair["state"] == "prepared":
+                    continue
+                if not admission_id or not (settled_response(self.policy_root, admission_id,
+                        owner["generation"], batch_owner=repair["id"]) or unknown_response(
+                        self.policy_root, admission_id, owner["generation"], batch_owner=repair["id"])):
+                    raise VaultIntegrityError("Historical repair accounting binding differs")
             for member in owner["members"]:
                 row = self._historical_batch_member_row(db, owner, member)
                 stage = self._read_extraction(row)
-                if stage is not None and stage.get("admission_id") != owner["admission_id"]:
+                admissible = {owner["admission_id"], *[r.get("repair_admission")
+                              for r in repairs if any(
+                                  i["job_id"] == member["job_id"] for i in r["items"]) ]}
+                if stage is not None and stage.get("admission_id") not in admissible:
                     raise VaultIntegrityError("Historical batch admission binding differs")
                 if owner["phase"] == "passed" and (row["state"] != "succeeded"
                         or self._read_publication_receipt(row) is None):
                     raise VaultIntegrityError("Historical batch checkpoint lacks publication")
-                if expected is not None and stage != {**expected[member["job_id"]],
-                                                       "admission_id": owner["admission_id"]}:
+                if expected is not None and stage != expected[member["job_id"]]:
                     raise VaultIntegrityError("Historical batch restored publication differs from its reply")
             previous = owner["previous"]
             sequence = owner["sequence"]

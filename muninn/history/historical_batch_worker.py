@@ -20,10 +20,10 @@ from muninn.history.historical_batch import (
     BatchOutbox,
     billed_cost,
     payload,
-    terminal_results,
-    validate_item,
+    prepare_items,
+    resolved_extractions,
 )
-from muninn.history.remote_accounting import Admission, reserve
+from muninn.history.remote_accounting import Admission, reserve, settled_response, unknown_response
 
 _API = "https://openrouter.ai/api/v1/batches"
 _MAX_RESPONSE = 16 * 1024 * 1024  # Enough for bounded bulk results; not a source-size cutoff.
@@ -92,7 +92,8 @@ class HistoricalBatchWorker:
     already committed. Publication may resume after consent/budget revocation.
     """
     def __init__(self, journal, *, authorize_submit=lambda generation: False,
-                 authorize_transaction=None, send=transport, provider_status=None, clock=time.monotonic):
+                 authorize_transaction=None, send=transport, provider_status=None, clock=time.monotonic,
+                 repair_id=None):
         self.journal = journal
         self.authorize_submit = authorize_submit
         self.authorize_transaction = authorize_transaction
@@ -102,8 +103,36 @@ class HistoricalBatchWorker:
         self.next_poll = 0.0
         self.status = {"state": "idle"}
         self.next_step = 0.0
+        self.repair_id = repair_id
+        self.repair_worker = None
+
+    def _private_owner(self):
+        with self.journal._connect() as db:
+            return self.journal._historical_batch_head(db)[1]
+
+    def _settle_retained_repairs(self, outbox, parent):
+        """Restart may find a sealed terminal BEFORE its separate bill commit."""
+        for child in outbox.repair_records(parent):
+            if child["state"] not in {"terminal_saved", "cleaned"}:
+                continue
+            ident, generation = child.get("repair_admission"), child["consent_generation"]
+            if not ident or not (unknown_response(self.journal.policy_root, ident, generation,
+                    batch_owner=child["id"]) or settled_response(self.journal.policy_root, ident,
+                    generation, batch_owner=child["id"])):
+                raise BatchError("batch_cost_unresolved")
+            billed_cost(child["terminal"])
+            if not Admission(self.journal.policy_root, ident, generation).settle_response(child["terminal"]):
+                raise BatchError("batch_cost_unresolved")
 
     def _admission(self, ident):
+        if self.repair_id is not None:
+            owner = self.journal.historical_batch_owner()
+            outbox = BatchOutbox(self.journal.archive)
+            records = outbox.repair_records(outbox.read(owner["id"]))
+            child = next((r for r in records if r["id"] == ident), None)
+            if owner["phase"] != "sent" or child is None or not child.get("repair_admission"):
+                raise BatchError("batch_admission_unresolved")
+            return Admission(self.journal.policy_root, child["repair_admission"], owner["generation"])
         with self.journal._connect() as db:
             _head, owner = self.journal._historical_batch_head(db)
             if owner is None or owner["id"] != ident or owner["phase"] != "sent":
@@ -124,6 +153,13 @@ class HistoricalBatchWorker:
         self.status = {"state": "working", "items": owner["items"]}
         outbox = await asyncio.to_thread(BatchOutbox, self.journal.archive)
         record = await asyncio.to_thread(outbox.read, owner["id"])
+        parent_id = owner["id"]
+        if self.repair_id is not None:
+            children = await asyncio.to_thread(outbox.repair_records, record)
+            record = next((r for r in children if r["id"] == self.repair_id), None)
+            if record is None or children[-1]["id"] != self.repair_id:
+                raise BatchError("batch_repair_binding_invalid")
+            owner = {**owner, "id": self.repair_id, "items": len(record["items"])}
         if record["state"] == "submission_unknown":
             candidate = record.get("recovery_candidate")
             if candidate is None:
@@ -143,6 +179,29 @@ class HistoricalBatchWorker:
             if not self.authorize_submit(owner["generation"]):
                 self.status["state"] = "consent_required"
                 return True
+            if self.repair_id is not None:
+                # Reprove failed-only selection before any new provider attempt.
+                original = await asyncio.to_thread(outbox.read, parent_id)
+                parent_owner = await asyncio.to_thread(self._private_owner)
+                source = await asyncio.to_thread(CitedAnalysisSource, self.journal.archive)
+                _valid, unresolved = await asyncio.to_thread(resolved_extractions, outbox, original,
+                    source, self.journal.policy_root, parent_owner["admission_id"])
+                if any(i["job_id"] not in unresolved for i in record["items"]):
+                    raise BatchError("batch_repair_repeated_success")
+                with self.journal._connect() as db:
+                    for item in record["items"]:
+                        row = db.execute("SELECT state,sealed_extraction,sealed_receipt,publication_started "
+                                         "FROM history_analysis_jobs WHERE job_id=?", (item["job_id"],)).fetchone()
+                        if (row is None or row["state"] not in {"pending", "retry", "outcome_unknown"}
+                                or any(row[k] for k in ("sealed_extraction", "sealed_receipt", "publication_started"))):
+                            raise BatchError("batch_repair_publication_pending")
+                from muninn.history.batch_activation import bind_consent, read_batch_policy
+                await asyncio.to_thread(bind_consent, self.journal, outbox, record["id"],
+                                        read_batch_policy(self.journal.policy_root))
+                if record.get("repair_admission") is not None:
+                    # A persisted uncertainty/reservation must never be replaced.
+                    self.status = {"state": "repair_admission_unresolved", "items": owner["items"]}
+                    return True
             from muninn.history.auto_routing import openrouter_key_status
             status = await asyncio.to_thread(self.provider_status or openrouter_key_status,
                                             policy_root=self.journal.policy_root)
@@ -150,7 +209,6 @@ class HistoricalBatchWorker:
                 owner["generation"], status, batch_owner=owner["id"])
             try:
                 # Reauthenticate the ACTUAL stored prompt, not just a safe flag.
-                from muninn.history.historical_batch import prepare_items
                 source = await asyncio.to_thread(CitedAnalysisSource, self.journal.archive)
                 checked = await asyncio.to_thread(prepare_items, source,
                     [(i["job_id"], i["window"]) for i in record["items"]])
@@ -159,6 +217,10 @@ class HistoricalBatchWorker:
                 body = payload(record["items"])
                 if not self.authorize_submit(owner["generation"]):
                     raise BatchError("batch_consent_revoked")
+                if self.repair_id is not None:
+                    await asyncio.to_thread(outbox.bind_repair_admission, owner["id"], record["revision"],
+                                            admitted.identifier)
+                    record = await asyncio.to_thread(outbox.read, owner["id"])
                 # Shield/drain all durable fences; cancelling a to_thread does
                 # not cancel its transaction. No POST until all three commit.
                 async def fence():
@@ -170,8 +232,9 @@ class HistoricalBatchWorker:
                              lambda db: self.authorize_transaction(db, owner["id"], digest))
                     await asyncio.to_thread(admitted.mark_unknown, policy_guard=guard)
                     await asyncio.to_thread(outbox.begin_submission, owner["id"], record["revision"])
-                    await asyncio.to_thread(self.journal.mark_historical_batch_dispatched,
-                                            owner["id"], admitted.identifier)
+                    if self.repair_id is None:
+                        await asyncio.to_thread(self.journal.mark_historical_batch_dispatched,
+                                                owner["id"], admitted.identifier)
                 task = asyncio.create_task(fence())
                 try:
                     await asyncio.shield(task)
@@ -208,26 +271,50 @@ class HistoricalBatchWorker:
         billed_cost(record["terminal"])  # Missing/BYOK cost stays unknown.
         if not await asyncio.to_thread(paid.settle_response, record["terminal"]):
             raise BatchError("batch_cost_unresolved")
-        rows = terminal_results(record["items"], record["terminal"])
+        parent = await asyncio.to_thread(outbox.read, parent_id)
+        await asyncio.to_thread(self._settle_retained_repairs, outbox, parent)
         source = await asyncio.to_thread(CitedAnalysisSource, self.journal.archive)
-        invalid = 0
-        for item in record["items"]:
-            try:
-                outcome = await asyncio.to_thread(validate_item, source, item, rows[item["custom_id"]])
-            except ValueError:
-                invalid += 1
-                continue  # Retain failed evidence; successful siblings need no rerun.
+        parent_owner = await asyncio.to_thread(self._private_owner)
+        stages, unresolved = await asyncio.to_thread(resolved_extractions, outbox, parent, source,
+            self.journal.policy_root, parent_owner["admission_id"])
+        for job_id, stage in stages.items():
             job = await asyncio.to_thread(self.journal.claim_historical_batch_result,
-                                         owner["id"], item["job_id"])
+                                         parent_id, job_id)
             if job is None:
                 continue  # Already published or an unexpired publication lease.
-            stage = {**outcome["extraction"], "admission_id": paid.identifier}
             await self._publish(source, job, stage)
-        passed = not invalid and await asyncio.to_thread(self.journal.finish_historical_batch, owner["id"])
+        invalid = len(unresolved)
+        passed = not invalid and await asyncio.to_thread(self.journal.finish_historical_batch, parent_id)
         self.status = {"state": "passed" if passed else "checkpoint_unresolved", "items": owner["items"],
                        "invalid_items": invalid}
         if passed:
             self.next_step = 0.0
+        elif invalid and self.repair_id is None:
+            children = await asyncio.to_thread(outbox.repair_records, parent)
+            if not children or children[-1]["state"] in {"terminal_saved", "cleaned"}:
+                if len(children) >= 2:
+                    self.status["state"] = "repair_limit_reached"
+                    return True
+                if not self.authorize_submit(owner["generation"]):
+                    self.status["state"] = "consent_required"
+                    return True
+                from muninn.history.batch_activation import read_batch_policy
+                policy = await asyncio.to_thread(read_batch_policy, self.journal.policy_root)
+                if not policy["enabled"] or not policy["remaining_batches"]:
+                    return True
+                items = await asyncio.to_thread(prepare_items, source,
+                    [(i["job_id"], i["window"]) for i in parent["items"] if i["job_id"] in unresolved])
+                child_id = await asyncio.to_thread(outbox.prepare_repair, parent_id, items)
+            else:
+                child_id = children[-1]["id"]
+            if self.repair_worker is None or self.repair_worker.repair_id != child_id:
+                self.repair_worker = HistoricalBatchWorker(self.journal, authorize_submit=self.authorize_submit,
+                    authorize_transaction=self.authorize_transaction, send=self.send,
+                    provider_status=self.provider_status, clock=self.clock, repair_id=child_id)
+            await self.repair_worker.step()
+            updated = await asyncio.to_thread(outbox.read, parent_id)
+            self.status = {**self.repair_worker.status, "repair_only": True,
+                           "parent_items": len(parent["items"]), "repair_round": len(updated["repairs"])}
         return True
 
     async def _publish(self, source, job, stage):

@@ -91,6 +91,13 @@ def bind_consent(journal, outbox, ident, policy):
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT enabled,generation,max_batches FROM batch_policy WHERE id=1").fetchone()
+        existing = db.execute("SELECT retention_generation,remote_generation,input_sha256 "
+                              "FROM batch_consent WHERE batch_id=?", (ident,)).fetchone()
+        expected = (policy["generation"], record["consent_generation"], _binding(record))
+        if existing is not None:
+            if existing != expected:
+                raise PolicyError("Batch consent binding differs")
+            return
         count = db.execute("SELECT COUNT(*) FROM batch_consent WHERE retention_generation=?",
                            (policy["generation"],)).fetchone()[0]
         if not row or row[0] != 1 or row[1] != policy["generation"] or count >= row[2]:
