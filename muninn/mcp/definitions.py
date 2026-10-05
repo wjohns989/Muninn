@@ -1120,7 +1120,9 @@ CORE_TOOLS = (
     "poll_secure_history_analysis",
     "analyze_secure_history",
     "search_credential_metadata",
-    "get_project_goal", "get_user_profile",
+    # Project context already includes the goal. Keep the compact budget for
+    # the transcript poll needed to complete an asynchronous source read.
+    "get_user_profile",
 )
 TOOLSETS: Dict[str, Tuple[str, ...]] = {
     "full": tuple(schema["name"] for schema in TOOLS_SCHEMAS),

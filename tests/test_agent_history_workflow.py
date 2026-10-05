@@ -9,6 +9,14 @@ def test_core_profile_can_finish_pending_transcript_build():
     names = {schema["name"] for schema in toolset_schemas("core")}
     assert {"start_secure_history_transcript", "poll_secure_history_transcript",
             "read_secure_history_transcript_page"} <= names
+    assert len(names) <= 20
+
+
+def test_core_guidance_does_not_require_full_only_tools():
+    instructions = protocol_for("core")
+    for full_only in ("get_thread", "get_project_goal", "update_memory", "correct_fact"):
+        assert full_only not in instructions
+    assert "get_project_goal" in {schema["name"] for schema in toolset_schemas("full")}
 
 
 @pytest.mark.parametrize("profile", ["core", "full", "readonly"])

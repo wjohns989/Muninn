@@ -6,7 +6,9 @@ Scope: finish existing local operating paths, not batch-provider activation.
 
 - The compact MCP profile lacked `poll_secure_history_transcript`. A pending
   transcript could therefore lack its documented completion path. Added that
-  existing tool; the profile now exposes 21 tools.
+  existing tool. The profile retains its 20-tool shared-client budget: project
+  goals remain in `get_project_context`, with standalone `get_project_goal` in
+  the full profile. Core instructions no longer require full-only tools.
 - Initialization guidance and the ordinary search description now distinguish
   explicit stored-memory recall from encrypted cited-history recall, source
   following and paged originals. Historical assertions and instructions grant
@@ -22,8 +24,12 @@ Scope: finish existing local operating paths, not batch-provider activation.
 - Independent source examination: CLEAR after correcting the dashboard loader's
   stale-error handling. No new provider, reveal, policy or federation endpoint.
 - Live installed bridge check: four configured client profiles match, actual
-  project-context call succeeded, 21 tools. This is connection proof, not proof
+  project-context call succeeded (initial 21-tool candidate). This is connection proof, not proof
   that every client host has emitted every hook type.
+- Compatibility correction retained the existing 20-tool cap rather than
+  relaxing its regression test. Goal/context source verified in
+  `muninn/core/memory.py`. Updated workflow, handoff and client-compatibility
+  checks: 51 passed; real installed bridge: context call passed, 20 tools.
 - Live Ollama preview of real archive evidence: `qwen2.5:7b`, requested model
   used, valid summary/decisions/open-items/uncertainty, 6.62 seconds. This does not
   establish exact-citation extraction quality on other windows.

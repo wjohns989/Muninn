@@ -997,10 +997,11 @@ context. These tools require the main local token, stay loopback-only, use no
 model, and do not change a provisional claim into verified truth. Keep private
 context and capabilities out of logs/publication. Search is lexical over safe
 candidate text/type, not a plaintext index or a full historical claim backfill.
-The compact `core` profile exposes 21 tools, including the transcript-build poll
+The compact `core` profile exposes 20 tools, including the transcript-build poll
 needed to finish a pending full-transcript read. Its startup instructions explain
 the separate stored-memory, cited-history, transcript and credential-metadata
-recall paths. `update_memory`,
+recall paths. Project goals are included in `get_project_context`; the standalone
+`get_project_goal` is available in `full`. `update_memory`,
 `set_project_goal`, and `correct_fact` are available in `full` instead of loading
 those mutation schemas into every ordinary retrieval session.
 
