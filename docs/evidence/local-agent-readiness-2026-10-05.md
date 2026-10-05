@@ -46,6 +46,19 @@ The corrected gate permits ordinary claims only at an existing local opportunity
 GPU admission, privacy, cooldown, foreground priority, consent and the original
 drain deadline remain unchanged. Focused scheduler/automatic-service/cadence
 validation: 76 passed. Independent examination of the actual diff: CLEAR.
+That behavior was superseded by W's subsequent explicit remote-only instruction:
+automatic remote opt-in now claims only remote-eligible windows at every local
+quiet/max-wait opportunity and after catch-up expiry, with no local fallback.
+Private/local-bound windows stay parked. Three focused checks failed on the
+prior condition; the revised scheduler/automatic-service/cadence checks passed
+77 tests. Independent design/diff review: CLEAR. No credential egress or budget
+change was made, and no further local inference test was launched.
+
+The sustained credential pass failed with HTTPStatusError and no resolutions.
+Its pre-run backup was validated; its post-run backup was unavailable. The CLI
+now exposes only a validated numeric HTTP status, never response/exception text,
+URL, headers or body. Five HTTP cases reproduced the missing diagnostic before
+the fix; all 23 isolated triage checks passed. Local triage remains stopped.
 
 The service is running in strict authenticated encrypted-history mode. Capture
 and automatic local/remote interpretation are enabled; enrollment completion is

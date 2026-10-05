@@ -9,19 +9,23 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import json
-import sys
 import hashlib
+import json
 import sqlite3
+import sys
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
+
 from muninn.history.ambiguity_triage import (
-    CandidateForReview, classify_local, deterministic_decision,
+    CandidateForReview,
+    classify_local,
+    deterministic_decision,
 )
 from muninn.history.auto_routing import choose_route, probe_gpu, probe_ollama
-from muninn.history.credential_store import CredentialStore
 from muninn.history.credential_review_source import CredentialReviewSource
+from muninn.history.credential_store import CredentialStore
 
 
 def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
@@ -242,8 +246,6 @@ def main() -> int:
                          on_progress=lambda report: print(json.dumps(report, sort_keys=True), flush=True),
                          keep_alive="30s" if args.max_pages > 1 else 0)
             print(json.dumps({"page": page, **report}, sort_keys=True), flush=True)
-            decided = (report["rule_rejected"] + report["model_rejected"]
-                       + report["deferred_for_user"])
             if (not args.apply or report["groups_seen"] == 0
                     or (report["next_cursor"] == cursor and report["model_calls"] == 0)
                     or report["queue_counts"].get("pending", 0) == 0):
@@ -272,6 +274,11 @@ def main() -> int:
                           "backup_state": backup_state,
                           "post_backup_unavailable": args.backup_after is not None
                           and backup_state != "validated_post_triage_backup"}
+        if isinstance(exc, httpx.HTTPStatusError):
+            # The body, URL, headers and exception message may contain secrets.
+            status = exc.response.status_code
+            if type(status) is int and 100 <= status <= 599:
+                failure["http_status_code"] = status
         if isinstance(exc, sqlite3.Error) and getattr(exc, "sqlite_errorname", "") in {
                 "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_READONLY", "SQLITE_FULL",
                 "SQLITE_IOERR", "SQLITE_CANTOPEN", "SQLITE_CORRUPT"}:

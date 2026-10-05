@@ -182,7 +182,9 @@ an already enabled installation, use `--restart --preserve-capture-auto
 private preimage of the nonsecret User flag, requires the managed ZDR policy
 and its spending caps, verifies the new process, then persists the flag for
 future launcher starts. A failed remote-enabled reload stops its own new
-process. Existing local-only queued windows remain local-only. The opt-in does
+process. Existing local-only queued windows remain parked while this mode is on.
+Automatic claims are remote-only even when the local quiet/max-wait gate opens;
+disabling the remote capture flag restores ordinary local eligibility. The opt-in does
 not clear unresolved cost admissions or guarantee that remote inference is
 available; ordinary captures and encrypted search continue locally.
 
@@ -193,14 +195,16 @@ the ordinary 30-second minimum attempt interval and single consumer, and selects
 remote-bound windows without local GPU fallback. Consent/generation changes,
 spending limits or uncertain accounting halt catch-up. Its absolute expiry is
 passed only to the child process, not saved as a permanent setting; normal
-capture cadence resumes afterward. Existing local-bound failures are not
+remote-only capture cadence resumes afterward while remote opt-in stays enabled.
+Existing local-bound failures are not
 silently retried or converted. Status exposes the deadline and halt reason under
 `capture_enrichment.backlog_drain`; this mode alone does not prove full historical
 coverage or resolve credential ambiguity.
 
-Capture windows deferred as `source_not_remote_safe` remain durable and eligible
-for ordinary/local processing when runnable capacity is available. They do not
-occupy planning slots or get retried by the remote-only catch-up consumer. Status
+Capture windows deferred as `source_not_remote_safe` remain durable and parked
+while automatic remote mode is enabled. They become eligible for ordinary/local
+processing when remote mode is turned off and local capacity is available. They
+do not occupy planning slots or get retried by the remote-only consumer. Status
 reports them separately as `parked_private_windows`; this is scheduling only and
 does not grant permission to send their contents remotely. Other deferred work
 still counts against the existing runnable-work limits.
@@ -577,7 +581,7 @@ Key environment variables:
 | `MUNINN_SECURE_AUTO_ANALYSIS` | off for direct server starts; on in Windows shared launcher | After an authenticated search finds a pertinent encrypted snapshot, queue one durable, provisional interpretation job; capture and indexing remain CPU-only. Set `0` in the Windows User environment to disable |
 | `MUNINN_CAPTURE_ENRICHMENT` | off | Encrypted new-capture outbox with immutable enable watermark and crash reconciliation. Alone it does not run models or backfill historical snapshots |
 | `MUNINN_CAPTURE_AUTO_ANALYSIS` | off | With capture enrichment enabled, automatically prepare and interpret new captures after quiet time. One CPU-only planner and one shared resource-aware model consumer; foreground search takes priority. Local-only unless capture-specific ZDR is enabled |
-| `MUNINN_CAPTURE_AUTO_REMOTE` | off | Separately opt in to remote-first interpretation of newly queued capture windows under the managed ZDR policy and daily/monthly spending caps. An ineligible, denied, or unsent request falls back to local inference; an uncertain/sent request never auto-retries. Old local-only jobs stay local-only. Does not start a historical bulk run |
+| `MUNINN_CAPTURE_AUTO_REMOTE` | off | Separately opt in to remote-only automatic interpretation under the managed ZDR policy and daily/monthly spending caps. Denied or private windows stay pending/parked without local inference; an uncertain/sent request never auto-retries. Old local-only jobs stay parked while this mode is enabled. Does not start a historical bulk run |
 | `MUNINN_CAPTURE_QUIET_SECONDS` | `300` | Quiet period after a successful archive operation and fresh startup grace. Rejected or merely queued requests do not reset it. Valid finite range: greater than zero through 86400 |
 | `MUNINN_CAPTURE_MAX_WAIT_SECONDS` | `1800` | Maximum wait before new-capture planning and a model attempt become eligible despite continuous chat capture. Must be at least the quiet period; resource and spending gates still apply. This prevents the global quiet timer from starving analysis |
 | `MUNINN_CAPTURE_INTERVAL_SECONDS` | `30` | Minimum interval between capture analysis attempts, including deferred/reuse attempts; foreground analysis is not throttled. Same valid range as quiet seconds |
@@ -1023,12 +1027,13 @@ uses the quiet/resource gate. Approved remote processing can continue during
 chat activity after the existing attempt cooldown, selecting only remotely
 admitted windows and retaining foreground search priority. CPU planning likewise
 need not wait for quiet when remote consent is active. Privacy failures remain
-local; a remote refusal during chat activity does not silently run a GPU model.
-Remote attempts do not restart the local maximum-wait timer: private/local-only
-work gets an opportunity after quiet time or the configured maximum wait, still
-subject to foreground priority, queue capacity and GPU availability. A resource-
-deferred local opportunity resets that wait; this is not a promise to force GPU
-work while another application needs it.
+local; a remote refusal never silently runs a GPU model in this automatic remote
+mode, even at quiet/max-wait or after temporary catch-up expires. Private and
+local-only windows stay parked. Disable the separate remote capture flag to
+resume ordinary local quiet/max-wait opportunities, still subject to foreground
+priority, queue capacity and GPU availability. A resource-deferred local
+opportunity resets that wait; GPU work is never forced while another application
+needs it.
 These workers default off; enabling both capture flags above activates local
 cadence without a manual batch command. No temporary catch-up deadline or budget
 is extended by persistent remote scheduling.

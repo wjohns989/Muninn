@@ -732,6 +732,7 @@ class HistoryService:
             "capture_enrichment": ({"capture_enabled": _flag("MUNINN_CAPTURE_ENRICHMENT"),
                                     "automatic_analysis_enabled": self._capture_auto_enabled(),
                                     "automatic_remote_enabled": self._capture_remote_enabled(),
+                                    "automatic_remote_only": self._capture_remote_enabled(),
                                     "cadence": self._capture_cadence.snapshot(),
                                     "backlog_drain": {**self._capture_drain.snapshot(),
                                                       "active": self._capture_drain_active()},
@@ -1203,10 +1204,11 @@ class HistoryService:
                     quiet_ready or remote_ready
                     or drain and self._capture_cadence.attempt_ready())
                 kwargs = {"include_capture": include_capture, "include_search": include_search}
-                if (drain or remote_ready) and not quiet_ready:
+                if drain or remote_ready:
                     # Remote network work needs no quiet GPU. Existing consent,
                     # interval, foreground priority and dispatch guards still apply.
-                    # Private/local jobs wait for the ordinary resource/quiet gate.
+                    # Automatic remote opt-in uses remote-eligible jobs only;
+                    # private/local jobs stay parked, with no local fallback.
                     kwargs["capture_remote_only"] = True
                 processed = (await self._process_secure_analysis_once(
                     **kwargs)

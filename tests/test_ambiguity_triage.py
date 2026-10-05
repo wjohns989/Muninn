@@ -9,11 +9,13 @@ import httpx
 import pytest
 
 from muninn.history.ambiguity_triage import (
-    CandidateForReview, classify_local, deterministic_decision,
+    CandidateForReview,
+    classify_local,
+    deterministic_decision,
 )
-from scripts import triage_credential_ambiguity as runner
 from muninn.history.auto_routing import GpuState
 from muninn.history.credential_store import AmbiguousCandidate, CredentialStore, source_fingerprint
+from scripts import triage_credential_ambiguity as runner
 
 
 class _TTY(io.StringIO):
@@ -280,11 +282,11 @@ def test_all_contexts_must_finish_and_previous_model_decisions_are_reused(tmp_pa
 @pytest.mark.parametrize("tamper_after_model", [False, True])
 def test_real_context_store_review_cache_commit_and_late_integrity_gate(tmp_path, monkeypatch,
                                                                        tamper_after_model):
-    from muninn.history.secure_archive import SecureHistoryArchive
-    from muninn.history.credential_review_source import CredentialReviewSource
-    from muninn.history.credential_discovery import ExtractionStats, iter_transcript_findings
-    from muninn.history.secure_projection_store import ProjectionIntegrityError
     from muninn.history.ambiguity_triage import ReviewDecision
+    from muninn.history.credential_discovery import ExtractionStats, iter_transcript_findings
+    from muninn.history.credential_review_source import CredentialReviewSource
+    from muninn.history.secure_archive import SecureHistoryArchive
+    from muninn.history.secure_projection_store import ProjectionIntegrityError
     phrase = "synthetic passphrase long enough"
     path = tmp_path / "chat.jsonl"
     path.write_text("\n".join(json.dumps(row) for row in [
@@ -438,7 +440,8 @@ def test_triage_rejects_alias_and_in_vault_backup_destinations(tmp_path, monkeyp
     assert caught.value.code == 2
 
 
-def test_triage_failure_reports_backup_state_without_exception_text(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status_code", [None, 400, 404, 429, 500, 503])
+def test_triage_failure_reports_backup_state_without_exception_text(tmp_path, monkeypatch, status_code):
     passphrase = "synthetic passphrase long enough"
     root = tmp_path / "vault"
     CredentialStore.create(root, passphrase)
@@ -452,6 +455,13 @@ def test_triage_failure_reports_backup_state_without_exception_text(tmp_path, mo
     monkeypatch.setattr(runner.getpass, "getpass", lambda _prompt: passphrase)
 
     def fail(**_kwargs):
+        if status_code is not None:
+            request = httpx.Request("POST", "http://127.0.0.1:11434/api/chat?private=context",
+                                    headers={"Authorization": "synthetic-sensitive-header"})
+            response = httpx.Response(status_code, request=request,
+                                      text="synthetic-sensitive-body-never-log")
+            raise httpx.HTTPStatusError("synthetic-sensitive-context-never-log",
+                                        request=request, response=response)
         raise RuntimeError("synthetic-sensitive-context-never-log")
 
     monkeypatch.setattr(runner, "run", fail)
@@ -460,4 +470,8 @@ def test_triage_failure_reports_backup_state_without_exception_text(tmp_path, mo
     report = json.loads(output.getvalue().splitlines()[-1])
     assert report["backup_state"] == "validated_pre_triage_backup"
     assert report["post_backup_unavailable"] is True
+    assert report.get("http_status_code") == status_code
     assert "synthetic-sensitive-context-never-log" not in output.getvalue()
+    assert "synthetic-sensitive-body-never-log" not in output.getvalue()
+    assert "synthetic-sensitive-header" not in output.getvalue()
+    assert "private=context" not in output.getvalue()

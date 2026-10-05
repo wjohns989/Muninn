@@ -103,7 +103,7 @@ async def test_drain_consumer_claims_only_remote_windows_during_activity(monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("opportunity", ["quiet", "max_wait"])
-async def test_drain_preserves_local_opportunities(monkeypatch, tmp_path, opportunity):
+async def test_remote_drain_stays_remote_only_at_local_opportunities(monkeypatch, tmp_path, opportunity):
     service, _archive, _source, now = enabled_service(monkeypatch, tmp_path)
     service._capture_cadence = SmallCaptureCadence(
         quiet_seconds=10, interval_seconds=4, max_wait_seconds=30,
@@ -122,7 +122,8 @@ async def test_drain_preserves_local_opportunities(monkeypatch, tmp_path, opport
     monkeypatch.setattr(service, "_process_secure_analysis_once", once)
     with pytest.raises(asyncio.CancelledError):
         await service._secure_analysis_loop()
-    assert calls == [{"include_capture": True, "include_search": False}]
+    assert calls == [{"include_capture": True, "include_search": False,
+                      "capture_remote_only": True}]
 
 
 @pytest.mark.asyncio
@@ -176,7 +177,8 @@ async def test_persistent_remote_opt_in_can_plan_during_chat_activity(monkeypatc
     (True, False, True, {"include_capture": True, "include_search": False, "capture_remote_only": True}),
     (False, False, True, None),
     (True, False, False, None),
-    (True, True, True, {"include_capture": True, "include_search": False}),
+    (True, True, True, {"include_capture": True, "include_search": False, "capture_remote_only": True}),
+    (False, True, True, {"include_capture": True, "include_search": False}),
 ])
 async def test_remote_scheduling_is_independent_of_quiet_but_not_consent_or_cooldown(
         monkeypatch, tmp_path, remote, quiet, cooldown, expected):
