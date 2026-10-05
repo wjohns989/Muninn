@@ -143,6 +143,28 @@ def test_active_raw_capture_recovery_requires_explicit_preserve_mode():
     assert args.recover_active_capture
 
 
+def test_explicit_multi_capture_bound_preserves_every_other_busy_guard():
+    args = reload.parse_args(["--restart", "--preserve-capture-auto", "--recover-active-capture",
+                              "--recover-active-capture-limit", "3", "--expected-revision", "abcdef0"])
+    assert args.recover_active_capture_limit == 3
+    queued = {table: {} for table in reload.TABLES}
+    queued["jobs"]["capturing"] = 3
+    assert not reload.queues_idle(queued, preserve_queued=True, allow_active_capture=True)
+    assert reload.queues_idle(queued, preserve_queued=True, allow_active_capture=True, active_capture_limit=3)
+    assert not reload.queues_idle({**queued, "jobs": {"capturing": 4}}, preserve_queued=True,
+                                 allow_active_capture=True, active_capture_limit=3)
+    for table, state in [("history_search_jobs", "running"), ("history_analysis_jobs", "running"),
+                         ("history_analysis_jobs", "publishing")]:
+        assert not reload.queues_idle({**queued, table: {state: 1}}, preserve_queued=True,
+                                     allow_active_capture=True, active_capture_limit=3)
+    for value in ["0", "33", "-1"]:
+        with pytest.raises(SystemExit):
+            reload.parse_args(["--restart", "--preserve-capture-auto", "--recover-active-capture",
+                               "--recover-active-capture-limit", value, "--expected-revision", "abcdef0"])
+    with pytest.raises(SystemExit):
+        reload.parse_args(["--recover-active-capture-limit", "3"])
+
+
 def test_active_raw_capture_recovery_never_permits_model_search_or_multiple_captures():
     queued = {table: {"pending": 1} for table in reload.TABLES}
     queued["jobs"]["capturing"] = 1

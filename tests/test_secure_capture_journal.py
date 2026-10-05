@@ -69,6 +69,40 @@ def test_archive_commit_before_journal_finish_replays_without_duplicate_snapshot
     assert archive.status()["snapshots"] == 1
 
 
+def test_restart_replays_three_distinct_capture_interruption_points(tmp_path, monkeypatch):
+    journal, archive = _journal(tmp_path)
+    sources = [tmp_path / f"capture-{i}.jsonl" for i in range(3)]
+    for i, source in enumerate(sources):
+        source.write_text(f"Isolated capture {i}. " * 256, encoding="utf-8")
+        journal.enqueue(source, "codex", force=True)
+    claims = [journal.claim_due() for _ in sources]
+    assert journal.status() == {"capturing": 3}
+    archive.archive_file(claims[0].path, "codex")  # Committed, journal ACK not written.
+    write_chunk = archive._write_chunk
+    def interrupted(*args, **kwargs):
+        write_chunk(*args, **kwargs)
+        raise KeyboardInterrupt("isolated capture interruption")
+    with monkeypatch.context() as patch:
+        patch.setattr(archive, "_write_chunk", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            archive.archive_file(claims[1].path, "codex")
+    # Third claim has not started writing. None of these live claims are reset.
+    reopened = SecureHistoryArchive(archive.root, "test-only portable passphrase")
+    restarted = CaptureJournal(reopened)
+    assert restarted.status() == {"pending": 3}
+    replayed = []
+    for _ in sources:
+        job = restarted.claim_due()
+        replayed.append(job.path)
+        result = reopened.archive_file(job.path, job.provider)
+        assert result["status"] in {"captured", "unchanged"}
+        assert restarted.finish(job, archived=True)
+    assert set(replayed) == {source.resolve() for source in sources}
+    assert restarted.status() == {"archived": 3} and reopened.status()["snapshots"] == 3
+    for source in sources:
+        assert reopened.read_file(source) == source.read_bytes()
+
+
 def test_restart_replays_raw_capture_interrupted_during_encrypted_write(tmp_path, monkeypatch):
     journal, archive = _journal(tmp_path)
     source = tmp_path / "session.jsonl"

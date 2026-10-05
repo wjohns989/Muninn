@@ -74,7 +74,9 @@ def parse_args(argv=None):
     parser.add_argument("--preserve-capture-auto", action="store_true",
                         help="Reload already enabled local capture without changing settings or queued work")
     parser.add_argument("--recover-active-capture", action="store_true",
-                        help="Replay at most one interrupted CPU archive capture; model/search workers must be idle")
+                        help="Replay interrupted CPU archive captures; model/search workers must be idle")
+    parser.add_argument("--recover-active-capture-limit", type=int, default=1,
+                        help="Explicit replay bound (1-32), default one; requires active-capture recovery")
     parser.add_argument("--enable-capture-remote", action="store_true",
                         help="Opt in to managed ZDR for new capture windows on an existing auto-capture service")
     parser.add_argument("--backlog-drain-minutes", type=int,
@@ -94,6 +96,9 @@ def parse_args(argv=None):
         parser.error("remote capture requires restart with --preserve-capture-auto")
     if args.recover_active_capture and not (args.restart and args.preserve_capture_auto):
         parser.error("active capture recovery requires restart with --preserve-capture-auto")
+    if (not 1 <= args.recover_active_capture_limit <= 32
+            or args.recover_active_capture_limit != 1 and not args.recover_active_capture):
+        parser.error("capture recovery limit requires active-capture recovery and must be 1-32")
     if args.backlog_drain_minutes is not None and (
             not args.enable_capture_remote or not 1 <= args.backlog_drain_minutes <= 180):
         parser.error("backlog drain requires remote capture and 1-180 minutes")
@@ -243,11 +248,13 @@ def queue_states(db):
     return {table: dict(db.execute(f"SELECT state,COUNT(*) FROM {table} GROUP BY state")) for table in TABLES}
 
 
-def queues_idle(queues, *, preserve_queued=False, allow_active_capture=False):
-    """Default stops no claim; explicit recovery permits one replayable CPU capture."""
+def queues_idle(queues, *, preserve_queued=False, allow_active_capture=False, active_capture_limit=1):
+    """Default stops no claim; explicit bounded recovery permits replayable CPU captures."""
+    if type(active_capture_limit) is not int or not 1 <= active_capture_limit <= 32:
+        return False
     excluded = {"pending", "retry", "publication_pending"} if preserve_queued else set()
     recover_capture = (preserve_queued and allow_active_capture
-                       and queues["jobs"].get("capturing", 0) in (0, 1))
+                       and 0 <= queues["jobs"].get("capturing", 0) <= active_capture_limit)
     return not any(queues[table].get(state, 0)
                    for table in TABLES for state in ACTIVE[table] - excluded
                    if not (recover_capture and table == "jobs" and state == "capturing"))
@@ -442,7 +449,8 @@ def run(args):
         return
     require(os.name == "nt", "Owned forced reload is supported only on Windows")
     require(queues_idle(initial, preserve_queued=args.preserve_capture_auto,
-                        allow_active_capture=args.recover_active_capture), "Durable workers are not idle")
+                        allow_active_capture=args.recover_active_capture,
+                        active_capture_limit=args.recover_active_capture_limit), "Durable workers are not idle")
     require(initial_publication_unclaimed, "Durable publication has a live lease")
     require(pre_reload_mode_matches(before, environment, preserve_capture_auto=args.preserve_capture_auto),
             "Existing capture mode differs from the requested reload procedure")
@@ -488,7 +496,8 @@ def run(args):
         fence.execute("BEGIN IMMEDIATE")
         fenced_queues = queue_states(fence)
         require(queues_idle(fenced_queues, preserve_queued=args.preserve_capture_auto,
-                            allow_active_capture=args.recover_active_capture),
+                            allow_active_capture=args.recover_active_capture,
+                            active_capture_limit=args.recover_active_capture_limit),
                 "Queue changed before owned stop")
         if args.preserve_capture_auto:
             require(publication_queue_unclaimed(fence), "Durable publication gained a live lease")
