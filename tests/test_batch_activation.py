@@ -107,3 +107,21 @@ def test_unsent_local_failure_is_readmitted_but_never_empty_failure(tmp_path):
     items = BatchOutbox(journal.archive).read(ident)["items"]
     assert job.job_id in {item["job_id"] for item in items}
     assert empty.job_id not in {item["job_id"] for item in items}
+
+
+def test_one_serialized_request_refusal_does_not_block_safe_siblings(tmp_path, monkeypatch):
+    from muninn.history import batch_activation
+    from muninn.history.historical_batch import BatchError
+    journal, archive = history(tmp_path)
+    with journal._connect() as db:
+        rejected = db.execute("SELECT job_id FROM history_analysis_jobs ORDER BY created_at,job_id").fetchone()[0]
+    original = batch_activation.prepare_items
+    def stricter_screen(source, bindings):
+        if bindings[0][0] == rejected:
+            raise BatchError("source_not_remote_safe")
+        return original(source, bindings)
+    monkeypatch.setattr(batch_activation, "prepare_items", stricter_screen)
+    configure_batch(journal.policy_root, enabled=True)
+    ident = prepare_next_batch(journal)
+    assert ident
+    assert rejected not in {item["job_id"] for item in BatchOutbox(archive).read(ident)["items"]}

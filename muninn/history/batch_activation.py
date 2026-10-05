@@ -13,7 +13,7 @@ import time
 from contextlib import closing
 
 from muninn.history.auto_routing import remote_policy_snapshot
-from muninn.history.historical_batch import MAX_ITEMS, BatchOutbox, _json, prepare_items
+from muninn.history.historical_batch import MAX_ITEMS, BatchError, BatchOutbox, _json, prepare_items
 from muninn.history.private_acl import verify_private
 from muninn.history.remote_policy import PolicyError, _paths
 
@@ -162,6 +162,7 @@ def prepare_next_batch(journal):
     from muninn.history.cited_windows import CitedWindowPlanStore
     plans = CitedWindowPlanStore(journal.archive)
     checked = []
+    prepared = {}
     retry_proofs = {job_id: (attempt, digest) for job_id, _target, attempt, digest in failed}
     for job_id, target in candidates + [(job_id, target) for job_id, target, _, _ in failed]:
         # Reconstruct from the authenticated plan, never from an untrusted hint.
@@ -170,6 +171,12 @@ def prepare_next_batch(journal):
         window = source.remote_input(descriptor)
         if window is None or not window["text"].strip():
             continue
+        try:
+            prepared[job_id] = prepare_items(source, [(job_id, descriptor)])[0]
+        except BatchError as exc:
+            if str(exc) != "source_not_remote_safe":
+                raise
+            continue  # Serialized request screening is stricter than span screening.
         checked.append(((window["event_at"] is None, window["event_at"] or 0,
                          target["ordinal"], target["work_id"], job_id), (job_id, descriptor)))
     if not checked:
@@ -188,7 +195,7 @@ def prepare_next_batch(journal):
     if not bindings:
         return None
     outbox = BatchOutbox(journal.archive)
-    ident = outbox.prepare(prepare_items(source, bindings), consent_generation=remote.generation)
+    ident = outbox.prepare([prepared[job_id] for job_id, _ in bindings], consent_generation=remote.generation)
     bind_consent(journal, outbox, ident, policy)
     journal.reserve_historical_batch(ident)
     return ident
