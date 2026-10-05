@@ -65,7 +65,7 @@ class SourceEvidenceStore(SecureProjectionStore):
                 yield db
             return
         verify_private(self.db_path)
-        db = sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True, timeout=30)
+        db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=30)
         try:
             db.execute("PRAGMA query_only=ON")
             yield db

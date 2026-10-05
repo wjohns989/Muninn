@@ -160,6 +160,7 @@ class HistoricalBatchWorker:
             if record is None or children[-1]["id"] != self.repair_id:
                 raise BatchError("batch_repair_binding_invalid")
             owner = {**owner, "id": self.repair_id, "items": len(record["items"])}
+            self.status["items"] = owner["items"]
         if record["state"] == "submission_unknown":
             candidate = record.get("recovery_candidate")
             if candidate is None:

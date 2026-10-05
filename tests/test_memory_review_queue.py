@@ -2,6 +2,7 @@
 
 import hashlib
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -87,6 +88,14 @@ def files_digest(root):
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def test_read_only_open_supports_relative_configured_archive_root(tmp_path, monkeypatch):
+    ledger, ids, _binding = queue_fixture(tmp_path)
+    monkeypatch.chdir(ledger.archive.root.parent)
+    ledger.archive.root = Path(ledger.archive.root.name)
+    readonly = MemoryLedger(ledger.archive, read_only=True)
+    assert [row["id"] for row in readonly.review_page()["matches"]] == ids
 
 
 def test_read_only_open_never_initializes_missing_stores(tmp_path):

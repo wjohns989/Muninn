@@ -96,7 +96,7 @@ class MemoryLedger:
     @contextmanager
     def _connect(self):
         verify_private(self.db_path)
-        db = (sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True, timeout=30)
+        db = (sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=30)
               if self.read_only else sqlite3.connect(self.db_path, timeout=30))
         try:
             if self.read_only:
