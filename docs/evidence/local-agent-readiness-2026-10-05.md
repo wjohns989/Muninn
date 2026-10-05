@@ -69,6 +69,13 @@ reopens/requeues the same raw claim, replays the complete source and verifies bo
 versions while leaving the unreferenced encrypted staging file untouched. Two
 new admission tests failed before implementation; helper/capture-journal checks:
 100 passed, including model-claim races, backup failure and competing owners.
+Independent source/result review: CLEAR. Installed candidate `ae7877d` reloaded
+successfully with six validated encrypted database preimages and one replayable
+CPU capture. The real authenticated status then reported strict archive mode,
+`automatic_remote_only: true`, no capture claim left active, and no Ollama model
+resident. The existing catch-up deadline was retained; budgets were unchanged.
+This is mode/recovery proof, not complete historical coverage: that live check
+still had 3,683 pending snapshot versions and 176 parked private windows.
 
 The service is running in strict authenticated encrypted-history mode. Capture
 and automatic local/remote interpretation are enabled; enrollment completion is
