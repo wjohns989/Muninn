@@ -61,3 +61,39 @@ separate remote scheduling revision permits currently opted-in remote network
 work during chat activity, preserving quiet GPU work, foreground priority and
 all dispatch controls. Its affected suite passed 53 tests and independent
 design/diff inspection cleared it. Installed verification follows separately.
+
+## Installed revision and real outcomes
+
+Candidate `8ecc280` was loaded through the same verified-owner procedure with
+six validated database preimages and preserved local/remote flags. Authenticated
+strict history returned 200, anonymous protected access remained 401, anonymous
+HTML contained no token, and one listener remained. The temporary drain stayed
+expired; no deadline or budget change was made.
+
+While the quiet timer still had approximately 253 seconds remaining, metadata
+inspection found three Luna jobs succeeded since that reload. This demonstrates
+real remote processing during ongoing chat, not a synthetic model stub or an
+assertion based only on enabled flags. Source coverage remained incomplete:
+103 resolved and 3,622 pending versions at that observation, including subsequent
+new captures. Enrollment completion is still not interpretation completion.
+
+The bounded capacity watcher verified the actual service process, observed one
+free slot, and invoked the reviewed recovery command. A fresh encrypted journal
+preimage passed integrity checking. Exactly one former local failure was queued;
+the remaining selected items stayed untouched at the capacity limit. Comparing
+the preimage with the live journal found that item subsequently parked with
+`source_not_remote_safe`, `remote_dispatched=0`. That is a real privacy refusal,
+not a successful remote extraction or a reason to weaken the guard. The three
+previous uncertain remote outcomes remained unchanged.
+
+The fixed-run ledger held 591 settled response admissions totaling $0.528908,
+including the separate GPT-OSS probe. Excluding that probe, backlog ledger cost
+was $0.528786. Dedicated-key monthly usage minus the run baseline and the probe
+was $0.52851704; the difference was $0.00026896. These are two measured accounting
+views, not an assertion of exact reconciliation. Daily key usage was $0.479699357
+under the unchanged $5/day limit. No batch submission occurred.
+
+All GitHub workflows for `8ecc280` passed, including the full locked-dependency
+suite, privacy check, clean imports, benchmark dry run and transport replay.
+Existing untracked user files were preserved. These scoped proofs do not assert
+that every historical ambiguity or the complete installation goal is finished.
