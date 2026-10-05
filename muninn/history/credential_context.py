@@ -13,15 +13,15 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from muninn.history.credential_discovery import ExtractionStats, iter_transcript_findings
 from muninn.history.credential_store import AmbiguousCandidate
-from muninn.history.source_evidence import SourceEvidenceStore
 from muninn.history.secure_projection_store import ProjectionIntegrityError
+from muninn.history.source_evidence import SourceEvidenceStore
 
 
 class CredentialContextStore(SourceEvidenceStore):
@@ -29,6 +29,9 @@ class CredentialContextStore(SourceEvidenceStore):
         super().__init__(archive, root or Path(archive.root) / "credential-context")
         with self._connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS context_reviews(attempt TEXT NOT NULL, "
+                       "page INTEGER NOT NULL, model_identity TEXT NOT NULL, ciphertext BLOB NOT NULL, "
+                       "PRIMARY KEY(attempt,page,model_identity))")
+            db.execute("CREATE TABLE IF NOT EXISTS context_remote_calls(attempt TEXT NOT NULL, "
                        "page INTEGER NOT NULL, model_identity TEXT NOT NULL, ciphertext BLOB NOT NULL, "
                        "PRIMARY KEY(attempt,page,model_identity))")
 
@@ -116,6 +119,75 @@ class CredentialContextStore(SourceEvidenceStore):
             db.execute("INSERT OR IGNORE INTO context_reviews VALUES(?,?,?,?)",
                        (attempt, page, model_identity, sealed))
 
+    def _remote_aad(self, entry, version, attempt, page, identity):
+        binding = json.loads(self._review_aad(entry, version, attempt, page, identity))
+        binding['domain'] = 'credential-context-zdr-dispatch-v1'
+        return json.dumps(binding, sort_keys=True, separators=(',', ':')).encode()
+
+    @staticmethod
+    def _validate_remote(record):
+        try:
+            if (not isinstance(record, dict)
+                    or set(record) != {'state', 'admission', 'generation', 'body_hash', 'response'}
+                    or record['state'] not in {'intent', 'received'}
+                    or type(record['generation']) is not int or record['generation'] < 1
+                    or not isinstance(record['admission'], str) or len(record['admission']) != 32
+                    or not isinstance(record['body_hash'], str) or len(record['body_hash']) != 64
+                    or any(c not in '0123456789abcdef' for c in record['admission'] + record['body_hash'])):
+                raise ValueError
+            response = record['response']
+            if record['state'] == 'intent':
+                if response is not None:
+                    raise ValueError
+            elif (not isinstance(response, dict)
+                  or set(response) != {'model', 'cost', 'decision', 'http_status'}
+                  or response['decision'] not in {'rejected', 'deferred'}
+                  or not isinstance(response['model'], str) or len(response['model']) > 128
+                  or response['cost'] is not None and (not isinstance(response['cost'], str)
+                                                       or len(response['cost']) > 64)
+                  or type(response['http_status']) is not int or not 100 <= response['http_status'] <= 599):
+                raise ValueError
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProjectionIntegrityError('Credential remote receipt authentication failed') from exc
+        return record
+
+    def _decode_remote(self, ciphertext, aad):
+        try:
+            if len(ciphertext) > 4096:
+                raise ValueError
+            raw = AESGCM(self._key()).decrypt(ciphertext[:12], ciphertext[12:], aad)
+            return self._validate_remote(json.loads(raw))
+        except (InvalidTag, ValueError, TypeError, UnicodeError) as exc:
+            raise ProjectionIntegrityError('Credential remote receipt authentication failed') from exc
+
+    def remote_receipt(self, entry, version, attempt, page, identity):
+        aad = self._remote_aad(entry, version, attempt, page, identity)
+        self.get_page(entry, version, attempt, page)
+        with self._connect() as db:
+            row = db.execute('SELECT ciphertext FROM context_remote_calls '
+                             'WHERE attempt=? AND page=? AND model_identity=?',
+                             (attempt, page, identity)).fetchone()
+        return self._decode_remote(row[0], aad) if row is not None else None
+
+    def save_remote_receipt(self, entry, version, attempt, page, identity, record, *, expected):
+        """Occurrence-bound encrypted CAS; a received decision survives ledger settlement."""
+        self._validate_remote(record)
+        aad = self._remote_aad(entry, version, attempt, page, identity)
+        self.get_page(entry, version, attempt, page)
+        nonce = os.urandom(12)
+        sealed = nonce + AESGCM(self._key()).encrypt(
+            nonce, json.dumps(record, sort_keys=True, allow_nan=False).encode(), aad)
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT ciphertext FROM context_remote_calls '
+                             'WHERE attempt=? AND page=? AND model_identity=?',
+                             (attempt, page, identity)).fetchone()
+            current = self._decode_remote(row[0], aad) if row is not None else None
+            if current != expected or current is not None and current['state'] == 'received':
+                raise ProjectionIntegrityError('Credential remote receipt changed')
+            db.execute('INSERT OR REPLACE INTO context_remote_calls VALUES(?,?,?,?)',
+                       (attempt, page, identity, sealed))
+
     def verify_all(self) -> dict[str, int]:
         entries = {(entry["blob"], entry["sha256"], version): entry
                    for versions in self.archive._load_manifest()["files"].values()
@@ -123,18 +195,30 @@ class CredentialContextStore(SourceEvidenceStore):
         report = {"snapshots": 0, "contexts": 0}
         with self._connect() as db:
             attempts = db.execute("SELECT attempt,blob,sha,version FROM attempts WHERE state='complete'").fetchall()
-            orphan = db.execute("SELECT 1 FROM context_reviews r LEFT JOIN attempts a "
-                                "ON r.attempt=a.attempt WHERE a.attempt IS NULL OR a.state!='complete' LIMIT 1").fetchone()
+            orphan = db.execute(
+                "SELECT 1 FROM context_reviews r LEFT JOIN attempts a "
+                "ON r.attempt=a.attempt WHERE a.attempt IS NULL OR a.state!='complete' LIMIT 1").fetchone()
             if orphan is not None:
                 raise ProjectionIntegrityError("Credential review has no completed source context")
+            orphan = db.execute(
+                "SELECT 1 FROM context_remote_calls r LEFT JOIN attempts a "
+                "ON r.attempt=a.attempt WHERE a.attempt IS NULL OR a.state!='complete' LIMIT 1").fetchone()
+            if orphan is not None:
+                raise ProjectionIntegrityError('Credential remote receipt has no completed source context')
         for attempt, blob, sha, version in attempts:
             entry = entries.get((blob, sha, version))
             if entry is None:
                 raise ProjectionIntegrityError("Credential context has no authenticated snapshot")
             report["contexts"] += sum(1 for _ in self.contexts(entry, version, attempt))
             with self._connect() as db:
-                reviews = db.execute("SELECT page,model_identity FROM context_reviews WHERE attempt=?", (attempt,)).fetchall()
+                reviews = db.execute("SELECT page,model_identity FROM context_reviews WHERE attempt=?",
+                                     (attempt,)).fetchall()
             for page, model_identity in reviews:
                 self.cached_review(entry, version, attempt, page, model_identity)
+            with self._connect() as db:
+                remote = db.execute('SELECT page,model_identity FROM context_remote_calls WHERE attempt=?',
+                                    (attempt,)).fetchall()
+            for page, model_identity in remote:
+                self.remote_receipt(entry, version, attempt, page, model_identity)
             report["snapshots"] += 1
         return report

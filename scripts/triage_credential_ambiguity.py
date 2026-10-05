@@ -1,4 +1,4 @@
-"""One bounded local-only pass over encrypted credential ambiguity groups.
+"""One bounded locally unlocked pass over encrypted credential ambiguities.
 
 Run in a local interactive terminal. The passphrase is never an argument or
 environment variable. No candidate text, model reply, or secret is printed.
@@ -28,12 +28,106 @@ from muninn.history.credential_review_source import CredentialReviewSource
 from muninn.history.credential_store import CredentialStore
 
 
+def run_zdr(*, root, passphrase, limit, model_limit, model, apply, policy_root,
+            archive_root, review_source, after, on_progress):
+    """Same occurrence/evidence gate, without a local-model probe or dispatch."""
+    from muninn.history.auto_routing import remote_policy_snapshot
+    from muninn.history.credential_zdr import review_context
+    from muninn.history.remote_accounting import AdmissionError
+    if model_limit and (policy_root is None or archive_root is None and review_source is None):
+        raise ValueError('ZDR review requires explicit policy root and authenticated source archive')
+    store = CredentialStore(root)
+    rows = store.list_ambiguities(status='pending', limit=limit,
+                                  **({'after': after} if after is not None else {}))
+    if on_progress:
+        on_progress({'stage': 'review_page', 'rows': len(rows)})
+    source = review_source or (CredentialReviewSource(archive_root) if model_limit else None)
+    generation = remote_policy_snapshot(policy_root).generation if model_limit else None
+    calls = reused = incomplete = rules = rejected = deferred = 0
+    examined = set()
+    reason = 'no_model_needed'
+    for row in rows:
+        candidate = store.reveal_ambiguity(row['id'], passphrase=passphrase)
+        item = CandidateForReview(row['id'], row['name'], row['reason'], candidate)
+        decision = deterministic_decision(item)
+        if decision is not None:
+            rules += decision.decision == 'rejected'
+        elif not model_limit:
+            examined.add(row['id'])
+            continue
+        else:
+            prepared = source.prepare(row)
+            if prepared is None:
+                incomplete += 1
+                examined.add(row['id'])
+                reason = 'source_context_required'
+                continue
+            outcomes, matched, complete, unsafe = set(), 0, True, False
+            for page, occurrence in source.inputs(prepared, row, candidate):
+                matched += 1
+                if calls >= model_limit:
+                    reason, complete = 'model_limit_reached', False
+                    break
+                try:
+                    result, dispatched, cached = review_context(
+                        occurrence, source, prepared, page, policy_root=policy_root,
+                        generation=generation, model=model)
+                except AdmissionError as exc:
+                    reason, complete = exc.code, False
+                    unsafe = exc.code == 'credential_context_not_remote_safe'
+                    break
+                calls += dispatched
+                reused += cached
+                outcomes.add(result.decision)
+                reason = 'zdr_context_review'
+                if on_progress:
+                    on_progress({'stage': reason, 'model_calls': calls, 'contexts_reused': reused})
+            if unsafe:
+                incomplete += 1
+                deferred += 1
+                examined.add(row['id'])
+                continue  # local-only/user-review context must not starve later safe rows
+            if not complete or not matched:
+                incomplete += 1
+                # Do not repeatedly attempt reservations for later rows when
+                # a known batch, unknown transport, revocation or cap blocks.
+                break
+            from muninn.history.ambiguity_triage import ReviewDecision
+            decision = ReviewDecision(item.id, 'rejected' if outcomes == {'rejected'} else 'deferred', 'zdr-model')
+            rejected += decision.decision == 'rejected'
+        examined.add(row['id'])
+        deferred += decision.decision == 'deferred'
+        if apply and decision.decision == 'rejected':
+            store.decide_ambiguity(row['id'], passphrase=passphrase, decision='rejected',
+                                   actor='zdr-agent' if decision.basis == 'zdr-model' else 'local-agent',
+                                   reason='not-a-secret')
+    cursor = after
+    for row in rows:
+        if row['id'] not in examined:
+            break
+        if 'created_at' in row:
+            cursor = {'created_at': row['created_at'], 'id': row['id']}
+    counts = store.ambiguity_status()
+    return {'groups_seen': len(examined), 'rows_seen': len(rows), 'model_calls': calls,
+            'contexts_reused': reused, 'source_context_pending': incomplete,
+            'rule_rejected': rules, 'model_rejected': rejected, 'deferred_for_user': deferred,
+            'left_pending': counts.get('pending', 0), 'model_route': reason,
+            'applied': apply, 'queue_counts': counts, 'next_cursor': cursor}
+
+
 def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
         model: str, apply: bool, base_url: str,
         keep_alive: int | str = 0, archive_root: Path | None = None,
-        review_source=None, after: dict | None = None, on_progress=None) -> dict:
+        review_source=None, after: dict | None = None, on_progress=None,
+        provider: str = 'ollama', policy_root: Path | None = None) -> dict:
     if not 1 <= limit <= 100 or not 0 <= model_limit <= min(limit, 100):
         raise ValueError("Invalid local triage bounds")
+    if provider == 'openrouter':
+        return run_zdr(root=root, passphrase=passphrase, limit=limit, model_limit=model_limit,
+                       model=model, apply=apply, policy_root=policy_root, archive_root=archive_root,
+                       review_source=review_source, after=after, on_progress=on_progress)
+    if provider != 'ollama':
+        raise ValueError('Unsupported credential review provider')
     if base_url.rstrip("/") != "http://127.0.0.1:11434":
         raise ValueError("Credential triage requires loopback Ollama")
     store = CredentialStore(root)
@@ -186,6 +280,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=60)
     parser.add_argument("--model-limit", type=int, default=12)
     parser.add_argument("--model", default="qwen2.5:7b")
+    parser.add_argument('--provider', choices=('ollama', 'openrouter'), default='ollama')
+    parser.add_argument('--policy-root', type=Path,
+                        help='Existing managed ZDR consent and budget root; required for OpenRouter')
+    parser.add_argument('--check-readiness', action='store_true',
+                        help='Check managed remote admission before any local passphrase prompt')
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--max-pages", type=int, default=1,
                         help="Process successive pages with one local unlock (1-10000)")
@@ -195,6 +294,12 @@ def main() -> int:
                         help="Create and validate a new portable vault backup before review")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
+    if args.provider == 'openrouter' and args.model == 'qwen2.5:7b':
+        args.model = None  # configured remote primary, never a local name by default
+    if args.provider == 'openrouter' and args.model_limit and (args.policy_root is None or args.archive_root is None):
+        parser.error('OpenRouter review requires --policy-root and --archive-root')
+    if args.check_readiness and (args.provider != 'openrouter' or args.policy_root is None):
+        parser.error('--check-readiness requires OpenRouter and its existing --policy-root')
     if not 1 <= args.max_pages <= 10000:
         parser.error("--max-pages must be between 1 and 10000")
     if args.backup_after is not None and not args.apply:
@@ -219,6 +324,26 @@ def main() -> int:
             parser.error("Pre- and post-triage backup destinations must differ")
     except (OSError, RuntimeError):
         parser.error("Invalid vault or backup destination")
+    if args.provider == 'openrouter' and (args.model_limit or args.check_readiness):
+        from muninn.history.auto_routing import openrouter_key_status, remote_policy_snapshot
+        from muninn.history.remote_accounting import AdmissionError, status
+        try:
+            policy = remote_policy_snapshot(args.policy_root)
+            accounting = status(args.policy_root)
+            readiness = 'remote_consent_revoked' if not policy.enabled else (
+                'remote_admission_busy' if accounting['unresolved'] else 'ready')
+            if readiness == 'ready':
+                provider_status = openrouter_key_status(policy_root=args.policy_root)
+                readiness = 'ready' if provider_status['admission_ready'] else provider_status['state']
+            if args.check_readiness or readiness != 'ready':
+                print(json.dumps({'stage': 'zdr_readiness', 'state': readiness,
+                                  'unresolved_admissions': accounting['unresolved'],
+                                  'passphrase_needed': readiness == 'ready' and not args.check_readiness}), flush=True)
+                return 0 if readiness == 'ready' else 2
+        except AdmissionError as exc:
+            print(json.dumps({'stage': 'zdr_readiness', 'state': exc.code,
+                              'passphrase_needed': False}), flush=True)
+            return 2
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print(json.dumps({"state": "interactive_terminal_required"}))
         return 2
@@ -242,6 +367,7 @@ def main() -> int:
                          apply=args.apply, base_url=args.ollama_url,
                          archive_root=args.archive_root,
                          review_source=review_source,
+                         provider=args.provider, policy_root=args.policy_root,
                          after=cursor,
                          on_progress=lambda report: print(json.dumps(report, sort_keys=True), flush=True),
                          keep_alive="30s" if args.max_pages > 1 else 0)
@@ -279,6 +405,9 @@ def main() -> int:
             status = exc.response.status_code
             if type(status) is int and 100 <= status <= 599:
                 failure["http_status_code"] = status
+        from muninn.history.remote_accounting import AdmissionError
+        if isinstance(exc, AdmissionError):
+            failure['reason'] = exc.code
         if isinstance(exc, sqlite3.Error) and getattr(exc, "sqlite_errorname", "") in {
                 "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_READONLY", "SQLITE_FULL",
                 "SQLITE_IOERR", "SQLITE_CANTOPEN", "SQLITE_CORRUPT"}:

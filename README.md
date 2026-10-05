@@ -981,7 +981,8 @@ python -m muninn.cli credentials search API_KEY --root '<your-private-data-dir>\
 python -m muninn.cli credentials review-status --root '<your-private-data-dir>\credential_vault'
 python -m muninn.cli credentials review-list --root '<your-private-data-dir>\credential_vault' --review-state deferred
 python -m muninn.cli credentials backup --root '<your-private-data-dir>\credential_vault' --destination '<new-private-backup-dir>'
-python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --archive-root '<your-private-data-dir>\history_secure_archive' --limit 60 --model '<your-installed-Ollama-chat-model>' --max-pages 200 --backup-before '<new-private-pre-triage-backup-dir>' --backup-after '<new-private-reviewed-backup-dir>' --apply
+python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --archive-root '<your-private-data-dir>\history_secure_archive' --policy-root '<your-private-data-dir>' --provider openrouter --check-readiness
+python -m scripts.triage_credential_ambiguity --root '<your-private-data-dir>\credential_vault' --archive-root '<your-private-data-dir>\history_secure_archive' --policy-root '<your-private-data-dir>' --provider openrouter --limit 60 --max-pages 200 --backup-before '<new-private-pre-triage-backup-dir>' --backup-after '<new-private-reviewed-backup-dir>' --apply
 ```
 
 Credential backup authenticates records with streaming cursors and compares the
@@ -1008,7 +1009,7 @@ this is not a backup failure. If an error interrupts triage, its terminal JSON
 reports which backup stage completed without printing candidate text; the
 post-triage backup is only validated after a successful processing pass.
 
-Local model review now joins every original ambiguous assignment occurrence to
+Credential model review joins every original ambiguous assignment occurrence to
 its authenticated snapshot and source unit. Project evidence and provider event
 time are carried separately from archive capture time and file mtime. An absent
 timestamp remains unknown; a later Codex cwd never rewrites earlier turns.
@@ -1016,8 +1017,26 @@ The classifier cannot reject a whole cross-source value group based on one
 representative. Every matching occurrence must support rejection; uncertainty
 stays pending and later rows remain reachable through keyset pagination.
 Encrypted per-context decisions are reusable only for the same immutable source
-and model-weight identity. Unsupported source shapes remain pending, and integrity
+and model/request identity (local model weights for Ollama). Unsupported source shapes remain pending, and integrity
 failures abort. No candidate or model reply is printed by the triage runner.
+
+The OpenRouter route uses the configured primary model, synchronous strict ZDR
+and the existing managed spending caps. It never probes Ollama. Values from the
+target and neighboring assignments are withheld locally; variable-name metadata,
+coarse value shape and safely screened source/time context remain available to
+the interpreter. Unscreenable contexts stay pending for local review and do not
+block later safe candidates. Possible values cannot be automatically promoted.
+Encrypted occurrence-bound dispatch receipts retain decisions before billing
+settlement, so restarts and portable restores reuse received results rather than
+repeat paid calls (the matching managed accounting store is also required).
+Unknown transport or billing outcomes stop further dispatch.
+The shared paid-admission fence defers this route while a historical batch is
+outstanding; readiness checks happen before a passphrase prompt or backup.
+PowerShell triage wrappers now default to OpenRouter; `-PolicyRoot` overrides the
+default parent of `-VaultRoot`, and an omitted `-Model` uses the configured remote
+primary. Explicit `--provider ollama` / `-Provider ollama` retains local-only
+review for users who choose it. This route is not yet an automatic background
+vault-unlock service or proof that the historical ambiguity queue is cleared.
 
 The private `source-evidence` and `credential-context` sidecars are encrypted,
 rebuildable, and included in portable archive backup/restore verification. Their

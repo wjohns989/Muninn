@@ -5,7 +5,9 @@ param(
     [Parameter(Mandatory = $true)][string]$PreBackupDestination,
     [Parameter(Mandatory = $true)][string]$BackupDestination,
     [string]$Python = 'python',
-    [string]$Model = 'qwen2.5:7b',
+    [ValidateSet('openrouter', 'ollama')][string]$Provider = 'openrouter',
+    [string]$PolicyRoot = '',
+    [string]$Model = '',
     [ValidateRange(1, 10000)][int]$MaxPages = 200,
     [ValidateRange(1, 100)][int]$PageSize = 60,
     [ValidateRange(0, 100)][int]$ModelLimit = 12
@@ -45,10 +47,13 @@ if ($ModelLimit -gt $PageSize) {
 }
 
 Set-Location -LiteralPath $repository
+if (-not $PolicyRoot) { $PolicyRoot = Split-Path -Parent $VaultRoot }
+$modelArguments = @()
+if ($Model) { $modelArguments = @('--model', $Model) }
 Start-Transcript -LiteralPath $LogPath -ErrorAction Stop | Out-Null
 try {
     & $Python -m scripts.triage_credential_ambiguity --root $VaultRoot --archive-root $ArchiveRoot `
-        --model $Model --limit $PageSize --model-limit $ModelLimit `
+        --provider $Provider --policy-root $PolicyRoot @modelArguments --limit $PageSize --model-limit $ModelLimit `
         --max-pages $MaxPages --backup-before $PreBackupDestination `
         --backup-after $BackupDestination --apply
     $triageExit = $LASTEXITCODE

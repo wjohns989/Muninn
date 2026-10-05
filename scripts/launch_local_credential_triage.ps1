@@ -12,7 +12,9 @@ param(
     [Parameter(Mandatory = $true)][string]$PreBackupDestination,
     [Parameter(Mandatory = $true)][string]$BackupDestination,
     [string]$Python = 'python',
-    [string]$Model = 'qwen2.5:7b',
+    [ValidateSet('openrouter', 'ollama')][string]$Provider = 'openrouter',
+    [string]$PolicyRoot = '',
+    [string]$Model = '',
     [ValidateRange(1, 10000)][int]$MaxPages = 1,
     [ValidateRange(1, 100)][int]$PageSize = 6,
     [ValidateRange(0, 100)][int]$ModelLimit = 2
@@ -30,6 +32,7 @@ foreach ($destination in @($LogPath, $PreBackupDestination, $BackupDestination))
     }
 }
 if ($ModelLimit -gt $PageSize) { throw 'ModelLimit must not exceed PageSize' }
+if (-not $PolicyRoot) { $PolicyRoot = Split-Path -Parent $VaultRoot }
 function Quote-Argument([string]$value) {
     if ($value.Contains('"') -or $value.Contains("`n") -or $value.Contains("`r")) {
         throw 'Unsupported argument character'
@@ -40,8 +43,9 @@ $arguments = @('-NoProfile', '-NoExit', '-File', (Quote-Argument $worker),
     '-VaultRoot', (Quote-Argument $VaultRoot), '-ArchiveRoot', (Quote-Argument $ArchiveRoot),
     '-LogPath', (Quote-Argument $LogPath), '-PreBackupDestination', (Quote-Argument $PreBackupDestination),
     '-BackupDestination', (Quote-Argument $BackupDestination), '-Python', (Quote-Argument $Python),
-    '-Model', (Quote-Argument $Model), '-MaxPages', [string]$MaxPages,
+    '-Provider', $Provider, '-PolicyRoot', (Quote-Argument $PolicyRoot), '-MaxPages', [string]$MaxPages,
     '-PageSize', [string]$PageSize, '-ModelLimit', [string]$ModelLimit)
+if ($Model) { $arguments += @('-Model', (Quote-Argument $Model)) }
 # This is an interactive unlock, not a background helper. The console remains
 # open after completion so the user can see the safe final status.
 $process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments `
