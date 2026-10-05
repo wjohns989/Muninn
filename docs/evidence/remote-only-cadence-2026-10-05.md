@@ -20,3 +20,40 @@ immutable provenance/truth, append-only state-bound transitions, credential-risk
 exclusion, rejected-result filtering, and verified encrypted ledger preimages.
 Retained focused proof: 69 ledger tests, one additional rollback regression, and
 seven CLI tests passed; independent integration review cleared the actual diff.
+
+## Follow-up: network cadence and batch recovery
+
+Current read-only sample: seven settled provider admissions in ten minutes,
+mean request duration 5.27 seconds, mean charge $0.000646. This is a small live
+sample, not a full-backlog price forecast or model-quality benchmark.
+
+The remote-only fenced dispatch now uses a five-second start interval; actual
+provider/billing failures reset the original thirty-second backoff. Unsent
+budget/policy outcomes and local inference retain their original interval.
+One serial consumer and shared spending admission remain in force. No change
+to the historical deadline, $5/day/$50/month policy, or local GPU admission.
+
+The same inference consumer now supports retained batch submission/recovery and
+publication. Its production callback DEFAULTS TO DENY NEW SUBMISSIONS: separate
+retention-consent binding and chronological selection remain pending. Already
+sent owners can poll their exact encrypted provider ID, retain the full terminal,
+settle a non-BYOK bill, publish validated siblings, and advance only when all
+members pass. Unknown POST responses are not retried; no DELETE is implemented.
+Polling, saving, settlement and local publication may recover after revocation.
+Transport uses a fixed HTTPS origin, no redirects/proxies/retries, a sixty-second
+overall request timeout, and a four-MiB decoded-response bound before strict JSON
+parsing. This transport bound is not a source/transcript-size cutoff.
+
+Focused five-suite run passed 96 tests in 34.36 seconds before the final added
+service failure-backoff assertion; its affected automatic-service rerun passed
+22 tests in 12.92 seconds. Initial batch-worker proof passed 14 tests in 10.07
+seconds, including service shutdown draining. The affected worker/service run
+including four transport checks passed 40 tests in 23.69 seconds. Independent
+review cleared cadence and publication/shutdown fencing, but found recovery
+startup depended on ordinary automation flags. Startup now also admits recovery
+of an existing durable owner without enabling new work. The final affected
+worker/automatic-service rerun including its startup regression passed 41 tests
+in 22.82 seconds; Ruff and whitespace checks passed. Independent review of this
+startup correction is required before installation.
+These isolated tests do not establish live batch activation or portable recovery
+of the separate remote-accounting store.

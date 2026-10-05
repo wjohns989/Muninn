@@ -24,8 +24,8 @@ import httpx
 
 from muninn.history.blind_index import SearchCancelled, SecureHistoryBlindIndex
 from muninn.history.blind_index import _terms as _search_terms
-from muninn.history.capture_journal import CaptureJournal, analysis_deferral_code
 from muninn.history.capture_cadence import CaptureBacklogDrain, SmallCaptureCadence
+from muninn.history.capture_journal import CaptureJournal, analysis_deferral_code
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.importer import import_history, read_thread
 from muninn.history.locations import app_data_dirs, export_candidates, history_homes, history_sources
@@ -106,6 +106,7 @@ class HistoryService:
         self._secure_analysis_task: Optional[asyncio.Task] = None
         self._secure_analysis_wakeup = asyncio.Event()
         self._secure_analysis_active: tuple[str, threading.Event] | None = None
+        self._historical_batch_worker = None
         self._secure_capture_plan_task: Optional[asyncio.Task] = None
         self._secure_capture_plan_wakeup = asyncio.Event()
         self._capture_cadence = SmallCaptureCadence()
@@ -733,6 +734,9 @@ class HistoryService:
                                     "automatic_analysis_enabled": self._capture_auto_enabled(),
                                     "automatic_remote_enabled": self._capture_remote_enabled(),
                                     "automatic_remote_only": self._capture_remote_enabled(),
+                                    "historical_batch": (self._historical_batch_worker.status
+                                                         if self._historical_batch_worker is not None
+                                                         else {"state": "inactive"}),
                                     "cadence": self._capture_cadence.snapshot(),
                                     "backlog_drain": {**self._capture_drain.snapshot(),
                                                       "active": self._capture_drain_active()},
@@ -766,7 +770,10 @@ class HistoryService:
                 self._secure_search_task = asyncio.create_task(self._secure_search_loop())
             if self._capture_auto_enabled() and self._secure_capture_plan_task is None:
                 self._secure_capture_plan_task = asyncio.create_task(self._secure_capture_plan_loop())
-            if (_flag("MUNINN_SECURE_AUTO_ANALYSIS") or self._capture_auto_enabled()) and self._secure_analysis_task is None:
+            batch_owner = await asyncio.to_thread(self._require_capture_journal().historical_batch_owner)
+            recover_batch = batch_owner is not None and batch_owner["phase"] != "passed"
+            if ((_flag("MUNINN_SECURE_AUTO_ANALYSIS") or self._capture_auto_enabled() or recover_batch)
+                    and self._secure_analysis_task is None):
                 self._secure_analysis_task = asyncio.create_task(self._secure_analysis_loop())
             if _flag("MUNINN_HISTORY_INDEX_AUTO") and self._secure_index_task is None:
                 self._secure_index_task = asyncio.create_task(self._secure_index_loop())
@@ -926,8 +933,8 @@ class HistoryService:
             from muninn.history.auto_routing import remote_policy_snapshot
             remote_generation = remote_policy_snapshot(self.data_dir).generation
         cancelled = threading.Event()
-        from muninn.history.structured_projector import ProjectionCancelled, UnsupportedTranscript
         from muninn.history.secure_projection_store import ProjectionIntegrityError
+        from muninn.history.structured_projector import ProjectionCancelled, UnsupportedTranscript
         in_flight = asyncio.create_task(asyncio.to_thread(
             journal.queue_capture_windows, receipt, limit=4,
             remote_policy_generation=remote_generation,
@@ -1036,7 +1043,8 @@ class HistoryService:
                         # A private-source screening refusal is not a model
                         # attempt. Start the remote cooldown only at the fenced
                         # dispatch boundary, before any HTTP request can begin.
-                        self._capture_cadence.note_attempt(local_opportunity=False)
+                        self._capture_cadence.note_attempt(local_opportunity=False,
+                                                           cooldown_seconds=5)
                 return marked
 
             async def remote_not_sent() -> bool:
@@ -1133,6 +1141,10 @@ class HistoryService:
                 self._capture_cadence.note_local_opportunity()
             outcome = await analyze_cited_window(self, source, descriptor,
                                                  **analysis_kwargs, **reuse_kwargs)
+            if (job.lane == 1 and capture_remote_only and not remote_was_not_sent
+                    and outcome.get("status") not in {"ok", "reused"}):
+                # Provider/billing failures retain the original full backoff.
+                self._capture_cadence.note_attempt(local_opportunity=False)
             if job.lane == 1 and capture_remote_only and remote_was_not_sent:
                 if (outcome.get("status") == "deferred"
                         and outcome.get("reason") == "source_not_remote_safe"):
@@ -1207,10 +1219,43 @@ class HistoryService:
             self._secure_analysis_active = None
         return True
 
+    async def _process_secure_batch_once(self) -> bool:
+        """Recover a durable batch in the SAME serial inference consumer.
+
+        This does not select/create a batch or enable temporary retention. New
+        submissions remain denied until the separate consent/scheduling path
+        is installed. Already paid results remain recoverable after revocation.
+        """
+        journal = self._require_capture_journal()
+        owner = await asyncio.to_thread(journal.historical_batch_owner)
+        if owner is None or owner["phase"] == "passed":
+            return False
+        if self._historical_batch_worker is None:
+            from muninn.history.historical_batch_worker import HistoricalBatchWorker
+            self._historical_batch_worker = HistoricalBatchWorker(journal)
+        task = asyncio.create_task(self._historical_batch_worker.step())
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # HTTP/durable writes must finish before service shutdown reports
+            # completion. The transport has an overall 60-second time bound.
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        except Exception as exc:
+            self._historical_batch_worker.status = {"state": "recovery_deferred",
+                                                   "error_category": type(exc).__name__}
+            raise
+        return True
+
     async def _secure_analysis_loop(self) -> None:
         """One inference consumer; capture admission is quiet/resource-gated."""
         while True:
             try:
+                if await self._process_secure_batch_once():
+                    # While a batch owns the checkpoint, do not start another
+                    # inference route. Separate CPU capture/search loops run on.
+                    await asyncio.sleep(5)
+                    continue
                 include_search = _flag("MUNINN_SECURE_AUTO_ANALYSIS")
                 drain = await asyncio.to_thread(self._capture_drain_active)
                 quiet_ready = self._capture_cadence.analysis_ready()

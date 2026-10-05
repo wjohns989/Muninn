@@ -3,6 +3,22 @@ import pytest
 from muninn.history.capture_cadence import SmallCaptureCadence
 
 
+def test_remote_short_interval_does_not_reduce_failure_or_local_cooldown():
+    now = [0.0]
+    cadence = SmallCaptureCadence(clock=lambda: now[0])
+    cadence.note_attempt(local_opportunity=False, cooldown_seconds=5)
+    now[0] = 4.9
+    assert not cadence.attempt_ready()
+    now[0] = 5.0
+    assert cadence.attempt_ready()
+    cadence.note_attempt(local_opportunity=False)
+    now[0] = 10.0
+    assert not cadence.attempt_ready()
+    assert cadence.snapshot()["attempt_cooldown_remaining_seconds"] == 25
+    now[0] = 35.0
+    assert cadence.attempt_ready()
+
+
 class FakeClock:
     def __init__(self, now=100.0):
         self.now = now

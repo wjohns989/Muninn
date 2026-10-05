@@ -13,7 +13,6 @@ import time
 from numbers import Real
 from typing import Callable
 
-
 _MAX_SECONDS = 86400.0
 
 
@@ -46,6 +45,7 @@ class SmallCaptureCadence:
         self._last_activity = now
         self._last_attempt_or_start = now
         self._last_attempt: float | None = None
+        self._attempt_interval = self.interval_seconds
 
     def _now(self) -> float:
         try:
@@ -78,16 +78,20 @@ class SmallCaptureCadence:
             ready = (max(0.0, now - self._last_activity) >= self.quiet_seconds
                      or max(0.0, now - self._last_attempt_or_start) >= self.max_wait_seconds)
             cooldown = (self._last_attempt is None
-                        or max(0.0, now - self._last_attempt) >= self.interval_seconds)
+                        or max(0.0, now - self._last_attempt) >= self._attempt_interval)
             return ready and cooldown
 
-    def note_attempt(self, *, local_opportunity: bool = True) -> None:
+    def note_attempt(self, *, local_opportunity: bool = True,
+                     cooldown_seconds: float | None = None) -> None:
         """Rate-limit all attempts; only local opportunities reset local max-wait."""
         if type(local_opportunity) is not bool:
             raise ValueError("local_opportunity must be boolean")
+        interval = (self.interval_seconds if cooldown_seconds is None
+                    else _duration(cooldown_seconds, "cooldown_seconds"))
         with self._lock:
             now = self._now()
             self._last_attempt = now
+            self._attempt_interval = interval
             if local_opportunity:
                 self._last_attempt_or_start = now
 
@@ -100,7 +104,7 @@ class SmallCaptureCadence:
         """Keep the attempt interval when an explicit catch-up bypasses quiet time."""
         with self._lock:
             return (self._last_attempt is None
-                    or max(0.0, self._now() - self._last_attempt) >= self.interval_seconds)
+                    or max(0.0, self._now() - self._last_attempt) >= self._attempt_interval)
 
     def snapshot(self) -> dict[str, bool | float]:
         """Return timing-only status; never exposes source or capture identity."""
@@ -114,7 +118,7 @@ class SmallCaptureCadence:
                 cooldown_remaining = 0.0
             else:
                 attempt_elapsed = max(0.0, now - self._last_attempt)
-                cooldown_remaining = max(0.0, self.interval_seconds - attempt_elapsed)
+                cooldown_remaining = max(0.0, self._attempt_interval - attempt_elapsed)
             planning_ready = quiet_remaining == 0.0 or max_wait_remaining == 0.0
             analysis_ready = planning_ready and cooldown_remaining == 0.0
             return {

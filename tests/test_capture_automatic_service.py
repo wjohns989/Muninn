@@ -3,7 +3,6 @@ import asyncio
 
 import pytest
 
-from muninn.history.service import HistoryService
 from tests.test_capture_enrichment_service import setup_service
 from tests.test_capture_window_jobs import window_fixture
 from tests.test_secure_analysis_journal import _result, _target
@@ -14,7 +13,7 @@ def test_planning_gate_yields_to_foreground_search(tmp_path):
     assert journal.capture_planning_ready()
     search_id = journal.enqueue_search("observation")
     assert not journal.capture_planning_ready()
-    search = journal.claim_search()
+    journal.claim_search()
     assert not journal.capture_planning_ready()
     assert journal.cancel_search(search_id)
     assert journal.capture_planning_ready()
@@ -60,6 +59,7 @@ def enabled_service(monkeypatch, tmp_path):
 @pytest.mark.parametrize("outcome_kind", ["private", "denied", "dispatched"])
 async def test_remote_only_cooldown_tracks_dispatch_not_private_screening(monkeypatch, tmp_path, outcome_kind):
     from types import SimpleNamespace
+
     from muninn.history import secure_analysis
 
     service, _archive, source, now = enabled_service(monkeypatch, tmp_path)
@@ -84,6 +84,7 @@ async def test_remote_only_cooldown_tracks_dispatch_not_private_screening(monkey
             return {"status": "deferred", "reason": "source_not_remote_safe"}
         if outcome_kind == "dispatched":
             assert await kwargs["before_remote"]()
+            assert service._capture_cadence.snapshot()["attempt_cooldown_remaining_seconds"] == 5
             # A sent request remains throttled even when its outcome is uncertain.
             assert not service._capture_cadence.attempt_ready()
             return {"status": "deferred", "reason": "remote_cost_unresolved"}
@@ -93,6 +94,8 @@ async def test_remote_only_cooldown_tracks_dispatch_not_private_screening(monkey
     assert await service._process_secure_analysis_once(
         include_capture=True, include_search=False, capture_remote_only=True)
     assert service._capture_cadence.attempt_ready() is (outcome_kind == "private")
+    assert service._capture_cadence.snapshot()["attempt_cooldown_remaining_seconds"] == (
+        0 if outcome_kind == "private" else 30)
     with journal._connect() as db:
         row = db.execute("SELECT state,remote_dispatched FROM history_analysis_jobs WHERE lane=1").fetchone()
     assert row["remote_dispatched"] == (outcome_kind == "dispatched")
@@ -257,7 +260,8 @@ async def test_timer_loops_publish_new_capture_without_manual_batch(monkeypatch,
     from muninn.history import secure_analysis
     from muninn.history.capture_cadence import SmallCaptureCadence
     service, _archive, source_path, now = enabled_service(monkeypatch, tmp_path)
-    source_path.write_text('{"type":"event_msg","payload":{"type":"user_message","message":"Remember this isolated project decision."}}\n')
+    source_path.write_text('{"type":"event_msg","payload":{"type":"user_message",'
+                           '"message":"Remember this isolated project decision."}}\n')
     await service.capture(str(source_path), "codex")
     journal = service._require_capture_journal()
     receipt = journal.pending_enrichment()[0]
