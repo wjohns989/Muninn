@@ -62,3 +62,31 @@ escrow must be designed explicitly rather than weakening that safety boundary.
 
 Primary contract: [OpenRouter batch documentation](https://openrouter.ai/docs/batch-quickstart).
 Endpoint inventory: [Luna Pro batch endpoints](https://openrouter.ai/api/v1/models/openai/gpt-6-luna-pro:batch/endpoints).
+
+## Account eligibility observation (October 5)
+
+Read-only API checks with the existing dedicated key returned 466 public models,
+including 73 `:batch` variants, but only 283 models and no batch variants from
+the authenticated `/models/user` catalog. Luna Pro appeared in both catalogs;
+Luna Pro batch appeared only in the public one. The authenticated ZDR endpoint
+inventory listed Luna Pro on Azure and no batch endpoints. A direct authenticated
+GET for the Luna Pro batch model returned 404; that alone is not a submission
+eligibility test. No batch was submitted, no private payload was sent, and no
+account or managed consent setting was changed.
+
+OpenRouter documents `/models/user` as filtered by provider preferences, privacy
+settings and guardrails. This is evidence of a catalog-level eligibility concern,
+not proof of which account setting caused it. `variant` and `include_variants`
+are not documented query parameters for that endpoint; their identical responses
+do not provide an independent eligibility test. Confirm batch eligibility and
+the pinned provider's non-training terms through a separate scoped retention
+policy before implementing or enabling private-data dispatch. Do not disable
+normal ZDR protection globally to make this historical exception work.
+
+At this observation the key's daily usage was $0.486495557, monthly usage was
+$0.537961537, and its enforced limit was $5/day. These totals include other
+dedicated-key probes and are not a reconciled historical-run-only cost or a
+forecast for the full backlog. A 50% token-price discount does not prove faster
+completion or the cost per accepted, cited result.
+
+Catalog contract: [user-filtered models](https://openrouter.ai/docs/api/api-reference/models/list-models-filtered-by-user-provider-preferences-privacy-settings-and-guardrails).
