@@ -24,12 +24,13 @@ already specify recover=False (enroll_history_backlog.py and
 recover_capture_windows.py); no speculative source change is needed.
 
 There was no immediately-before census of raw claims, so this check cannot prove
-that no claim was transiently reset. Afterward the authenticated journal reported
+that no claim was transiently reset. Afterward a query-only journal census reported
 3470 archived raw captures, 2 unavailable, no pending or active raw capture, and
 no active analysis leases. The existing 4 outcome_unknown jobs and 842 failed jobs
 were unchanged. No recent raw-capture updated_at records were observed within
 the inspected 180-second interval. Analysis startup recovery only touches expired
-leases; it does not revoke a live analysis lease.
+leases; it does not revoke a live analysis lease. These counts are operational
+index hints, not independently validated publication or archived-byte coverage.
 
 The owned service remained healthy and the existing 28-window/20-request batch
 remained awaiting_provider with the original active drain deadline. No deletion,
