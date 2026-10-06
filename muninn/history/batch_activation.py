@@ -10,11 +10,12 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import time
+import uuid
 from contextlib import closing
 
 from muninn.history.auto_routing import remote_policy_snapshot
 from muninn.history.historical_batch import MAX_ITEMS, BatchError, BatchOutbox, _json, prepare_items
-from muninn.history.private_acl import verify_private
+from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
 from muninn.history.remote_policy import PolicyError, _paths
 
 
@@ -28,30 +29,67 @@ def _database(root):
 def read_batch_policy(root):
     remote = remote_policy_snapshot(root)
     if remote.source != "managed":
-        return {"enabled": False, "generation": 0, "remaining_batches": 0}
+        return {"enabled": False, "generation": 0, "remaining_batches": 0, "max_batches": 0}
     database = _database(root)
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=2)) as db:
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='batch_policy'").fetchone():
-            return {"enabled": False, "generation": 0, "remaining_batches": 0}
+            return {"enabled": False, "generation": 0, "remaining_batches": 0, "max_batches": 0}
         row = db.execute("SELECT enabled,generation,max_batches FROM batch_policy WHERE id=1").fetchone()
         if (row is None or row[0] not in (0, 1) or type(row[1]) is not int or row[1] < 1
                 or type(row[2]) is not int or not 1 <= row[2] <= 10000):
             raise PolicyError("Batch policy is invalid")
         used = db.execute("SELECT COUNT(*) FROM batch_consent WHERE retention_generation=?", (row[1],)).fetchone()[0]
     return {"enabled": bool(row[0]), "generation": row[1],
-            "remaining_batches": max(0, row[2] - used)}
+            "remaining_batches": max(0, row[2] - used), "max_batches": row[2]}
 
 
-def configure_batch(root, *, enabled, max_batches=1):
+class BatchPolicyConflict(PolicyError):
+    """Observed generation no longer authorizes this local policy edit."""
+
+
+def _backup_batch_policy(root, database):
+    """Private preimage while the caller holds the policy writer fence."""
+    destination = database.parent.parent / ("batch-policy-preimage-" + uuid.uuid4().hex)
+    create_private_directory(destination)
+    target = destination / "policy.sqlite3"
+    create_private_file(target)
+    deadline = time.monotonic() + 20
+    def progress(*_):
+        if time.monotonic() > deadline:
+            raise TimeoutError("Batch policy preimage deadline")
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=2)) as source:
+        source.execute("BEGIN")
+        with closing(sqlite3.connect(target)) as copy:
+            source.backup(copy, pages=256, progress=progress, sleep=.01)
+            if copy.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise PolicyError("Batch policy preimage invalid")
+    verify_private(target)
+
+
+def configure_batch(root, *, enabled, max_batches=1, expected_generation=None, backup_before=False):
     """Explicit local operator action. Existing spending/ZDR policy is untouched."""
-    if type(enabled) is not bool or type(max_batches) is not int or not 1 <= max_batches <= 10000:
+    if (type(enabled) is not bool or type(max_batches) is not int or not 1 <= max_batches <= 10000
+            or type(backup_before) is not bool or expected_generation is not None and
+            (type(expected_generation) is not int or not 0 <= expected_generation < 2**63)):
         raise ValueError("Invalid batch configuration")
     remote = remote_policy_snapshot(root)
     if remote.source != "managed" or enabled and not remote.enabled:
         raise PolicyError("Managed remote consent is required")
-    with closing(sqlite3.connect(_database(root), timeout=5)) as db:
+    database = _database(root)
+    with closing(sqlite3.connect(database, timeout=5)) as db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
+        # Recheck consent and CAS under the same lock as the policy update.
+        current_remote = db.execute("SELECT enabled,generation FROM policy WHERE id=1").fetchone()
+        if enabled and current_remote != (1, remote.generation):
+            raise BatchPolicyConflict("Remote consent changed; refresh before saving")
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='batch_policy'").fetchone()
+        row = db.execute("SELECT generation FROM batch_policy WHERE id=1").fetchone() if exists else None
+        previous = row[0] if row else 0
+        if expected_generation is not None and previous != expected_generation:
+            raise BatchPolicyConflict("Batch policy changed; refresh before saving")
+        if backup_before:
+            _backup_batch_policy(root, database)  # Before any DDL or mutation.
         db.execute("CREATE TABLE IF NOT EXISTS batch_policy (id INTEGER PRIMARY KEY CHECK(id=1),"
                    "enabled INTEGER NOT NULL,generation INTEGER NOT NULL,max_batches INTEGER NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS batch_policy_audit (generation INTEGER PRIMARY KEY,"
@@ -59,8 +97,7 @@ def configure_batch(root, *, enabled, max_batches=1):
         db.execute("CREATE TABLE IF NOT EXISTS batch_consent (batch_id TEXT PRIMARY KEY,"
                    "retention_generation INTEGER NOT NULL,remote_generation INTEGER NOT NULL,"
                    "input_sha256 TEXT NOT NULL)")
-        row = db.execute("SELECT generation FROM batch_policy WHERE id=1").fetchone()
-        generation = (row[0] if row else 0) + 1
+        generation = previous + 1
         db.execute("INSERT INTO batch_policy VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET "
                    "enabled=excluded.enabled,generation=excluded.generation,max_batches=excluded.max_batches",
                    (int(enabled), generation, max_batches))

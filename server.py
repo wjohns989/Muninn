@@ -2019,6 +2019,13 @@ class RemotePolicyUpdateRequest(BaseModel):
     override_ceiling: bool = False
 
 
+class BatchPolicyUpdateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    enabled: bool = Field(strict=True)
+    max_batches: int = Field(strict=True, ge=1, le=10000)
+    expected_generation: int = Field(strict=True, ge=0, lt=2**63)
+
+
 def _remote_policy_root() -> Path:
     return _require_history().data_dir
 
@@ -2033,6 +2040,35 @@ def _remote_policy_data(policy) -> dict:
         "source": policy.source,
         "budget_kind": "admission_threshold_not_hard_cap",
     }
+
+
+@app.get("/history/secure/batch-policy", dependencies=[Depends(verify_main_local_token)])
+async def secure_batch_policy_endpoint():
+    from muninn.history.batch_activation import read_batch_policy
+    try:
+        result = await asyncio.to_thread(read_batch_policy, _remote_policy_root())
+    except Exception:
+        raise HTTPException(status_code=503, detail="Batch policy unavailable", headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
+
+
+@app.post("/history/secure/batch-policy", dependencies=[Depends(verify_main_local_token)])
+async def update_secure_batch_policy_endpoint(req: BatchPolicyUpdateRequest, request: Request):
+    from muninn.history.batch_activation import BatchPolicyConflict, configure_batch
+    origin = request.headers.get("origin")
+    own_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if origin is not None and (origin != own_origin or request.url.hostname not in
+                               {"localhost", "127.0.0.1", "::1"}):
+        raise HTTPException(status_code=403, detail="Same-origin dashboard required", headers=NO_STORE)
+    try:
+        result = await asyncio.to_thread(configure_batch, _remote_policy_root(), enabled=req.enabled,
+            max_batches=req.max_batches, expected_generation=req.expected_generation, backup_before=True)
+    except BatchPolicyConflict:
+        raise HTTPException(status_code=409, detail="Batch policy changed; refresh before saving", headers=NO_STORE) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="Batch policy save unconfirmed; refresh current state",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
 
 
 @app.get("/history/secure/remote-policy", dependencies=[Depends(verify_main_local_token)])

@@ -430,6 +430,23 @@
                     <p id="remote-policy-status" role="status" aria-live="polite">Enter the main local token to inspect policy.</p>
                     <p id="remote-key-status" role="status" aria-live="polite">Provider key limit not checked.</p>
                 </div>
+                <div class="card" id="batch-policy-card">
+                    <h3>Temporary nontraining batch permission</h3>
+                    <p class="card-description">This is separate from ZDR permission and dollar budgets. Screened noncredential
+                        excerpts may be retained temporarily by the provider; this route is not ZDR.
+                        Each enabled save starts a fresh permission generation and checkpoint quota, and may allow
+                        automatic processing to incur charges within the existing spending limits.</p>
+                    <label><input type="checkbox" id="batch-policy-enabled"> Allow screened historical batches</label>
+                    <label for="batch-policy-max">Checkpoint quota for the new permission generation (1–10,000)</label>
+                    <input id="batch-policy-max" class="input-base" type="number" min="1" max="10000" step="1" placeholder="Refresh first">
+                    <div class="operator-actions">
+                        <button type="button" id="batch-policy-refresh" class="btn-secondary">Refresh batch permission</button>
+                        <button type="button" id="batch-policy-save" class="btn-primary" disabled>Save batch permission</button>
+                    </div>
+                    <p id="batch-policy-status" role="status" aria-live="polite">Not loaded. Refresh before changing permission.</p>
+                    <p class="status-note">Uncheck and save to revoke new batch dispatches. Already-admitted batches may finish;
+                        their recovery, encrypted inputs and results are preserved. No batch is cancelled, deleted or resent here.</p>
+                </div>
                 <div class="card">
                     <h3>Cited memories &amp; evidence</h3>
                     <p class="card-description">Search interpreted memories, inspect their recorded status, then follow
@@ -559,6 +576,9 @@
         let remotePolicyLoadedEnabled = false;
         let remotePolicyLoadSequence = 0;
         let remotePolicySavePending = false;
+        let batchPolicySequence = 0;
+        let batchPolicyGeneration = null;
+        let batchPolicyBusy = false;
         let resourceStatusSequence = 0;
         let credentialSearchSequence = 0;
         let healthPoll = null;
@@ -709,6 +729,7 @@
         function lockSession() {
             AUTH_TOKEN = '';
             sessionEpoch++;
+            if (typeof clearBatchPolicyView === 'function') clearBatchPolicyView();
             clearCitedMemoryView();
             authAttemptSequence++;
             historySearchSequence++;
@@ -807,6 +828,7 @@
             }
             lockSession();
             AUTH_TOKEN = token;
+            document.getElementById('batch-policy-refresh').disabled = false;
             document.querySelectorAll('.sidebar, .main-content').forEach(node => { node.inert = false; });
             document.getElementById('auth-modal').classList.remove('active');
             document.getElementById('auth-dot').className = 'status-dot online';
@@ -937,6 +959,8 @@
                 void loadHistoryTranscriptPage(cursor, historySearchSequence, historyTranscriptSequence);
             });
             document.getElementById('remote-policy-save').addEventListener('click', saveRemotePolicy);
+            document.getElementById('batch-policy-refresh').addEventListener('click', loadBatchPolicy);
+            document.getElementById('batch-policy-save').addEventListener('click', saveBatchPolicy);
             document.getElementById('refresh-local-resources').addEventListener('click', loadLocalResources);
             document.getElementById('credential-metadata-search').addEventListener('click', searchCredentialMetadata);
             document.getElementById('credential-metadata-query').addEventListener('keydown', event => {
@@ -1451,6 +1475,99 @@
                 card.appendChild(location);
                 card.appendChild(reference);
                 results.appendChild(card);
+            }
+        }
+
+        function clearBatchPolicyView() {
+            batchPolicySequence++;
+            batchPolicyGeneration = null;
+            batchPolicyBusy = false;
+            document.getElementById('batch-policy-enabled').checked = false;
+            document.getElementById('batch-policy-max').value = '';
+            document.getElementById('batch-policy-save').disabled = true;
+            document.getElementById('batch-policy-refresh').disabled = !AUTH_TOKEN;
+            document.getElementById('batch-policy-status').textContent = 'Not loaded. Refresh before changing permission.';
+        }
+
+        function batchPolicyView(data) {
+            if (!data || typeof data.enabled !== 'boolean' || !Number.isSafeInteger(data.generation) ||
+                data.generation < 0 || !Number.isSafeInteger(data.max_batches) ||
+                !Number.isSafeInteger(data.remaining_batches) || data.remaining_batches < 0 ||
+                data.remaining_batches > data.max_batches || data.max_batches > 10000 ||
+                (data.generation === 0 ? data.enabled || data.max_batches !== 0 : data.max_batches < 1)) return null;
+            return {enabled: data.enabled, generation: data.generation,
+                max_batches: data.max_batches, remaining_batches: data.remaining_batches};
+        }
+
+        function renderBatchPolicy(data) {
+            batchPolicyGeneration = data.generation;
+            document.getElementById('batch-policy-enabled').checked = data.enabled;
+            document.getElementById('batch-policy-max').value = String(data.max_batches || 1);
+            document.getElementById('batch-policy-status').textContent =
+                `${data.enabled ? 'Enabled' : 'Disabled'} · generation ${data.generation}; ` +
+                `${data.remaining_batches.toLocaleString()} of ${data.max_batches.toLocaleString()} checkpoints remaining. ` +
+                'Quota is not a dollar cap. Already-admitted recovery is preserved.';
+        }
+
+        function setBatchPolicyBusy(value) {
+            batchPolicyBusy = value;
+            document.getElementById('batch-policy-save').disabled = value || batchPolicyGeneration === null;
+            document.getElementById('batch-policy-refresh').disabled = value || !AUTH_TOKEN;
+            document.getElementById('batch-policy-enabled').disabled = value;
+            document.getElementById('batch-policy-max').disabled = value;
+        }
+
+        async function loadBatchPolicy() {
+            if (!AUTH_TOKEN || batchPolicyBusy) return;
+            const sequence = ++batchPolicySequence, epoch = sessionEpoch, token = AUTH_TOKEN;
+            const current = () => sequence === batchPolicySequence && epoch === sessionEpoch && token === AUTH_TOKEN;
+            batchPolicyGeneration = null;
+            setBatchPolicyBusy(true);
+            const status = document.getElementById('batch-policy-status');
+            status.textContent = 'Reading local batch permission...';
+            try {
+                const response = await api('/history/secure/batch-policy', 'GET', null, 30000);
+                if (!current()) return;
+                const data = response.error ? null : batchPolicyView(response.data);
+                if (data) renderBatchPolicy(data);
+                else status.textContent = 'Batch permission unavailable. Refresh before making changes.';
+            } catch (_) {
+                if (current()) status.textContent = 'Batch permission unavailable. Refresh before making changes.';
+            } finally {
+                if (current()) setBatchPolicyBusy(false);
+            }
+        }
+
+        async function saveBatchPolicy() {
+            if (!AUTH_TOKEN || batchPolicyBusy || batchPolicyGeneration === null) return;
+            const enabled = document.getElementById('batch-policy-enabled').checked;
+            const max_batches = Number(document.getElementById('batch-policy-max').value);
+            const status = document.getElementById('batch-policy-status');
+            if (!Number.isSafeInteger(max_batches) || max_batches < 1 || max_batches > 10000) {
+                status.textContent = 'Enter a whole-number checkpoint quota from 1 to 10,000.'; return;
+            }
+            if (enabled && !window.confirm('Allow temporary nontraining provider retention of screened noncredential excerpts? ' +
+                'This is not ZDR. Saving starts a fresh permission generation and quota, and may allow charged ' +
+                'automatic processing within existing spending limits.')) return;
+            const expected_generation = batchPolicyGeneration;
+            const sequence = ++batchPolicySequence, epoch = sessionEpoch, token = AUTH_TOKEN;
+            const current = () => sequence === batchPolicySequence && epoch === sessionEpoch && token === AUTH_TOKEN;
+            batchPolicyGeneration = null;
+            setBatchPolicyBusy(true);
+            status.textContent = 'Saving permission after a verified local policy preimage...';
+            try {
+                const response = await api('/history/secure/batch-policy', 'POST',
+                    {enabled, max_batches, expected_generation}, 30000);
+                if (!current()) return;
+                const data = response.error ? null : batchPolicyView(response.data);
+                if (data && data.generation === expected_generation + 1 && data.enabled === enabled && data.max_batches === max_batches) {
+                    renderBatchPolicy(data);
+                    status.textContent = 'Saved. ' + status.textContent;
+                } else status.textContent = 'Save outcome unknown or policy changed. Explicitly refresh before another change; no automatic retry.';
+            } catch (_) {
+                if (current()) status.textContent = 'Save outcome unknown. Explicitly refresh before another change; no automatic retry.';
+            } finally {
+                if (current()) setBatchPolicyBusy(false);
             }
         }
 
