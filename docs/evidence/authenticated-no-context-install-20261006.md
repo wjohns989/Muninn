@@ -42,6 +42,16 @@ remaining and all six dispatched outcome-unknown jobs still present. Empty repai
 added zero model successes. This is measured automatic local progress, not a
 claim that all 212 or the entire backlog are complete. Counts are dated snapshots.
 
+Completion follow-up on October 6 at approximately 10:35 UTC: the same installed service's automatic repair
+finished all **212** old blank failures. A read-only audit freshly authenticated
+every retained no-context proof, found **zero** remaining legacy empty failures,
+and confirmed all **six** dispatched outcome-unknown jobs remain preserved. Empty
+repair added **zero** model successes. Authenticated live status independently
+reported `no_context=212` and no failed windows, with the same single PID 85372,
+strict archive readiness, anonymous protection and token-free public page. This
+closes the blank-window failure acceptance gap, not substantive interpretation
+or full local-installation readiness.
+
 The pending paid checkpoint `4b84b05c96044cea9a40bf120061f007` remained submitted,
 with provider identity `batch-1791278985-LekmzqQB5r5zaQ9NPMuw`, 33 windows and 18
 provider requests. Pinned read-back matched its pre-install item and wire hashes:

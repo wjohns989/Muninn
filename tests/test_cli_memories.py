@@ -104,6 +104,23 @@ def test_review_list_is_authenticated_read_only_and_keeps_the_compact_cursor(tmp
     assert parsed.cursor == "opaque" and parsed.limit == 1
 
 
+def test_grouped_triage_cli_requires_backup_before_prompt_and_quit_is_read_only(tmp_path, monkeypatch):
+    archive, ledger, _ident = candidate(tmp_path)
+    out = terminal(monkeypatch, "q")
+    parsed = cli.build_parser().parse_args(["memories", "triage", "--archive-root", str(archive.root),
+                                          "--limit", "6"])
+    monkeypatch.setattr("getpass.getpass", lambda _: pytest.fail("must validate before prompt"))
+    with pytest.raises(SystemExit, match="--backup-before"):
+        cli.cmd_memories(parsed)
+    parsed.backup_before = tmp_path / "unused"
+    monkeypatch.setattr("getpass.getpass", lambda _: PHRASE)
+    before = ledger.verify_all()
+    assert cli.cmd_memories(parsed) == 2
+    assert ledger.verify_all() == before and not parsed.backup_before.exists()
+    assert "grouped_review_page" in out.getvalue()
+    assert PHRASE not in out.getvalue() and "transcript_capability" not in out.getvalue()
+
+
 @pytest.mark.parametrize("state,reason", [("filed", "source_supported"), ("rejected", "user_rejected")])
 def test_review_typed_confirmation_backup_then_cas(tmp_path, monkeypatch, state, reason):
     archive, ledger, ident = candidate(tmp_path)

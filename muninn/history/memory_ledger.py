@@ -591,7 +591,7 @@ class MemoryLedger:
         return {"matches": list(reversed(eligible[-limit:])), "total_matches": total,
                 "truncated": total > limit, "ordering": "newest_publication_first"}
 
-    def source(self, ident, *, max_chars=3000):
+    def source(self, ident, *, max_chars=3000, include_transcript_capability=True):
         """Follow an exact citation; unsafe units have metadata, not raw context.
 
         The returned expiring bearer only grants the existing redacted transcript
@@ -602,6 +602,8 @@ class MemoryLedger:
         self._screen_cache.clear()
         if type(max_chars) is not int or not 1 <= max_chars <= 4000:
             raise ValueError("Invalid cited source context bound")
+        if type(include_transcript_capability) is not bool:
+            raise ValueError("Invalid transcript capability option")
         candidate, state = self._read_candidate(ident)
         if candidate is None: return None
         cite = candidate["citation"]
@@ -609,7 +611,8 @@ class MemoryLedger:
         unit, data = self._source(entry, cite["version"], cite["attempt"], cite["page"])
         projected = candidate['screening'] == 'original_ranges'
         projection = self._public_projection(candidate) if projected else None
-        public = self._public_candidate(ident, candidate, state, include_text=not projected)
+        public = self._public_candidate(ident, candidate, state, include_text=not projected,
+                                        persist_screen=not self.read_only)
         if projection is not None:
             public.update(text=sanitize_agent_span(candidate['text'], max_chars=2048),
                           quote=sanitize_agent_span(candidate['quote'], max_chars=2048))
@@ -617,10 +620,10 @@ class MemoryLedger:
                   "context_state": "withheld", "redaction": "strict-best-effort",
                   "citation": {"version": cite["version"], "unit": cite["unit"],
                       "fragment": cite["fragment"], "quote_start": cite["start"],
-                      "quote_length": cite["length"], "parser_version": cite["parser_version"]},
-                  "transcript_capability": SecureHistoryBlindIndex(self.archive)._capability(
-                      entry, cite["version"], "transcript"),
-                  "transcript_tool": "start_secure_history_transcript"}
+                      "quote_length": cite["length"], "parser_version": cite["parser_version"]}}
+        if include_transcript_capability:
+            result.update(transcript_capability=SecureHistoryBlindIndex(self.archive)._capability(
+                entry, cite["version"], "transcript"), transcript_tool="start_secure_history_transcript")
         if "text" in public:
             if candidate['screening'] == 'original_ranges':
                 descriptor = candidate['source_view']['window']
@@ -702,12 +705,42 @@ class MemoryLedger:
         return ident
 
     def review_page(self, *, limit=20, cursor=None):
+        return self._review_page(limit=limit, cursor=cursor)
+
+    def grouped_review_page(self, *, limit=20, cursor=None):
+        """Local consultation groups, partial to one authenticated review page.
+
+        Source identity is not an excerpt citation or a similarity guess. Unknown
+        project attribution never combines candidates. Grouping changes neither
+        their filing state nor epistemic/truth labels.
+        """
+        page = self._review_page(limit=limit, cursor=cursor, local_groups=True)
+        groups = OrderedDict()
+        for item in page.pop("matches"):
+            source_group = item.pop("_source_group")
+            known = item["project_ref"] is not None and item["project_basis"] != "unknown"
+            key = (source_group, item["project_ref"], item["project_basis"], item["type"],
+                   None if known else item["id"])
+            group = groups.setdefault(key, {"source_group": source_group,
+                "project_ref": item["project_ref"], "project_basis": item["project_basis"],
+                "type": item["type"], "scope_known": known, "items": []})
+            group["items"].append(item)
+        for group in groups.values():
+            group["items"].sort(key=lambda item: (
+                item["event_at"] is None, item["event_at"] or 0, item["id"]))
+        return {**page, "groups": list(groups.values()),
+                "grouping_scope": "one_anchored_page",
+                "item_ordering": "event_time_with_unknown_last_within_group"}
+
+    def _review_page(self, *, limit=20, cursor=None, local_groups=False):
         """Browse a stable candidate prefix using current decisions, without writes.
 
         Every call verifies the full current chain, including its tail. Only the
         returned page and a lookahead receive fresh whole-unit privacy checks.
         This is bounded output, not constant-time or deadline-bounded retrieval.
         """
+        if local_groups and not getattr(self.archive, "_unlocked_with_passphrase", False):
+            raise PermissionError("Grouped review requires a portable passphrase unlock")
         if type(limit) is not int or not 1 <= limit <= 20:
             raise ValueError("Invalid review page bound")
         states = ["provisional", "needs_user"]
@@ -755,6 +788,11 @@ class MemoryLedger:
                 if len(matches) == limit:
                     has_more = True
                     break
+                if local_groups:
+                    cite = candidate["citation"]
+                    public["_source_group"] = hmac.new(self._key, b"local-review-source-v1\0" +
+                        _json({key: cite[key] for key in ("blob", "sha", "version", "parser_version")}),
+                        hashlib.sha256).hexdigest()
                 matches.append(public)
                 after = seq
         next_cursor = None

@@ -1109,8 +1109,10 @@ def cmd_memories(args: argparse.Namespace) -> int:
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SystemExit("Memory review requires an interactive local terminal.")
-    if args.action not in {"status", "get", "review", "review-list"} or args.archive_root is None:
+    if args.action not in {"status", "get", "review", "review-list", "triage"} or args.archive_root is None:
         raise SystemExit("A memory action and --archive-root are required.")
+    if args.action == "triage" and args.backup_before is None:
+        raise SystemExit("Grouped triage requires --backup-before; every decision is confirmed locally.")
     if args.action in {"get", "review"} and not args.record_id:
         raise SystemExit("Exact --record-id is required.")
     if args.action == "review" and (
@@ -1125,6 +1127,10 @@ def cmd_memories(args: argparse.Namespace) -> int:
         archive = SecureHistoryArchive(args.archive_root, passphrase)
         # Drop the prompt result after the portable envelope is authenticated.
         del passphrase
+        if args.action == "triage":
+            from muninn.history.memory_review import run_local_triage
+            return run_local_triage(archive, backup_before=args.backup_before,
+                                    limit=args.limit, cursor=args.cursor)
         ledger = MemoryLedger(archive, read_only=args.action == "review-list")
         if args.action == "status":
             print(json.dumps(ledger.review_status(), sort_keys=True))
@@ -1529,7 +1535,7 @@ def build_parser() -> argparse.ArgumentParser:
     memories = subparsers.add_parser(
         "memories", help="Inspect and resolve noncredential cited memories in a local terminal.",
     )
-    memories.add_argument("action", choices=["status", "get", "review", "review-list"])
+    memories.add_argument("action", choices=["status", "get", "review", "review-list", "triage"])
     memories.add_argument("--archive-root", type=Path, required=True,
                           help="Existing encrypted history archive; portable recovery passphrase prompted locally.")
     memories.add_argument("--record-id", help="Exact cited-memory id returned by agent search.")
