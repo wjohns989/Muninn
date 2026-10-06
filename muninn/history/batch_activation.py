@@ -206,15 +206,26 @@ def prepare_next_batch(journal, *, min_items=1):
         descriptor = plans.window_at(entry, target["version"], target["plan_attempt"], target["ordinal"])
         window = source.remote_input(descriptor)
         if window is None or not window["text"].strip():
-            if job_id not in retry_proofs and window is None:
-                _park_refusal(journal, job_id, descriptor)
+            if window is None:
+                if job_id in retry_proofs:
+                    attempt, digest = retry_proofs[job_id]
+                    journal.retry_capture_window(job_id, expected_attempt=attempt,
+                        remote_policy_generation=remote.generation, expected_target_sha256=digest,
+                        private_only=True, screening_source=source)
+                else:
+                    _park_refusal(journal, job_id, descriptor)
             continue
         try:
             prepared[job_id] = prepare_items(source, [(job_id, descriptor)])[0]
         except BatchError as exc:
             if str(exc) != "source_not_remote_safe":
                 raise
-            if job_id not in retry_proofs:
+            if job_id in retry_proofs:
+                attempt, digest = retry_proofs[job_id]
+                journal.retry_capture_window(job_id, expected_attempt=attempt,
+                    remote_policy_generation=remote.generation, expected_target_sha256=digest,
+                    private_only=True, screening_source=source)
+            else:
                 _park_refusal(journal, job_id, descriptor)
             continue  # Serialized request screening is stricter than span screening.
         checked.append(((window["event_at"] is None, window["event_at"] or 0,

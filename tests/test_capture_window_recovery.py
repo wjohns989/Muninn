@@ -210,3 +210,28 @@ def test_post_backup_selected_row_change_aborts_before_any_recovery(tmp_path, mo
     assert operator.main(["--archive-root", str(archive.root), "--prompt-passphrase", "--apply",
         "--expected-generation", "1", "--backup-before", str(tmp_path / "preimage")]) == 1
     assert journal.get_analysis_job(job.job_id)["state"] == "failed"
+
+
+def test_read_only_recovery_capacity_uses_current_archive_policy_without_writes(tmp_path):
+    import sqlite3
+    from scripts.enroll_history_backlog import ReadOnlyJournal
+    from muninn.history.remote_policy import write_policy
+    from muninn.history.batch_activation import configure_batch
+
+    journal, archive, _, _, _ = failed_window(tmp_path)
+    reader = ReadOnlyJournal(archive)
+    assert reader.policy_root == journal.policy_root
+    original = journal.path.read_bytes()
+    with reader._connect() as db:
+        assert reader._capture_window_capacity(db) == 24
+        with pytest.raises(sqlite3.OperationalError):
+            db.execute("UPDATE history_analysis_jobs SET state='pending'")
+    write_policy(journal.policy_root, enabled=True, daily_usd=5, monthly_usd=50,
+                 override_ceiling=False, fallback=lambda: (False, 1, 30, False))
+    configure_batch(journal.policy_root, enabled=True, max_batches=2)
+    with reader._connect() as db:
+        assert reader._capture_window_capacity(db) == 128
+    configure_batch(journal.policy_root, enabled=False, max_batches=2)
+    with reader._connect() as db:
+        assert reader._capture_window_capacity(db) == 24
+    assert journal.path.read_bytes() == original

@@ -360,6 +360,11 @@ def prepare_preimage_destination(archive):
 def preimage_databases(archive, journal):
     preimages = archive / "operator-preimages"
     databases = [journal]
+    # The paid outbox uses .db, not .sqlite3. Preserve it under the same paid
+    # stop fence as the journal; never omit retained inputs/results on reload.
+    paid_outbox = archive / "historical-batches.db"
+    if paid_outbox.exists():
+        databases.append(paid_outbox)
     # Prune our own namespace before traversal, not just before copying.
     for directory, children, files in os.walk(archive, followlinks=False):
         if Path(directory) == archive:

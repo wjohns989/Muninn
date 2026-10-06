@@ -131,3 +131,49 @@ def test_bulk_result_transport_accepts_more_than_old_four_mib():
 
     raw = json.dumps({"padding": "x" * (4 * 1024 * 1024 + 1)}).encode()
     assert len(_decode(raw)["padding"]) == 4 * 1024 * 1024 + 1
+
+
+def test_planner_cannot_take_the_last_slot_needed_by_an_old_unsent_failure(tmp_path):
+    journal, archive, receipt = bulk_history(tmp_path)
+    assert fill(journal, receipt) == 128
+    old = journal.claim_analysis(include_capture=True, include_search=False)
+    assert journal.fail_analysis(old.job_id, old.lease_token, "model_unavailable")
+    # The CPU planner used to refill this freed slot before selection could
+    # re-admit the oldest failure, pushing it behind arbitrarily newer work.
+    assert journal.queue_capture_windows(receipt, limit=1, remote_policy_generation=1)["queued"] == 0
+    ident = prepare_next_batch(journal)
+    assert old.job_id in {row["job_id"] for row in BatchOutbox(archive).read(ident)["items"]}
+    with journal._connect() as db:
+        assert journal._analysis_active_counts(db)[1] == 128
+
+
+@pytest.mark.parametrize("code", ["insufficient_context", "outcome_unknown"])
+def test_nonrecoverable_failure_does_not_reserve_planning_capacity(tmp_path, code):
+    journal, _archive, receipt = bulk_history(tmp_path)
+    assert fill(journal, receipt) == 128
+    old = journal.claim_analysis(include_capture=True, include_search=False)
+    assert journal.fail_analysis(old.job_id, old.lease_token, code)
+    assert journal.queue_capture_windows(receipt, limit=1, remote_policy_generation=1)["queued"] == 1
+
+
+def test_reservation_is_bounded_and_revoke_restores_normal_planning_capacity(tmp_path):
+    journal, _archive, receipt = bulk_history(tmp_path)
+    assert fill(journal, receipt, 40) == 40
+    for _ in range(40):
+        job = journal.claim_analysis(include_capture=True, include_search=False)
+        assert journal.fail_analysis(job.job_id, job.lease_token, "model_unavailable")
+    with journal._connect() as db:
+        assert journal._capture_window_capacity(db) == 128
+        assert journal._capture_planning_capacity(db) == 96
+    configure_batch(journal.policy_root, enabled=False)
+    with journal._connect() as db:
+        assert journal._capture_window_capacity(db) == 24
+        assert journal._capture_planning_capacity(db) == 24
+
+
+def test_planner_rechecks_reserved_capacity_at_commit(tmp_path, monkeypatch):
+    journal, _archive, receipt = bulk_history(tmp_path)
+    capacity = iter([1, 0])
+    monkeypatch.setattr(journal, "_capture_planning_capacity", lambda db: next(capacity))
+    assert journal.queue_capture_windows(receipt, limit=1, remote_policy_generation=1)["queued"] == 0
+    assert journal.capture_window_status(receipt)["queued"] == 0

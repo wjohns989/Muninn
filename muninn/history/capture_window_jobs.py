@@ -250,7 +250,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
         elif state["attempt"] != attempt or state["count"] != count:
             raise VaultIntegrityError("Capture window plan became stale")
         with self._connect() as db:
-            capacity = self._capture_window_capacity(db)
+            capacity = self._capture_planning_capacity(db)
         descriptors = []
         for ordinal in range(state["next_ordinal"], min(count, state["next_ordinal"] + min(limit, capacity))):
             if should_cancel():
@@ -268,7 +268,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
             if (row["sealed_plan"] != before["sealed_plan"]
                     or row["sealed_planning_state"] != before["sealed_planning_state"]):
                 return {"state": "concurrent_advance", "queued": 0}
-            capacity = self._capture_window_capacity(db)
+            capacity = self._capture_planning_capacity(db)
             for ordinal, digest in descriptors[:capacity]:
                 target = {"kind": "capture_window", "vault_id": self.archive.vault_id,
                           "blob": receipt["blob"], "sha256": receipt["sha256"], "version": receipt["version"],
@@ -319,6 +319,33 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
         total_limit, automatic_limit = self._analysis_queue_limits()
         return max(0, min(total_limit - total, automatic_limit - automatic))
 
+    def _capture_planning_capacity(self, db):
+        """New planning cannot monopolize slots needed by old unsent failures.
+
+        These are scheduling hints, not retry or dispatch authority. The retry
+        transition authenticates the actual target and descriptor separately.
+        Do not change the base capacity used by recovery or foreground search.
+        """
+        capacity = self._capture_window_capacity(db)
+        from muninn.history.historical_batch import MAX_ITEMS
+        if not capacity or self._analysis_queue_limits()[1] != MAX_ITEMS:
+            return capacity
+        codes = sorted(_RECOVERABLE_LOCAL_FAILURES)
+        rows = db.execute("SELECT w.work_id FROM history_analysis_jobs j "
+            "JOIN capture_enrichment_windows w ON w.job_id=j.job_id "
+            "JOIN capture_enrichment_sources s ON s.work_id=w.work_id "
+            "WHERE j.lane=1 AND j.state='failed' AND j.remote_dispatched=0 "
+            "AND j.cancel_requested=0 AND j.publication_started=0 AND s.resolved=0 "
+            "AND j.lease_token IS NULL AND j.lease_until IS NULL "
+            "AND j.sealed_extraction IS NULL AND j.extraction_id IS NULL "
+            "AND j.sealed_receipt IS NULL AND j.sealed_reuse IS NULL AND j.sealed_result IS NULL "
+            f"AND j.error_code IN ({','.join('?' for _ in codes)})", codes).fetchall()
+        if not rows:
+            return capacity
+        selected = self._historical_selected_receipts(db)
+        reserve = min(32, sum(row[0] in selected for row in rows))
+        return max(0, capacity - reserve)
+
     def _foreground_analysis_capacity(self, db):
         total, automatic = self._analysis_active_counts(db)
         total_limit, _ = self._analysis_queue_limits()
@@ -327,16 +354,20 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
         return max(0, min(32 - (total - automatic), max(total_limit, automatic + 8) - total))
 
     def retry_capture_window(self, job_id, *, expected_attempt, remote_policy_generation,
-                             expected_target_sha256=None):
+                             expected_target_sha256=None, private_only=False, screening_source=None):
         """Explicitly re-admit one failed local window under reviewed remote consent.
 
         This does not call a provider or acknowledge interpretation. The service
         still checks the generation, source privacy and budget before dispatch.
         Never reset a sent request, immutable extraction, or publication proof.
-        The expected attempt fences repeated/stale operator actions.
+        The expected attempt fences repeated/stale operator actions. Private-only
+        recovery proves a fresh screening refusal itself; it never trusts a
+        caller's assertion and does not consume a runnable queue slot.
         """
         if (not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id)
                 or type(expected_attempt) is not int or not 0 <= expected_attempt < 2**31
+                or type(private_only) is not bool
+                or screening_source is not None and not private_only
                 or type(remote_policy_generation) is not int
                 or not 1 <= remote_policy_generation < 2**63
                 or expected_target_sha256 is not None and (
@@ -368,16 +399,43 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
             if (hashlib.sha256(self._stage_json(descriptor)).hexdigest() != target["descriptor_sha256"]
                     or window is not None and window != descriptor):
                 raise VaultIntegrityError("Capture recovery descriptor differs from its source plan")
-            if self._capture_window_capacity(db) == 0:
+            if private_only:
+                from muninn.history.cited_analysis_source import CitedAnalysisSource
+                from muninn.history.historical_batch import BatchError, prepare_items
+                from muninn.history.auto_routing import remote_policy_snapshot
+                if (screening_source is not None and
+                        (type(screening_source) is not CitedAnalysisSource
+                         or screening_source.archive is not self.archive)):
+                    raise ValueError("Invalid capture screening source")
+                if target["work_id"] not in self._historical_selected_receipts(db):
+                    return "ineligible"
+                _head, owner = self._historical_batch_head(db)
+                if owner is not None and owner["phase"] != "passed":
+                    return "checkpoint_pending"
+                reader = screening_source or CitedAnalysisSource(self.archive, read_only=True)
+                try:
+                    prepare_items(reader, [(job_id, descriptor)])
+                except BatchError as exc:
+                    if str(exc) != "source_not_remote_safe":
+                        raise
+                else:
+                    return "not_private"
+                # This is metadata handoff, not paid authorization. Dispatch
+                # still fences revocation atomically in managed accounting.
+                remote = remote_policy_snapshot(self.policy_root)
+                if remote.source != "managed" or not remote.enabled or remote.generation != remote_policy_generation:
+                    return "consent_changed"
+            elif self._capture_window_capacity(db) == 0:
                 return "queue_full"
             target = {**target, "remote_policy_generation": remote_policy_generation}
             dedup = hmac.new(self._key, b"capture-window-dedup-v1\0" + self._stage_json(target),
                              hashlib.sha256).hexdigest()
             db.execute("UPDATE history_analysis_jobs SET sealed_target=?,dedup_key=?,"
-                       "remote_policy_generation=?,state='pending',error_code='',due_at=0,"
+                       "remote_policy_generation=?,state=?,error_code=?,due_at=0,"
                        "updated_at=? WHERE job_id=?", (
                 self._seal_search(target, job_id, "analysis-target"), dedup,
-                remote_policy_generation, time.time(), job_id))
+                remote_policy_generation, "retry" if private_only else "pending",
+                "source_not_remote_safe" if private_only else "", time.time(), job_id))
             db.execute("UPDATE capture_enrichment_windows SET sealed_binding=? WHERE job_id=?", (
                 self._seal_search(target, job_id, "capture-window-binding-v1"), job_id))
             if window is not None:
@@ -386,7 +444,7 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                 rebound = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
                 db.execute("UPDATE history_analysis_jobs SET sealed_window=? WHERE job_id=?", (
                     self._seal_search(window, job_id, self._window_purpose(rebound, db)), job_id))
-            return "queued"
+            return "parked_private" if private_only else "queued"
 
     def _validated_analysis_target(self, row, db=None):
         target = self._open_search(row["sealed_target"], row["job_id"], "analysis-target")

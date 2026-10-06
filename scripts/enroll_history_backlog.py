@@ -19,6 +19,10 @@ from muninn.history.secure_archive import SecureHistoryArchive
 class ReadOnlyJournal(CaptureJournal):
     def __init__(self, archive):
         self.archive = archive
+        # Match CaptureJournal's default policy boundary without its writer
+        # initialization. Queue-capacity inspection must not guess or cache
+        # batch consent, nor create/migrate the live journal.
+        self.policy_root = archive.root.parent
         self.path = (archive.root / "capture-jobs.db").absolute()
         self._key = hmac.new(archive._key, b"muninn-capture-journal-key-v1", hashlib.sha256).digest()
 

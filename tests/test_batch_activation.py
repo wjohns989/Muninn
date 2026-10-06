@@ -179,3 +179,104 @@ def test_one_serialized_request_refusal_does_not_block_safe_siblings(tmp_path, m
                          "WHERE job_id=?", (rejected,)).fetchone()
         assert tuple(row) == ("retry", "source_not_remote_safe", 0)
         assert journal._capture_window_capacity(db) > 0
+
+
+def test_private_unsent_local_failure_reaches_the_parked_zdr_lane_without_a_batch(tmp_path, monkeypatch):
+    from muninn.history.cited_analysis_source import CitedAnalysisSource
+    journal, archive = history(tmp_path)
+    old = journal.claim_analysis(include_capture=True, include_search=False)
+    assert journal.fail_analysis(old.job_id, old.lease_token, "local_output_quote")
+    configure_batch(journal.policy_root, enabled=True)
+    monkeypatch.setattr(CitedAnalysisSource, "remote_input", lambda *_: None)
+    assert prepare_next_batch(journal) is None
+    with journal._connect() as db:
+        row = db.execute("SELECT state,error_code,remote_dispatched,remote_policy_generation "
+                         "FROM history_analysis_jobs WHERE job_id=?", (old.job_id,)).fetchone()
+        assert tuple(row) == ("retry", "source_not_remote_safe", 0, 1)
+    assert not (archive.root / "historical-batches.db").exists()
+    assert journal.capture_window_status(journal.pending_enrichment()[0])["acknowledged"] == 0
+
+
+def test_safe_failed_window_cannot_be_parked_by_private_only_switch(tmp_path):
+    journal, _archive = history(tmp_path)
+    job = journal.claim_analysis(include_capture=True, include_search=False)
+    assert journal.fail_analysis(job.job_id, job.lease_token, "model_unavailable")
+    with journal._connect() as db:
+        before = tuple(db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job.job_id,)).fetchone())
+    assert journal.retry_capture_window(job.job_id, expected_attempt=job.attempt,
+        remote_policy_generation=1, private_only=True) == "not_private"
+    with journal._connect() as db:
+        assert tuple(db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job.job_id,)).fetchone()) == before
+
+
+def test_private_recovery_rechecks_consent_after_screening(tmp_path, monkeypatch):
+    from muninn.history.cited_analysis_source import CitedAnalysisSource
+    journal, _archive = history(tmp_path)
+    job = journal.claim_analysis(include_capture=True, include_search=False)
+    assert journal.fail_analysis(job.job_id, job.lease_token, "local_output_quote")
+    def revoke(*_):
+        write_policy(journal.policy_root, enabled=False, daily_usd=5, monthly_usd=50,
+                     override_ceiling=False, fallback=lambda: (False, 1, 30, False))
+        return None
+    monkeypatch.setattr(CitedAnalysisSource, "remote_input", revoke)
+    with journal._connect() as db:
+        before = tuple(db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job.job_id,)).fetchone())
+    assert journal.retry_capture_window(job.job_id, expected_attempt=job.attempt,
+        remote_policy_generation=1, private_only=True) == "consent_changed"
+    with journal._connect() as db:
+        assert tuple(db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job.job_id,)).fetchone()) == before
+
+
+def test_private_recovery_needs_no_free_runnable_slot(tmp_path, monkeypatch):
+    from muninn.history.cited_analysis_source import CitedAnalysisSource
+    journal, _archive = history(tmp_path)
+    job = journal.claim_analysis(include_capture=True, include_search=False)
+    assert journal.fail_analysis(job.job_id, job.lease_token, "local_output_quote")
+    monkeypatch.setattr(CitedAnalysisSource, "remote_input", lambda *_: None)
+    monkeypatch.setattr(journal, "_capture_window_capacity", lambda db: 0)
+    assert journal.retry_capture_window(job.job_id, expected_attempt=job.attempt,
+        remote_policy_generation=1, private_only=True) == "parked_private"
+    claimed = journal.claim_analysis(include_capture=True, include_search=False,
+                                     capture_remote_only=True, capture_private_zdr=True)
+    assert claimed.job_id == job.job_id
+    assert claimed.remote_policy_generation == 1
+
+
+def test_owned_batch_blocks_private_failure_handoff(tmp_path, monkeypatch):
+    from muninn.history.cited_analysis_source import CitedAnalysisSource
+    journal, _archive = history(tmp_path)
+    job = journal.claim_analysis(include_capture=True, include_search=False)
+    configure_batch(journal.policy_root, enabled=True)
+    assert prepare_next_batch(journal)
+    # Keep this job running during selection so it is not readmitted into the
+    # newly owned batch. Its subsequent local failure is unrelated retained work.
+    assert journal.fail_analysis(job.job_id, job.lease_token, "local_output_quote")
+    monkeypatch.setattr(CitedAnalysisSource, "remote_input", lambda *_: None)
+    assert journal.retry_capture_window(job.job_id, expected_attempt=job.attempt,
+        remote_policy_generation=1, private_only=True) == "checkpoint_pending"
+
+
+def test_serialized_private_failure_is_screened_again_inside_transition(tmp_path, monkeypatch):
+    from muninn.history import secure_analysis
+    journal, _archive = history(tmp_path)
+    job = journal.claim_analysis(include_capture=True, include_search=False)
+    assert journal.fail_analysis(job.job_id, job.lease_token, "model_unavailable")
+    configure_batch(journal.policy_root, enabled=True)
+    monkeypatch.setattr(secure_analysis, "_request_safe", lambda body: False)
+    assert prepare_next_batch(journal) is None
+    assert journal.get_analysis_job(job.job_id)["state"] == "retry"
+
+
+@pytest.mark.parametrize("field,value", [("remote_dispatched", 1), ("publication_started", 1),
+                                        ("cancel_requested", 1), ("sealed_result", b"retain")])
+def test_private_switch_cannot_reset_sent_or_immutable_work(tmp_path, field, value):
+    journal, _archive = history(tmp_path)
+    job = journal.claim_analysis(include_capture=True, include_search=False)
+    assert journal.fail_analysis(job.job_id, job.lease_token, "local_output_quote")
+    with journal._connect() as db:
+        db.execute(f"UPDATE history_analysis_jobs SET {field}=? WHERE job_id=?", (value, job.job_id))
+        before = tuple(db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job.job_id,)).fetchone())
+    assert journal.retry_capture_window(job.job_id, expected_attempt=job.attempt,
+        remote_policy_generation=1, private_only=True) == "ineligible"
+    with journal._connect() as db:
+        assert tuple(db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job.job_id,)).fetchone()) == before

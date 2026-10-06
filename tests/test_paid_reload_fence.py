@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from muninn.history.credential_crypto import VaultIntegrityError
-from scripts.reload_shared_local import paid_stop_fence
+from scripts.reload_shared_local import paid_stop_fence, preimage_databases
 from tests.test_historical_batch_jobs import admission, fixture
 from tests.test_historical_batch_worker import responses
 
@@ -119,3 +119,18 @@ def test_stop_proof_only_decrypts_current_paid_batch(tmp_path, monkeypatch):
     with paid_stop_fence(journal.policy_root, archive.root, journal.path):
         pass
     assert decrypted == [ident]
+
+
+def test_reload_preimage_includes_the_retained_paid_outbox_under_fence(tmp_path):
+    journal, archive, outbox, ident, _, _ = submitted(tmp_path)
+    assert outbox.path in preimage_databases(archive.root, journal.path)
+    before = outbox.read(ident)
+    target = tmp_path / "isolated-encrypted-outbox-backup.db"
+    with paid_stop_fence(journal.policy_root, archive.root, journal.path):
+        with sqlite3.connect(outbox.path.as_uri() + "?mode=ro", uri=True) as source:
+            with sqlite3.connect(target) as destination:
+                source.backup(destination)
+                assert destination.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    with sqlite3.connect(outbox.path) as source, sqlite3.connect(target) as copy:
+        assert source.execute("SELECT * FROM batches").fetchall() == copy.execute("SELECT * FROM batches").fetchall()
+    assert outbox.read(ident) == before
