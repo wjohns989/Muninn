@@ -39,14 +39,79 @@ def setup(monkeypatch, *, phase='passed'):
 
 
 @pytest.mark.asyncio
-async def test_passed_checkpoint_gets_one_private_opportunity_before_next_batch(monkeypatch):
+async def test_passed_checkpoint_gets_four_bounded_private_opportunities_then_next_batch(monkeypatch):
     service, _, preparations, steps, calls = setup(monkeypatch)
+    for count in range(1, 5):
+        assert await service._process_secure_batch_once()
+        assert len(calls) == count
+        assert calls[-1] == {'include_capture': True, 'include_search': False,
+                            'capture_remote_only': True, 'capture_private_zdr': True}
+        assert preparations == [] and steps == []
     assert await service._process_secure_batch_once()
-    assert calls == [{'include_capture': True, 'include_search': False,
-                      'capture_remote_only': True, 'capture_private_zdr': True}]
-    assert preparations == [] and steps == []
+    assert len(calls) == 4 and len(preparations) == 1 and len(steps) == 1
+
+
+@pytest.mark.asyncio
+async def test_private_turn_keeps_cooldown_without_starting_next_clean_batch(monkeypatch):
+    service, _, preparations, steps, calls = setup(monkeypatch)
+    ready = True
+    service._capture_cadence.attempt_ready = lambda: ready
+    assert await service._process_secure_batch_once()
+    ready = False
+    for _ in range(2):
+        assert await service._process_secure_batch_once()
+    assert len(calls) == 1 and preparations == [] and steps == []
+    ready = True
+    assert await service._process_secure_batch_once()
+    assert len(calls) == 2 and preparations == [] and steps == []
+
+
+@pytest.mark.asyncio
+async def test_empty_private_lane_finishes_turn_and_does_not_delay_clean_work(monkeypatch):
+    service, _, preparations, steps, calls = setup(monkeypatch)
+    async def empty(**kwargs):
+        calls.append(kwargs)
+        return False
+    service._process_secure_analysis_once = empty
     assert await service._process_secure_batch_once()
     assert len(calls) == 1 and len(preparations) == 1 and len(steps) == 1
+    assert await service._process_secure_batch_once()
+    assert len(calls) == 1 and len(preparations) == 2
+
+
+@pytest.mark.asyncio
+async def test_new_passed_checkpoint_resets_bounded_turn_not_same_checkpoint(monkeypatch):
+    service, owner, preparations, steps, calls = setup(monkeypatch)
+    for _ in range(4):
+        assert await service._process_secure_batch_once()
+    owner['id'] = 'b' * 32
+    assert await service._process_secure_batch_once()
+    assert len(calls) == 5 and preparations == [] and steps == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('gate', ['_capture_auto_enabled', '_capture_remote_enabled'])
+async def test_disabled_automatic_private_gate_does_not_use_remaining_turn(monkeypatch, gate):
+    service, _, _, _, calls = setup(monkeypatch)
+    assert await service._process_secure_batch_once()
+    setattr(service, gate, lambda: False)
+    assert await service._process_secure_batch_once()
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_private_exception_consumes_an_opportunity_and_cannot_starve_clean_work(monkeypatch):
+    service, _, preparations, steps, calls = setup(monkeypatch)
+    async def failure(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError('isolated claim failure')
+    service._process_secure_analysis_once = failure
+    for count in range(1, 5):
+        with pytest.raises(RuntimeError):
+            await service._process_secure_batch_once()
+        assert len(calls) == count and preparations == []
+    assert await service._process_secure_batch_once()
+    assert len(calls) == 4 and len(preparations) == 1 and len(steps) == 1
 
 
 @pytest.mark.asyncio

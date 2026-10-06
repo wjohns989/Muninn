@@ -43,6 +43,8 @@ CAPTURE_DEBOUNCE_SECONDS = 120.0
 # sources. This detects same-size/same-mtime rewrites without rereading the
 # full corpus on every cycle (default complete pass: 64 scan cadences).
 STRICT_VERIFY_BUCKETS = 64
+# Give private ZDR work a bounded turn without starving screened clean batches.
+PRIVATE_ZDR_CHECKPOINT_OPPORTUNITIES = 4
 _CLAUDE_SESSION_NAME = re.compile(
     r"^(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|agent-[0-9a-f-]+)\.jsonl$", re.I)
 _CODEX_ROLLOUT_NAME = re.compile(
@@ -1253,16 +1255,22 @@ class HistoryService:
         )
         owner = await asyncio.to_thread(journal.historical_batch_owner)
         if (owner is not None and owner["phase"] == "passed"
-                and getattr(self, "_private_zdr_checkpoint", None) != owner["id"]
-                and self._capture_auto_enabled() and self._capture_remote_enabled()
-                and self._capture_cadence.attempt_ready()):
-            # One fair opportunity after the exact previous checkpoint passed.
+                and self._capture_auto_enabled() and self._capture_remote_enabled()):
+            # A bounded private turn after the exact previous checkpoint passed.
             # Journal state and managed admission, not this fairness hint,
             # provide durable no-redispatch proof across restart.
-            self._private_zdr_checkpoint = owner["id"]
-            if await self._process_secure_analysis_once(include_capture=True,
-                    include_search=False, capture_remote_only=True, capture_private_zdr=True):
-                return True
+            if getattr(self, "_private_zdr_checkpoint", None) != owner["id"]:
+                self._private_zdr_checkpoint = owner["id"]
+                self._private_zdr_opportunities = 0
+            if self._private_zdr_opportunities < PRIVATE_ZDR_CHECKPOINT_OPPORTUNITIES:
+                if not self._capture_cadence.attempt_ready():
+                    return True  # Preserve cooldown; do not consume a turn or prepare a clean batch.
+                self._private_zdr_opportunities += 1  # Cancellation/error also consumes this opportunity.
+                if await self._process_secure_analysis_once(include_capture=True,
+                        include_search=False, capture_remote_only=True, capture_private_zdr=True):
+                    return True
+                # No eligible private work: do not make clean work wait for empty turns.
+                self._private_zdr_opportunities = PRIVATE_ZDR_CHECKPOINT_OPPORTUNITIES
         if owner is None or owner["phase"] == "passed":
             policy = await asyncio.to_thread(read_batch_policy, journal.policy_root)
             if not policy["enabled"]:
