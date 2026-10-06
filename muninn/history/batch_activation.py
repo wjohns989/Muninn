@@ -171,11 +171,7 @@ def prepare_next_batch(journal, *, min_items=1):
         _seal, cursor = journal._historical_progress(db)
         if cursor is None:
             return None
-        manifest = journal._historical_manifest(cursor)
-        selected = {journal._enrichment_id(journal.archive._snapshot_receipt(entries[-1], len(entries) - 1))
-                    for entries in list(manifest["files"].values())[:cursor["source_index"]]
-                    if entries and entries[-1]["provider"] in {"codex", "claude_code", "gemini_cli"}
-                    and entries[-1]["kind"] == "transcript"}
+        selected = set(journal._historical_selected_receipts(db))
         rows = db.execute("SELECT j.* FROM history_analysis_jobs j JOIN capture_enrichment_windows w "
                           "ON w.job_id=j.job_id "
                           "WHERE j.lane=1 AND j.state IN ('pending','retry') AND j.remote_dispatched=0 "

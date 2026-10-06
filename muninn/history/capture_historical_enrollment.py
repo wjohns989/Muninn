@@ -4,6 +4,7 @@ import re
 
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.private_acl import verify_private, VaultPermissionError
+from muninn.history.capture_historical_versions import HistoricalVersionsMixin
 
 _ID = "0" * 32
 _PURPOSE = "capture-historical-cursor-v1"
@@ -12,12 +13,13 @@ _FIELDS = {"format", "selection", "generation", "manifest_sha", "source_index",
            "total_sources", "queued", "existing", "excluded", "complete"}
 
 
-class HistoricalEnrollmentMixin:
+class HistoricalEnrollmentMixin(HistoricalVersionsMixin):
     def _init_historical_enrollment(self, db):
         db.execute("CREATE TABLE IF NOT EXISTS capture_historical_enrollment "
                    "(id INTEGER PRIMARY KEY CHECK(id=1), sealed_cursor BLOB NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS capture_historical_receipts "
                    "(work_id TEXT PRIMARY KEY, sealed_grant BLOB NOT NULL)")
+        self._init_historical_versions(db)
 
     def _historical_progress(self, db):
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE name IN "
@@ -167,12 +169,13 @@ class HistoricalEnrollmentMixin:
                 self._seal_search(cursor, _ID, _PURPOSE),))
         return cursor
 
-    def _verify_historical_enrollment(self, db, baseline):
+    def _historical_selected_receipts(self, db):
+        """One authenticated selection union for verification and batch admission."""
         _seal, cursor = self._historical_progress(db)
         if cursor is None:
+            if self._historical_versions_progress(db)[1] is not None:
+                raise VaultIntegrityError("Historical versions have no latest enrollment authority")
             return {}
-        if baseline is None:
-            raise VaultIntegrityError("Historical enrollment has no live baseline")
         manifest = self._historical_manifest(cursor)
         selected = {}
         for entries in list(manifest["files"].values())[:cursor["source_index"]]:
@@ -181,6 +184,13 @@ class HistoricalEnrollmentMixin:
                 selected[self._enrichment_id(receipt)] = receipt
         if len(selected) != cursor["queued"] + cursor["existing"]:
             raise VaultIntegrityError("Historical enrollment selection differs from cursor")
+        selected.update(self._historical_versions_selected(db, cursor, manifest))
+        return selected
+
+    def _verify_historical_enrollment(self, db, baseline):
+        selected = self._historical_selected_receipts(db)
+        if self._historical_progress(db)[1] is not None and baseline is None:
+            raise VaultIntegrityError("Historical enrollment has no live baseline")
         for ident in selected:
             row = db.execute("SELECT work_id,sealed_receipt FROM capture_enrichment_sources WHERE work_id=?", (ident,)).fetchone()
             if row is None or self._read_enrichment_receipt(row, baseline, db=db) != selected[ident]:

@@ -39,6 +39,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive-root", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="Explicitly commit enrollment; never call a model")
+    parser.add_argument("--all-versions", action="store_true",
+                        help="Backfill every pinned version after latest enrollment is complete")
     parser.add_argument("--limit", type=int, default=128)
     parser.add_argument("--max-batches", type=int, default=1)
     parser.add_argument("--prompt-passphrase", action="store_true", help="Prompt locally instead of using Windows unlock")
@@ -50,11 +52,14 @@ def main(argv=None):
         archive = SecureHistoryArchive(args.archive_root.resolve(), passphrase)
         del passphrase
         if not args.apply:
-            print(json.dumps(ReadOnlyJournal(archive).preview_historical_latest(limit=args.limit)))
+            reader = ReadOnlyJournal(archive)
+            preview = reader.preview_historical_versions if args.all_versions else reader.preview_historical_latest
+            print(json.dumps(preview(limit=args.limit)))
             return 0
         journal = CaptureJournal(archive, recover=False)
+        enroll = journal.enroll_historical_versions if args.all_versions else journal.enroll_historical_latest
         for _ in range(args.max_batches):
-            state = journal.enroll_historical_latest(limit=args.limit)
+            state = enroll(limit=args.limit)
             print(json.dumps({"stage": "enrollment_batch", **state}), flush=True)
             if state["complete"]:
                 break

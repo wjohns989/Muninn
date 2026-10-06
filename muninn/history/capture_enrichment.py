@@ -226,6 +226,7 @@ class CaptureEnrichmentMixin(HistoricalEnrollmentMixin):
             states = dict(db.execute("SELECT state,COUNT(*) FROM history_analysis_jobs "
                                      "WHERE lane=1 GROUP BY state"))
             _seal, historical = self._historical_progress(db)
+            _versions_seal, historical_versions = self._historical_versions_progress(db)
         result = {"configured": baseline is not None, "pending_sources": count,
                   "parked_private_windows": parked,
                   # Operational journal hints, not independently verified
@@ -234,6 +235,9 @@ class CaptureEnrichmentMixin(HistoricalEnrollmentMixin):
                                   "total": sum(states.values()), "states": states}}
         if historical is not None:
             result["historical_enrollment"] = {k: v for k, v in historical.items() if k != "manifest_sha"}
+        if historical_versions is not None:
+            result["historical_versions_enrollment"] = {
+                k: v for k, v in historical_versions.items() if k != "manifest_sha"}
         return result
 
     def _verify_enrichment(self, db):
