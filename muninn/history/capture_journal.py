@@ -310,10 +310,12 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             prior = db.execute(
-                "SELECT revision, observed_size, observed_mtime_ns, state, due_at FROM jobs WHERE source_key=?", (key,)
+                "SELECT revision, observed_size, observed_mtime_ns, state, due_at, sealed_locator, provider "
+                "FROM jobs WHERE source_key=?", (key,)
             ).fetchone()
             if (
                 prior
+                and self._open(prior["sealed_locator"], prior["provider"]) == path
                 and (size, mtime_ns) == (prior["observed_size"], prior["observed_mtime_ns"])
                 and (not force or prior["state"] in {"pending", "capturing", "retry"})
             ):

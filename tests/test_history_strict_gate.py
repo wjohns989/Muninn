@@ -103,6 +103,10 @@ async def test_strict_mode_blocks_legacy_service_entry_points(monkeypatch, tmp_p
 @pytest.mark.asyncio
 async def test_strict_mode_does_not_schedule_background_capture_or_analysis(monkeypatch, tmp_path):
     monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    # This tests the no-opt-in default, independently of a user's enabled
+    # installation. Explicit auto-capture is covered by its separate fixtures.
+    monkeypatch.setenv("MUNINN_CAPTURE_ENRICHMENT", "0")
+    monkeypatch.setenv("MUNINN_CAPTURE_AUTO_ANALYSIS", "0")
     service = HistoryService.__new__(HistoryService)
     service._background = set()
     service._auto_task = None

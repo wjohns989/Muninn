@@ -520,10 +520,17 @@ class HistoryService:
         journal = self._require_capture_journal()
 
         def scan() -> Dict[str, int]:
+            from muninn.history.archive_lineage import source_signatures
+            from muninn.history.capture_locator_selection import select_capture_locator
+
             self._reconcile_capture_enrichment()
-            signatures = archive.latest_source_signatures()
+            # Pin discovery, signatures and duplicate-locator selection to one
+            # authenticated generation. The capture writer rechecks current.
+            manifest = archive._load_manifest()
+            signatures = source_signatures(manifest)
             generation = journal.begin_scan()
             batch: list[tuple[str, str]] = []
+            groups = {}
             for home in history_homes(self.home):
                 for source in history_sources(home):
                     if source.provider not in {"codex", "claude_code", "gemini_cli"}:
@@ -538,34 +545,46 @@ class HistoryService:
                         continue
                     for item in HistoryVault._source_files(source):
                         key = journal.source_key(item["path"].resolve(strict=False), item["provider"])
-                        if journal.scan_seen(key, generation):
-                            continue
-                        if item["kind"] != "transcript":
-                            outcome = "excluded"
+                        groups.setdefault(key, []).append(item)
+            # No native identity is marked seen until all of its physical
+            # candidates are considered, regardless of checkpoint boundaries.
+            for key, items in groups.items():
+                if journal.scan_seen(key, generation):
+                    continue
+                transcripts = [item for item in items if item["kind"] == "transcript"]
+                if not transcripts:
+                    outcome = "excluded"
+                else:
+                    provider = transcripts[0]["provider"]
+                    try:
+                        paths = {self._validate_capture_source(str(item["path"]), provider)
+                                 for item in transcripts}
+                        path = (next(iter(paths)) if len(paths) == 1 else
+                                select_capture_locator(archive, manifest, paths, provider))
+                        if path is None:
+                            outcome = "unchanged"  # Every candidate is proved already covered.
                         else:
-                            try:
-                                path = self._validate_capture_source(str(item["path"]), item["provider"])
-                                stat = path.stat()
-                                if signatures.get(str(path)) == (stat.st_size, stat.st_mtime_ns):
-                                    if int(key[:8], 16) % STRICT_VERIFY_BUCKETS == generation % STRICT_VERIFY_BUCKETS:
-                                        outcome = journal.enqueue(path, item["provider"], force=True,
-                                                                  immediate=True)
-                                        if outcome != "queued":
-                                            outcome = "unchanged"
-                                    else:
-                                        outcome = "unchanged"
-                                else:
-                                    outcome = journal.enqueue(path, item["provider"], immediate=True)
+                            stat = path.stat()
+                            if signatures.get(str(path)) == (stat.st_size, stat.st_mtime_ns):
+                                if int(key[:8], 16) % STRICT_VERIFY_BUCKETS == generation % STRICT_VERIFY_BUCKETS:
+                                    outcome = journal.enqueue(path, provider, force=True,
+                                                              immediate=True)
                                     if outcome != "queued":
                                         outcome = "unchanged"
-                            except FileNotFoundError:
-                                outcome = "missing"
-                            except (OSError, RuntimeError, ValueError):
-                                outcome = "errors"
-                        batch.append((key, outcome))
-                        if len(batch) == 250:
-                            journal.record_scan_batch(generation, batch)
-                            batch.clear()
+                                else:
+                                    outcome = "unchanged"
+                            else:
+                                outcome = journal.enqueue(path, provider, immediate=True)
+                                if outcome != "queued":
+                                    outcome = "unchanged"
+                    except FileNotFoundError:
+                        outcome = "missing"
+                    except (OSError, RuntimeError, ValueError):
+                        outcome = "errors"
+                batch.append((key, outcome))
+                if len(batch) == 250:
+                    journal.record_scan_batch(generation, batch)
+                    batch.clear()
             journal.record_scan_batch(generation, batch)
             return journal.finish_scan(generation)
 

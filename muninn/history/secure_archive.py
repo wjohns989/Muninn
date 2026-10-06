@@ -27,6 +27,9 @@ from typing import Any, BinaryIO, Callable, Iterator
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from muninn.history.archive_lineage import (
+    canonical_source, capture_anchor, record_alias, source_signatures, validate_lineage,
+)
 from muninn.history.credential_crypto import VaultHeader, VaultIntegrityError, derive_key
 from muninn.history.private_acl import _is_link, create_private_directory, create_private_file, verify_private
 
@@ -238,11 +241,14 @@ class SecureHistoryArchive:
             raise VaultIntegrityError("History archive manifest is truncated")
         try:
             manifest = json.loads(AESGCM(self._key).decrypt(raw[:12], raw[12:], self._manifest_aad(generation)))
-            if (not isinstance(manifest, dict) or manifest.get("format") != 1
+            if (not isinstance(manifest, dict)
                     or manifest.get("vault_id") != self.vault_id
                     or manifest.get("generation") != generation
                     or not isinstance(manifest.get("files"), dict)):
                 raise ValueError
+            validate_lineage(manifest)
+        except VaultIntegrityError:
+            raise
         except (InvalidTag, ValueError, TypeError) as exc:
             raise VaultIntegrityError("History archive manifest authentication failed") from exc
         if not pinned:
@@ -280,13 +286,15 @@ class SecureHistoryArchive:
         with self._write_lock():
             source_key = str(Path(source).resolve(strict=True))
             manifest = self._load_manifest()
+            aliases_before = dict(manifest.get("aliases", {}))
             result = self._archive_one(manifest, Path(source_key), provider, kind, expected_source=expected_source)
-            if result["status"] == "captured":
+            if result["status"] == "captured" or aliases_before != manifest.get("aliases", {}):
                 manifest["generation"] += 1
                 self._save_manifest(manifest)
             if include_snapshot_receipt:
                 version = result["versions"] - 1
-                result["snapshot_receipt"] = self._snapshot_receipt(manifest["files"][source_key][version], version)
+                anchor = canonical_source(manifest, source_key)
+                result["snapshot_receipt"] = self._snapshot_receipt(manifest["files"][anchor][version], version)
             return result
 
     def _snapshot_receipt(self, entry: dict, version: int) -> dict[str, Any]:
@@ -319,9 +327,10 @@ class SecureHistoryArchive:
             pending = 0
             for source, provider, kind in items:
                 try:
+                    aliases_before = dict(manifest.get("aliases", {}))
                     result = self._archive_one(manifest, source, provider, kind, expected_source=Path(source))
                     report[result["status"]] += 1
-                    if result["status"] == "captured":
+                    if result["status"] == "captured" or aliases_before != manifest.get("aliases", {}):
                         pending += 1
                 except (OSError, RuntimeError, ValueError) as exc:
                     # Paths are private data; report a bounded class and not the source.
@@ -346,8 +355,15 @@ class SecureHistoryArchive:
             raise ValueError("Unsupported history provider")
         if kind not in {"transcript", "prompt_history", "desktop_session", "export", "state_db"}:
             raise ValueError("Unsupported history kind")
-        prior = manifest["files"].get(str(source), [])
+        source_key = str(source)
+        anchor = capture_anchor(manifest, source_key, provider, kind)
+        relocated = source_key != anchor
+        continuity_required = relocated or any(
+            alias["anchor"] == anchor for alias in manifest.get("aliases", {}).values())
+        prior = manifest["files"].get(anchor, [])
         before = source.stat()
+        if continuity_required and before.st_size < prior[-1]["size"]:
+            raise ValueError("History relocation does not preserve the latest snapshot")
 
         def assert_open_identity(handle: BinaryIO) -> None:
             opened = os.fstat(handle.fileno())
@@ -362,7 +378,7 @@ class SecureHistoryArchive:
                     or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)):
                 raise ValueError("History source identity changed after authorization")
 
-        if prior and prior[-1]["size"] == before.st_size and prior[-1]["mtime_ns"] == before.st_mtime_ns:
+        if prior and prior[-1]["size"] == before.st_size:
             unchanged_digest = hashlib.sha256()
             with source.open("rb") as current:
                 assert_open_identity(current)
@@ -374,7 +390,10 @@ class SecureHistoryArchive:
             if (prior[-1]["provider"] == provider and prior[-1]["kind"] == kind
                     and (before.st_size, before.st_mtime_ns) == (after_check.st_size, after_check.st_mtime_ns)
                     and unchanged_digest.hexdigest() == prior[-1]["sha256"]):
+                record_alias(manifest, source_key, anchor, prior[-1], before.st_mtime_ns)
                 return {"status": "unchanged", "versions": len(prior)}
+            if continuity_required:
+                raise ValueError("History relocation does not preserve the latest snapshot")
         blob_id = uuid.uuid4().hex
         nonce_prefix = os.urandom(8)
         blob = self._blobs / f"{blob_id}.enc"
@@ -415,6 +434,9 @@ class SecureHistoryArchive:
         assert_path_identity(after)
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or size != before.st_size:
             raise RuntimeError("History source changed during encrypted capture; retry later")
+        if continuity_required and (prefix_size is None or prefix_digest.hexdigest() != previous["sha256"]):
+            # Preserve encrypted staging for recovery, but acknowledge no snapshot.
+            raise ValueError("History relocation does not preserve the latest snapshot")
         os.replace(staging, blob)
         verify_private(blob)
         entry = {"blob": blob_id, "provider": provider, "kind": kind,
@@ -424,14 +446,18 @@ class SecureHistoryArchive:
         if prefix_size is not None and prefix_digest.hexdigest() == previous["sha256"]:
             entry["prefix_of"] = {"blob": previous["blob"], "sha256": previous["sha256"],
                                   "size": prefix_size, "version": len(prior) - 1}
-        manifest["files"][str(source)] = [*prior, entry]
-        return {"status": "captured", "versions": len(manifest["files"][str(source)]), "size": size}
+        if relocated:
+            entry["observed_source"] = source_key
+        manifest["files"][anchor] = [*prior, entry]
+        record_alias(manifest, source_key, anchor, entry, before.st_mtime_ns)
+        return {"status": "captured", "versions": len(manifest["files"][anchor]), "size": size}
 
     def read_file(self, source: Path, version: int = -1) -> bytes:
         """Explicit local decrypt; never pass this result to ordinary indexes or models."""
         manifest = self._load_manifest()
         try:
-            entry = manifest["files"][str(Path(source).resolve())][version]
+            anchor = canonical_source(manifest, str(Path(source).resolve()))
+            entry = manifest["files"][anchor][version]
         except (KeyError, IndexError, TypeError) as exc:
             raise FileNotFoundError("History snapshot not found") from exc
         result = self._verify_entry(entry, collect=True)
@@ -594,8 +620,7 @@ class SecureHistoryArchive:
         the archive writer hashes again before declaring a capture unchanged.
         """
         manifest = self._load_manifest()
-        return {path: (entries[-1]["size"], entries[-1]["mtime_ns"])
-                for path, entries in manifest["files"].items() if entries}
+        return source_signatures(manifest)
 
     def rebind_windows_user(self) -> None:
         """After portable restore, attach a new CurrentUser DPAPI wrapper."""

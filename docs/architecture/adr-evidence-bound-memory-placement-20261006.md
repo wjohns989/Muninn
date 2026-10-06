@@ -1,7 +1,7 @@
 # Evidence-bound automatic memory placement
 
-Status: accepted design; pilot-only consumer implemented in source and isolated
-tests. Live installation and Luna semantic-quality proof pending.
+Status: accepted design; pilot-only consumer implemented, tested and installed
+as `80fef98`. Luna semantic-quality proof and full expansion remain pending.
 
 ## Concrete missing dependency
 

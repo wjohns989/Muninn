@@ -94,9 +94,34 @@ Additional completed isolated validation on October 6, 2026:
 - No full repository suite or merge was performed. The existing paid batch and
   raw data were retained; no batch was deleted, cancelled, repacked or resent.
 
-Required next proof: install the exact reviewed candidate through the existing
-owned-service/paid-identity/idle/encrypted-preimage fences, verify compatible
-readers, then inspect the bounded real Luna pilot for semantic quality and total
-billed cost before considering expansion. Neither these tests nor the pilot
-cap prove a resolved historical ambiguity queue, complete hooks or full local
-installation.
+## Scoped installed-runtime proof
+
+Candidate `80fef98` was installed through the existing reload procedure on
+October 6. The secret hook passed before commit. Reload validated seven encrypted
+database preimages with zero in-flight jobs, then verified one authenticated
+strict-archive service on port 42069 with the existing automatic capture and
+remote flags preserved. Read-back observed PID 90700 as the sole listener,
+authenticated history HTTP 200, and the new empty classification jobs/membership
+schema. Empty work at this checkpoint is expected: discovery/inference is gated
+behind the currently owned, unpassed paid batch.
+
+The retained owner `e126f20c9fba4b47b1eee34402ce0b59` stayed sent/submitted with
+25 windows in 12 logical requests and unchanged input/wire hashes before and
+after reload. Its provider GET was in-progress, zero completed/failed, bill
+pending. No result or pilot success is inferred from acceptance. Existing policy
+remained generation 2, $5/day and $50/month; anonymous accounting returned 401,
+authenticated accounting 200 with no-store, and the public page contained no
+token. Local settled run cost remained $0.859029 with one unresolved admission;
+this is not a reconciled provider total. Independent results review cleared this
+scoped installation, not full-goal completion.
+
+At read-back enrollment was complete (2,457 queued, 924 existing, 848 excluded
+out of 4,229 source versions). Enrollment is NOT interpreted coverage; remaining
+windows/overall percentage are not established by those counts. Backlog drain
+was inactive, so ordinary cadence applies. The existing credential worker was
+alive but awaiting a local passphrase; no duplicate worker was started.
+
+Required next proof: inspect the bounded real Luna pilot after the exact paid
+owner passes, including semantic quality and total billed cost before expansion.
+Neither these tests, this installation nor the pilot cap prove a resolved
+historical ambiguity queue, complete hooks or full local installation.
