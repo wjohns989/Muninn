@@ -263,7 +263,7 @@ class MemoryLedger:
         except ProjectionIntegrityError as exc:
             raise MemoryLedgerIntegrityError("Ledger context is not authenticated") from exc
         info = raw.digest() == screened.digest(), body_length, body.digest()
-        if not persist_screen:
+        if not persist_screen or self.read_only:
             self._screen_cache[cache_key] = info
             if len(self._screen_cache) > 128:
                 self._screen_cache.popitem(last=False)

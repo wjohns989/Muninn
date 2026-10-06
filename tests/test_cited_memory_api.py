@@ -68,6 +68,14 @@ async def test_agent_lookup_search_and_exact_source_follow_to_full_redacted_tran
     server._cited_memory_read_times.clear(); server._secure_history_page_times.clear()
     transport=httpx.ASGITransport(app=server.app,client=("127.0.0.1",1234))
     headers={"Authorization":"Bearer "+token}
+    original_init = MemoryLedger.__init__
+    def read_only_init(self, *args, **kwargs):
+        assert kwargs.get('read_only') is True, 'public cited read opened a ledger writer'
+        return original_init(self, *args, **kwargs)
+    monkeypatch.setattr(MemoryLedger, '__init__', read_only_init)
+    from muninn.history.source_evidence import SourceEvidenceStore
+    monkeypatch.setattr(SourceEvidenceStore, '_store_screen_info',
+                        lambda *a, **kw: pytest.fail('public read wrote a screening attestation'))
     try:
         async with httpx.AsyncClient(transport=transport,base_url="http://localhost") as client:
             requests=[('search',{'query':'citations'}),('get',{'memory_ref':ident}),('source',{'memory_ref':ident})]
@@ -107,6 +115,35 @@ async def test_agent_lookup_search_and_exact_source_follow_to_full_redacted_tran
             for action,payload in requests:
                 assert (await client.post('/history/secure/memories/'+action,json=payload,headers=headers)).status_code==404
     finally: await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_cold_cited_search_is_unavailable_without_creating_empty_coverage(tmp_path, monkeypatch):
+    archive, _, _, _ = fixture(tmp_path)
+    ledger_root = archive.root / 'memory-ledger'
+    assert not ledger_root.exists()
+    token = 'synthetic-main-token-aaaaaaaaaaaaaaaaaaaa'
+    monkeypatch.setenv('MUNINN_AUTH_TOKEN', token)
+    monkeypatch.setenv('MUNINN_NO_AUTH', '0')
+    monkeypatch.setenv('MUNINN_HISTORY_SECURITY', 'strict')
+    monkeypatch.setattr(server, 'is_security_enabled', lambda: True)
+    service = HistoryService(None, tmp_path/'unused', home=tmp_path,
+                            secure_archive_root=archive.root,
+                            archive_passphrase='synthetic portable recovery phrase')
+    monkeypatch.setattr(server, '_require_history', lambda: service)
+    monkeypatch.setattr(server, '_secure_history_fetch_slots', asyncio.Semaphore(1))
+    server._cited_memory_read_times.clear()
+    transport = httpx.ASGITransport(app=server.app, client=('127.0.0.1', 1234))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url='http://localhost') as client:
+            response = await client.post('/history/secure/memories/search',
+                json={'query': 'citations'}, headers={'Authorization': 'Bearer '+token})
+            assert response.status_code == 503
+            assert response.headers['cache-control'] == 'no-store'
+            assert str(archive.root) not in response.text
+        assert not ledger_root.exists()
+    finally:
+        await service.stop()
 
 
 @pytest.mark.asyncio
