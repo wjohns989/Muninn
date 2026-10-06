@@ -33,13 +33,14 @@ _ASSIGN = re.compile(
     r"(?m)(?:\A|\n)[ \t]{0,16}(?:export[ \t]+)?"
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})[ \t]{0,16}=[ \t]{0,16}"
 )
+_ASSIGNMENT_BOUNDARY = r"(?:(?<![A-Za-z0-9_])|\\[nrt])"
 _INLINE_ASSIGN = re.compile(
-    r"(?<![A-Za-z0-9_])(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})"
+    _ASSIGNMENT_BOUNDARY + r"(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})"
     r"[ \t]{0,16}(?:=|\\?\"[ \t]{0,16}:)[ \t]{0,16}\\?\"?"
 )
 _VALUE = re.compile(r'(?P<value>[A-Za-z0-9_./+=:@-]{8,512})(?=$|[ \t\r\n#"\'\\,;}\]])')
 _PROJECT_ASSIGN = re.compile(
-    r"(?<![A-Za-z0-9_])[\"']?(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})[\"']?"
+    _ASSIGNMENT_BOUNDARY + r"[\"']?(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})[\"']?"
     r"[ \t]{0,16}(?:=|:)[ \t]{0,16}[\"']?"
 )
 _SECRET_NAME = re.compile(

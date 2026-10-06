@@ -460,6 +460,33 @@ def test_transcript_assignment_scans_across_chunks_without_claiming_current_use(
     assert found == [("SERVICE_API_KEY", "aaaabbbbcccc11112222", "")]
 
 
+@pytest.mark.parametrize("scanner", ["project", "transcript"])
+@pytest.mark.parametrize("separator", [b"\\n", b"\\r", b"\\t", b"\\r\\n"])
+@pytest.mark.parametrize("name", [b"OPENROUTER_API_KEY", b"API_KEY"])
+def test_escaped_whitespace_is_not_part_of_credential_name(scanner, separator, name):
+    payload = b'x' * 1100 + separator + name + b'=aaaabbbbcccc11112222"'
+    scan = (lambda chunks: discovery.iter_project_findings(chunks, "fixture.py", ExtractionStats())
+            if scanner == "project" else iter_transcript_findings(chunks, ExtractionStats()))
+    expected_hint = "fixture.py" if scanner == "project" else ""
+    expected = [(name.decode(), "aaaabbbbcccc11112222", expected_hint)]
+    assert list(scan([payload])) == expected
+    for split in range(1100, 1100 + len(separator) + len(name) + 1):
+        assert list(scan([payload[:split], payload[split:]])) == expected
+
+
+@pytest.mark.parametrize("scanner", ["project", "transcript"])
+@pytest.mark.parametrize("name", ["nOPENROUTER_API_KEY", "rOPENROUTER_API_KEY", "tOPENROUTER_API_KEY"])
+def test_literal_name_prefix_is_not_stripped(scanner, name):
+    payload = (name + '=aaaabbbbcccc11112222\n').encode()
+    if scanner == "project":
+        found = list(discovery.iter_project_findings([payload], "fixture.py", ExtractionStats()))
+        hint = "fixture.py"
+    else:
+        found = list(iter_transcript_findings([payload], ExtractionStats()))
+        hint = ""
+    assert found == [(name, "aaaabbbbcccc11112222", hint)]
+
+
 def test_archive_late_integrity_failure_rolls_back_findings(tmp_path, monkeypatch):
     root = tmp_path / "archive"
     archive = SecureHistoryArchive.create(root, "synthetic archive passphrase")
