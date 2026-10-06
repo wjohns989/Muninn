@@ -1012,7 +1012,8 @@ class HistoryService:
                         return True
                     publishing = True
                 refs = await asyncio.to_thread(source.record_proposals, stage["window"],
-                    stage["proposals"], model_identity=stage["model_identity"])
+                    stage["proposals"], model_identity=stage["model_identity"],
+                    **({'source_view': stage['source_view']} if 'source_view' in stage else {}))
                 await asyncio.to_thread(journal.acknowledge_publication, job.job_id, job.lease_token, refs)
                 return True
             if job.lane == 1:
@@ -1196,7 +1197,8 @@ class HistoryService:
                     return True
                 publishing = True
                 refs = await asyncio.to_thread(source.record_proposals, stage["window"],
-                    stage["proposals"], model_identity=stage["model_identity"])
+                    stage["proposals"], model_identity=stage["model_identity"],
+                    **({'source_view': stage['source_view']} if 'source_view' in stage else {}))
                 await asyncio.to_thread(journal.acknowledge_publication, job.job_id, job.lease_token, refs)
             elif outcome["status"] == "deferred":
                 await asyncio.to_thread(journal.defer_analysis, job.job_id,

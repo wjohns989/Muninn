@@ -523,7 +523,8 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                     self._validated_analysis_target(row, db)
                     self._read_analysis_window(row)
                     expected = source.expected_refs(stage["window"], stage["proposals"],
-                                                    model_identity=stage["model_identity"])
+                        model_identity=stage["model_identity"],
+                        **({'source_view': stage['source_view']} if 'source_view' in stage else {}))
                     if refs != expected or not contains(refs):
                         raise VaultIntegrityError("History publication references are incomplete")
                     count += 1
@@ -876,9 +877,8 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
         from muninn.history.memory_ledger import TYPES, MemoryLedger
         try:
             if (not isinstance(stage, dict)
-                    or set(stage) not in ({"format", "window", "proposals", "model_identity", "result"},
-                                          {"format", "window", "proposals", "model_identity", "result",
-                                           "admission_id"})
+                    or set(stage) - {"admission_id", "source_view"}
+                        != {"format", "window", "proposals", "model_identity", "result"}
                     or type(stage["format"]) is not int or stage["format"] != 1
                     or not MemoryLedger._hex(stage["model_identity"])
                     or not isinstance(stage["proposals"], list) or len(stage["proposals"]) > 12):
@@ -900,7 +900,12 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                 raise ValueError
             # Detach caller-owned mutable dictionaries before authentication.
             checked = json.loads(raw)
-            if authenticate:
+            if 'source_view' in checked:
+                from muninn.history.cited_zdr_projection import CitedZDRProjection
+                CitedZDRProjection.from_source_view(CitedAnalysisSource(self.archive, read_only=True),
+                    checked['window'], checked['source_view']).validated_proposals(
+                        checked['window'], checked['proposals'])
+            elif authenticate:
                 CitedAnalysisSource(self.archive).validated_proposals(checked["window"], checked["proposals"])
             return checked
         except (ValueError, TypeError, KeyError, UnicodeError) as exc:
@@ -1041,7 +1046,8 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
         from muninn.history.cited_analysis_source import CitedAnalysisSource
         source = CitedAnalysisSource(self.archive)
         expected = source.expected_refs(stage_before["window"], stage_before["proposals"],
-                                         model_identity=stage_before["model_identity"])
+            model_identity=stage_before["model_identity"],
+            **({'source_view': stage_before['source_view']} if 'source_view' in stage_before else {}))
         if refs != expected or not source.ledger.verify_refs(refs):
             raise SearchJobError("Memory receipt has no matching durable records")
         with self._connect() as db:

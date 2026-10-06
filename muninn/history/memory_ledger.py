@@ -324,7 +324,7 @@ class MemoryLedger:
         self._append(ident, payload, idempotent=True)
         return ident
 
-    def record_batch(self, entry, version, attempt, items, *, model_identity):
+    def record_batch(self, entry, version, attempt, items, *, model_identity, source_view=None):
         """Authenticate MODEL proposals before one bounded, all-or-none commit.
 
         This API does not dispatch inference or activate automatic backfill.
@@ -335,12 +335,34 @@ class MemoryLedger:
                 or any(not isinstance(item, dict) or set(item) != {"page", "proposal"}
                        or type(item["page"]) is not int or item["page"] < 0 for item in items)):
             raise ValueError("Invalid bounded memory batch")
-        events = [self._prepare_record(entry, version, attempt, item["page"], item["proposal"],
-                                      model_identity=model_identity, proposal_origin="model") for item in items]
+        events = self._prepare_batch(entry, version, attempt, items,
+                                    model_identity=model_identity, source_view=source_view)
         self._append_batch(events, idempotent=True)
         return [ref for ref, _payload in events]
 
-    def _prepare_record(self, entry, version, attempt, page, proposal, *, model_identity, proposal_origin):
+    def _range_projection(self, view):
+        from muninn.history.cited_analysis_source import CitedAnalysisSource
+        from muninn.history.cited_zdr_projection import CitedZDRProjection
+        # Reuse this ledger's authenticated source reader, not a new writer or
+        # a persisted screening attestation. Full-unit EOF precedes admission.
+        source = object.__new__(CitedAnalysisSource)
+        source.archive, source.ledger = self.archive, self
+        descriptor = view.get('window') if isinstance(view, dict) else None
+        return CitedZDRProjection.from_source_view(source, descriptor, view)
+
+    def _prepare_batch(self, entry, version, attempt, items, *, model_identity, source_view=None):
+        projection = self._range_projection(source_view) if source_view is not None else None
+        if projection is not None:
+            descriptor = projection.source_view()['window']
+            if (descriptor['blob'] != entry['blob'] or descriptor['sha256'] != entry['sha256']
+                    or descriptor['version'] != version or descriptor['attempt'] != attempt):
+                raise ValueError('Source view is not bound to publication source')
+        return [self._prepare_record(entry, version, attempt, item['page'], item['proposal'],
+                model_identity=model_identity, proposal_origin='model', _projection=projection)
+                for item in items]
+
+    def _prepare_record(self, entry, version, attempt, page, proposal, *, model_identity,
+                        proposal_origin, _projection=None):
         if proposal_origin not in ("source_rule", "model"):
             raise ValueError("Invalid memory proposal origin")
         if (not isinstance(proposal, dict) or set(proposal) != {"type", "text", "quote", "start"}
@@ -353,9 +375,20 @@ class MemoryLedger:
         start, quote = proposal["start"], proposal["quote"]
         if data["text"][start:start + len(quote)] != quote:
             raise ValueError("Memory quote does not match its authenticated source")
-        safe = self._screen({"window": data["text"], "claim": proposal["text"], "quote": quote})
-        unit_safe, body_length, body_digest = self._unit_info(entry, version, attempt, unit)
-        credential_risk = not safe or not unit_safe or proposal["type"] == "possible_credential"
+        if _projection is None:
+            safe = self._screen({"window": data["text"], "claim": proposal["text"], "quote": quote})
+            unit_safe, body_length, body_digest = self._unit_info(entry, version, attempt, unit)
+            credential_risk = not safe or not unit_safe or proposal["type"] == "possible_credential"
+        else:
+            if proposal_origin != 'model':
+                raise ValueError('Projected evidence does not grant source-rule authority')
+            _projection.validate_page_proposal(page, proposal)
+            # The canonical projection already drained the entire unit. It
+            # cannot grant whole-unit observation authority and needs no second
+            # drain or persisted raw-unit screening attestation.
+            body_length, body_digest = 0, b''
+            credential_risk = (proposal['type'] == 'possible_credential'
+                               or not self._screen({'claim': proposal['text'], 'quote': quote}))
         project_ref = (hmac.new(self._key, b"project\0" + unit.cwd.encode("utf-8"), hashlib.sha256).hexdigest()
                        if unit.cwd else None)
         observation = bool(unit.role and unit.role.casefold() == "user" and proposal["text"] == quote
@@ -375,6 +408,8 @@ class MemoryLedger:
         # separate domain so they cannot alias a prior filed observation.
         if proposal_origin == "model":
             identity["proposal_origin"] = proposal_origin
+        if _projection is not None:
+            identity['source_view'] = _projection.source_view()
         ident = hmac.new(self._key, b"candidate\0" + _json(identity), hashlib.sha256).hexdigest()
         payload = {"event": "candidate", "policy": POLICY, "model_identity": model_identity,
                    "proposal_origin": proposal_origin,
@@ -390,6 +425,9 @@ class MemoryLedger:
                                 "attempt": attempt, "page": page, "unit": unit.ordinal,
                                 "fragment": data["fragment"], "start": start, "length": len(quote),
                                 "parser_version": PARSER_VERSION}}
+        if _projection is not None:
+            payload.update(screening='original_ranges', source_view=_projection.source_view(),
+                           epistemic_kind='model_interpretation', truth_status='model_inferred')
         return ident, payload
 
     def _check_candidate(self, payload):
@@ -444,27 +482,31 @@ class MemoryLedger:
                 or payload.get("reason") not in _REVIEW_REASONS[state]
                 or payload.get("actor") != "local-user"
                 or candidate.get("credential_risk") is not False
-                or candidate.get("screening") != "complete_unit"
+                or candidate.get("screening") not in {"complete_unit", "original_ranges"}
                 or not isinstance(candidate.get("citation"), dict)
                 or payload.get("candidate_sha256") != hashlib.sha256(_json(candidate)).hexdigest()
                 or payload.get("citation_sha256") != hashlib.sha256(_json(candidate["citation"])).hexdigest()):
             raise MemoryLedgerIntegrityError("Memory review decision authentication failed")
         return state
 
-    def _public_candidate(self, ident, candidate, state, *, persist_screen=True):
+    def _public_candidate(self, ident, candidate, state, *, persist_screen=True, include_text=True):
         if candidate is None: return None
         public = {k: candidate[k] for k in ("type", "epistemic_kind", "truth_status",
                   "event_at", "time_basis", "project_ref", "project_basis")}
         public.update(id=ident, state=state, source_ref=hmac.new(
             self._key, b"citation\0" + _json(candidate["citation"]), hashlib.sha256).hexdigest())
         public["proposal_origin"] = candidate.get("proposal_origin", "legacy_unrecorded")
-        if self._public_text_safe(candidate, persist_screen=persist_screen):
+        if include_text and self._public_text_safe(candidate, persist_screen=persist_screen):
             public.update(text=sanitize_agent_span(candidate["text"], max_chars=2048),
                           quote=sanitize_agent_span(candidate["quote"], max_chars=2048))
         return public
 
     def _public_text_safe(self, candidate, *, persist_screen=True):
-        if candidate["credential_risk"] or candidate["screening"] != "complete_unit":
+        if candidate["credential_risk"]:
+            return False
+        if candidate['screening'] == 'original_ranges':
+            return self._public_projection(candidate) is not None
+        if candidate['screening'] != 'complete_unit':
             return False
         cite = candidate["citation"]
         entry = self._entries[(cite["blob"], cite["version"])]
@@ -477,6 +519,29 @@ class MemoryLedger:
                                use_persisted=False, persist_screen=persist_screen)[0]
                 and self._screen({"window": data["text"], "claim": candidate["text"],
                                   "quote": candidate["quote"]}))
+
+    def _public_projection(self, candidate):
+        """One fresh canonical proof shared by public text/context and review."""
+        try:
+            if (candidate.get('credential_risk') is not False
+                    or candidate.get('screening') != 'original_ranges'
+                    or candidate.get('proposal_origin') != 'model'
+                    or candidate.get('type') == 'possible_credential'
+                    or not self._screen({'claim': candidate['text'], 'quote': candidate['quote']})):
+                return None
+            self._check_candidate(candidate)
+            projection = self._range_projection(candidate['source_view'])
+            desc, cite = projection.source_view()['window'], candidate['citation']
+            if (desc['blob'] != cite['blob'] or desc['sha256'] != cite['sha']
+                    or desc['version'] != cite['version'] or desc['attempt'] != cite['attempt']):
+                return None
+            if projection.remote_input(desc) is None:
+                return None
+            projection.validate_page_proposal(cite['page'], {'type': candidate['type'],
+                'text': candidate['text'], 'quote': candidate['quote'], 'start': cite['start']})
+            return projection
+        except (ValueError, RuntimeError, KeyError, TypeError):
+            return None
 
     def get(self, ident):
         self._screen_cache.clear()  # no stale source-safety proof across public reads
@@ -506,7 +571,7 @@ class MemoryLedger:
                     current_states[ref] = payload["state"]
                     # Never match private credential text, even if the caller
                     # happens to know it. Exact refs use metadata-only get.
-                    if payload["credential_risk"] or payload["screening"] != "complete_unit":
+                    if payload["credential_risk"] or payload["screening"] not in {"complete_unit", "original_ranges"}:
                         continue
                     safe_text = sanitize_agent_span(payload["text"], max_chars=2048)
                     searchable = (safe_text + ' ' + payload["type"]).casefold()
@@ -542,7 +607,12 @@ class MemoryLedger:
         cite = candidate["citation"]
         entry = self._entries[(cite["blob"], cite["version"])]
         unit, data = self._source(entry, cite["version"], cite["attempt"], cite["page"])
-        public = self._public_candidate(ident, candidate, state)
+        projected = candidate['screening'] == 'original_ranges'
+        projection = self._public_projection(candidate) if projected else None
+        public = self._public_candidate(ident, candidate, state, include_text=not projected)
+        if projection is not None:
+            public.update(text=sanitize_agent_span(candidate['text'], max_chars=2048),
+                          quote=sanitize_agent_span(candidate['quote'], max_chars=2048))
         result = {"memory": public, "provider": unit.provider,
                   "context_state": "withheld", "redaction": "strict-best-effort",
                   "citation": {"version": cite["version"], "unit": cite["unit"],
@@ -552,6 +622,18 @@ class MemoryLedger:
                       entry, cite["version"], "transcript"),
                   "transcript_tool": "start_secure_history_transcript"}
         if "text" in public:
+            if candidate['screening'] == 'original_ranges':
+                descriptor = candidate['source_view']['window']
+                window = projection.reopen(descriptor)
+                quote_start = projection.validate_page_proposal(cite['page'], {
+                    'type': candidate['type'], 'text': candidate['text'],
+                    'quote': candidate['quote'], 'start': cite['start']})
+                start = max(0, quote_start - min(500, max_chars // 4))
+                result.update(context=window['text'][start:start + max_chars], context_state='available',
+                              context_coordinate='cited_window', context_start=start,
+                              context_truncated=start > 0 or start + max_chars < len(window['text']),
+                              partial_visible_ranges=True)
+                return result
             start = max(0, cite["start"] - min(500, max_chars // 4))
             result.update(context=sanitize_agent_span(data["text"][start:start+max_chars],
                                                      max_chars=max_chars),
@@ -584,7 +666,7 @@ class MemoryLedger:
         if candidate is None or observed_state != expected_state:
             raise ValueError("Memory review state changed")
         if (candidate.get("credential_risk") is not False
-                or candidate.get("screening") != "complete_unit"
+                or candidate.get("screening") not in {"complete_unit", "original_ranges"}
                 or not self._public_text_safe(candidate)):
             raise ValueError("Only safe noncredential cited memories can be reviewed")
         with self._connect() as db:
@@ -665,7 +747,7 @@ class MemoryLedger:
             for seq, ref in positions:
                 candidate = candidates[ref]
                 if (current_states[ref] not in states or candidate["credential_risk"]
-                        or candidate["screening"] != "complete_unit"):
+                        or candidate["screening"] not in {"complete_unit", "original_ranges"}):
                     continue
                 public = self._public_candidate(ref, candidate, current_states[ref], persist_screen=False)
                 if "text" not in public:
@@ -690,7 +772,9 @@ class MemoryLedger:
             _report, candidates, states = self._review_snapshot(db)
         counts = {state: 0 for state in ("provisional", "filed", "needs_user", "rejected")}
         for ref, candidate in candidates.items():
-            if candidate.get("credential_risk") is False and candidate.get("screening") == "complete_unit":
+            if (candidate.get("credential_risk") is False
+                    and candidate.get("screening") in {"complete_unit", "original_ranges"}
+                    and (candidate['screening'] == 'complete_unit' or self._public_text_safe(candidate))):
                 counts[states[ref]] += 1
         return counts
 

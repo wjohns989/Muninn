@@ -270,8 +270,12 @@ def _cited_outcome(content, source, descriptor, provider, model, digest=None, *,
             "Partial visible ranges only; withheld content was not interpreted. "
             + result["analysis"]["uncertainty"])[:700]
     identity = _cited_model_identity(window, provider, model, digest, request_options=request_options)
-    return {**result, "extraction": {"format": 1, "window": descriptor,
-        "proposals": parsed["proposals"], "model_identity": identity, "result": result}}
+    extraction = {"format": 1, "window": descriptor, "proposals": parsed["proposals"],
+                  "model_identity": identity, "result": result}
+    from muninn.history.cited_zdr_projection import CitedZDRProjection
+    if isinstance(source, CitedZDRProjection):
+        extraction['source_view'] = source.source_view()
+    return {**result, "extraction": extraction}
 
 
 def _clean_result(content: str, *, source_span: str = "") -> dict[str, object]:

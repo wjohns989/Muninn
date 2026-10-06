@@ -24,9 +24,9 @@ class CitedSourceError(ValueError):
 
 
 class CitedAnalysisSource:
-    def __init__(self, archive):
+    def __init__(self, archive, *, read_only=False):
         self.archive = archive
-        self.ledger = MemoryLedger(archive)
+        self.ledger = MemoryLedger(archive, read_only=read_only)
 
     @staticmethod
     def _digest(window):
@@ -199,22 +199,31 @@ class CitedAnalysisSource:
             checked.append({"page": page, "proposal": {**proposal, "start": source_start}})
         return checked
 
-    def record_proposals(self, descriptor, proposals, *, model_identity):
+    def record_proposals(self, descriptor, proposals, *, model_identity, source_view=None):
+        if source_view is not None and (not isinstance(source_view, dict)
+                                       or source_view.get('window') != descriptor):
+            raise CitedSourceError('Publication view does not match its extraction window')
         checked = self.validated_proposals(descriptor, proposals)
         if not MemoryLedger._hex(model_identity):
             raise CitedSourceError("Invalid extraction model identity")
         if not checked:
+            if source_view is not None:
+                from muninn.history.cited_zdr_projection import CitedZDRProjection
+                CitedZDRProjection.from_source_view(self, descriptor, source_view)
             return []
         entry = self._window(descriptor)[0]
         return self.ledger.record_batch(entry, descriptor["version"], descriptor["attempt"], checked,
-                                        model_identity=model_identity)
+                                        model_identity=model_identity, source_view=source_view)
 
-    def expected_refs(self, descriptor, proposals, *, model_identity):
+    def expected_refs(self, descriptor, proposals, *, model_identity, source_view=None):
         """Compute stage-bound identities without publishing any candidate."""
+        if source_view is not None and (not isinstance(source_view, dict)
+                                       or source_view.get('window') != descriptor):
+            raise CitedSourceError('Publication view does not match its extraction window')
         checked = self.validated_proposals(descriptor, proposals)
         if not MemoryLedger._hex(model_identity):
             raise CitedSourceError("Invalid extraction model identity")
         entry = self._window(descriptor)[0]
-        return [self.ledger._prepare_record(entry, descriptor["version"], descriptor["attempt"],
-                item["page"], item["proposal"], model_identity=model_identity,
-                proposal_origin="model")[0] for item in checked]
+        return [ref for ref, _ in self.ledger._prepare_batch(
+            entry, descriptor["version"], descriptor["attempt"], checked,
+            model_identity=model_identity, source_view=source_view)]

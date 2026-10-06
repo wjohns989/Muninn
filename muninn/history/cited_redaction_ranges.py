@@ -18,8 +18,9 @@ def unchanged_cited_ranges(source, descriptor, *, should_cancel=lambda: False):
 
     An unchanged run can still contain sensitive labels, paths or undetected
     values. Any later provider use needs independent exact-body screening,
-    consent, strict ZDR and billing/dispatch guards; batch admission and public
-    reads retain their current whole-unit policy. This is not that admission.
+    consent, strict ZDR and billing/dispatch guards. Batch admission retains
+    its whole-unit policy. Public projected candidates require a fresh canonical
+    view plus independently screened claims/quotes; this helper alone grants none.
     """
     if should_cancel():
         raise CitedSourceError('Cited range selection cancelled')

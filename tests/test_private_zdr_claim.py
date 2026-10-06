@@ -77,7 +77,8 @@ def test_authenticated_owned_checkpoint_blocks_unrelated_private_job(tmp_path):
         capture_remote_only=True, capture_private_zdr=True) is None
 
 
-def test_projected_stage_restarts_and_publishes_without_redispatch(tmp_path):
+@pytest.mark.parametrize('legacy', [False, True])
+def test_projected_stage_restarts_and_publishes_without_redispatch(tmp_path, legacy):
     from muninn.history import secure_analysis
     from muninn.history.capture_journal import CaptureJournal
     from muninn.history.cited_analysis_source import CitedAnalysisSource
@@ -100,6 +101,9 @@ def test_projected_stage_restarts_and_publishes_without_redispatch(tmp_path):
             'quote': quote, 'start': source.reopen(descriptor)['text'].index(quote)}]})
     stage = secure_analysis._cited_outcome(output, projection, descriptor,
                                          'openrouter', 'fixture-model')['extraction']
+    assert stage['source_view'] == projection.source_view()
+    if legacy:
+        stage.pop('source_view')  # Previously installed stages remain unchanged.
     assert journal.bind_analysis_window(job.job_id, job.lease_token, descriptor)
     paid = reserve(journal.policy_root, 1, READY)
     assert journal.mark_remote_dispatched(job.job_id, job.lease_token)
@@ -114,8 +118,10 @@ def test_projected_stage_restarts_and_publishes_without_redispatch(tmp_path):
     replay = restarted.claim_analysis(include_capture=True, include_search=False,
         capture_remote_only=True, capture_private_zdr=True)
     assert replay.state == 'publishing' and replay.extraction == stage
-    refs = source.record_proposals(descriptor, stage['proposals'], model_identity=stage['model_identity'])
+    refs = source.record_proposals(descriptor, stage['proposals'], model_identity=stage['model_identity'],
+                                  **({'source_view': stage['source_view']} if not legacy else {}))
     assert restarted.acknowledge_publication(replay.job_id, replay.lease_token, refs)
     assert restarted.verify_publications(job_ids=[old.job_id]) == 1
     assert restarted.get_analysis_job(old.job_id)['memory_refs'] == refs
+    assert ('text' in source.ledger.get(refs[0])) is not legacy
     assert b'short-value' not in restarted.path.read_bytes()

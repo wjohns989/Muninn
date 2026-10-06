@@ -334,7 +334,8 @@ class HistoricalBatchWorker:
                 if not await asyncio.to_thread(self.journal.begin_publication, job.job_id, job.lease_token):
                     return
             refs = await asyncio.to_thread(source.record_proposals, stage["window"], stage["proposals"],
-                                           model_identity=stage["model_identity"])
+                model_identity=stage["model_identity"],
+                **({'source_view': stage['source_view']} if 'source_view' in stage else {}))
             await asyncio.to_thread(self.journal.acknowledge_publication, job.job_id, job.lease_token, refs)
         finally:
             task.cancel()
