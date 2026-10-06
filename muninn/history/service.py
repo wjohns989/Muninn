@@ -933,11 +933,20 @@ class HistoryService:
                                or await asyncio.to_thread(self._capture_drain_active))):
             return False
         journal = self._require_capture_journal()
-        if automatic and not await asyncio.to_thread(journal.capture_planning_ready):
+        if automatic and not await asyncio.to_thread(journal.capture_planning_ready, require_capacity=False):
             return False
+        empty_repair = asyncio.create_task(asyncio.to_thread(journal.reconcile_capture_no_context, limit=8))
+        try:
+            empty_completed = await asyncio.shield(empty_repair)
+        except asyncio.CancelledError:
+            # A cancelled await cannot stop its SQLite writer thread.
+            await asyncio.gather(empty_repair, return_exceptions=True)
+            raise
+        if automatic and not await asyncio.to_thread(journal.capture_planning_ready):
+            return bool(empty_completed)
         receipt = await asyncio.to_thread(journal.next_capture_plan)
         if receipt is None:
-            return False
+            return bool(empty_completed)
         ticket = await asyncio.to_thread(journal.capture_planning_ticket, receipt)
         remote_generation = -1
         from muninn.history.batch_activation import historical_queue_capacity
@@ -1037,6 +1046,15 @@ class HistoryService:
                 await asyncio.to_thread(journal.fail_analysis, job.job_id, job.lease_token, "insufficient_context")
                 return True
             if not await asyncio.to_thread(journal.bind_analysis_window, job.job_id, job.lease_token, descriptor):
+                return True
+            if job.lane == 1 and not (await asyncio.to_thread(source.reopen, descriptor))["text"].strip():
+                empty_ack = asyncio.create_task(asyncio.to_thread(journal.acknowledge_capture_no_context,
+                    job.job_id, lease_token=job.lease_token))
+                try:
+                    await asyncio.shield(empty_ack)
+                except asyncio.CancelledError:
+                    await asyncio.gather(empty_ack, return_exceptions=True)
+                    raise
                 return True
             if cancelled.is_set():
                 await asyncio.to_thread(journal.fail_analysis, job.job_id,

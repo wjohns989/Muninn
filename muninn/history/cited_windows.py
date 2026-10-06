@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import uuid
+from contextlib import contextmanager
 from itertools import zip_longest
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from muninn.history.cited_analysis_source import CitedAnalysisSource
 from muninn.history.secure_projection_store import SecureProjectionStore, ProjectionIntegrityError, _j
 from muninn.history.structured_projector import ProjectionCancelled
 from muninn.history.transcript_units import PARSER_VERSION
+from muninn.history.private_acl import verify_private
 
 WINDOW_CHARS = 3000
 PLAN_VERSION = 1
@@ -29,9 +32,31 @@ class CitedWindowPlanStore(SecureProjectionStore):
     max_page_chars = 8192
     window_chars = WINDOW_CHARS
 
-    def __init__(self, archive, root: Path | None = None):
-        self.source = CitedAnalysisSource(archive)
+    def __init__(self, archive, root: Path | None = None, *, read_only=False):
+        self.read_only = read_only
+        self.source = CitedAnalysisSource(archive, read_only=read_only)
+        if read_only:
+            self.archive = archive
+            self.root = root or Path(archive.root) / "cited-windows"
+            self.db_path = self.root / "projections.sqlite3"
+            verify_private(self.root)
+            verify_private(self.db_path)
+            return
         super().__init__(archive, root or Path(archive.root) / "cited-windows")
+
+    @contextmanager
+    def _connect(self):
+        if not self.read_only:
+            with super()._connect() as db:
+                yield db
+            return
+        verify_private(self.db_path)
+        db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=30)
+        try:
+            db.execute("PRAGMA query_only=ON")
+            yield db
+        finally:
+            db.close()
 
     def _key(self):
         return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,

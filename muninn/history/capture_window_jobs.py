@@ -538,13 +538,16 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                                      "WHERE w.work_id=? GROUP BY j.state",
                                      (row["work_id"],)))
             if (sum(counts.values()) != state["next_ordinal"]
-                    or counts.get("succeeded", 0) + counts.get("reused", 0) != state["acknowledged"]):
+                    or sum(counts.get(k, 0) for k in ("succeeded", "reused", "no_context"))
+                        != state["acknowledged"]):
                 raise VaultIntegrityError("Capture window coverage records are inconsistent")
             for job in db.execute("SELECT j.* FROM capture_enrichment_windows w "
                                   "JOIN history_analysis_jobs j ON w.job_id=j.job_id WHERE w.work_id=?",
                                   (row["work_id"],)):
                 self._read_capture_reuse(job)
-        outcome = ("no_context" if not state["count"] else "completed" if state["acknowledged"] == state["count"]
+                self._read_capture_no_context(job)
+        outcome = ("no_context" if not state["count"] or counts.get("no_context") == state["count"]
+                   else "completed" if state["acknowledged"] == state["count"]
                    else "failed" if any(counts.get(k) for k in ("failed", "cancelled", "outcome_unknown"))
                    else "deferred" if counts.get("retry") else "processing")
         return {"state": outcome, "windows": state["count"], "queued": state["next_ordinal"],
@@ -582,6 +585,8 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                     acknowledged += 1
                 reuse = self._read_capture_reuse(job)
                 if reuse is not None:
+                    acknowledged += 1
+                if self._read_capture_no_context(job, source=plans.source) is not None:
                     acknowledged += 1
             if acknowledged != state["acknowledged"]:
                 raise VaultIntegrityError("Capture window completion counter is invalid")

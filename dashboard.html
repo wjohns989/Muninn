@@ -1122,7 +1122,7 @@
             const enrichment = object(data?.capture_enrichment);
             const jobs = object(enrichment.window_jobs);
             const states = object(jobs.states);
-            const labels = ['succeeded', 'reused', 'pending', 'retry', 'failed', 'outcome_unknown',
+            const labels = ['succeeded', 'reused', 'no_context', 'pending', 'retry', 'failed', 'outcome_unknown',
                 'running', 'publishing', 'publication_pending', 'cancelled', 'not_queued', 'not_applicable'];
             const known = jobs.basis === 'all_capture_lane_jobs' && integer(jobs.total) &&
                 Object.entries(states).every(([key, value]) => labels.includes(key) && integer(value)) &&
@@ -1187,7 +1187,7 @@
                 route: enrichment.automatic_remote_only === true ? 'Automatic remote-only processing reported; no local model fallback.' :
                     enrichment.automatic_remote_only === false ? 'Remote-only mode not enabled; actual per-request routing is separate evidence.' : 'Automatic routing unknown.',
                 coverage: `${known ? count(jobs.total) : 'Unknown'} recorded windows across all capture-lane jobs. ` +
-                    (known ? `${value('running')} running, ${value('publishing')} publishing, ${value('publication_pending')} publication pending; ` : '') +
+                    (known ? `${value('no_context')} authenticated no-content windows (not model successes); ${value('running')} running, ${value('publishing')} publishing, ${value('publication_pending')} publication pending; ` : '') +
                     'Remaining window total is unknown until every eligible source is planned; no overall completion percentage.'};
         }
 
@@ -1453,7 +1453,7 @@
                         'This includes historical snapshot versions, not just latest files.';
                 }
                 const windows = enrichment.window_jobs;
-                const labels = ['succeeded', 'reused', 'pending', 'retry', 'failed',
+                const labels = ['succeeded', 'reused', 'no_context', 'pending', 'retry', 'failed',
                     'outcome_unknown', 'running', 'publishing', 'publication_pending',
                     'cancelled', 'not_queued', 'not_applicable'];
                 const states = windows?.states;

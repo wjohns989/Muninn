@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from muninn.history.blind_index import _terms as _search_terms
 from muninn.history.capture_enrichment import CaptureEnrichmentMixin
+from muninn.history.capture_no_context import CaptureNoContextMixin
 from muninn.history.capture_window_jobs import CaptureWindowJobsMixin
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.historical_batch_jobs import HistoricalBatchJobsMixin
@@ -46,6 +47,7 @@ _ANALYSIS_ACTIVE = {"pending", "running", "retry", "publishing", "publication_pe
 _ANALYSIS_STATES = _ANALYSIS_ACTIVE | {
     "succeeded",
     "reused",
+    "no_context",
     "failed",
     "cancelled",
     "not_queued",
@@ -141,7 +143,8 @@ class AnalysisJob:
         )
 
 
-class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalBatchJobsMixin):
+class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalBatchJobsMixin,
+                     CaptureNoContextMixin):
     def __init__(self, archive: SecureHistoryArchive, *, recover: bool = True,
                  policy_root: Path | None = None):
         self.archive = archive
@@ -468,7 +471,9 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                 if row["vault_id"] != self.archive.vault_id or not re.fullmatch(r"[0-9a-f]{32}", row["job_id"]):
                     raise VaultIntegrityError("Analysis journal identity is invalid")
                 self._validated_analysis_target(row, db)
-                if row["sealed_result"] is not None:
+                if row["state"] == "no_context":
+                    self._read_capture_no_context(row)
+                elif row["sealed_result"] is not None:
                     self._allow_analysis_result(
                         self._open_search(row["sealed_result"], row["job_id"], "analysis-result")
                     )
@@ -1134,13 +1139,15 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
         return db.execute("SELECT 1 FROM history_search_jobs WHERE state='running' "
                           "OR (state IN ('pending','retry') AND due_at<=?) LIMIT 1", (now,)).fetchone() is not None
 
-    def capture_planning_ready(self) -> bool:
+    def capture_planning_ready(self, *, require_capacity=True) -> bool:
         """Cheap preflight; claims recheck priority after lengthy preparation."""
+        if type(require_capacity) is not bool:
+            raise ValueError("Invalid planning capacity gate")
         with self._connect() as db:
             self._capture_schedule(db)
             return (self._enrichment_baseline(db) is not None
                     and not self._foreground_search_pending(db, time.time())
-                    and self._capture_window_capacity(db) > 0)
+                    and (not require_capacity or self._capture_window_capacity(db) > 0))
 
     def claim_analysis(self, *, include_capture: bool = False,
                        include_search: bool = True,
@@ -1315,6 +1322,8 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
             "error_code": row["error_code"] if row["error_code"] in _ANALYSIS_RETRY_CODES | _ANALYSIS_TERMINAL_CODES else None,
             "due_at": row["due_at"] if row["state"] == "retry" else None,
         }
+        if self._read_capture_no_context(row) is not None:
+            response["coverage_basis"] = "authenticated_whitespace"
         receipt = self._read_publication_receipt(row)
         if receipt is not None:
             response["memory_refs"] = list(receipt["refs"])
