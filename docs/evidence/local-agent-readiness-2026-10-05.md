@@ -84,6 +84,10 @@ eligible unsent local failure was requeued through the existing fenced recovery
 script after a validated encrypted journal preimage; uncertain dispatched jobs
 were untouched. Recovery is not a successful interpretation receipt.
 
-Historical ambiguity resolution, complete backlog interpretation and missing
-Gemini host-event proofs remain open. The local passphrase-only credential
-workflow must not be replaced by an ordinary agent bearer or provider egress.
+Historical ambiguity resolution and complete backlog interpretation remain open.
+The installed Gemini native runner's AfterAgent and PreCompress handoffs now have
+operator-triggered live capture and authenticated encrypted-content proof in
+`gemini-native-hooks-20261005.md`. This is not a new natural model-reply/compaction
+cycle; endpoint counters include those explicit probes. The local passphrase-only
+credential workflow must not be replaced by an ordinary agent bearer or provider
+egress.
