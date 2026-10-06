@@ -1138,10 +1138,13 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
 
     def claim_analysis(self, *, include_capture: bool = False,
                        include_search: bool = True,
-                       capture_remote_only: bool = False) -> AnalysisJob | None:
+                       capture_remote_only: bool = False,
+                       capture_private_zdr: bool = False) -> AnalysisJob | None:
         if any(type(value) is not bool for value in
-               (include_capture, include_search, capture_remote_only)):
+               (include_capture, include_search, capture_remote_only, capture_private_zdr)):
             raise ValueError("Invalid capture lane admission")
+        if capture_private_zdr and not (include_capture and not include_search and capture_remote_only):
+            raise ValueError("Invalid private ZDR lane admission")
         now = time.time()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -1151,7 +1154,20 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
             minimum_lane = 0 if include_search else 1
             blocked = sorted(self._historical_batch_blocked_jobs(db))
             exclusion = " AND job_id NOT IN (" + ",".join("?" for _ in blocked) + ") " if blocked else " "
-            row = db.execute(
+            if capture_private_zdr:
+                # A private synchronous call cannot bypass an owned/sent batch
+                # checkpoint, even when it is not one of that batch's members.
+                owner = self._historical_batch_head(db)[1]
+                if owner is not None and owner["phase"] != "passed":
+                    return None
+                row = db.execute(
+                    "SELECT * FROM history_analysis_jobs WHERE lane=1 AND lane<=? "
+                    "AND state IN ('retry','publication_pending') AND due_at<=? "
+                    "AND remote_policy_generation>0 AND (publication_started=1 OR "
+                    "sealed_extraction IS NOT NULL OR error_code='source_not_remote_safe') "
+                    "ORDER BY created_at,job_id LIMIT 1", (maximum_lane, now)).fetchone()
+            else:
+                row = db.execute(
                 "SELECT * FROM history_analysis_jobs WHERE state IN ('pending','retry','publication_pending') "
                 "AND due_at<=? AND lane>=? AND lane<=? "
                 "AND (?=0 OR lane=0 OR publication_started=1 OR (remote_policy_generation>0 "
@@ -1160,7 +1176,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                 + exclusion + "ORDER BY lane,due_at,created_at LIMIT 1",
                 (now, minimum_lane, maximum_lane, int(capture_remote_only),
                  int(self._capture_window_capacity(db) > 0), *blocked),
-            ).fetchone()
+                ).fetchone()
             if not row:
                 return None
             self._validated_analysis_target(row, db)

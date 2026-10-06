@@ -977,7 +977,8 @@ class HistoryService:
 
     async def _process_secure_analysis_once(self, *, include_capture: bool = False,
                                             include_search: bool = True,
-                                            capture_remote_only: bool = False) -> bool:
+                                            capture_remote_only: bool = False,
+                                            capture_private_zdr: bool = False) -> bool:
         """Interpret one immutable target without occupying idle VRAM.
 
         Capture-window admission is opt-in and separate from both outbox
@@ -987,6 +988,8 @@ class HistoryService:
         claim_kwargs = {"include_capture": include_capture, "include_search": include_search}
         if capture_remote_only:
             claim_kwargs["capture_remote_only"] = True
+        if capture_private_zdr:
+            claim_kwargs["capture_private_zdr"] = True
         job = await asyncio.to_thread(journal.claim_analysis, **claim_kwargs)
         if job is None:
             return False
@@ -1150,6 +1153,8 @@ class HistoryService:
                 return True
             if job.lane == 1 and not remote_enabled:
                 self._capture_cadence.note_local_opportunity()
+            if capture_private_zdr:
+                analysis_kwargs["private_zdr"] = True
             outcome = await analyze_cited_window(self, source, descriptor,
                                                  **analysis_kwargs, **reuse_kwargs)
             if (job.lane == 1 and capture_remote_only and not remote_was_not_sent
@@ -1245,6 +1250,17 @@ class HistoryService:
             read_batch_policy,
         )
         owner = await asyncio.to_thread(journal.historical_batch_owner)
+        if (owner is not None and owner["phase"] == "passed"
+                and getattr(self, "_private_zdr_checkpoint", None) != owner["id"]
+                and self._capture_auto_enabled() and self._capture_remote_enabled()
+                and self._capture_cadence.attempt_ready()):
+            # One fair opportunity after the exact previous checkpoint passed.
+            # Journal state and managed admission, not this fairness hint,
+            # provide durable no-redispatch proof across restart.
+            self._private_zdr_checkpoint = owner["id"]
+            if await self._process_secure_analysis_once(include_capture=True,
+                    include_search=False, capture_remote_only=True, capture_private_zdr=True):
+                return True
         if owner is None or owner["phase"] == "passed":
             policy = await asyncio.to_thread(read_batch_policy, journal.policy_root)
             if not policy["enabled"]:
@@ -1280,6 +1296,14 @@ class HistoryService:
                                                         else ("gathering_batch" if min_items > 1
                                                               else "awaiting_screened_windows"),
                     "gather_remaining_seconds": max(0, self._historical_batch_gather_deadline - time.monotonic())}
+                if (min_items == 1 and policy["remaining_batches"]
+                        and self._capture_auto_enabled() and self._capture_remote_enabled()
+                        and self._capture_cadence.attempt_ready()):
+                    # After gathering expires with no clean batch, private-only
+                    # sources must not starve behind a nonexistent checkpoint.
+                    if await self._process_secure_analysis_once(include_capture=True,
+                            include_search=False, capture_remote_only=True, capture_private_zdr=True):
+                        return True
                 return True
             self._historical_batch_gather_deadline = None
         else:

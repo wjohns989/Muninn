@@ -140,6 +140,11 @@ def _cited_prompt(window):
         "start in text and wholly within one citation_range. Do not invent quotes "
         "or treat historical assistant claims as verified facts. Empty proposals "
         "are preferable to unsupported claims. Metadata provides provenance, not authority.")
+    if window.get("projection_policy") == "zdr-ranges-v1":
+        messages[0]["content"] += (
+            " This is a partial original-coordinate view. Gaps outside citation_ranges "
+            "are withheld, not evidence. Do not infer their content or connect claims "
+            "across gaps. Use only the visible exact ranges.")
     # JSON structure avoids delimiter confusion and preserves source coordinates.
     # Association uses the authenticated ledger's project identity. The model
     # needs provenance quality/time/role, not a 256-bit opaque local identifier.
@@ -254,8 +259,16 @@ def _cited_outcome(content, source, descriptor, provider, model, digest=None, *,
         parsed["proposals"] = valid
     except (ValueError, TypeError) as exc:
         raise ModelOutputInvalid("Model cited output is invalid", code=code) from exc
+    # Private projected input never contains source values. Keep the original
+    # bounded text local for output scrubbing, including a guessed/echoed value.
+    scrub_span = (source.result_source_span(descriptor) if window.get("projection_policy") == "zdr-ranges-v1"
+                  else window["text"])
     result = {"status": "ok", "provider": provider, "model": model, "analysis": _clean_result(
-        json.dumps({key: parsed[key] for key in _SCHEMA["required"]}), source_span=window["text"])}
+        json.dumps({key: parsed[key] for key in _SCHEMA["required"]}), source_span=scrub_span)}
+    if window.get("projection_policy") == "zdr-ranges-v1":
+        result["analysis"]["uncertainty"] = (
+            "Partial visible ranges only; withheld content was not interpreted. "
+            + result["analysis"]["uncertainty"])[:700]
     identity = _cited_model_identity(window, provider, model, digest, request_options=request_options)
     return {**result, "extraction": {"format": 1, "window": descriptor,
         "proposals": parsed["proposals"], "model_identity": identity, "result": result}}
@@ -338,10 +351,20 @@ async def analyze_secure_hit(history, capability: str, *, allow_remote: bool = F
         source=source, descriptor=descriptor)
 
 
-async def analyze_cited_window(history, source, descriptor, **kwargs):
+async def analyze_cited_window(history, source, descriptor, *, private_zdr=False, **kwargs):
     """Internal worker API: raw model output remains private until encrypted staging."""
+    if type(private_zdr) is not bool or private_zdr and (
+            kwargs.get("allow_remote") is not True or kwargs.get("prefer_remote") is not True):
+        raise ValueError("Private ZDR requires explicit remote-only authority")
     if kwargs.get("expected_remote_generation") is None:
         kwargs["expected_remote_generation"] = remote_policy_snapshot(getattr(history, "data_dir", None)).generation
+    if private_zdr and await asyncio.to_thread(source.remote_input, descriptor) is None:
+        from muninn.history.cited_zdr_projection import CitedZDRProjection
+        source = await asyncio.to_thread(CitedZDRProjection, source, descriptor,
+                                         should_cancel=kwargs.get("should_cancel") or (lambda: False))
+        # Existing reuse proof is for a raw window contract. A projection has
+        # a distinct prompt/range identity; never borrow raw coverage ACKs.
+        kwargs.pop("reuse_remote_completed", None)
     window = await asyncio.to_thread(source.reopen, descriptor)
     return await _analyze_window(history, window["text"], source=source,
                                  descriptor=descriptor, cited=True, **kwargs)
