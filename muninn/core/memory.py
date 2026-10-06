@@ -29,6 +29,7 @@ import inspect
 from collections import OrderedDict
 from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
+from muninn.core.credential_boundary import CredentialMemoryError, require_credential_free
 
 from muninn.core.types import (
     MemoryRecord, MemoryType, Provenance, SearchResult,
@@ -546,6 +547,7 @@ class MuninnMemory:
                    projects (e.g. user preferences, universal rules).
         """
         self._check_initialized()
+        require_credential_free(content, metadata, user_id, agent_id, namespace)
         with self._otel.span(
             "muninn.memory.add",
             {
@@ -589,7 +591,8 @@ class MuninnMemory:
                 merged_successfully = False
                 async with self._write_lock:
                     existing = await asyncio.to_thread(self._metadata.get, dedup_result.existing_memory_id)
-                    if existing and self._record_matches_scope(existing, namespace, user_id):
+                    if (existing and not existing._credential_projection
+                            and self._record_matches_scope(existing, namespace, user_id)):
                         merged_content = self._dedup.merge_content(content, existing.content)
                         await asyncio.gather(
                             asyncio.to_thread(self._metadata.update, dedup_result.existing_memory_id, content=merged_content),
@@ -769,6 +772,7 @@ class MuninnMemory:
             List of memory dicts with scores.
         """
         self._check_initialized()
+        require_credential_free(query, filters, user_id, agent_id, namespaces)
 
         with self._otel.span(
             "muninn.memory.search",
@@ -1091,6 +1095,7 @@ class MuninnMemory:
     ) -> Dict[str, Any]:
         """Set/update editable user profile and global context data."""
         self._check_initialized()
+        require_credential_free(profile, user_id, source)
         if not isinstance(profile, dict):
             raise ValueError("profile must be a JSON object")
 
@@ -1157,6 +1162,7 @@ class MuninnMemory:
     ) -> Dict[str, Any]:
         """Set/update a scoped project goal and cache its embedding."""
         self._check_initialized()
+        require_credential_free(goal_statement, constraints, user_id, namespace, project)
         if self._goal_compass is None:
             raise RuntimeError("Goal compass is disabled by feature flag")
         if not goal_statement.strip():
@@ -1849,10 +1855,13 @@ class MuninnMemory:
             Updated memory dict.
         """
         self._check_initialized()
+        require_credential_free(data, kwargs)
 
         record = await asyncio.to_thread(self._metadata.get, memory_id)
         if not record:
             return {"error": f"Memory {memory_id} not found"}
+        if record._credential_projection:
+            raise CredentialMemoryError()
 
         old_content = record.content
         entity_names = list((record.metadata or {}).get("entity_names", []))
@@ -1870,6 +1879,8 @@ class MuninnMemory:
                 new_meta.update(value)
                 record.metadata = new_meta
 
+        require_credential_free(record.model_dump())
+
         # If content changed, re-extract and re-embed
         if data is not None:
             if self.config.extraction.defer_llm_on_add and not record.metadata.get(
@@ -1882,6 +1893,7 @@ class MuninnMemory:
                     data,
                     model_profile=self.config.extraction.runtime_model_profile,
                 )
+            require_credential_free(extraction.model_dump())
             entity_names = self._extract_entity_names(extraction)
             updated_metadata = dict(record.metadata or {})
             if entity_names:
@@ -2472,6 +2484,7 @@ class MuninnMemory:
 
     async def _embed(self, text: str) -> List[float]:
         """Generate embedding for text."""
+        require_credential_free(text)
         if self._embed_model is not None:
             # fastembed is CPU-bound, run in thread
             def _run_fastembed():
@@ -2510,6 +2523,7 @@ class MuninnMemory:
 
     async def _extract(self, content: str, model_profile: Optional[str] = None) -> ExtractionResult:
         """Run extraction pipeline on content."""
+        require_credential_free(content)
         if self._extraction:
             return await self._extraction.extract(
                 content,

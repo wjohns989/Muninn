@@ -15,6 +15,7 @@ from muninn.core.types import (
     MemoryRecord, MemoryType, Provenance, ExtractionResult,
 )
 from muninn.scoring.importance import calculate_importance, calculate_novelty
+from muninn.core.credential_boundary import require_credential_free
 
 logger = logging.getLogger("Muninn.Ingestion")
 
@@ -42,6 +43,7 @@ class IngestionManager:
         """
         Execute the full ingestion pipeline: extract -> embed -> dedup -> conflict -> score -> store.
         """
+        require_credential_free(content, metadata, user_id, agent_id, namespace)
         self._otel.add_event(
             "muninn.add.request",
             {"content_preview": self._otel.maybe_content(content)},
@@ -115,6 +117,9 @@ class IngestionManager:
                 if entity_names:
                     scoped_metadata["entity_names"] = entity_names
         
+        # Model/rule output is untrusted too; protect derived graph/index writes.
+        require_credential_free(extraction.model_dump(), scoped_metadata)
+
         # 2. Embedding
         with self._otel.span("muninn.ingestion.embed"):
             try:
@@ -186,7 +191,8 @@ class IngestionManager:
                         candidate_records = [
                             candidate
                             for candidate in all_candidates
-                            if self.memory._record_matches_scope(candidate, namespace, user_id)
+                            if not candidate._credential_projection
+                            and self.memory._record_matches_scope(candidate, namespace, user_id)
                         ]
                         if candidate_records:
                             conflicts = await asyncio.to_thread(

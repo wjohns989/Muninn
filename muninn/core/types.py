@@ -11,7 +11,7 @@ import uuid
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from muninn.core.recall_trace import RecallTrace
 
@@ -48,6 +48,8 @@ class MediaType(str, Enum):
 
 
 class MemoryRecord(BaseModel):
+    # Ephemeral read projection, never serialized into a memory or index.
+    _credential_projection: bool = PrivateAttr(default=False)
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str
     memory_type: MemoryType = MemoryType.EPISODIC

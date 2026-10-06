@@ -50,6 +50,7 @@ from muninn.core.env_loader import load_project_env
 load_project_env(Path(__file__).parent)
 
 from muninn.core.memory import MuninnMemory
+from muninn.core.credential_boundary import CredentialMemoryError, require_credential_free
 from muninn.core import handoffs
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.core.feature_flags import FeatureDisabledError
@@ -664,6 +665,8 @@ async def add_memory_endpoint(req: AddMemoryRequest):
 
         if not content.strip():
             raise HTTPException(status_code=400, detail="Content cannot be empty")
+        # Screen before splitting: a value must not become an unlabeled chunk.
+        require_credential_free(content, req.metadata, req.user_id, req.agent_id, req.namespace)
 
         # Determine provenance
         provenance = Provenance.AUTO_EXTRACTED
@@ -721,6 +724,8 @@ async def add_memory_endpoint(req: AddMemoryRequest):
         logger.info("Added memory for user %s", req.user_id)
         return {"success": True, "data": result}
 
+    except CredentialMemoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except HTTPException:
         raise
     except Exception as e:
@@ -1477,6 +1482,8 @@ async def update_memory_endpoint(req: UpdateMemoryRequest):
         # Phase 5C.3: Removed global lock
         result = await memory.update(req.memory_id, req.data)
         return {"success": True, "data": result}
+    except CredentialMemoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as e:
         logger.error("Error updating memory: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -10,11 +10,37 @@ import json
 import time
 import math
 import logging
+from functools import wraps
+from threading import local
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from muninn.core.types import MemoryRecord, MemoryType, Provenance
 from muninn.store.lock import get_store_lock
+from muninn.core.credential_boundary import (
+    CredentialMemoryError, project_credentials, require_credential_free,
+)
+
+
+def _ordinary_transaction(method):
+    """Original-row screening and rewrite share a SQLite writer transaction."""
+    @wraps(method)
+    def invoke(self, *args, **kwargs):
+        # Legacy callers share a connection; their commit must not release our
+        # check/write transaction. Use an owned connection for guarded rewrites.
+        if getattr(self._ordinary_local, "connection", None) is not None:
+            return method(self, *args, **kwargs)
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        self._ordinary_local.connection = conn
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                return method(self, *args, **kwargs)
+        finally:
+            del self._ordinary_local.connection
+            conn.close()
+    return invoke
 
 logger = logging.getLogger("Muninn.SQLite")
 
@@ -270,6 +296,7 @@ class SQLiteMetadataStore:
     """Manages memory records in SQLite with full CRUD and query capabilities."""
 
     def __init__(self, db_path):
+        self._ordinary_local = local()
         self.db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
@@ -284,6 +311,9 @@ class SQLiteMetadataStore:
                 raise
 
     def _get_conn(self) -> sqlite3.Connection:
+        owned = getattr(self._ordinary_local, "connection", None)
+        if owned is not None:
+            return owned
         if self._conn is None:
             self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
@@ -467,7 +497,10 @@ class SQLiteMetadataStore:
         else:
             d["media_type"] = "text"
 
-        return MemoryRecord(**d)
+        projected = project_credentials(d)
+        record = MemoryRecord(**projected)
+        record._credential_projection = projected != d
+        return record
 
 
     def set_meta(self, key: str, value: str) -> None:
@@ -595,6 +628,7 @@ class SQLiteMetadataStore:
             "top_source_count": top_source_count,
         }
 
+    @_ordinary_transaction
     def set_project_goal(
         self,
         *,
@@ -607,6 +641,13 @@ class SQLiteMetadataStore:
     ) -> None:
         """Persist or update a scoped project goal definition."""
         conn = self._get_conn()
+        require_credential_free(user_id, namespace, project, goal_statement, constraints)
+        existing = conn.execute(
+            "SELECT goal_statement,constraints_json FROM project_goals "
+            "WHERE user_id=? AND namespace=? AND project=?", (user_id, namespace, project),
+        ).fetchone()
+        if existing:
+            require_credential_free(existing[0], json.loads(existing[1] or "[]"))
         conn.execute(
             """
             INSERT INTO project_goals (
@@ -670,7 +711,7 @@ class SQLiteMetadataStore:
             except (json.JSONDecodeError, ValueError, TypeError):
                 embedding = None
 
-        return {
+        return project_credentials({
             "user_id": row["user_id"],
             "namespace": row["namespace"],
             "project": row["project"],
@@ -678,8 +719,9 @@ class SQLiteMetadataStore:
             "constraints": constraints,
             "goal_embedding": embedding,
             "updated_at": row["updated_at"],
-        }
+        })
 
+    @_ordinary_transaction
     def set_user_profile(
         self,
         *,
@@ -690,6 +732,10 @@ class SQLiteMetadataStore:
         """Persist or update an editable scoped user profile/context object."""
         conn = self._get_conn()
         payload = profile if isinstance(profile, dict) else {}
+        require_credential_free(user_id, payload, source)
+        existing = conn.execute("SELECT profile_json FROM user_profiles WHERE user_id=?", (user_id,)).fetchone()
+        if existing:
+            require_credential_free(json.loads(existing[0] or "{}"))
         conn.execute(
             """
             INSERT INTO user_profiles (user_id, profile_json, source, updated_at)
@@ -732,12 +778,12 @@ class SQLiteMetadataStore:
             except json.JSONDecodeError:
                 profile = {}
 
-        return {
+        return project_credentials({
             "user_id": row["user_id"],
             "profile": profile,
             "source": row["source"],
             "updated_at": float(row["updated_at"]),
-        }
+        })
 
     def has_handoff_event(self, event_id: str) -> bool:
         """Return True when an idempotency event has already been applied."""
@@ -1312,6 +1358,9 @@ class SQLiteMetadataStore:
     # --- CRUD Operations ---
 
     def add(self, record: MemoryRecord) -> str:
+        if record._credential_projection:
+            raise CredentialMemoryError()
+        require_credential_free(record.model_dump())
         # Use an advisory file lock to serialize cross-process writers.
         lock = get_store_lock(self.db_path.parent)
         with lock.acquire(shared=False):
@@ -1353,10 +1402,16 @@ class SQLiteMetadataStore:
             return None
         return self._row_to_record(row)
 
+    @_ordinary_transaction
     def update(self, memory_id: str, **kwargs) -> bool:
         conn = self._get_conn()
         if not kwargs:
             return False
+        require_credential_free(kwargs)
+        if {"content", "metadata"} & kwargs.keys():
+            original = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if original and self._row_to_record(original)._credential_projection:
+                raise CredentialMemoryError()
         # Serialize metadata if present
         if "metadata" in kwargs and isinstance(kwargs["metadata"], dict):
             kwargs["metadata"] = json.dumps(kwargs["metadata"])
@@ -1373,15 +1428,19 @@ class SQLiteMetadataStore:
         conn.commit()
         return cursor.rowcount > 0
 
+    @_ordinary_transaction
     def update_elo_rating(self, memory_id: str, new_rating: float) -> bool:
         """Update the Elo rating for a specific memory."""
-        record = self.get(memory_id)
-        if not record:
+        conn = self._get_conn()
+        row = conn.execute("SELECT metadata FROM memories WHERE id=?", (memory_id,)).fetchone()
+        if row is None:
             return False
-            
-        metadata = record.metadata or {}
+        # Preserve the original JSON, not the credential-redacted read view.
+        metadata = json.loads(row[0] or "{}")
         metadata["elo_rating"] = float(new_rating)
-        return self.update(memory_id, metadata=metadata)
+        conn.execute("UPDATE memories SET metadata=? WHERE id=?", (json.dumps(metadata), memory_id))
+        conn.commit()
+        return True
 
     def delete(self, memory_id: str) -> bool:
         conn = self._get_conn()
@@ -1604,9 +1663,10 @@ class SQLiteMetadataStore:
     def _handoff_row(row: sqlite3.Row) -> Dict[str, Any]:
         item = dict(row)
         item["details"] = json.loads(item.pop("details_json") or "{}")
-        return item
+        return project_credentials(item)
 
     def add_handoff(self, handoff: Dict[str, Any]) -> Dict[str, Any]:
+        require_credential_free(handoff)
         conn = self._get_conn()
         conn.execute(
             "INSERT INTO agent_handoffs (id, user_id, project, title, summary, details_json, from_agent, "
@@ -1656,6 +1716,7 @@ class SQLiteMetadataStore:
         now: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """Move a handoff to ``status`` if it is currently in ``allowed_from``; None otherwise."""
+        require_credential_free(status, agent, note)
         if status not in HANDOFF_STATUSES:
             raise ValueError(f"Unknown handoff status: {status}")
         conn = self._get_conn()
