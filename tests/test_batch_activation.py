@@ -51,6 +51,21 @@ def test_gathering_threshold_applies_after_payload_bound(tmp_path, monkeypatch):
     assert len(BatchOutbox(archive).read(ident)["items"]) == 1
 
 
+def test_packing_bound_preserves_the_same_selected_legacy_windows(tmp_path, monkeypatch):
+    from muninn.history import batch_packing
+    from muninn.history.historical_batch import BatchError
+    journal, archive = history(tmp_path)
+    configure_batch(journal.policy_root, enabled=True)
+    attempted = []
+    def too_large(source, items, **kwargs):
+        attempted.extend(items)
+        raise BatchError("batch_request_bound")
+    monkeypatch.setattr(batch_packing, "pack_items", too_large)
+    ident = prepare_next_batch(journal)
+    assert BatchOutbox(archive).read(ident)["items"] == attempted
+    assert all("pack" not in item for item in attempted)
+
+
 @pytest.mark.parametrize("value", [0,129,True,1.5])
 def test_gathering_threshold_is_bounded(tmp_path, value):
     journal, _archive = history(tmp_path)

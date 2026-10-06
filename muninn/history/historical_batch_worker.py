@@ -161,6 +161,9 @@ class HistoricalBatchWorker:
                 raise BatchError("batch_repair_binding_invalid")
             owner = {**owner, "id": self.repair_id, "items": len(record["items"])}
             self.status["items"] = owner["items"]
+        units = {"windows": len(record["items"]),
+                 "provider_requests": len(payload(record["items"])["requests"])}
+        self.status.update(units)
         if record["state"] == "submission_unknown":
             candidate = record.get("recovery_candidate")
             if candidate is None:
@@ -201,7 +204,7 @@ class HistoricalBatchWorker:
                                         read_batch_policy(self.journal.policy_root))
                 if record.get("repair_admission") is not None:
                     # A persisted uncertainty/reservation must never be replaced.
-                    self.status = {"state": "repair_admission_unresolved", "items": owner["items"]}
+                    self.status = {"state": "repair_admission_unresolved", "items": owner["items"], **units}
                     return True
             from muninn.history.auto_routing import openrouter_key_status
             status = await asyncio.to_thread(self.provider_status or openrouter_key_status,
@@ -215,6 +218,8 @@ class HistoricalBatchWorker:
                     [(i["job_id"], i["window"]) for i in record["items"]])
                 if any(a["body"] != b["body"] for a, b in zip(checked, record["items"])):
                     raise BatchError("batch_input_binding_invalid")
+                from muninn.history.batch_packing import verify_scopes
+                await asyncio.to_thread(verify_scopes, source, record["items"])
                 body = payload(record["items"])
                 if not self.authorize_submit(owner["generation"]):
                     raise BatchError("batch_consent_revoked")
@@ -287,7 +292,7 @@ class HistoricalBatchWorker:
         invalid = len(unresolved)
         passed = not invalid and await asyncio.to_thread(self.journal.finish_historical_batch, parent_id)
         self.status = {"state": "passed" if passed else "checkpoint_unresolved", "items": owner["items"],
-                       "invalid_items": invalid}
+                       "invalid_items": invalid, **units}
         if passed:
             self.next_step = 0.0
         elif invalid and self.repair_id is None:
@@ -315,7 +320,9 @@ class HistoricalBatchWorker:
             await self.repair_worker.step()
             updated = await asyncio.to_thread(outbox.read, parent_id)
             self.status = {**self.repair_worker.status, "repair_only": True,
-                           "parent_items": len(parent["items"]), "repair_round": len(updated["repairs"])}
+                           "parent_items": len(parent["items"]),
+                           "parent_provider_requests": len(payload(parent["items"])["requests"]),
+                           "repair_round": len(updated["repairs"])}
         return True
 
     async def _publish(self, source, job, stage):

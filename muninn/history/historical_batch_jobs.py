@@ -134,6 +134,8 @@ class HistoricalBatchJobsMixin:
             (item["job_id"], item["window"]) for item in outbox["items"]])
         if any(a["body"] != b["body"] for a, b in zip(expected, outbox["items"])):
             raise BatchError("batch_input_binding_invalid")
+        from muninn.history.batch_packing import verify_scopes
+        verify_scopes(CitedAnalysisSource(self.archive), outbox["items"])
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             head, previous = self._historical_batch_head(db)

@@ -202,6 +202,7 @@ def prepare_next_batch(journal, *, min_items=1):
     plans = CitedWindowPlanStore(journal.archive)
     checked = []
     prepared = {}
+    packing_positions = {}
     retry_proofs = {job_id: (attempt, digest) for job_id, _target, attempt, digest in failed}
     for job_id, target in candidates + [(job_id, target) for job_id, target, _, _ in failed]:
         # Reconstruct from the authenticated plan, never from an untrusted hint.
@@ -222,6 +223,7 @@ def prepare_next_batch(journal, *, min_items=1):
             continue  # Serialized request screening is stricter than span screening.
         checked.append(((window["event_at"] is None, window["event_at"] or 0,
                          target["ordinal"], target["work_id"], job_id), (job_id, descriptor)))
+        packing_positions[job_id] = (target["plan_attempt"], target["ordinal"])
     if not checked:
         return None
     bindings = []
@@ -245,7 +247,15 @@ def prepare_next_batch(journal, *, min_items=1):
     if len(bindings) < min_items:
         return None
     outbox = BatchOutbox(journal.archive)
-    ident = outbox.prepare([prepared[job_id] for job_id, _ in bindings], consent_generation=remote.generation)
+    from muninn.history.batch_packing import pack_items
+    selected_items = [prepared[job_id] for job_id, _ in bindings]
+    try:
+        selected_items = pack_items(source, selected_items, positions=packing_positions)
+    except BatchError as exc:
+        if str(exc) != "batch_request_bound":
+            raise
+        # The same selected windows remain eligible in their original shape.
+    ident = outbox.prepare(selected_items, consent_generation=remote.generation)
     bind_consent(journal, outbox, ident, policy)
     journal.reserve_historical_batch(ident)
     return ident

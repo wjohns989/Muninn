@@ -95,7 +95,9 @@ def payload(items):
         raise BatchError("batch_item_count_invalid")
     custom_ids, jobs = set(), set()
     for item in items:
-        if (not isinstance(item, dict) or set(item) != {"custom_id", "job_id", "window", "body"}
+        if (not isinstance(item, dict) or set(item) not in (
+                {"custom_id", "job_id", "window", "body"},
+                {"custom_id", "job_id", "window", "body", "pack"})
                 or not _opaque(item["custom_id"]) or not _opaque(item["job_id"])
                 or item["custom_id"] in custom_ids or item["job_id"] in jobs
                 or not isinstance(item["body"], dict)):
@@ -103,9 +105,10 @@ def payload(items):
         CitedAnalysisSource.validate_descriptor(item["window"])
         custom_ids.add(item["custom_id"])
         jobs.add(item["job_id"])
+    from muninn.history.batch_packing import requests
     value = {"endpoint": "/v1/chat/completions", "model": MODEL,
              "provider": {"only": [PROVIDER]}, "completion_window": "24h",
-             "requests": [{"custom_id": i["custom_id"], "body": i["body"]} for i in items]}
+             "requests": requests(items)}
     if len(_wire_json(value)) > MAX_REQUEST_BYTES:
         raise BatchError("batch_request_bound")
     return json.loads(_json(value))
@@ -151,17 +154,17 @@ def terminal_results(items, response):
     if (not isinstance(counts, dict) or any(type(counts.get(k)) is not int
             or counts[k] != v for k, v in expected_counts.items())):
         raise BatchError("batch_result_counts_invalid")
-    return matched
+    return {i["custom_id"]: matched[i.get("pack", {}).get("request_id", i["custom_id"])] for i in items}
 
 
-def validate_item(source, item, row):
+def validate_item(source, item, row, *, _frame_cache=None):
     """Validate one stored reply against its exact authenticated cited window.
 
     Returns an unstaged extraction, NOT publication authority or a source ACK.
     No item-level cost is invented from an aggregate batch bill.
     """
     from muninn.history.secure_analysis import _cited_outcome
-    if not isinstance(row, dict) or row.get("custom_id") != item["custom_id"]:
+    if not isinstance(row, dict) or row.get("custom_id") != item.get("pack", {}).get("request_id", item["custom_id"]):
         raise BatchError("batch_result_binding_invalid")
     reply = row.get("response")
     if (row.get("error") is not None or not isinstance(reply, dict)
@@ -176,8 +179,15 @@ def validate_item(source, item, row):
             or not isinstance(choices[0].get("message"), dict)
             or not isinstance(choices[0]["message"].get("content"), str)):
         raise BatchError("batch_item_output_invalid")
-    return _cited_outcome(choices[0]["message"]["content"], source,
-                          item["window"], "openrouter", MODEL)
+    content = choices[0]["message"]["content"]
+    if "pack" not in item:
+        return _cited_outcome(content, source, item["window"], "openrouter", MODEL)
+    from muninn.history.batch_packing import slot_analysis, model_identity
+    analysis = slot_analysis(item, content, _frame_cache)
+    outcome = _cited_outcome(_json(analysis).decode("utf-8"), source, item["window"], "openrouter", MODEL)
+    stage = outcome["extraction"]
+    stage["model_identity"] = model_identity(item, stage["model_identity"])
+    return outcome
 
 
 def billed_cost(response):
@@ -212,12 +222,15 @@ def resolved_extractions(outbox, parent, source, policy_root, admission_id):
                                                batch_owner=record["id"]):
             raise BatchError("batch_cost_unresolved")
         billed_cost(record["terminal"])
+        from muninn.history.batch_packing import verify_scopes
+        verify_scopes(source, record["items"])
         rows = terminal_results(record["items"], record["terminal"])
+        frame_cache = {}  # One authenticated reply parse per cohort in this call only.
         for item in record["items"]:
             if item["job_id"] not in unresolved:
                 raise BatchError("batch_repair_repeated_success")
             try:
-                outcome = validate_item(source, item, rows[item["custom_id"]])
+                outcome = validate_item(source, item, rows[item["custom_id"]], _frame_cache=frame_cache)
             except ModelOutputInvalid:
                 continue
             except BatchError as exc:
@@ -461,7 +474,7 @@ class BatchOutbox:
                     or response.get("completion_window") != "24h"
                     or response.get("status") not in {"validating", "in_progress", "finalizing", *TERMINAL}
                     or type((response.get("request_counts") or {}).get("total")) is not int
-                    or response["request_counts"]["total"] != len(record["items"])):
+                    or response["request_counts"]["total"] != len(payload(record["items"])["requests"])):
                 raise BatchError("batch_submission_identity_invalid")
             record["provider_id"] = response["id"]
         return self._transition(ident, expected_revision, "submission_unknown", "submitted", change)
