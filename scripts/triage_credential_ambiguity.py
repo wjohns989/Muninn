@@ -11,8 +11,10 @@ import argparse
 import getpass
 import hashlib
 import json
+import stat
 import sqlite3
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,6 +28,124 @@ from muninn.history.ambiguity_triage import (
 from muninn.history.auto_routing import choose_route, probe_gpu, probe_ollama
 from muninn.history.credential_review_source import CredentialReviewSource
 from muninn.history.credential_store import CredentialStore
+
+_PROGRESS_STAGES = {'zdr_readiness', 'waiting_for_remote_admission', 'awaiting_passphrase',
+                    'validated_pre_triage_backup', 'validated_post_triage_backup',
+                    'review_page', 'source_context_prepare', 'local_context_review',
+                    'zdr_context_review', 'remote_context_review', 'triage_status'}
+_PROGRESS_STATES = {'ready', 'failed', 'remote_admission_busy', 'remote_consent_revoked',
+                    'remote_readiness_timeout', 'readiness_wait_cancelled', 'readiness_check_failed',
+                    'progress_log_unavailable', 'interactive_terminal_required',
+                    'unknown', 'disabled', 'key_missing', 'provider_unavailable',
+                    'invalid_provider_data', 'key_disabled', 'key_cap_exceeds_local_threshold',
+                    'key_exhausted', 'local_threshold_reached',
+                    'remote_accounting_unconfigured', 'remote_accounting_unavailable',
+                    'remote_accounting_invalid_cost', 'remote_accounting_invalid_reference',
+                    'remote_accounting_invalid_policy', 'remote_cost_unresolved',
+                    'credential_context_not_remote_safe', 'source_context_required',
+                    'model_limit_reached'}
+
+
+def validate_progress_path(path):
+    """No linked/reparse ancestor may redirect a progress destination."""
+    if '..' in path.parts:
+        raise ValueError('Progress path must not contain parent traversal')
+    path = path.absolute()
+    for component in (*reversed(path.parents), path):
+        try:
+            details = component.lstat()
+        except FileNotFoundError:
+            continue
+        if (stat.S_ISLNK(details.st_mode)
+                or getattr(details, 'st_file_attributes', 0) & 0x400
+                or (hasattr(component, 'is_junction') and component.is_junction())):
+            raise ValueError('Progress path must not contain linked components')
+    return path
+
+
+def emit_progress(report, path=None):
+    """Keep the interactive console intact; persist only operational counters."""
+    if path is not None:
+        from muninn.history.private_acl import verify_private
+        validate_progress_path(path)
+        verify_private(path)
+        safe = {}
+        counters = {'rows', 'page', 'model_calls', 'contexts_reused', 'groups_seen',
+                    'left_pending', 'deferred_for_user', 'model_rejected', 'rule_rejected',
+                    'source_context_pending', 'contexts_quota_deferred',
+                    'contexts_route_deferred', 'credential_records', 'remaining_seconds',
+                    'unresolved_admissions', 'http_status_code'}
+        flags = {'passphrase_needed', 'review_resolved', 'applied', 'post_backup_unavailable'}
+        for name, value in report.items():
+            if name in counters and type(value) is int and 0 <= value < 2**63:
+                safe[name] = value
+            elif name in flags and type(value) is bool:
+                safe[name] = value
+            elif (name in {'stage', 'backup_state'} and isinstance(value, str)
+                  and value in _PROGRESS_STAGES):
+                safe[name] = value
+            elif (name in {'state', 'model_route'} and isinstance(value, str)
+                  and value in _PROGRESS_STATES):
+                safe[name] = value
+            elif name in {'queue_counts', 'review_queue'} and isinstance(value, dict):
+                safe[name] = {state: count for state, count in value.items()
+                              if state in {'pending', 'accepted', 'rejected', 'deferred'}
+                              and type(count) is int and 0 <= count < 2**63}
+        # Existing file only: a removed destination is never silently recreated.
+        with path.open('r+', encoding='utf-8') as stream:
+            stream.seek(0, 2)
+            stream.write(json.dumps(safe, sort_keys=True) + '\n')
+            stream.flush()
+    print(json.dumps(report, sort_keys=True), flush=True)
+
+
+def wait_remote_readiness(policy_root, wait_seconds=0, *, on_progress=None):
+    """Read-only admission wait BEFORE unlocking; never reserve or retry a call.
+
+    Only an already-owned admission is transient here. Revocation, provider
+    failures and budgets return to the operator, not a hidden retry loop.
+    """
+    from muninn.history.auto_routing import openrouter_key_status, remote_policy_snapshot
+    from muninn.history.remote_accounting import AdmissionError, status
+    deadline = time.monotonic() + wait_seconds
+    report = {"stage": "zdr_readiness", "passphrase_needed": False}
+    try:
+        while True:
+            policy = remote_policy_snapshot(policy_root)
+            accounting = status(policy_root)
+            if (type(policy.enabled) is not bool or not isinstance(accounting, dict)
+                    or type(accounting.get('unresolved')) is not int
+                    or not 0 <= accounting['unresolved'] <= 1):
+                return {**report, 'state': 'readiness_check_failed'}
+            state = 'remote_consent_revoked' if not policy.enabled else (
+                'remote_admission_busy' if accounting['unresolved'] else 'ready')
+            if state == 'ready':
+                provider_status = openrouter_key_status(policy_root=policy_root)
+                if (not isinstance(provider_status, dict)
+                        or type(provider_status.get('admission_ready')) is not bool
+                        or (not provider_status['admission_ready']
+                            and provider_status.get('state') == 'ready')):
+                    return {**report, 'state': 'readiness_check_failed'}
+                state = 'ready' if provider_status['admission_ready'] else provider_status['state']
+            report = {**report, 'state': state,
+                      'unresolved_admissions': accounting['unresolved']}
+            remaining = max(0, deadline - time.monotonic())
+            if wait_seconds and not remaining and state in {'ready', 'remote_admission_busy'}:
+                return {**report, 'state': 'remote_readiness_timeout'}
+            if state != 'remote_admission_busy' or not wait_seconds:
+                return report
+            if on_progress is not None:
+                on_progress({**report, 'stage': 'waiting_for_remote_admission',
+                             'remaining_seconds': int(remaining)})
+            time.sleep(min(60, remaining))
+    except AdmissionError as exc:
+        return {**report, 'state': exc.code}
+    except KeyboardInterrupt:
+        return {**report, 'state': 'readiness_wait_cancelled'}
+    except Exception as exc:
+        # Private configuration or HTTP exceptions must never enter the log.
+        return {**report, 'state': 'readiness_check_failed',
+                'error_category': type(exc).__name__}
 
 
 def run_zdr(*, root, passphrase, limit, model_limit, model, apply, policy_root,
@@ -285,6 +405,10 @@ def main() -> int:
                         help='Existing managed ZDR consent and budget root; required for OpenRouter')
     parser.add_argument('--check-readiness', action='store_true',
                         help='Check managed remote admission before any local passphrase prompt')
+    parser.add_argument('--wait-for-readiness', type=int, default=0, metavar='SECONDS',
+                        help='Interactive read-only wait for a busy admission (1-86400); unlock only when ready')
+    parser.add_argument('--progress-log', type=Path,
+                        help='New owner-only live progress JSONL; counters/codes only, no credentials or cursors')
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--max-pages", type=int, default=1,
                         help="Process successive pages with one local unlock (1-10000)")
@@ -300,6 +424,13 @@ def main() -> int:
         parser.error('OpenRouter review requires --policy-root and --archive-root')
     if args.check_readiness and (args.provider != 'openrouter' or args.policy_root is None):
         parser.error('--check-readiness requires OpenRouter and its existing --policy-root')
+    if not 0 <= args.wait_for_readiness <= 86400:
+        parser.error('--wait-for-readiness must be between 0 and 86400 seconds')
+    if args.wait_for_readiness and (args.provider != 'openrouter' or args.policy_root is None
+                                   or not args.model_limit or args.check_readiness):
+        parser.error('Readiness waiting requires interactive OpenRouter model review, not --check-readiness')
+    if args.progress_log is not None and args.check_readiness:
+        parser.error('Progress logging requires the interactive workflow, not --check-readiness')
     if not 1 <= args.max_pages <= 10000:
         parser.error("--max-pages must be between 1 and 10000")
     if args.backup_after is not None and not args.apply:
@@ -322,42 +453,55 @@ def main() -> int:
             destinations.append(resolved)
         if len(destinations) == 2 and destinations[0] == destinations[1]:
             parser.error("Pre- and post-triage backup destinations must differ")
-    except (OSError, RuntimeError):
+        if args.progress_log is not None:
+            args.progress_log = validate_progress_path(args.progress_log)
+            progress_path = args.progress_log.resolve(strict=False)
+            private_roots = [vault_path]
+            if args.archive_root is not None:
+                private_roots.append(args.archive_root.resolve(strict=True))
+            if any(progress_path == root or root in progress_path.parents for root in private_roots):
+                parser.error('Progress log cannot be inside the vault or archive')
+            if any(progress_path == root or root in progress_path.parents for root in destinations):
+                parser.error('Progress log cannot use a backup destination')
+    except (OSError, RuntimeError, ValueError):
         parser.error("Invalid vault or backup destination")
-    if args.provider == 'openrouter' and (args.model_limit or args.check_readiness):
-        from muninn.history.auto_routing import openrouter_key_status, remote_policy_snapshot
-        from muninn.history.remote_accounting import AdmissionError, status
+    if (args.wait_for_readiness or args.progress_log is not None) and (
+            not sys.stdin.isatty() or not sys.stdout.isatty()):
+        print(json.dumps({"state": "interactive_terminal_required"}), flush=True)
+        return 2
+    if args.progress_log is not None:
         try:
-            policy = remote_policy_snapshot(args.policy_root)
-            accounting = status(args.policy_root)
-            readiness = 'remote_consent_revoked' if not policy.enabled else (
-                'remote_admission_busy' if accounting['unresolved'] else 'ready')
-            if readiness == 'ready':
-                provider_status = openrouter_key_status(policy_root=args.policy_root)
-                readiness = 'ready' if provider_status['admission_ready'] else provider_status['state']
-            if args.check_readiness or readiness != 'ready':
-                print(json.dumps({'stage': 'zdr_readiness', 'state': readiness,
-                                  'unresolved_admissions': accounting['unresolved'],
-                                  'passphrase_needed': readiness == 'ready' and not args.check_readiness}), flush=True)
-                return 0 if readiness == 'ready' else 2
-        except AdmissionError as exc:
-            print(json.dumps({'stage': 'zdr_readiness', 'state': exc.code,
-                              'passphrase_needed': False}), flush=True)
+            from muninn.history.private_acl import create_private_directory, create_private_file
+            if not args.progress_log.parent.exists():
+                create_private_directory(args.progress_log.parent)
+            validate_progress_path(args.progress_log)
+            create_private_file(args.progress_log)
+        except Exception as exc:
+            print(json.dumps({'state': 'progress_log_unavailable',
+                              'error_category': type(exc).__name__}), flush=True)
             return 2
+    emit = lambda report: emit_progress(report, args.progress_log)
+    if args.provider == 'openrouter' and (args.model_limit or args.check_readiness):
+        report = wait_remote_readiness(args.policy_root, args.wait_for_readiness,
+            on_progress=emit)
+        if args.check_readiness or report['state'] != 'ready':
+            emit(report)
+            return 130 if report['state'] == 'readiness_wait_cancelled' else (
+                0 if report['state'] == 'ready' else 2)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print(json.dumps({"state": "interactive_terminal_required"}))
         return 2
     backup_state = "not_started"
     try:
+        emit({'stage': 'awaiting_passphrase', 'passphrase_needed': True})
         passphrase = getpass.getpass("Credential vault passphrase (hidden): ")
         if args.backup_before is not None:
             count = CredentialStore(args.root).backup(args.backup_before,
                                                       passphrase=passphrase)
             backup_state = "validated_pre_triage_backup"
-            print(json.dumps({"stage": "validated_pre_triage_backup",
+            emit({"stage": "validated_pre_triage_backup",
                               "credential_records": count,
-                              "review_queue": CredentialStore(args.root).ambiguity_status()},
-                             sort_keys=True), flush=True)
+                              "review_queue": CredentialStore(args.root).ambiguity_status()})
         review_source = (CredentialReviewSource(args.archive_root)
                          if args.archive_root is not None and args.model_limit else None)
         cursor = None
@@ -369,9 +513,9 @@ def main() -> int:
                          review_source=review_source,
                          provider=args.provider, policy_root=args.policy_root,
                          after=cursor,
-                         on_progress=lambda report: print(json.dumps(report, sort_keys=True), flush=True),
+                         on_progress=emit,
                          keep_alive="30s" if args.max_pages > 1 else 0)
-            print(json.dumps({"page": page, **report}, sort_keys=True), flush=True)
+            emit({"page": page, **report})
             if (not args.apply or report["groups_seen"] == 0
                     or (report["next_cursor"] == cursor and report["model_calls"] == 0)
                     or report["queue_counts"].get("pending", 0) == 0):
@@ -381,18 +525,16 @@ def main() -> int:
             count = CredentialStore(args.root).backup(args.backup_after,
                                                       passphrase=passphrase)
             backup_state = "validated_post_triage_backup"
-            print(json.dumps({"stage": "validated_post_triage_backup",
+            emit({"stage": "validated_post_triage_backup",
                               "credential_records": count,
-                              "review_queue": CredentialStore(args.root).ambiguity_status()},
-                             sort_keys=True), flush=True)
+                              "review_queue": CredentialStore(args.root).ambiguity_status()})
         if args.apply:
             queue_status = CredentialStore(args.root).ambiguity_status()
             review_resolved = not any(queue_status.get(name, 0)
                                       for name in ("pending", "deferred"))
-            print(json.dumps({"stage": "triage_status",
+            emit({"stage": "triage_status",
                               "review_resolved": review_resolved,
-                              "review_queue": queue_status},
-                             sort_keys=True), flush=True)
+                              "review_queue": queue_status})
             return 0 if review_resolved else 2
     except BaseException as exc:
         # Exception text can contain private source context; return only type.
@@ -412,7 +554,8 @@ def main() -> int:
                 "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_READONLY", "SQLITE_FULL",
                 "SQLITE_IOERR", "SQLITE_CANTOPEN", "SQLITE_CORRUPT"}:
             failure["sqlite_error_code"] = exc.sqlite_errorname
-        print(json.dumps(failure, sort_keys=True), flush=True)
+        # If the progress destination fails, do not attempt it again on error.
+        emit_progress(failure)
         return 130 if isinstance(exc, KeyboardInterrupt) else 1
     return 0
 

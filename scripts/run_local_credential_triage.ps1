@@ -10,7 +10,8 @@ param(
     [string]$Model = '',
     [ValidateRange(1, 10000)][int]$MaxPages = 200,
     [ValidateRange(1, 100)][int]$PageSize = 60,
-    [ValidateRange(0, 100)][int]$ModelLimit = 12
+    [ValidateRange(0, 100)][int]$ModelLimit = 12,
+    [ValidateRange(0, 86400)][int]$WaitForRemoteSeconds = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,16 +46,21 @@ if (-not (Test-Path -LiteralPath (Split-Path -Parent $PreBackupDestination) -Pat
 if ($ModelLimit -gt $PageSize) {
     throw 'ModelLimit must not exceed PageSize'
 }
+if ($WaitForRemoteSeconds -gt 0 -and ($Provider -ne 'openrouter' -or $ModelLimit -eq 0)) {
+    throw 'Remote readiness waiting requires OpenRouter model review'
+}
 
 Set-Location -LiteralPath $repository
 if (-not $PolicyRoot) { $PolicyRoot = Split-Path -Parent $VaultRoot }
 $modelArguments = @()
 if ($Model) { $modelArguments = @('--model', $Model) }
+$progressParent = if ($Provider -eq 'openrouter') { Join-Path $PolicyRoot 'remote_policy' } else { Split-Path -Parent $LogPath }
+$progressLog = Join-Path (Join-Path $progressParent 'triage-progress') ((Split-Path -Leaf $LogPath) + '.progress.jsonl')
 Start-Transcript -LiteralPath $LogPath -ErrorAction Stop | Out-Null
 try {
     & $Python -m scripts.triage_credential_ambiguity --root $VaultRoot --archive-root $ArchiveRoot `
         --provider $Provider --policy-root $PolicyRoot @modelArguments --limit $PageSize --model-limit $ModelLimit `
-        --max-pages $MaxPages --backup-before $PreBackupDestination `
+        --max-pages $MaxPages --wait-for-readiness $WaitForRemoteSeconds --progress-log $progressLog --backup-before $PreBackupDestination `
         --backup-after $BackupDestination --apply
     $triageExit = $LASTEXITCODE
     Write-Host ("MUNINN_TRIAGE_EXIT_CODE={0}" -f $triageExit)
