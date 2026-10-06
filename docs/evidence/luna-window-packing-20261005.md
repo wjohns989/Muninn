@@ -63,10 +63,57 @@ count actual packed root requests separately from windows, preserve per-window
 publication/repair denominators, settle aggregate costs once, and report measured
 live compatibility rather than infer speed or savings from request reduction.
 
-## Remaining proof
+## Remaining proof at installation
 
 This record does not establish live packed provider acceptance, inference
 quality, turnaround improvement, measured savings, complete historical coverage
 or whole-installation readiness. The first newly prepared authorized serial
 checkpoint must supply that representative acceptance/citation/billing evidence.
 An awaiting known repair is not completion or permission to resend its parent.
+
+## First live packed results, observed 2026-10-06
+
+The next packed parent `941f312ed3224a39ae0fa4956fb787ac`, provider batch
+`batch-1791257569-HAudpeQ5KYvsSGmBgokW`, contains 34 transcript windows in
+16 root requests. Its retained authenticated terminal response is completed
+with 16 completed / 16 total provider requests and zero transport failures.
+The exact terminal custom-request ID mapping and original member bindings
+passed. Its finite non-BYOK aggregate provider charge is **$0.01298015**;
+this is one parent bill, not 34 individual bills.
+
+The parent's exact owner- and generation-2-bound local admission is settled with resolution
+`response` and **$0.012981**, reflecting the ledger's upward rounding to whole
+microdollars. This matches the retained provider charge at that precision.
+That check also used query-only SQL and reported zero changes.
+
+Independent review cleared the scoped partial-acceptance interpretation, keeping
+the child pending and speed/savings unproved. Its remaining settlement question
+was resolved by the exact owner/generation/resolution/amount comparison above;
+it is not a claim that the child's bill or the whole parent checkpoint passed.
+
+The journal reports 33 succeeded windows and one pending repair window. A
+read-only cross-check of those 33 successful stages and encrypted publication
+receipts passed: their expected references match the original authenticated
+window descriptors, exact quotes/proposals and model identity. The verified
+ledger contains all corresponding references, spanning **34 durable cited
+candidate entries**. These entries remain source observations/provisional
+interpretations, not independently certified truths.
+
+The check used `CitedAnalysisSource(..., read_only=True)`, including read-only
+ledger and source-evidence stores, and a query-only journal connection built
+without its initializing constructor. The encrypted ledger chain was checked
+once in a pinned reference reader. The journal reported zero SQL changes.
+No private source, credential value or model-result text was printed or saved.
+
+Only the remaining window is in the linked first repair
+`1294ea083ffd470fb85146f54fad25c9`, provider batch
+`batch-1791258769-CvCbDaMSEjxc7Kg4TyKl`. Its actual retained plan is one
+window / one unpacked provider request. Provider GET reports `in_progress`,
+zero completed / one total request, and unknown usage cost. Successful siblings
+are retained, not resent. The parent checkpoint is **not complete** until the
+repair passes and exact settlement/publication checks allow advancement.
+
+Packing used about 53% fewer requests than a one-request-per-window layout
+(16 versus 34). This proves representative live provider compatibility and
+cited durable publication, **not** measured turnaround improvement or monetary
+savings. Whole-backlog coverage and whole-installation readiness remain open.
