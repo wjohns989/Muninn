@@ -18,6 +18,14 @@ import time
 from pathlib import Path
 
 
+def _failure_code(exc: Exception) -> str:
+    """Static diagnostic labels only; never echo an untrusted error payload."""
+    codes = {'review_call_failed', 'review_response_invalid', 'review_continuation_invalid',
+             'bridge_closed', 'mcp_error', 'protocol_mismatch', 'context_tool_missing',
+             'context_call_failed', 'review_tool_missing', 'bridge_timeout'}
+    return str(exc) if str(exc) in codes else type(exc).__name__
+
+
 def _review_page(result: dict, *, limit: int = 1) -> dict:
     """Validate the actual wire response without reporting private payloads."""
     if result.get("isError") is True:
@@ -217,7 +225,7 @@ def main() -> int:
                           **review_proof}, sort_keys=True))
         return 0
     except (BrokenPipeError, OSError, RuntimeError, TimeoutError, queue.Empty) as exc:
-        print(json.dumps({"state": "failed", "reason": type(exc).__name__}, sort_keys=True))
+        print(json.dumps({"state": "failed", "reason": _failure_code(exc)}, sort_keys=True))
         return 1
     finally:
         if proc.stdin is not None:
