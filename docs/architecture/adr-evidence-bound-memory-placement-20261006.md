@@ -99,3 +99,31 @@ Independent read-only design review cleared this boundary and rejected the
 direct-source-only shortcut as a completion claim. This document and the
 metadata baseline do not claim an implemented classifier, model success,
 resolved ambiguity queue or completed local installation.
+
+## Next consumer integration design review (October 6)
+
+Group eligible noncredential candidates from the same project and original
+publication ACK into cohorts of at most 12. Seed enrollment ownership from all
+existing jobs without rewriting them; atomically record jobs, authenticated
+opaque member ownership and processed ACKs. Verify membership in both directions,
+including same-project and original-ACK proof. Late or overlapping ACKs must not
+bill a candidate twice. Existing admitted jobs are never repacked or rewritten.
+
+Use the existing serial inference consumer, with at most one classification turn
+between passed paid checkpoints while clean batches progress. Crucially, after
+gathering finds no clean batch, classification must continue at the existing
+cadence without requiring another batch or unused retained-batch quota. An owned
+unpassed checkpoint always blocks new inference; staged local publication remains
+recoverable without dispatch. Foreground, exact consent generation and managed
+spending gates apply to every new call. No local fallback is introduced.
+
+Proof must cover 25 eligible refs splitting into 12/12/1 cohorts, overlapping late
+ACKs and existing singleton ownership; tail progress without a new checkpoint;
+zero dispatch under an unpassed owner, revocation or foreground block; and a crash
+between proven-unsent accounting release and journal cleanup. Proven-unsent work
+is distinct from unknown transport, which is never automatically resent.
+
+Independent review cleared the cohort design and identified the tail-starvation
+counterexample; the design above includes that correction. Consumer integration,
+membership migration, tests and live quality remain pending, not implemented by
+this design note.
