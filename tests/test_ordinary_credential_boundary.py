@@ -301,3 +301,27 @@ def test_fixture_detects_the_old_raw_hydration_defect(tmp_path, monkeypatch):
     monkeypatch.setattr(sqlite_metadata, "project_credentials", lambda value: value)
     assert FAKE in store.get(record.id).content
     store.close()
+
+
+def test_integrity_does_not_resolve_against_projected_neighbors():
+    from unittest.mock import patch
+    from muninn.consolidation.daemon import ConsolidationDaemon
+    from muninn.core.config import ConsolidationConfig
+    ordinary = MemoryRecord(id="ordinary", content="normal")
+    protected = MemoryRecord(id="protected", content="safe projection")
+    protected._credential_projection = True
+    detector = MagicMock(is_available=True)
+    resolver = MagicMock(resolve=AsyncMock())
+    with (patch("muninn.conflict.detector.ConflictDetector", return_value=detector),
+          patch("muninn.conflict.resolver.ConflictResolver", return_value=resolver)):
+        metadata, vectors = MagicMock(), MagicMock()
+        daemon = ConsolidationDaemon(config=ConsolidationConfig(integrity_resource_mode="persistent"),
+                                     metadata=metadata, vectors=vectors, graph=MagicMock(), bm25=MagicMock())
+        metadata.get_for_consolidation.return_value = [ordinary]
+        metadata.get_by_ids.return_value = [protected]
+        vectors.get_vectors.return_value = {ordinary.id: [0.1, 0.2]}
+        vectors.search.return_value = [(protected.id, 0.8)]
+        result = asyncio.run(daemon._phase_integrity())
+    assert result["audited"] == 0
+    detector.detect_conflicts.assert_not_called()
+    resolver.resolve.assert_not_called()
