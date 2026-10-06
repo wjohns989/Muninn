@@ -777,6 +777,7 @@ class SecureHistoryArchive:
             journal = CaptureJournal(restored, recover=False)
             journal.verify_all()
             journal.verify_publications()
+            journal.verify_classifications()
         if (archive_staging / "source-evidence").exists():
             from muninn.history.source_evidence import SourceEvidenceStore
 
@@ -854,6 +855,7 @@ class SecureHistoryArchive:
             journal = CaptureJournal(backup, recover=False)
             journal.verify_all()
             report["publication_receipts_verified"] = journal.verify_publications()
+            report["classification_jobs_verified"] = journal.verify_classifications()
             if (archive_staging / "source-evidence").exists():
                 from muninn.history.source_evidence import SourceEvidenceStore
 

@@ -27,7 +27,8 @@ _COLUMNS = {
                "generation", "accounting_version"},
     "audit": {"generation", "changed_at", "enabled", "daily_usd", "monthly_usd", "override_ceiling"},
     "remote_admissions": {"id", "generation", "state", "started", "start_day", "start_month",
-                          "finished", "end_day", "end_month", "cost_micro", "resolution", "batch_owner"},
+                          "finished", "end_day", "end_month", "cost_micro", "resolution", "batch_owner",
+                          "classification_job", "classification_input"},
     "batch_policy": {"id", "enabled", "generation", "max_batches"},
     "batch_policy_audit": {"generation", "changed_at", "enabled", "max_batches"},
     "batch_consent": {"batch_id", "retention_generation", "remote_generation", "input_sha256"},
@@ -56,6 +57,21 @@ def _validate(db):
         if "accounting_version" in columns else (0,)
     if version not in {(0,), (1,)} or (version == (1,)) != ("remote_admissions" in tables):
         raise VaultIntegrityError("Recovery accounting sentinel is inconsistent")
+    if "remote_admissions" in tables:
+        fields = {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}
+        bound = {"classification_job", "classification_input"}
+        if fields & bound and not bound <= fields:
+            raise VaultIntegrityError("Recovery classification binding is incomplete")
+        if bound <= fields:
+            query = "SELECT classification_job,classification_input" + (",batch_owner" if "batch_owner" in fields else "")
+            for row in db.execute(query + " FROM remote_admissions"):
+                job, digest = row[:2]
+                if job is None and digest is None:
+                    continue
+                if (not isinstance(job, str) or len(job) != 32 or any(c not in "0123456789abcdef" for c in job)
+                        or not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+                        or len(row) == 3 and row[2] is not None):
+                    raise VaultIntegrityError("Recovery classification ownership is invalid")
     return version == (1,)
 
 

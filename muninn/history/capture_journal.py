@@ -27,6 +27,7 @@ from muninn.history.blind_index import _terms as _search_terms
 from muninn.history.capture_enrichment import CaptureEnrichmentMixin
 from muninn.history.capture_no_context import CaptureNoContextMixin
 from muninn.history.capture_window_jobs import CaptureWindowJobsMixin
+from muninn.history.classification_jobs import CaptureClassificationMixin
 from muninn.history.credential_crypto import VaultIntegrityError
 from muninn.history.historical_batch_jobs import HistoricalBatchJobsMixin
 from muninn.history.private_acl import create_private_file, verify_private
@@ -144,7 +145,7 @@ class AnalysisJob:
 
 
 class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalBatchJobsMixin,
-                     CaptureNoContextMixin):
+                     CaptureNoContextMixin, CaptureClassificationMixin):
     def __init__(self, archive: SecureHistoryArchive, *, recover: bool = True,
                  policy_root: Path | None = None):
         self.archive = archive
@@ -243,6 +244,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
             self._init_enrichment(db)
             self._init_capture_window_jobs(db)
             self._init_historical_batch_jobs(db)
+            self._init_classifications(db)
 
     @contextmanager
     def _connect(self, *, initialize: bool = False) -> Iterator[sqlite3.Connection]:
@@ -447,6 +449,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
 
     def verify_all(self) -> int:
         """Authenticate every sealed locator and the SQLite snapshot structure."""
+        self.verify_classifications()
         with self._connect() as db:
             if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise VaultIntegrityError("Capture journal integrity check failed")

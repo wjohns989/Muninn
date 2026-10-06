@@ -30,6 +30,7 @@ from muninn.history.secure_projection_store import ProjectionIntegrityError
 from muninn.history.source_evidence import SourceEvidenceStore
 from muninn.history.streaming_redaction import redacted_fragments
 from muninn.history.transcript_units import PARSER_VERSION, SourceUnit
+from muninn.history.memory_placement import MemoryPlacementMixin
 
 POLICY = "source-observation-v1"
 TYPES = {"observation", "fact", "preference", "decision", "task", "procedure",
@@ -55,7 +56,7 @@ def _json(value) -> bytes:
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
-class MemoryLedger:
+class MemoryLedger(MemoryPlacementMixin):
     def __init__(self, archive, *, read_only=False):
         self.archive = archive
         self.read_only = read_only
@@ -184,8 +185,7 @@ class MemoryLedger:
             # Never extend a broken prefix merely because its tail/head survived.
             # Authenticate the old chain once for this bounded atomic batch.
             # Bulk backfill still requires measured scaling before activation.
-            for _ in self._walk(db):
-                pass
+            self._snapshot(db)
             head = self._head(db)
             seq, previous = head["seq"], head["digest"]
             seen = set()
@@ -445,23 +445,7 @@ class MemoryLedger:
             raise MemoryLedgerIntegrityError("Ledger citation is not authenticated") from exc
 
     def _read_candidate(self, ident):
-        if not self._hex(ident):
-            raise ValueError("Invalid memory reference")
-        candidate, state = None, None
-        with self._connect() as db:
-            db.execute("BEGIN")
-            for ref, payload in self._walk(db):
-                if ref != ident:
-                    continue
-                if payload.get("event") == "candidate":
-                    if candidate is not None:
-                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
-                    self._check_candidate(payload)
-                    candidate, state = payload, payload["state"]
-                elif candidate is not None and payload.get("event") in ("decision", "human_review"):
-                    state = self._apply_review_event(ident, candidate, state, payload)
-                else:
-                    raise MemoryLedgerIntegrityError("Memory review has no candidate")
+        candidate, state, _placement = self._read_view(ident)
         return candidate, state
 
     def _apply_review_event(self, ident, candidate, current_state, payload):
@@ -489,13 +473,15 @@ class MemoryLedger:
             raise MemoryLedgerIntegrityError("Memory review decision authentication failed")
         return state
 
-    def _public_candidate(self, ident, candidate, state, *, persist_screen=True, include_text=True):
+    def _public_candidate(self, ident, candidate, state, *, persist_screen=True, include_text=True, placement=None):
         if candidate is None: return None
         public = {k: candidate[k] for k in ("type", "epistemic_kind", "truth_status",
                   "event_at", "time_basis", "project_ref", "project_basis")}
         public.update(id=ident, state=state, source_ref=hmac.new(
             self._key, b"citation\0" + _json(candidate["citation"]), hashlib.sha256).hexdigest())
         public["proposal_origin"] = candidate.get("proposal_origin", "legacy_unrecorded")
+        if placement is not None:
+            public["placement"] = self._public_placement(placement)
         if include_text and self._public_text_safe(candidate, persist_screen=persist_screen):
             public.update(text=sanitize_agent_span(candidate["text"], max_chars=2048),
                           quote=sanitize_agent_span(candidate["quote"], max_chars=2048))
@@ -545,8 +531,8 @@ class MemoryLedger:
 
     def get(self, ident):
         self._screen_cache.clear()  # no stale source-safety proof across public reads
-        candidate, state = self._read_candidate(ident)
-        return self._public_candidate(ident, candidate, state)
+        candidate, state, placement = self._read_view(ident)
+        return self._public_candidate(ident, candidate, state, placement=placement)
 
     def search(self, query, *, limit=10):
         """One authenticated chain scan; no plaintext index or inference."""
@@ -559,33 +545,23 @@ class MemoryLedger:
         terms = list(dict.fromkeys(_terms(query)))
         if not 1 <= len(terms) <= 8:
             raise ValueError("Invalid cited memory query")
-        candidates, current_states, matching = {}, {}, OrderedDict()
+        matching = OrderedDict()
         with self._connect() as db:
             db.execute("BEGIN")
-            for ref, payload in self._walk(db):
-                if payload.get("event") == "candidate":
-                    if ref in candidates:
-                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
-                    self._check_candidate(payload)
-                    candidates[ref] = payload
-                    current_states[ref] = payload["state"]
-                    # Never match private credential text, even if the caller
-                    # happens to know it. Exact refs use metadata-only get.
-                    if payload["credential_risk"] or payload["screening"] not in {"complete_unit", "original_ranges"}:
-                        continue
-                    safe_text = sanitize_agent_span(payload["text"], max_chars=2048)
-                    searchable = (safe_text + ' ' + payload["type"]).casefold()
-                    if not all(term in searchable for term in terms): continue
-                    public = self._public_candidate(ref, payload, current_states[ref])
-                    if "text" not in public: continue
-                    matching[ref] = public
-                elif payload.get("event") in ("decision", "human_review") and ref in candidates:
-                    current_states[ref] = self._apply_review_event(
-                        ref, candidates[ref], current_states[ref], payload)
-                    if ref in matching:
-                        matching[ref]["state"] = current_states[ref]
-                else:
-                    raise MemoryLedgerIntegrityError("Invalid memory event sequence")
+            _report, candidates, current_states, placements, *_rest = self._snapshot(db)
+        for ref, payload in candidates.items():
+            # Never match private credential text, even if the caller knows it.
+            if payload["credential_risk"] or payload["screening"] not in {"complete_unit", "original_ranges"}:
+                continue
+            safe_text = sanitize_agent_span(payload["text"], max_chars=2048)
+            placement = placements.get(ref)
+            bucket = (placement["decision"]["bucket"] if placement is not None
+                      and placement["status"] == "current" else "")
+            searchable = (safe_text + ' ' + payload["type"] + ' ' + bucket).casefold()
+            if not all(term in searchable for term in terms): continue
+            public = self._public_candidate(ref, payload, current_states[ref], placement=placement)
+            if "text" in public:
+                matching[ref] = public
         eligible = [item for item in matching.values() if item["state"] != "rejected"]
         total = len(eligible)
         return {"matches": list(reversed(eligible[-limit:])), "total_matches": total,
@@ -604,7 +580,7 @@ class MemoryLedger:
             raise ValueError("Invalid cited source context bound")
         if type(include_transcript_capability) is not bool:
             raise ValueError("Invalid transcript capability option")
-        candidate, state = self._read_candidate(ident)
+        candidate, state, placement = self._read_view(ident)
         if candidate is None: return None
         cite = candidate["citation"]
         entry = self._entries[(cite["blob"], cite["version"])]
@@ -612,7 +588,7 @@ class MemoryLedger:
         projected = candidate['screening'] == 'original_ranges'
         projection = self._public_projection(candidate) if projected else None
         public = self._public_candidate(ident, candidate, state, include_text=not projected,
-                                        persist_screen=not self.read_only)
+                                        persist_screen=not self.read_only, placement=placement)
         if projection is not None:
             public.update(text=sanitize_agent_span(candidate['text'], max_chars=2048),
                           quote=sanitize_agent_span(candidate['quote'], max_chars=2048))
@@ -674,19 +650,8 @@ class MemoryLedger:
             raise ValueError("Only safe noncredential cited memories can be reviewed")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            current, current_state = None, None
-            for ref, payload in self._walk(db):
-                if ref != ident:
-                    continue
-                if payload.get("event") == "candidate":
-                    if current is not None:
-                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
-                    self._check_candidate(payload)
-                    current, current_state = payload, payload["state"]
-                elif current is not None and payload.get("event") in ("decision", "human_review"):
-                    current_state = self._apply_review_event(ref, current, current_state, payload)
-                else:
-                    raise MemoryLedgerIntegrityError("Memory review has no candidate")
+            _report, candidates, states, *_rest = self._snapshot(db)
+            current, current_state = candidates.get(ident), states.get(ident)
             if (current is None or current_state != expected_state
                     or _json(current) != _json(candidate)
                     or current.get("credential_risk") is not False):
@@ -719,11 +684,12 @@ class MemoryLedger:
         for item in page.pop("matches"):
             source_group = item.pop("_source_group")
             known = item["project_ref"] is not None and item["project_basis"] != "unknown"
-            key = (source_group, item["project_ref"], item["project_basis"], item["type"],
+            bucket = item.get("placement", {}).get("bucket", item["type"])
+            key = (source_group, item["project_ref"], item["project_basis"], bucket,
                    None if known else item["id"])
             group = groups.setdefault(key, {"source_group": source_group,
                 "project_ref": item["project_ref"], "project_basis": item["project_basis"],
-                "type": item["type"], "scope_known": known, "items": []})
+                "type": bucket, "scope_known": known, "items": []})
             group["items"].append(item)
         for group in groups.values():
             group["items"].sort(key=lambda item: (
@@ -770,7 +736,7 @@ class MemoryLedger:
             head = self._head(db)
             if anchor is None:
                 anchor = {"format": 1, **head, "after": 0, "limit": limit, "states": states}
-            _report, candidates, current_states = self._review_snapshot(db)
+            _report, candidates, current_states, placements, *_rest = self._snapshot(db)
             row = db.execute("SELECT ref,ciphertext FROM events WHERE seq=?", (anchor["seq"],)).fetchone()
             digest = _ZERO if anchor["seq"] == 0 else (self._digest(anchor["seq"], *row) if row else None)
             if anchor["seq"] > head["seq"] or digest != anchor["digest"]:
@@ -779,10 +745,14 @@ class MemoryLedger:
                                    "HAVING MIN(seq)>? ORDER BY MIN(seq)", (anchor["seq"], after))
             for seq, ref in positions:
                 candidate = candidates[ref]
+                placement = placements.get(ref)
                 if (current_states[ref] not in states or candidate["credential_risk"]
-                        or candidate["screening"] not in {"complete_unit", "original_ranges"}):
+                        or candidate["screening"] not in {"complete_unit", "original_ranges"}
+                        or placement is not None and placement["status"] == "current"
+                        and placement["decision"]["disposition"] == "accepted"):
                     continue
-                public = self._public_candidate(ref, candidate, current_states[ref], persist_screen=False)
+                public = self._public_candidate(ref, candidate, current_states[ref], persist_screen=False,
+                                                placement=placement)
                 if "text" not in public:
                     continue
                 if len(matches) == limit:
@@ -867,20 +837,7 @@ class MemoryLedger:
         return {"path": str(snapshot_path), **before}
 
     def _review_snapshot(self, db):
-        report = {"events": 0, "candidates": 0, "decisions": 0}
-        candidates, states = {}, {}
-        for ref, payload in self._walk(db):
-            report["events"] += 1
-            if payload.get("event") == "candidate" and ref not in candidates:
-                self._check_candidate(payload)
-                candidates[ref] = payload
-                states[ref] = payload["state"]
-                report["candidates"] += 1
-            elif payload.get("event") in ("decision", "human_review") and ref in candidates:
-                states[ref] = self._apply_review_event(ref, candidates[ref], states[ref], payload)
-                report["decisions"] += 1
-            else:
-                raise MemoryLedgerIntegrityError("Invalid memory event sequence")
+        report, candidates, states, *_rest = self._snapshot(db)
         return report, candidates, states
 
     def _verify_snapshot(self, db):
@@ -917,13 +874,7 @@ class MemoryLedger:
         """Authenticate one full chain and every requested candidate citation."""
         if not isinstance(refs, list) or len(refs) > 64 or any(not self._hex(ref) for ref in refs):
             raise ValueError("Invalid bounded memory references")
-        wanted, found = set(refs), set()
         with self._connect() as db:
             db.execute("BEGIN")
-            for ref, payload in self._walk(db):
-                if ref in wanted and payload.get("event") == "candidate":
-                    if ref in found:
-                        raise MemoryLedgerIntegrityError("Duplicate memory candidate")
-                    self._check_candidate(payload)
-                    found.add(ref)
-        return found == wanted
+            _report, candidates, *_rest = self._snapshot(db)
+        return set(refs) <= candidates.keys()

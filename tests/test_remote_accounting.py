@@ -31,6 +31,49 @@ def test_settled_cost_is_up_rounded_and_blocks_stale_provider_usage(tmp_path):
         reserve(tmp_path, 1, READY)
 
 
+def test_classification_requires_fresh_unowned_admission_not_batch_bill(tmp_path):
+    from muninn.history.remote_accounting import unowned_unknown_response, settled_response
+    policy(tmp_path)
+    sync = reserve(tmp_path, 1, READY)
+    assert not unowned_unknown_response(tmp_path, sync.identifier, 1)
+    sync.mark_unknown()
+    assert unowned_unknown_response(tmp_path, sync.identifier, 1)
+    assert sync.settle_response({"usage": {"cost": 0.001}})
+    assert not unowned_unknown_response(tmp_path, sync.identifier, 1)
+    assert settled_response(tmp_path, sync.identifier, 1, require_unowned=True)
+    batch = reserve(tmp_path, 1, READY, batch_owner="d" * 32)
+    batch.mark_unknown()
+    assert not unowned_unknown_response(tmp_path, batch.identifier, 1)
+    assert batch.settle_response({"usage": {"cost": 0.002}})
+    assert settled_response(tmp_path, batch.identifier, 1, batch_owner="d" * 32)
+    assert not settled_response(tmp_path, batch.identifier, 1, require_unowned=True)
+
+
+def test_classification_admission_is_bound_before_send_and_survives_reopen(tmp_path):
+    from muninn.history.remote_accounting import unowned_unknown_response, settled_response
+    policy(tmp_path)
+    job, digest = "b" * 32, "a" * 64
+    foreign = reserve(tmp_path, 1, READY)
+    foreign.mark_unknown()
+    assert not unowned_unknown_response(tmp_path, foreign.identifier, 1,
+        classification_job=job, classification_input=digest)
+    foreign.release_unsent()
+    own = reserve(tmp_path, 1, READY, classification_job=job, classification_input=digest)
+    own.mark_unknown()
+    assert unowned_unknown_response(tmp_path, own.identifier, 1,
+        classification_job=job, classification_input=digest)
+    assert not unowned_unknown_response(tmp_path, own.identifier, 1,
+        classification_job="c" * 32, classification_input=digest)
+    assert not unowned_unknown_response(tmp_path, own.identifier, 1,
+        classification_job=job, classification_input="d" * 64)
+    own.settle_response({"usage": {"cost": 0.002}})
+    assert settled_response(tmp_path, own.identifier, 1, require_unowned=True,
+        classification_job=job, classification_input=digest)
+    assert not settled_response(tmp_path, own.identifier, 1)
+    with pytest.raises(AdmissionError):
+        settled_response(tmp_path, own.identifier, 1, classification_input=digest)
+
+
 def test_parallel_process_equivalent_connections_allow_only_one_admission(tmp_path):
     policy(tmp_path)
     def attempt(_):

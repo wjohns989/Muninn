@@ -114,6 +114,10 @@ def _db(root, *, initialize=False, generation=None):
             raise AdmissionError()
         if initialize and "batch_owner" not in {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}:
             db.execute("ALTER TABLE remote_admissions ADD COLUMN batch_owner TEXT")
+        if initialize:
+            for column in ("classification_job", "classification_input"):
+                if column not in {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}:
+                    db.execute(f"ALTER TABLE remote_admissions ADD COLUMN {column} TEXT")
         # Querying required columns detects missing/incompatible ledger tables.
         db.execute("SELECT id,generation,state,started,start_day,start_month,finished,"
                    "end_day,end_month,cost_micro,resolution FROM remote_admissions LIMIT 0")
@@ -154,12 +158,18 @@ def _spent(db, day, month):
     return daily, monthly
 
 
-def reserve(root, generation, provider_status, *, now=None, batch_owner=None):
+def reserve(root, generation, provider_status, *, now=None, batch_owner=None,
+            classification_job=None, classification_input=None):
     """Reserve all remaining admission capacity, allowing one paid call at a time."""
     if not isinstance(provider_status, dict) or provider_status.get("admission_ready") is not True:
         raise AdmissionError("daily_zdr_cap_unverified")
     if batch_owner is not None:
         _check_id(batch_owner)
+    if classification_job is not None or classification_input is not None:
+        _check_id(classification_job)
+        if (batch_owner is not None or not isinstance(classification_input, str)
+                or len(classification_input) != 64 or any(c not in "0123456789abcdef" for c in classification_input)):
+            raise AdmissionError("remote_accounting_invalid_reference")
     reported = tuple(_micros(provider_status.get(k)) for k in ("usage_daily_usd", "usage_monthly_usd"))
     when = time.time() if now is None else now
     day, month = _periods(when)
@@ -178,8 +188,9 @@ def reserve(root, generation, provider_status, *, now=None, batch_owner=None):
         if any(max(local, remote) >= cap for local, remote, cap in zip(spent, reported, caps)):
             raise AdmissionError("remote_admission_threshold_reached")
         identifier = uuid.uuid4().hex
-        db.execute("INSERT INTO remote_admissions(id,generation,state,started,start_day,start_month,batch_owner) "
-                   "VALUES(?,?,'reserved',?,?,?,?)", (identifier, generation, when, day, month, batch_owner))
+        db.execute("INSERT INTO remote_admissions(id,generation,state,started,start_day,start_month,batch_owner,"
+                   "classification_job,classification_input) VALUES(?,?,'reserved',?,?,?,?,?,?)",
+                   (identifier, generation, when, day, month, batch_owner, classification_job, classification_input))
     return Admission(Path(root), identifier, generation)
 
 
@@ -288,7 +299,8 @@ def unknown_response(root, identifier, generation, *, batch_owner=None):
         return row == ("unknown", None, None)
 
 
-def settled_response(root, identifier, generation, *, batch_owner=None):
+def settled_response(root, identifier, generation, *, batch_owner=None, require_unowned=False,
+                     classification_job=None, classification_input=None):
     """Authenticate one settled provider response for durable publication."""
     _check_id(identifier)
     if batch_owner is not None:
@@ -298,6 +310,13 @@ def settled_response(root, identifier, generation, *, batch_owner=None):
     with _db(root) as (db, managed):
         if not managed:
             return False
+        if not _classification_binding(db, identifier, classification_job, classification_input):
+            return False
+        if require_unowned:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}
+            if "batch_owner" in columns:
+                if db.execute("SELECT batch_owner FROM remote_admissions WHERE id=?", (identifier,)).fetchone() != (None,):
+                    return False
         if batch_owner is not None:
             if "batch_owner" not in {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}:
                 return False
@@ -310,6 +329,62 @@ def settled_response(root, identifier, generation, *, batch_owner=None):
         ).fetchone()
         return bool(row and row[0] == "settled" and row[1] == "response"
                     and type(row[2]) is int and 0 <= row[2] <= _MAX)
+
+
+def _classification_binding(db, identifier, job, input_sha):
+    columns = {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}
+    if job is None and input_sha is None:
+        if not {"classification_job", "classification_input"} <= columns:
+            return True  # Legacy nonclassification accounting.
+        return db.execute("SELECT classification_job,classification_input FROM remote_admissions WHERE id=?",
+                          (identifier,)).fetchone() == (None, None)
+    _check_id(job)
+    if not isinstance(input_sha, str) or len(input_sha) != 64 or any(c not in "0123456789abcdef" for c in input_sha):
+        raise AdmissionError("remote_accounting_invalid_reference")
+    if not {"classification_job", "classification_input"} <= columns:
+        return False
+    return db.execute("SELECT classification_job,classification_input FROM remote_admissions WHERE id=?",
+                      (identifier,)).fetchone() == (job, input_sha)
+
+
+def unowned_unknown_response(root, identifier, generation, *, classification_job=None, classification_input=None):
+    """Only an unsatisfied synchronous admission may acquire a new job binding."""
+    _check_id(identifier)
+    if type(generation) is not int or generation < 1:
+        return False
+    with _db(root) as (db, managed):
+        if not managed:
+            return False
+        if not _classification_binding(db, identifier, classification_job, classification_input):
+            return False
+        columns = {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}
+        if "batch_owner" in columns:
+            if db.execute("SELECT batch_owner FROM remote_admissions WHERE id=?", (identifier,)).fetchone() != (None,):
+                return False
+        row = db.execute("SELECT state,resolution,cost_micro FROM remote_admissions WHERE id=? AND generation=?",
+                         (identifier, generation)).fetchone()
+        return row == ("unknown", None, None)
+
+
+def classification_admission_state(root, identifier, generation, job, input_sha):
+    """Authenticate owned bookkeeping without pretending unknown work settled."""
+    _check_id(identifier)
+    if type(generation) is not int or generation < 1:
+        return None
+    with _db(root) as (db, managed):
+        if not managed or not _classification_binding(db, identifier, job, input_sha):
+            return None
+        if db.execute("SELECT batch_owner FROM remote_admissions WHERE id=?", (identifier,)).fetchone() != (None,):
+            return None
+        row = db.execute("SELECT state,resolution,cost_micro FROM remote_admissions WHERE id=? AND generation=?",
+                         (identifier, generation)).fetchone()
+        if row == ("unknown", None, None) or row == ("released", "unsent", None):
+            return row[0]
+        # Operator reconciliation establishes bookkeeping, not a provider reply.
+        # settled_response remains response-only for staging/publication authority.
+        if row and row[0] == "settled" and row[1] in {"response", "operator"} and type(row[2]) is int and 0 <= row[2] <= _MAX:
+            return "settled"
+        return None
 
 
 def main(argv=None):
