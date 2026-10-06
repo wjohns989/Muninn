@@ -1,5 +1,5 @@
 :root {
-    /* Muninn SOTA+ / Metallic Cyber-Norse Palette */
+    /* Local-first control center; semantic colors remain compatible with forms. */
     --void-black: #050508;
     --slate-900: #0c0a1a;
     --slate-800: #121026;
@@ -28,11 +28,11 @@
     /* Digital Void & Neon Palette */
     --void-black: #05000a;
     --deep-slate: #0a0a0f;
-    --neon-purple: #bc13fe;
+    --neon-purple: #b3a1fa;
     --electric-violet: #7b2ff7;
-    --void-glow: rgba(188, 19, 254, 0.15);
+    --void-glow: rgba(179, 161, 250, 0.08);
     --text-primary: #f0f0f5;
-    --text-muted: #8a8a9e;
+    --text-muted: #b1b0c4;
     --border-dim: rgba(188, 19, 254, 0.2);
     --border-bright: rgba(188, 19, 254, 0.6);
 
@@ -54,7 +54,7 @@
 body {
     background-color: var(--void-black);
     color: var(--text-primary);
-    font-family: 'Rajdhani', 'Inter', sans-serif;
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
     height: 100vh;
     display: flex;
     overflow: hidden;
@@ -63,7 +63,7 @@ body {
 
 /* Cyber-Runic Background Motif */
 body::before {
-    content: "ᛗ ᚢ ᚾ ᛁ ᚾ";
+    content: "";
     position: fixed;
     top: 50%;
     left: 50%;
@@ -82,9 +82,9 @@ h1,
 h2,
 h3,
 .brand {
-    font-family: 'Rajdhani', sans-serif;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
+    font-family: inherit;
+    text-transform: none;
+    letter-spacing: -0.015em;
     font-weight: 700;
 }
 
@@ -1129,6 +1129,55 @@ select.input-base {
     color: var(--slate-300);
 }
 
+/* Operator hierarchy: actual work first; no decorative live-looking telemetry. */
+[hidden] { display: none !important; }
+.sidebar { width: 238px; flex-shrink: 0; }
+.brand { padding: 1.7rem 1.4rem; font-size: 1.35rem; letter-spacing: 0.04em; text-shadow: none; }
+.main-content { min-width: 0; background: #101019; }
+.container { max-width: 1260px; width: 100%; margin: 0 auto; }
+.card { background: #191923; box-shadow: none; border-color: #343342; }
+.card h3 { letter-spacing: 0; }
+.nav-item { font-size: 0.92rem; }
+.nav-item.active { background: #302744; box-shadow: none; }
+.tab-beam { display: none; }
+.pulse-active { animation: none; }
+.control-hero { display: flex; justify-content: space-between; align-items: flex-start;
+    flex-wrap: wrap; gap: 1rem; margin: 0.5rem 0 1.6rem; }
+.control-hero h1 { font-size: clamp(1.6rem, 3vw, 2.3rem); line-height: 1.2; margin: 0.25rem 0 0.65rem; }
+.control-hero p { color: var(--text-muted); max-width: 65ch; line-height: 1.6; }
+.eyebrow { color: var(--neon-purple); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; }
+.control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+.control-grid .stat-card { padding: 1.25rem; background: #191923; border: 1px solid #343342;
+    box-shadow: none; transform: none; min-width: 0; }
+.control-grid .stat-value { font-size: 2rem; color: var(--text-primary); margin: 0.45rem 0; overflow-wrap: anywhere; }
+.control-grid .stat-label { font-size: 0.85rem; letter-spacing: 0; text-transform: none; }
+.stat-note { font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; }
+.control-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 1rem; }
+.control-row .card { min-width: 0; }
+.status-list { display: grid; gap: 1rem; }
+.status-list div { display: grid; gap: 0.3rem; }
+.status-list dt { font-weight: 600; font-size: 0.87rem; color: #d9d4ef; }
+.status-list dd { font-size: 0.87rem; color: var(--text-muted); line-height: 1.65; overflow-wrap: anywhere; }
+.operator-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 1.2rem; }
+.status-note { border-left: 3px solid #ab925b; padding: 0.8rem 1rem; color: #e0d9c8;
+    background: #25221b; line-height: 1.6; margin: 1rem 0; }
+.overview-status-text { line-height: 1.65; }
+.card-description { line-height: 1.6; }
+.control-details { margin: 1rem 0; }
+.control-details summary { cursor: pointer; color: var(--text-muted); padding: 0.8rem 0; }
+:is(button, input, textarea, select, summary, .nav-item):focus-visible {
+    outline: 2px solid #cbbdff; outline-offset: 4px;
+}
+.modal-content h2 { line-height: 1.35; }
+.modal-content p { line-height: 1.65; }
+@media (max-width: 1000px) {
+    .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .control-row { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
 /* Keep the operator controls usable when the window is narrow. The desktop
    sidebar otherwise consumes most of a phone-width viewport. */
 @media (max-width: 720px) {
@@ -1199,7 +1248,8 @@ select.input-base {
     }
 
     .stat-grid,
-    .discovery-grid {
+    .discovery-grid,
+    .control-grid {
         grid-template-columns: minmax(0, 1fr);
     }
 

@@ -37,9 +37,10 @@ def test_legacy_import_controls_start_hidden_until_health_confirms_legacy():
 def test_every_sidebar_navigation_action_is_keyboard_reachable():
     page = TestClient(server.app).get("/").text
     items = re.findall(r'<li class="nav-item[^>]*>', page)
-    assert len(items) == 7
+    assert len(items) == 8
     assert all('tabindex="0"' in item and 'role="button"' in item for item in items)
-    assert sum('data-tab=' in item for item in items) == 6
+    assert sum('data-tab=' in item for item in items) == 7
+    assert any('data-tab="operations"' in item for item in items)
     assert sum('data-action="profile"' in item for item in items) == 1
     assert "document.querySelectorAll('.nav-item[data-tab], .nav-item[data-action=\"profile\"]')" in page
     assert "nav.addEventListener('keydown'" in page
