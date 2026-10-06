@@ -63,7 +63,10 @@ reading a queue item does not approve or resolve it. Decisions require the authe
 If these summaries do not answer the question, use start_secure_history_search and
 poll_secure_history_search to locate original transcripts. Use fetch_secure_history for a bounded
 redacted span, or start_secure_history_transcript, poll_secure_history_transcript and
-read_secure_history_transcript_page to read relevant pages. Pending is not an empty result;
+read_secure_history_transcript_page to read relevant pages. Start once with the search capability
+or cited-source transcript_capability. For a pending transcript, poll with the
+original capability, not a job ID. Once ready, read cursor and follow each next_cursor until the
+needed context is available (or next_cursor is null). Pending is not an empty result;
 read more pages only when needed and do not claim complete coverage from a partial read.
 Use search_credential_metadata to find a credential's existence and source location, never its value.
 Credential values require separately authorized local use; do not send them to an agent or model.

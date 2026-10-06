@@ -23,7 +23,14 @@ def _failure_code(exc: Exception) -> str:
     codes = {'review_call_failed', 'review_response_invalid', 'review_continuation_invalid',
              'bridge_closed', 'mcp_error', 'protocol_mismatch', 'context_tool_missing',
              'context_call_failed', 'review_tool_missing', 'bridge_timeout'}
+    codes.add('transcript_workflow_missing')
     return str(exc) if str(exc) in codes else type(exc).__name__
+
+
+def _recall_tools_present(names: set[str]) -> bool:
+    return {"search_cited_memories", "get_cited_memory_source",
+            "start_secure_history_transcript", "poll_secure_history_transcript",
+            "read_secure_history_transcript_page"} <= names
 
 
 def _review_page(result: dict, *, limit: int = 1) -> dict:
@@ -185,6 +192,8 @@ def main() -> int:
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         listed = result_for(2)
         names = {item.get("name") for item in listed.get("tools", []) if isinstance(item, dict)}
+        if args.verify_installed_profiles and not _recall_tools_present(names):
+            raise RuntimeError("transcript_workflow_missing")
         if "get_project_context" not in names:
             raise RuntimeError("context_tool_missing")
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
@@ -220,6 +229,7 @@ def main() -> int:
                             "review_snapshot_events": pages[0]["snapshot_events"]}
         print(json.dumps({"state": "passed", "tool_count": len(names),
                           "context_call_ok": True,
+                          "transcript_workflow_exposed": _recall_tools_present(names),
                           "installed_profiles_match": (True if args.verify_installed_profiles else None),
                           "elapsed_ms": round((time.monotonic() - started) * 1000),
                           **review_proof}, sort_keys=True))

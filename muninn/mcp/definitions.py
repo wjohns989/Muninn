@@ -407,10 +407,12 @@ TOOLS_SCHEMAS: List[Dict[str, Any]] = [
         "name": "start_secure_history_transcript",
         "description": (
             "Queue a CPU-only encrypted projection of the full conversational transcript "
-            "selected by a search_secure_history capability. Returns pending or a page cursor."
+            "selected by a search hit or cited source capability. Start once. If pending, call "
+            "poll_secure_history_transcript with the original capability, not a job ID. "
+            "If ready, pass cursor to read_secure_history_transcript_page, then follow next_cursor."
         ),
         "inputSchema": {"type": "object", "properties": {
-            "capability": {"type": "string", "description": "Expiring search hit capability."}},
+            "capability": {"type": "string", "description": "Expiring search hit or cited-source transcript_capability."}},
             "required": ["capability"]},
     },
     {
