@@ -430,6 +430,23 @@
                     <p id="remote-policy-status" role="status" aria-live="polite">Enter the main local token to inspect policy.</p>
                     <p id="remote-key-status" role="status" aria-live="polite">Provider key limit not checked.</p>
                 </div>
+                <div class="card">
+                    <h3>Cited memories &amp; evidence</h3>
+                    <p class="card-description">Search interpreted memories, inspect their recorded status, then follow
+                        the cited source. Model interpretations and provisional records are not verified facts.
+                        Project and source references are opaque identifiers, not file paths. Text is bounded,
+                        best-effort redacted; exact originals and credential values are not available here.</p>
+                    <label for="cited-memory-query">Find a cited memory (up to eight search terms)</label>
+                    <input id="cited-memory-query" class="input-base" maxlength="240" placeholder="Search cited memories...">
+                    <div class="m-t-8">
+                        <button type="button" id="cited-memory-search" class="btn-primary">Search cited memories</button>
+                        <button type="button" id="cited-memory-reviews" class="btn-secondary">Browse eligible review items</button>
+                        <button type="button" id="cited-memory-next" class="btn-secondary" hidden>Next review page</button>
+                    </div>
+                    <p id="cited-memory-status" role="status" aria-live="polite">Not loaded. Reads happen only when requested.</p>
+                    <div id="cited-memory-results"></div>
+                    <div id="cited-memory-detail"></div>
+                </div>
                 <div class="help-box">
                     <b>Encrypted History Search</b>
                     This searches locally archived transcripts, separate from ordinary memories.
@@ -530,6 +547,9 @@
         let AUTH_TOKEN = "";
         let HISTORY_SECURITY_MODE = "unknown";
         let historySearchSequence = 0;
+        let citedReadSequence = 0;
+        let citedReviewCursor = null;
+        let citedReadBusy = false;
         let historySearchJobId = null;
         let historyTranscriptSequence = 0;
         let historyTranscriptNextCursor = null;
@@ -689,6 +709,7 @@
         function lockSession() {
             AUTH_TOKEN = '';
             sessionEpoch++;
+            clearCitedMemoryView();
             authAttemptSequence++;
             historySearchSequence++;
             historyTranscriptSequence++;
@@ -903,6 +924,12 @@
                 });
             });
             document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
+            document.getElementById('cited-memory-search').addEventListener('click', searchCitedMemories);
+            document.getElementById('cited-memory-reviews').addEventListener('click', () => browseCitedReviews(false));
+            document.getElementById('cited-memory-next').addEventListener('click', () => browseCitedReviews(true));
+            document.getElementById('cited-memory-query').addEventListener('keydown', event => {
+                if (event.key === 'Enter') { event.preventDefault(); void searchCitedMemories(); }
+            });
             document.getElementById('history-transcript-next').addEventListener('click', () => {
                 const cursor = historyTranscriptNextCursor;
                 if (!cursor) return;
@@ -1524,6 +1551,172 @@
             }
         }
 
+        function clearCitedMemoryView() {
+            citedReadSequence++;
+            citedReviewCursor = null;
+            citedReadBusy = false;
+            document.getElementById('cited-memory-results').replaceChildren();
+            document.getElementById('cited-memory-detail').replaceChildren();
+            document.getElementById('cited-memory-status').textContent = 'Not loaded. Reads happen only when requested.';
+            document.getElementById('cited-memory-next').hidden = true;
+            setCitedReadBusy(false);
+            historySearchSequence++;
+            clearHistoryTranscript();
+        }
+
+        function setCitedReadBusy(busy) {
+            citedReadBusy = busy;
+            for (const id of ['cited-memory-search', 'cited-memory-reviews', 'cited-memory-next'])
+                document.getElementById(id).disabled = busy;
+        }
+
+        function citedMemoryView(value) {
+            if (!value || typeof value.id !== 'string' || !/^[a-f0-9]{64}$/.test(value.id)) return null;
+            const bounded = (text, limit) => typeof text === 'string' && [...text].length <= limit ? text : null;
+            const ref = text => typeof text === 'string' && /^[a-f0-9]{64}$/.test(text) ? text : 'unknown';
+            const tag = text => typeof text === 'string' && /^[a-z_][a-z0-9_-]{0,63}$/.test(text) ? text : 'unknown';
+            return {id: value.id, source_ref: ref(value.source_ref), project_ref: ref(value.project_ref),
+                state: tag(value.state), type: tag(value.type), truth_status: tag(value.truth_status),
+                epistemic_kind: tag(value.epistemic_kind), proposal_origin: tag(value.proposal_origin),
+                time_basis: tag(value.time_basis), project_basis: tag(value.project_basis),
+                event_at: bounded(value.event_at, 80) || 'unknown',
+                text: bounded(value.text, 2048), quote: bounded(value.quote, 2048)};
+        }
+
+        function citedText(parent, tag, text) {
+            const node = document.createElement(tag);
+            node.textContent = text;
+            if (tag === 'pre') node.className = 'cited-source-text';
+            parent.appendChild(node);
+            return node;
+        }
+
+        function renderCitedMemory(memory, current, withActions = true) {
+            const card = document.createElement('div');
+            card.className = 'result-item';
+            citedText(card, 'strong', `${memory.type} · ${memory.state} · ${memory.truth_status}`);
+            citedText(card, 'p', `Evidence: ${memory.epistemic_kind} · proposal origin: ${memory.proposal_origin}. ` +
+                'An interpretation or assertion is not independently verified truth.');
+            citedText(card, 'p', `Recorded event time: ${memory.event_at} · time basis: ${memory.time_basis}. ` +
+                `Project basis: ${memory.project_basis}. File and archive timestamps are not substituted for event time.`);
+            citedText(card, 'p', `Memory ref: ${memory.id}\nSource ref: ${memory.source_ref}\nProject ref: ${memory.project_ref}`);
+            citedText(card, 'pre', memory.text === null ? 'Memory text withheld or unavailable.' : memory.text);
+            if (memory.quote !== null) citedText(card, 'pre', `Recorded quote:\n${memory.quote}`);
+            if (withActions) {
+                for (const [label, source] of [['Look up record', false], ['Follow cited source', true]]) {
+                    const button = citedText(card, 'button', label);
+                    button.type = 'button'; button.className = 'btn-secondary';
+                    button.addEventListener('click', () => {
+                        if (current() && !citedReadBusy) void loadCitedMemory(memory.id, source, citedReadSequence);
+                    });
+                }
+            }
+            return card;
+        }
+
+        async function readCitedMemories(mode, body) {
+            if (!AUTH_TOKEN || citedReadBusy) return;
+            const priorCursor = citedReviewCursor;
+            clearCitedMemoryView();
+            const sequence = citedReadSequence, token = AUTH_TOKEN, epoch = sessionEpoch;
+            const current = () => token === AUTH_TOKEN && epoch === sessionEpoch && sequence === citedReadSequence;
+            setCitedReadBusy(true);
+            const status = document.getElementById('cited-memory-status');
+            status.textContent = 'Reading bounded local evidence...';
+            try {
+                const reply = await api(`/history/secure/memories/${mode}`, 'POST', body, 30000);
+                if (!current()) return;
+                const data = reply.data;
+                const limit = mode === 'search' ? 10 : 6;
+                if (reply.error || !data || !Array.isArray(data.matches) || data.matches.length > limit ||
+                        data.matches.some(row => citedMemoryView(row) === null)) {
+                    status.textContent = 'Read unavailable. A timed-out local read may still be running; no automatic retry was made.';
+                    return;
+                }
+                if (mode === 'review-queue') {
+                    const cursor = data.next_cursor;
+                    if (data.credential_or_withheld_excluded !== true || typeof data.has_more !== 'boolean' ||
+                            !(cursor === null || (typeof cursor === 'string' && cursor.length > 0 && cursor.length <= 2048)) ||
+                            data.has_more !== (cursor !== null) || cursor === priorCursor && cursor !== null) {
+                        status.textContent = 'Review page unavailable: invalid bounded page.'; return;
+                    }
+                    citedReviewCursor = cursor;
+                    document.getElementById('cited-memory-next').hidden = !cursor;
+                    status.textContent = `${data.matches.length} eligible noncredential review items on this page. ` +
+                        'This is a safe provisional/needs-user subset, not the total ambiguity queue. ' +
+                        (cursor ? 'More eligible items available.' : 'End of this eligible view; this does not mean all ambiguity is resolved.');
+                } else {
+                    status.textContent = `${data.matches.length} results shown · newest publication first, not source-event order. ` +
+                        (data.truncated === true ? 'Narrow the query for other matches.' :
+                            data.truncated === false ? 'No further matches reported for this query.' : 'Further matches unknown.');
+                }
+                for (const row of data.matches)
+                    document.getElementById('cited-memory-results').appendChild(renderCitedMemory(citedMemoryView(row), current));
+            } finally { if (current()) setCitedReadBusy(false); }
+        }
+
+        async function searchCitedMemories() {
+            if (citedReadBusy || !AUTH_TOKEN) return;
+            const query = document.getElementById('cited-memory-query').value.trim();
+            if (!query || new TextEncoder().encode(query).length > 512) {
+                document.getElementById('cited-memory-status').textContent = 'Enter a query of at most 512 UTF-8 bytes (up to eight terms).';
+                return;
+            }
+            await readCitedMemories('search', {query, limit: 10});
+        }
+
+        async function browseCitedReviews(next) {
+            if (citedReadBusy || !AUTH_TOKEN || next && !citedReviewCursor) return;
+            const body = {limit: 6};
+            if (next) body.cursor = citedReviewCursor;
+            await readCitedMemories('review-queue', body);
+        }
+
+        async function loadCitedMemory(ident, source, sequence) {
+            if (!AUTH_TOKEN || citedReadBusy || sequence !== citedReadSequence || !/^[a-f0-9]{64}$/.test(ident)) return;
+            const token = AUTH_TOKEN, epoch = sessionEpoch;
+            const current = () => token === AUTH_TOKEN && epoch === sessionEpoch && sequence === citedReadSequence;
+            const detail = document.getElementById('cited-memory-detail');
+            detail.replaceChildren();
+            historySearchSequence++;
+            clearHistoryTranscript();
+            const transcriptSequence = historySearchSequence;
+            setCitedReadBusy(true);
+            const status = document.getElementById('cited-memory-status');
+            status.textContent = 'Reading the authenticated record and source...';
+            try {
+                const reply = await api(`/history/secure/memories/${source ? 'source' : 'get'}`, 'POST',
+                    source ? {memory_ref: ident, max_chars: 3000} : {memory_ref: ident}, 30000);
+                if (!current()) return;
+                const data = reply.data;
+                const memory = citedMemoryView(source ? data?.memory : data);
+                if (reply.error || !memory || memory.id !== ident) {
+                    status.textContent = 'Record/source unavailable. A timed-out local read may still be running; no automatic retry was made.';
+                    return;
+                }
+                detail.appendChild(renderCitedMemory(memory, current, false));
+                if (source) {
+                    const available = data.context_state === 'available' && typeof data.context === 'string' && [...data.context].length <= 3000;
+                    citedText(detail, 'h4', 'Cited source context · best-effort redacted');
+                    citedText(detail, 'pre', available ? data.context : 'Source context withheld or unavailable.');
+                    citedText(detail, 'p', available ? 'Bounded excerpt; this is not the entire transcript.' :
+                        'The recorded quote is not a substitute for withheld source context.');
+                    const capability = data.transcript_capability;
+                    if (typeof capability === 'string' && capability.length > 0 && capability.length <= 4096) {
+                        const button = citedText(detail, 'button', 'Read redacted transcript');
+                        button.type = 'button'; button.className = 'btn-secondary';
+                        button.addEventListener('click', () => {
+                            if (!current() || transcriptSequence !== historySearchSequence || button.disabled) return;
+                            button.disabled = true;
+                            void openHistoryTranscript(capability, transcriptSequence, `memory ${ident.slice(0, 12)}`)
+                                .finally(() => { if (current()) button.disabled = false; });
+                        });
+                    }
+                }
+                status.textContent = 'Record/source loaded. Status and provenance are evidence, not a certification of truth.';
+            } finally { if (current()) setCitedReadBusy(false); }
+        }
+
         function clearHistoryTranscript() {
             historyTranscriptSequence++;
             historyTranscriptNextCursor = null;
@@ -1682,6 +1875,7 @@
                 historyMessage('Encrypted history search is available only when strict history mode is active.');
                 return;
             }
+            clearCitedMemoryView();
             const sequence = ++historySearchSequence;
             clearHistoryTranscript();
             const previous = historySearchJobId;

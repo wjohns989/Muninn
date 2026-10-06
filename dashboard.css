@@ -1261,3 +1261,6 @@ select.input-base {
         padding: 1.5rem;
     }
 }
+/* Bounded cited text remains literal and readable on narrow viewports. */
+.cited-source-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+#cited-memory-results .result-item, #cited-memory-detail .result-item { overflow-wrap: anywhere; }

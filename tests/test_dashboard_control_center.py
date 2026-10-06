@@ -189,6 +189,7 @@ const document = {querySelectorAll(selector) {return selector.includes('input') 
         value:'secret-fixture', disabled:true, style:{}, classList: {add(){}, remove(){}},
         replaceChildren(){this.textContent = '';}, focus(){this.focused = true;}}); return nodes.get(id);}};
 function renderOperatingStatus(data) {assert.equal(data, null);}
+function clearCitedMemoryView() {}
 lockSession();
 assert.equal(AUTH_TOKEN, ''); assert.equal(sessionEpoch, 1);
 assert.equal(historySearchJobId, null); assert.equal(historyTranscriptNextCursor, null);

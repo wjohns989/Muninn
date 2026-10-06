@@ -98,7 +98,33 @@ Do not delete/cancel/resubmit retained work or weaken serial checkpoint gates.
 
 ## Remaining UI gates after the first boundary
 
-Cited-memory interactive retrieval; generic review queue/actions; local-only
+### Cited-memory read boundary
+
+Reuse installed search/get/source/review-queue POST readers, without a new
+backend or bulk loading. Search shows at most ten records; review pages six,
+and represent only the safe noncredential provisional/needs-user subset.
+No page count is the total ambiguity queue and no empty page proves resolution.
+Source identity must match the requested opaque memory reference. Display
+bounded context only for `context_state=available`; otherwise explicitly
+withhold it, never substitute the record quote. Per-record state, truth status,
+proposal origin and time/project basis remain visible as provenance, not truth.
+
+Tokens, review cursors and transcript capabilities stay in session memory;
+source capabilities are held only by removable button closures. Lock/new reads
+clear all results, detail, cursors and transcript state. Independent session,
+sequence and transcript guards reject stale completions/clicks. Busy controls
+prevent parallel UI reads; 30-second observation timeouts do not cancel backend
+readers or imply their CPU slot is released. No automatic retry, inference,
+filing, deletion, consent or budget mutation. Existing redacted transcript paging
+provides whole-transcript access incrementally, never a raw-original fallback.
+
+Focused synthetic tests exercise the actual extracted JavaScript and literal
+DOM sinks, missing/withheld text, invalid identity and bounds, same-token session
+changes, old transcript clicks and review subset paging. Independent review
+requires these context and invalidation rules before activation.
+
+Cited-memory signed-in manual browser QA; generic review actions beyond the
+eligible noncredential browse-only view; local-only
 credential-use approval/audit; independent batch opt-in/revoke form; run-aware
 accounting/reconciliation; authoritative backup/restore currency and installed
 revision; natural-host client evidence; authenticated manual browser QA. Each

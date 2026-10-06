@@ -233,6 +233,7 @@ def test_history_ui_discards_stale_search_and_fetch_responses():
     )[0]
     source = "let HISTORY_SECURITY_MODE = 'strict'; let historySearchSequence = 0; " + (
         "let historySearchJobId = null; let historyTranscriptSequence = 0; "
+        "let citedReadSequence = 0; let citedReadBusy = false; let citedReviewCursor = null; "
         "let historyTranscriptNextCursor = null; let historyTranscriptPageNumber = 0; "
         "function historyMessage(message)" + source
     )
