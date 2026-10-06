@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import kuzu
+from muninn.core.credential_boundary import project_credentials, require_credential_free
 
 logger = logging.getLogger("Muninn.Graph")
 
@@ -74,7 +75,7 @@ class GraphStore:
             """)
         except Exception as e:
             if "already exists" not in str(e).lower():
-                logger.warning(f"Entity table creation: {e}")
+                logger.warning("Entity table creation failed (%s)", type(e).__name__)
             else:
                 # Check if we need to migrate the Entity table (e.g. if 'id' doesn't exist)
                 try:
@@ -86,7 +87,7 @@ class GraphStore:
                         conn.execute("DROP TABLE Entity")
                         self._initialize() # Re-run to create new table
                     except Exception as drop_err:
-                        logger.error(f"Failed to migrate Entity table: {drop_err}")
+                        logger.error("Entity table migration failed (%s)", type(drop_err).__name__)
 
         try:
             conn.execute("""
@@ -101,7 +102,7 @@ class GraphStore:
             """)
         except Exception as e:
             if "already exists" not in str(e).lower():
-                logger.warning(f"Memory table creation: {e}")
+                logger.warning("Memory table creation failed (%s)", type(e).__name__)
 
         # Create relationship tables
         try:
@@ -116,7 +117,7 @@ class GraphStore:
             """)
         except Exception as e:
             if "already exists" not in str(e).lower():
-                logger.warning(f"RELATES_TO table creation: {e}")
+                logger.warning("RELATES_TO table creation failed (%s)", type(e).__name__)
 
         try:
             conn.execute("""
@@ -127,7 +128,7 @@ class GraphStore:
             """)
         except Exception as e:
             if "already exists" not in str(e).lower():
-                logger.warning(f"MENTIONS table creation: {e}")
+                logger.warning("MENTIONS table creation failed (%s)", type(e).__name__)
 
         try:
             conn.execute("""
@@ -142,7 +143,7 @@ class GraphStore:
             """)
         except Exception as e:
             if "already exists" not in str(e).lower():
-                logger.warning(f"PRECEDES table creation: {e}")
+                logger.warning("PRECEDES table creation failed (%s)", type(e).__name__)
 
         try:
             conn.execute("""
@@ -157,7 +158,7 @@ class GraphStore:
             """)
         except Exception as e:
             if "already exists" not in str(e).lower():
-                logger.warning(f"CAUSES table creation: {e}")
+                logger.warning("CAUSES table creation failed (%s)", type(e).__name__)
 
         logger.info(f"Graph store initialized at {self.db_path}")
 
@@ -168,6 +169,7 @@ class GraphStore:
         user_id: str = "global", 
         namespace: str = "global"
     ) -> bool:
+        require_credential_free(name, entity_type, user_id, namespace)
         conn = self._get_conn()
         now = time.time()
         # Create a scoped unique ID
@@ -186,7 +188,7 @@ class GraphStore:
             )
             return True
         except Exception as e:
-            logger.debug(f"Entity creation: {e}")
+            logger.debug("Entity creation failed (%s)", type(e).__name__)
             return False
 
     def create_relation(
@@ -199,6 +201,7 @@ class GraphStore:
         user_id: str = "global",
         namespace: str = "global",
     ) -> bool:
+        require_credential_free(subject, predicate, obj, source_memory_id, confidence, user_id, namespace)
         conn = self._get_conn()
         now = time.time()
         
@@ -221,7 +224,7 @@ class GraphStore:
             )
             return True
         except Exception as e:
-            logger.debug(f"Relation creation: {e}")
+            logger.debug("Relation creation failed (%s)", type(e).__name__)
             return False
 
     def add_memory_node(
@@ -231,6 +234,8 @@ class GraphStore:
         user_id: str = "global",
         namespace: str = "global",
     ) -> bool:
+        # Screen the complete input before truncation, connection or an upsert.
+        require_credential_free(memory_id, summary, user_id, namespace)
         conn = self._get_conn()
         now = time.time()
         try:
@@ -242,7 +247,7 @@ class GraphStore:
             )
             return True
         except Exception as e:
-            logger.debug(f"Memory node creation: {e}")
+            logger.debug("Memory node creation failed (%s)", type(e).__name__)
             return False
 
     def link_memory_to_entity(
@@ -253,6 +258,7 @@ class GraphStore:
         user_id: str = "global",
         namespace: str = "global"
     ) -> bool:
+        require_credential_free(memory_id, entity_name, role, user_id, namespace)
         conn = self._get_conn()
         e_id = f"{user_id}/{namespace}/{entity_name}"
         
@@ -267,7 +273,7 @@ class GraphStore:
             )
             return True
         except Exception as e:
-            logger.debug(f"Memory-entity link: {e}")
+            logger.debug("Memory-entity link failed (%s)", type(e).__name__)
             return False
 
     def find_related_memories(
@@ -278,6 +284,7 @@ class GraphStore:
         namespace: str = "global"
     ) -> List[str]:
         """Find memory IDs related to given entity names via graph traversal (scoped)."""
+        require_credential_free(query_entities, user_id, namespace)
         if not query_entities:
             return []
 
@@ -307,7 +314,7 @@ class GraphStore:
                     row = result.get_next()
                     memory_ids.add(row[0])
             except Exception as e:
-                logger.debug(f"Graph search for '{entity_name}': {e}")
+                logger.debug("Graph search failed (%s)", type(e).__name__)
 
         return list(memory_ids)[:limit]
 
@@ -321,6 +328,7 @@ class GraphStore:
         """
         Integrated Graph + Summary search with multi-tenant isolation.
         """
+        require_credential_free(query, user_id, namespaces)
         from muninn.extraction.rules import extract_entities_rule_based
         keywords_raw = extract_entities_rule_based(query)
         if keywords_raw:
@@ -365,7 +373,7 @@ class GraphStore:
                             "score": 1.0,
                         })
                 except Exception as e:
-                    logger.debug(f"Graph entity search for '{kw}': {e}")
+                    logger.debug("Graph entity search failed (%s)", type(e).__name__)
 
         # Strategy 2: Fallback to summary keyword match (if results are sparse)
         if len(results) < limit:
@@ -388,7 +396,7 @@ class GraphStore:
                             "score": 0.8,
                         })
                 except Exception as e:
-                    logger.debug(f"Graph summary search for '{kw}': {e}")
+                    logger.debug("Graph summary search failed (%s)", type(e).__name__)
 
         # deduplicate with score prioritization
         seen = {}
@@ -398,7 +406,15 @@ class GraphStore:
                 seen[rid] = r
 
         unique = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
-        return unique[:limit]
+        # Legacy graph text bypasses SQLite hydration. Preserve canonical IDs,
+        # never invent a redacted alias for an unsafe legacy identifier.
+        safe = []
+        for record in unique[:limit]:
+            if project_credentials(record["id"]) != record["id"]:
+                continue  # A credential-shaped ID cannot be released or used as a view ID.
+            safe.append({**record, "summary": project_credentials(record["summary"]),
+                         "match": project_credentials(record["match"])})
+        return safe
     def get_entity_centrality(
         self, 
         entity_name: str, 
@@ -406,6 +422,7 @@ class GraphStore:
         namespace: str = "global"
     ) -> float:
         """Get degree centrality of an entity (normalized by max possible degree) within a scope."""
+        require_credential_free(entity_name, user_id, namespace)
         conn = self._get_conn()
         e_id = f"{user_id}/{namespace}/{entity_name}"
         try:
@@ -465,7 +482,7 @@ class GraphStore:
                 # Normalize: log scale capped at 1.0, baseline of 20 relations = 1.0
                 results[mid] = min(1.0, math.log1p(degree) / math.log1p(20))
         except Exception as e:
-            logger.debug(f"Batch degree lookup failed: {e}")
+            logger.debug("Batch degree lookup failed (%s)", type(e).__name__)
 
         # Ensure all requested IDs are in the output (default 0.0)
         for mid in memory_ids:
@@ -489,6 +506,7 @@ class GraphStore:
         user_id: Optional[str] = None,
         namespace: Optional[str] = None
     ) -> List[Dict[str, Any]]:
+        require_credential_free(user_id, namespace)
         conn = self._get_conn()
         entities = []
         
@@ -519,8 +537,8 @@ class GraphStore:
                     "namespace": row[3],
                 })
         except Exception as e:
-            logger.debug(f"Get all entities: {e}")
-        return entities
+            logger.debug("Get all entities failed (%s)", type(e).__name__)
+        return project_credentials(entities)
 
     def add_chain_link(
         self,
@@ -536,6 +554,8 @@ class GraphStore:
         """
         Add a directed memory-to-memory chain edge.
         """
+        require_credential_free(predecessor_id, successor_id, relation_type, confidence,
+                                reason, shared_entities, hours_apart)
         conn = self._get_conn()
         rel = str(relation_type or "PRECEDES").upper()
         if rel not in {"PRECEDES", "CAUSES"}:
@@ -563,7 +583,7 @@ class GraphStore:
             )
             return True
         except Exception as e:
-            logger.debug(f"Chain relation creation ({rel}): {e}")
+            logger.debug("Chain relation creation failed (%s)", type(e).__name__)
             return False
 
     def find_chain_related_memories(
@@ -644,7 +664,7 @@ class GraphStore:
             _accumulate(in_cau, 1.05)
 
         except Exception as e:
-            logger.debug(f"Chain traversal batch failed: {e}")
+            logger.debug("Chain traversal batch failed (%s)", type(e).__name__)
 
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         return ranked[:limit]
@@ -656,7 +676,7 @@ class GraphStore:
             conn.execute("MATCH (m:Memory {id: $id}) DETACH DELETE m", {"id": memory_id})
             return True
         except Exception as e:
-            logger.debug(f"Delete memory references: {e}")
+            logger.debug("Delete memory references failed (%s)", type(e).__name__)
             return False
 
     def close(self):
@@ -679,7 +699,7 @@ class GraphStore:
                 try:
                     close_connection()
                 except Exception as exc:
-                    logger.warning("Kuzu connection cleanup failed: %s", exc)
+                    logger.warning("Kuzu connection cleanup failed (%s)", type(exc).__name__)
         if current_connection is not None:
             del self._thread_local.conn
         if self._db is not None:

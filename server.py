@@ -50,7 +50,7 @@ from muninn.core.env_loader import load_project_env
 load_project_env(Path(__file__).parent)
 
 from muninn.core.memory import MuninnMemory
-from muninn.core.credential_boundary import CredentialMemoryError, require_credential_free
+from muninn.core.credential_boundary import CredentialMemoryError, project_credentials, require_credential_free
 from muninn.core import handoffs
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.core.feature_flags import FeatureDisabledError
@@ -2382,17 +2382,17 @@ async def get_graph_endpoint(user_id: Optional[str] = "global_user"):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        entities = memory._graph.get_all_entities()
-        return {
+        entities = project_credentials(memory._graph.get_all_entities(user_id=user_id))
+        return JSONResponse({
             "success": True,
             "data": {
                 "entities": entities,
                 "entity_count": len(entities),
             },
-        }
+        }, headers=NO_STORE)
     except Exception as e:
-        logger.error("Error getting graph: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error getting graph (%s)", type(e).__name__)
+        raise HTTPException(status_code=500, detail="Graph unavailable", headers=NO_STORE)
 
 
 @app.post("/handover", dependencies=[Depends(verify_token)])
