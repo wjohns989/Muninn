@@ -176,7 +176,7 @@ def run_zdr(*, root, passphrase, limit, model_limit, model, apply, policy_root,
             examined.add(row['id'])
             continue
         else:
-            prepared = source.prepare(row)
+            prepared = source.prepare(row, candidate=candidate)
             if prepared is None:
                 incomplete += 1
                 examined.add(row['id'])
@@ -293,7 +293,7 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
                         break
                     if on_progress:
                         on_progress({"stage": "source_context_prepare", "model_calls": calls})
-                    prepared = review_source.prepare(row)
+                    prepared = review_source.prepare(row, candidate=original.candidate)
                     if prepared is None:
                         incomplete += 1
                         examined.add(row["id"])

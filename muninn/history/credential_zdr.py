@@ -16,7 +16,9 @@ import httpx
 from muninn.history import llm_settings
 from muninn.history.ambiguity_triage import ReviewDecision
 from muninn.history.auto_routing import openrouter_key_status, remote_policy_snapshot
-from muninn.history.credential_discovery import _INLINE_ASSIGN, ExtractionStats, iter_transcript_findings
+from muninn.history.credential_discovery import (
+    _INLINE_ASSIGN, _iter_findings, ExtractionStats, iter_transcript_findings,
+)
 from muninn.history.credential_store import AmbiguousCandidate
 from muninn.history.remote_accounting import (
     Admission,
@@ -30,6 +32,11 @@ from muninn.history.safe_span import sanitize_agent_span
 from muninn.history.secure_analysis import _request_safe
 
 _VERSION = 'credential-masked-zdr-v1'
+# Reconstruct old paid request identities only. Never dispatch this recipe.
+_LEGACY_ASSIGN = re.compile(
+    r'(?<![A-Za-z0-9_])(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})'
+    r'[ \t]{0,16}(?:=|\\?"[ \t]{0,16}:)[ \t]{0,16}\\?"?'
+)
 _SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['items'],
            'properties': {'items': {'type': 'array', 'minItems': 1, 'maxItems': 12,
                'items': {'type': 'object', 'additionalProperties': False,
@@ -80,7 +87,10 @@ def _decoded_strings(text):
                 continue
 
 
-def masked_body(item, model):
+def masked_body(item, model, *, _assignment_revision=2):
+    if _assignment_revision not in (1, 2):
+        raise ValueError('Unsupported credential masking recipe')
+    assignment = _LEGACY_ASSIGN if _assignment_revision == 1 else _INLINE_ASSIGN
     if (not item.source_context or not isinstance(item.candidate, str)
             or not 4 <= len(item.candidate) <= 512):
         return None
@@ -95,8 +105,11 @@ def masked_body(item, model):
     values = {item.candidate}
     labels = {item.name}
     for text in _decoded_strings(context):
-        for finding in iter_transcript_findings(
-                [text.encode('utf-8')], ExtractionStats(), include_ambiguous=True):
+        findings = (_iter_findings([text.encode('utf-8')], '', ExtractionStats(),
+                                  assignment, include_ambiguous=True)
+                    if _assignment_revision == 1 else iter_transcript_findings(
+                        [text.encode('utf-8')], ExtractionStats(), include_ambiguous=True))
+        for finding in findings:
             value = finding.candidate if isinstance(finding, AmbiguousCandidate) else finding[1]
             labels.add(finding.name if isinstance(finding, AmbiguousCandidate) else finding[0])
             if value:
@@ -122,7 +135,7 @@ def masked_body(item, model):
         if match.group('name') in labels and following.startswith(marker) and boundary:
             return match.group().replace(match.group('name'), 'FIELD', 1)
         return match.group()
-    masked = _INLINE_ASSIGN.sub(neutralize, masked)
+    masked = assignment.sub(neutralize, masked)
     masked = masked.replace(marker, '[REDACTED]')
     metadata = {}
     for key in _METADATA:
@@ -206,31 +219,88 @@ def _settle(root, receipt):
     return response['decision']
 
 
+def _body_binding(body):
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, allow_nan=False).encode()).hexdigest()
+    identity = hashlib.sha256((_VERSION + '\0' + digest).encode()).hexdigest()
+    return digest, identity
+
+
+def _proven_unsent(root, receipt):
+    if receipt['state'] != 'intent':
+        return False
+    with _db(root) as (db, managed):
+        row = db.execute('SELECT state,resolution,cost_micro FROM remote_admissions '
+                         'WHERE id=? AND generation=?',
+                         (receipt['admission'], receipt['generation'])).fetchone() if managed else None
+    return row == ('released', 'unsent', None)
+
+
+def _guard_other_receipts(receipts, binding, identity, policy_root):
+    """A changed request is not permission to repeat a possibly paid occurrence."""
+    entry, version, attempt, page = binding
+    receipts.get_page(entry, version, attempt, page)
+    with receipts._connect() as db:
+        rows = db.execute('SELECT model_identity FROM context_remote_calls '
+                          'WHERE attempt=? AND page=?', (attempt, page)).fetchall()
+    for (other_identity,) in rows:
+        if other_identity == identity:
+            continue
+        other = receipts.remote_receipt(*binding, other_identity)
+        if other is None or not _proven_unsent(policy_root, other):
+            raise AdmissionError('credential_receipt_binding_mismatch')
+    # A new parser attempt must not hide paid work in an older replay of the
+    # same immutable source. Complete coverage normally selects that old replay;
+    # differing coverage requires explicit occurrence mapping before more POSTs.
+    source_identity = receipts._identity(entry, version)
+    with receipts._connect() as db:
+        older = db.execute(
+            'SELECT r.attempt,r.page,r.model_identity FROM context_remote_calls r '
+            'JOIN attempts a ON a.attempt=r.attempt '
+            "WHERE a.vault=? AND a.blob=? AND a.sha=? AND a.version=? AND a.state='complete' "
+            'AND r.attempt<>?',
+            (source_identity['vault'], source_identity['blob'], source_identity['hash'],
+             version, attempt)).fetchall()
+    for other_attempt, other_page, other_identity in older:
+        other = receipts.remote_receipt(entry, version, other_attempt, other_page, other_identity)
+        if other is None or not _proven_unsent(policy_root, other):
+            raise AdmissionError('credential_receipt_binding_mismatch')
+
+
 def review_context(item, source, prepared, page, *, policy_root, generation, model=None):
     """Return (decision, actual_POST_count, reused); never use Ollama or weaken ZDR."""
     model = llm_settings.normalize_model(model) or llm_settings.models()[0]
     body = masked_body(item, model)
     if body is None:
         raise AdmissionError('credential_context_not_remote_safe')
-    digest = hashlib.sha256(json.dumps(body, sort_keys=True, allow_nan=False).encode()).hexdigest()
-    identity = hashlib.sha256((_VERSION + '\0' + digest).encode()).hexdigest()
+    digest, identity = _body_binding(body)
     original, entry, _units, attempt = prepared
     args = (entry, original.version, attempt, page, identity)
     receipts = source.contexts
     prior = receipts.remote_receipt(*args)
     if prior is not None and prior['body_hash'] != digest:
         raise AdmissionError('credential_receipt_binding_mismatch')
+    if prior is None:
+        legacy_body = masked_body(item, model, _assignment_revision=1)
+        if legacy_body is not None:
+            legacy_digest, legacy_identity = _body_binding(legacy_body)
+            if legacy_identity != identity:
+                legacy = receipts.remote_receipt(*args[:-1], legacy_identity)
+                if legacy is not None and legacy['body_hash'] != legacy_digest:
+                    raise AdmissionError('credential_receipt_binding_mismatch')
+                if legacy is not None and legacy['state'] == 'received':
+                    decision = _settle(policy_root, legacy)
+                    receipts.record_review(*args[:-1], legacy_identity, decision)
+                    return ReviewDecision(item.id, decision, 'zdr-model'), 0, True
+                if legacy is not None and not _proven_unsent(policy_root, legacy):
+                    raise AdmissionError('credential_review_outcome_unknown')
     if prior is not None and prior['state'] == 'received':
         decision = _settle(policy_root, prior)
         receipts.record_review(*args, decision)
         return ReviewDecision(item.id, decision, 'zdr-model'), 0, True
     if prior is not None:
-        with _db(policy_root) as (db, managed):
-            row = db.execute('SELECT state,resolution,cost_micro FROM remote_admissions '
-                             'WHERE id=? AND generation=?',
-                             (prior['admission'], prior['generation'])).fetchone() if managed else None
-        if row != ('released', 'unsent', None):
+        if not _proven_unsent(policy_root, prior):
             raise AdmissionError('credential_review_outcome_unknown')
+    _guard_other_receipts(receipts, args[:-1], identity, policy_root)
     policy = remote_policy_snapshot(policy_root)
     if not policy.enabled or policy.generation != generation:
         raise AdmissionError('remote_consent_revoked')

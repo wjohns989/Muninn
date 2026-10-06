@@ -7,6 +7,7 @@ units; a single representative never stands in for different contexts.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import asdict
@@ -26,6 +27,7 @@ from muninn.history.source_evidence import SourceEvidenceStore
 
 class CredentialContextStore(SourceEvidenceStore):
     def __init__(self, archive, root: Path | None = None):
+        self._parser_revision = 2
         super().__init__(archive, root or Path(archive.root) / "credential-context")
         with self._connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS context_reviews(attempt TEXT NOT NULL, "
@@ -41,8 +43,43 @@ class CredentialContextStore(SourceEvidenceStore):
 
     def _identity(self, entry: dict, version: int) -> dict:
         ident = super()._identity(entry, version)
-        ident.update(format="secure-credential-context-v1", parser_redactor="raw-ambiguity-replay-v1")
+        ident.update(format="secure-credential-context-v1",
+                     parser_redactor=f"raw-ambiguity-replay-v{self._parser_revision}")
         return ident
+
+    def _for_attempt(self, entry: dict, version: int, attempt: str):
+        if getattr(self, "_bound_attempt", None) == attempt:
+            return self
+        with self._connect() as db:
+            for revision in (2, 1):
+                reader = copy.copy(self)
+                reader._parser_revision = revision
+                reader._bound_attempt = attempt
+                try:
+                    reader._authenticated_count(db, reader._identity(entry, version), attempt)
+                except ProjectionIntegrityError:
+                    continue
+                return reader
+        raise ProjectionIntegrityError("Credential context revision authentication failed")
+
+    def find_snapshot(self, entry: dict, version: int, *, parser_revision=None) -> str | None:
+        revision = self._parser_revision if parser_revision is None else parser_revision
+        if type(revision) is not int or revision not in (1, 2):
+            raise ValueError("Invalid credential context revision")
+        ident = self._identity(entry, version)
+        with self._connect() as db:
+            rows = db.execute("SELECT attempt FROM attempts WHERE vault=? AND blob=? AND sha=? "
+                              "AND version=? AND state='complete' ORDER BY rowid DESC",
+                              (ident["vault"], ident["blob"], ident["hash"], version)).fetchall()
+        for (attempt,) in rows:
+            reader = self._for_attempt(entry, version, attempt)
+            if reader._parser_revision == revision:
+                return attempt
+        return None
+
+    def get_page(self, entry: dict, version: int, attempt: str, ordinal: int) -> str:
+        reader = self._for_attempt(entry, version, attempt)
+        return SourceEvidenceStore.get_page(reader, entry, version, attempt, ordinal)
 
     def build_snapshot(self, entry: dict, version: int, *, should_cancel=lambda: False) -> str:
         existing = self.find_snapshot(entry, version)
@@ -65,6 +102,7 @@ class CredentialContextStore(SourceEvidenceStore):
         return super(SourceEvidenceStore, self).build(entry, version, project)
 
     def contexts(self, entry: dict, version: int, attempt: str) -> Iterator[AmbiguousCandidate]:
+        self = self._for_attempt(entry, version, attempt)
         last_line = -1
         for page in self._iter_sealed_pages(entry, version, attempt):
             try:
@@ -80,6 +118,7 @@ class CredentialContextStore(SourceEvidenceStore):
             yield item
 
     def _review_aad(self, entry: dict, version: int, attempt: str, page: int, model_identity: str) -> bytes:
+        self = self._for_attempt(entry, version, attempt)
         if (type(page) is not int or page < 0 or not isinstance(model_identity, str)
                 or len(model_identity) != 64 or any(c not in "0123456789abcdef" for c in model_identity)):
             raise ValueError("Invalid credential context review reference")
@@ -89,6 +128,7 @@ class CredentialContextStore(SourceEvidenceStore):
 
     def cached_review(self, entry: dict, version: int, attempt: str, page: int,
                       model_identity: str) -> str | None:
+        self = self._for_attempt(entry, version, attempt)
         aad = self._review_aad(entry, version, attempt, page, model_identity)
         with self._connect() as db:
             count, _stats = self._authenticated_count(db, self._identity(entry, version), attempt)
@@ -108,6 +148,7 @@ class CredentialContextStore(SourceEvidenceStore):
 
     def record_review(self, entry: dict, version: int, attempt: str, page: int,
                       model_identity: str, decision: str) -> None:
+        self = self._for_attempt(entry, version, attempt)
         if decision not in {"rejected", "deferred"}:
             raise ValueError("Invalid credential context review decision")
         aad = self._review_aad(entry, version, attempt, page, model_identity)
@@ -161,6 +202,7 @@ class CredentialContextStore(SourceEvidenceStore):
             raise ProjectionIntegrityError('Credential remote receipt authentication failed') from exc
 
     def remote_receipt(self, entry, version, attempt, page, identity):
+        self = self._for_attempt(entry, version, attempt)
         aad = self._remote_aad(entry, version, attempt, page, identity)
         self.get_page(entry, version, attempt, page)
         with self._connect() as db:
@@ -171,6 +213,7 @@ class CredentialContextStore(SourceEvidenceStore):
 
     def save_remote_receipt(self, entry, version, attempt, page, identity, record, *, expected):
         """Occurrence-bound encrypted CAS; a received decision survives ledger settlement."""
+        self = self._for_attempt(entry, version, attempt)
         self._validate_remote(record)
         aad = self._remote_aad(entry, version, attempt, page, identity)
         self.get_page(entry, version, attempt, page)

@@ -107,6 +107,131 @@ def test_portable_archive_restore_preserves_context_and_decision_cache(tmp_path)
     assert reopened.cached_review(entry, 0, attempt, 0, "a" * 64) == "deferred"
 
 
+def test_parser_revision_upgrade_keeps_legacy_reviews_and_paid_receipts(tmp_path):
+    archive, entry = _fixture(tmp_path)
+    legacy = CredentialContextStore(archive)
+    legacy._parser_revision = 1
+    old = legacy.build_snapshot(entry, 0)
+    identity = "a" * 64
+    legacy.record_review(entry, 0, old, 0, identity, "deferred")
+    receipt = {"state": "received", "admission": "b" * 32, "generation": 1,
+               "body_hash": "c" * 64, "response": {"model": "synthetic-model",
+                   "cost": "0.001", "decision": "deferred", "http_status": 200}}
+    legacy.save_remote_receipt(entry, 0, old, 0, identity, receipt, expected=None)
+    current = CredentialContextStore(archive)
+    assert current.find_snapshot(entry, 0) is None
+    assert current.find_snapshot(entry, 0, parser_revision=1) == old
+    assert current.cached_review(entry, 0, old, 0, identity) == "deferred"
+    assert current.remote_receipt(entry, 0, old, 0, identity) == receipt
+    new = current.build_snapshot(entry, 0)
+    assert new != old and current.find_snapshot(entry, 0) == new
+    assert len(list(current.contexts(entry, 0, old))) == 2
+    assert current.cached_review(entry, 0, new, 0, identity) is None
+    assert current.remote_receipt(entry, 0, new, 0, identity) is None
+    assert current.verify_all() == {"snapshots": 2, "contexts": 4}
+    restored = SecureHistoryArchive.restore_from_backup(
+        archive.root, tmp_path / "restored", "synthetic portable recovery phrase")
+    recovered = CredentialContextStore(restored)
+    assert recovered.verify_all() == {"snapshots": 2, "contexts": 4}
+    assert recovered.remote_receipt(entry, 0, old, 0, identity) == receipt
+
+
+def test_context_revision_selection_rejects_mismatched_or_forged_completion(tmp_path):
+    archive, entry = _fixture(tmp_path)
+    store = CredentialContextStore(archive)
+    store._parser_revision = 1
+    old = store.build_snapshot(entry, 0)
+    current = CredentialContextStore(archive)
+    with pytest.raises(ProjectionIntegrityError):
+        list(current.contexts({**entry, "sha256": "f" * 64}, 0, old))
+    with store._connect() as db:
+        db.execute("UPDATE attempts SET completion=? WHERE attempt=?", (b"forged", old))
+    with pytest.raises(ProjectionIntegrityError):
+        current.find_snapshot(entry, 0)
+
+
+@pytest.mark.parametrize("name,raw,expected", [
+    ("nSERVICE_API_KEY", r"\nSERVICE_API_KEY=${SYNTHETIC_REF}", True),
+    ("nSERVICE_API_KEY", "SERVICE_API_KEY=${SYNTHETIC_REF}", False),
+    ("rSERVICE_API_KEY", r"\nSERVICE_API_KEY=${SYNTHETIC_REF}", False),
+    ("nSERVICE_API_KEY", r"\nSERVICE_API_KEY=${OTHER_REF}", False),
+    ("nSERVICE_API_KEY", r"\nSERVICE_API_KEY=${SYNTHETIC_REF} nSERVICE_API_KEY=${SYNTHETIC_REF}", False),
+])
+def test_legacy_queue_name_join_requires_exact_escaped_source_evidence(name, raw, expected):
+    from muninn.history.credential_review_source import CredentialReviewSource
+    context = AmbiguousCandidate("SERVICE_API_KEY", "unparsed_value",
+                                 "${SYNTHETIC_REF}", "", 1, raw)
+    row = {"name": name, "reason": "unparsed_value"}
+    assert CredentialReviewSource._matches_context(context, row, "${SYNTHETIC_REF}") is expected
+
+
+def test_corrected_queue_row_reuses_matching_legacy_paid_context(tmp_path):
+    import re
+    import muninn.history.credential_context as module
+    from muninn.history import credential_discovery as discovery
+    from muninn.history.credential_review_source import CredentialReviewSource
+    from muninn.history.credential_store import source_fingerprint
+    archive, _ = _fixture(tmp_path)
+    source = tmp_path / "escaped.jsonl"
+    source.write_text(json.dumps({"type": "event_msg", "payload": {
+        "type": "user_message", "message": "\nSERVICE_API_KEY=${SYNTHETIC_REF}"}}) + "\n")
+    archive.archive_file(source, "codex")
+    entry = archive._load_manifest()["files"][str(source.resolve())][0]
+    legacy = CredentialContextStore(archive)
+    legacy._parser_revision = 1
+    old_regex = re.compile(r'(?<![A-Za-z0-9_])(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})'
+                           r'[ \t]{0,16}(?:=|\\?"[ \t]{0,16}:)[ \t]{0,16}\\?"?')
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, "iter_transcript_findings", lambda chunks, stats, **kwargs:
+                      discovery._iter_findings(chunks, "", stats, old_regex, **kwargs))
+        old = legacy.build_snapshot(entry, 0)
+    assert list(legacy.contexts(entry, 0, old))[0].name == "nSERVICE_API_KEY"
+    identity = "a" * 64
+    legacy.record_review(entry, 0, old, 0, identity, "deferred")
+    row = {"id": "b" * 32, "origin": "transcript", "name": "SERVICE_API_KEY",
+           "reason": "unparsed_value", "source_hash": source_fingerprint(
+               f"{archive.vault_id}:{entry['blob']}:{entry['sha256']}")}
+    review = CredentialReviewSource(archive)
+    prepared = review.prepare(row, candidate="${SYNTHETIC_REF}")
+    assert prepared[3] == old
+    inputs = list(review.inputs(prepared, row, "${SYNTHETIC_REF}"))
+    assert len(inputs) == 1 and inputs[0][1].id == row["id"]
+    assert inputs[0][1].name == "nSERVICE_API_KEY"
+    assert review.cached(prepared, 0, identity) == "deferred"
+
+
+def test_legacy_matching_context_cannot_hide_a_newly_discovered_occurrence(tmp_path):
+    import re
+    import muninn.history.credential_context as module
+    from muninn.history import credential_discovery as discovery
+    from muninn.history.credential_review_source import CredentialReviewSource
+    from muninn.history.credential_store import source_fingerprint
+    archive, _ = _fixture(tmp_path)
+    source = tmp_path / "missed.jsonl"
+    source.write_text(json.dumps({"type": "event_msg", "payload": {
+        "type": "user_message", "message":
+        "API_KEY=${SYNTHETIC_REF} documentation\nAPI_KEY=${SYNTHETIC_REF} uncertain"}}) + "\n")
+    archive.archive_file(source, "codex")
+    entry = archive._load_manifest()["files"][str(source.resolve())][0]
+    legacy = CredentialContextStore(archive)
+    legacy._parser_revision = 1
+    old_regex = re.compile(r'(?<![A-Za-z0-9_])(?P<name>[A-Za-z_][A-Za-z0-9_]{2,63})'
+                           r'[ \t]{0,16}(?:=|\\?"[ \t]{0,16}:)[ \t]{0,16}\\?"?')
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, "iter_transcript_findings", lambda chunks, stats, **kwargs:
+                      discovery._iter_findings(chunks, "", stats, old_regex, **kwargs))
+        old = legacy.build_snapshot(entry, 0)
+    assert len(list(legacy.contexts(entry, 0, old))) == 1
+    row = {"id": "b" * 32, "origin": "transcript", "name": "API_KEY",
+           "reason": "unparsed_value", "source_hash": source_fingerprint(
+               f"{archive.vault_id}:{entry['blob']}:{entry['sha256']}")}
+    review = CredentialReviewSource(archive)
+    prepared = review.prepare(row, candidate="${SYNTHETIC_REF}")
+    assert prepared[3] != old
+    assert len(list(review.inputs(prepared, row, "${SYNTHETIC_REF}"))) == 2
+    assert len(list(review.contexts.contexts(entry, 0, old))) == 1
+
+
 @pytest.mark.parametrize("error_kind", ["unsupported", "malformed", "integrity"])
 def test_review_prepare_defers_only_unsupported_provenance(tmp_path, monkeypatch, error_kind):
     from muninn.history.credential_review_source import CredentialReviewSource

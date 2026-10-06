@@ -24,7 +24,7 @@ class _TTY(io.StringIO):
 
 
 class _ReviewSource:
-    def prepare(self, row):
+    def prepare(self, row, *, candidate=None):
         return row["id"]
 
     def inputs(self, prepared, row, candidate):

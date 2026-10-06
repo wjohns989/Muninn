@@ -24,9 +24,10 @@ def item(context=None):
                                   'Documentation uses SERVICE_API_KEY=fake-value$123 as a placeholder.')})
 
 
-def setup(tmp_path, monkeypatch, *, confidence=1.0):
+def setup(tmp_path, monkeypatch, *, confidence=1.0, context_revision=2):
     archive, entry = _fixture(tmp_path)
     contexts = CredentialContextStore(archive)
+    contexts._parser_revision = context_revision
     attempt = contexts.build_snapshot(entry, 0)
     source = SimpleNamespace(contexts=contexts)
     prepared = (SimpleNamespace(version=0), entry, None, attempt)
@@ -56,6 +57,121 @@ def setup(tmp_path, monkeypatch, *, confidence=1.0):
         transport=httpx.MockTransport(handler), **kwargs))
     kwargs = {'policy_root': root, 'generation': 1, 'model': route.llm_settings.DEFAULT_MODEL}
     return source, prepared, kwargs, posts
+
+
+def test_legacy_mask_recipe_receipt_is_reused_without_another_post(tmp_path, monkeypatch):
+    source, prepared, kwargs, posts = setup(tmp_path, monkeypatch, context_revision=1)
+    original = route.masked_body
+    observed = item(r'Documentation\nSERVICE_API_KEY=fake-value$123 is a placeholder.')
+    observed = CandidateForReview(observed.id, 'nSERVICE_API_KEY', observed.reason,
+                                  observed.candidate, observed.source_context)
+    legacy_body = original(observed, kwargs['model'], _assignment_revision=1)
+    assert legacy_body is not None
+    legacy_context = json.loads(legacy_body['messages'][1]['content'])['items'][0]['source']['context']
+    assert legacy_context == r'Documentation\FIELD=[REDACTED] is a placeholder.'
+    assert original(observed, kwargs['model']) != legacy_body
+    with monkeypatch.context() as patch:
+        patch.setattr(route, 'masked_body', lambda value, model, **kw:
+                      original(value, model, _assignment_revision=1))
+        assert route.review_context(observed, source, prepared, 0, **kwargs)[1:] == (1, False)
+    assert route.review_context(observed, source, prepared, 0, **kwargs)[1:] == (0, True)
+    assert len(posts) == 1 and posts[0] == legacy_body
+    assert status(kwargs['policy_root'])['daily_cost_usd'] == .001
+    from muninn.history.secure_archive import SecureHistoryArchive
+    restored = SecureHistoryArchive.restore_from_backup(
+        source.contexts.archive.root, tmp_path / 'restored', 'synthetic portable recovery phrase')
+    source.contexts = CredentialContextStore(restored)
+    monkeypatch.setattr(route.llm_settings, 'api_key', lambda: pytest.fail('reuse requested key'))
+    assert route.review_context(observed, source, prepared, 0, **kwargs)[1:] == (0, True)
+    assert len(posts) == 1 and status(kwargs['policy_root'])['daily_cost_usd'] == .001
+
+
+@pytest.mark.parametrize('state', ['unknown', 'unsent', 'wrong_body'])
+def test_legacy_intent_never_resends_old_wire_body(tmp_path, monkeypatch, state):
+    source, prepared, kwargs, posts = setup(tmp_path, monkeypatch, context_revision=1)
+    base = item(r'Documentation\nSERVICE_API_KEY=fake-value$123 is a placeholder.')
+    observed = CandidateForReview(base.id, 'nSERVICE_API_KEY', base.reason,
+                                  base.candidate, base.source_context)
+    legacy_body = route.masked_body(observed, kwargs['model'], _assignment_revision=1)
+    digest, identity = route._body_binding(legacy_body)
+    admission = route.reserve(kwargs['policy_root'], 1, {'admission_ready': True,
+                              'usage_daily_usd': 0, 'usage_monthly_usd': 0})
+    if state == 'unsent':
+        admission.release_reserved()
+        admission.release_unsent()
+    else:
+        admission.mark_unknown()
+    record = {'state': 'intent', 'admission': admission.identifier, 'generation': 1,
+              'body_hash': 'f' * 64 if state == 'wrong_body' else digest, 'response': None}
+    _, entry, _, attempt = prepared
+    source.contexts.save_remote_receipt(entry, 0, attempt, 0, identity, record, expected=None)
+    if state == 'unsent':
+        assert route.review_context(observed, source, prepared, 0, **kwargs)[1:] == (1, False)
+        assert posts == [route.masked_body(observed, kwargs['model'])]
+        assert posts[0] != legacy_body
+        assert source.contexts.remote_receipt(entry, 0, attempt, 0, identity) == record
+    else:
+        error = ('credential_receipt_binding_mismatch' if state == 'wrong_body'
+                 else 'credential_review_outcome_unknown')
+        with pytest.raises(AdmissionError, match=error):
+            route.review_context(observed, source, prepared, 0, **kwargs)
+        assert posts == []
+
+
+def test_changed_unknown_receipt_cannot_hide_behind_a_new_identity(tmp_path, monkeypatch):
+    source, prepared, kwargs, posts = setup(tmp_path, monkeypatch)
+    real_save = source.contexts.save_remote_receipt
+    def interrupted(*args, **kw):
+        if args[-1]['state'] == 'received':
+            raise RuntimeError('simulated interruption')
+        return real_save(*args, **kw)
+    monkeypatch.setattr(source.contexts, 'save_remote_receipt', interrupted)
+    with pytest.raises(RuntimeError):
+        route.review_context(item(), source, prepared, 0, **kwargs)
+    monkeypatch.setattr(source.contexts, 'save_remote_receipt', real_save)
+    original = item()
+    changed = CandidateForReview(original.id, original.name, original.reason, original.candidate,
+                                 {**original.source_context, 'event_at': '2026-10-01T12:00:00Z'})
+    with pytest.raises(AdmissionError, match='credential_receipt_binding_mismatch'):
+        route.review_context(changed, source, prepared, 0, **kwargs)
+    assert len(posts) == 1
+
+
+def test_changed_paid_context_body_requires_explicit_resolution_not_another_post(tmp_path, monkeypatch):
+    source, prepared, kwargs, posts = setup(tmp_path, monkeypatch)
+    original = item()
+    route.review_context(original, source, prepared, 0, **kwargs)
+    changed = CandidateForReview(original.id, original.name, original.reason, original.candidate,
+                                 {**original.source_context, 'event_at': '2026-10-01T12:00:00Z'})
+    with pytest.raises(AdmissionError, match='credential_receipt_binding_mismatch'):
+        route.review_context(changed, source, prepared, 0, **kwargs)
+    assert len(posts) == 1
+
+
+@pytest.mark.parametrize('state', ['paid', 'unsent'])
+def test_new_parser_attempt_cannot_hide_old_paid_work(tmp_path, monkeypatch, state):
+    source, old_prepared, kwargs, posts = setup(tmp_path, monkeypatch, context_revision=1)
+    if state == 'paid':
+        route.review_context(item(), source, old_prepared, 0, **kwargs)
+    else:
+        mark = route.Admission.mark_unknown
+        monkeypatch.setattr(route.Admission, 'mark_unknown', lambda *args, **kw:
+                            (_ for _ in ()).throw(AdmissionError('remote_consent_revoked')))
+        with pytest.raises(AdmissionError):
+            route.review_context(item(), source, old_prepared, 0, **kwargs)
+        monkeypatch.setattr(route.Admission, 'mark_unknown', mark)
+    contexts = CredentialContextStore(source.contexts.archive)
+    source.contexts = contexts
+    original, entry, units, old_attempt = old_prepared
+    new_attempt = contexts.build_snapshot(entry, 0)
+    assert new_attempt != old_attempt
+    new_prepared = original, entry, units, new_attempt
+    if state == 'paid':
+        with pytest.raises(AdmissionError, match='credential_receipt_binding_mismatch'):
+            route.review_context(item(), source, new_prepared, 0, **kwargs)
+    else:
+        assert route.review_context(item(), source, new_prepared, 0, **kwargs)[1:] == (1, False)
+    assert len(posts) == 1
 
 
 @pytest.mark.parametrize('context', [
@@ -324,7 +440,7 @@ def test_unsafe_context_does_not_starve_next_safe_candidate(tmp_path, monkeypatc
 
     store = Store()
     monkeypatch.setattr(runner, 'CredentialStore', lambda root: store)
-    source.prepare = lambda row: prepared
+    source.prepare = lambda row, *, candidate=None: prepared
     def inputs(prepared, row, value):
         yield 0, CandidateForReview(row['id'], row['name'], row['reason'], value,
                                     {'context': f'Documentation SERVICE_API_KEY={value} is a placeholder.'})
