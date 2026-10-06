@@ -62,3 +62,28 @@ does not prove paid private-route model quality, resolve the historical backlog
 or retrofit safe visibility onto legacy withheld records. Larger multi-window
 provider packing is separate work; no current batch was enlarged or resent.
 Live installation and post-reload checks are recorded separately below.
+
+## Local installation
+
+Installed source revision: `c49b6427003c19dfc5f7a774a693a914914996de`.
+The existing owned Muninn service alone was reloaded with its current capture
+settings. Six encrypted database preimages validated; no in-flight model/search
+job or CPU capture required recovery. Post-reload: one process on port 42069,
+health 200, anonymous protected access 401, authenticated access 200, strict
+archive ready, automatic capture/remote processing and remote-only mode retained.
+
+Before/after encrypted-state fingerprints were identical:
+
+- 711 managed paid-admission rows, SHA-256
+  `24c4f1e6b0cf76427361cf12f0fff9f25bd51e19dcaa5e05d69ffb3b6195a7a2`.
+- Eight total rows across the retained-batch database's tables (including its
+  head, **not eight provider batches**), SHA-256
+  `09db57d13643141f551813f7207c9498303c5d5af8cfed38ff6ae9a30ac37365`.
+
+The same 49-request checkpoint remains awaiting its provider. Installation did
+not admit another paid request, cancel a batch or change the spending policy.
+Installed stdio bridge smoke passed: 20 tools, current Codex/Claude Code/Desktop/
+Gemini profile configurations match, context lookup succeeds, and two cited
+review pages with continuation succeed (47,489 ms for the smoke process).
+This is a real bridge/profile check, not proof of every host's capture-hook event
+or a paid new projected result. The backlog remains incomplete.
