@@ -58,13 +58,49 @@ evidence, frozen old masked context, paid reuse/cost counted once, unknown and
 An additional red-first coverage test reproduced an old replay omitting the
 second escaped bare API_KEY occurrence; the fixed preparation yields both.
 All provider traffic in these checks is mocked; no local model or paid provider
-call is test evidence. Existing live triage still requires its local unlock.
-That waiting process imported older source/context classes. A fresh CLI process
-is required to exercise this source-replay change; this record does not call the
-already waiting process an installed-candidate proof. The shared service was
-not reloaded or migrated for this CLI/source change.
+call is test evidence. Live triage still requires its local unlock. During
+isolated verification the waiting process imported older source/context classes;
+that process was not accepted as proof of the new code. Installation followed
+the independently reviewed bounded procedure below.
 
 This does not resolve all historical ambiguity, update old vault metadata, prove
 project-file alias correction, or complete the backlog/whole local installation.
 Revisit when an explicitly authorized source-bound replay needs metadata repair
 or when a new masking contract requires another exact receipt recipe.
+
+## Installed execution evidence, 2026-10-06
+
+Candidate `bee0854c5a4ef6bfcef1787a71c92f096dab6cd3` passed independent fresh-CLI
+diff review. The old imported worker was stopped only after matching its exact
+parent/interpreter/checkout/module and latest awaiting-passphrase state. No
+triage worker remained before replacement; no vault value was requested in chat.
+
+The existing guarded reload procedure installed that exact candidate. It
+validated six encrypted database preimages and bounded recovery to one CPU
+capture. These selected database preimages are not a whole-archive/vault backup
+or a complete historical-batch-store backup. Paid ownership/admission gates
+passed; no manual batch cancellation, deletion or resubmission was performed.
+
+Fresh probes showed one listener on port 42069, health 200, authenticated
+protected access 200, anonymous protected access 401, and strict archive ready.
+Existing automatic capture/remote settings remained effective. The authorized
+remote catch-up interval was renewed for 180 minutes; the live status confirmed
+it active. Expiry is normal-cadence fallback, not backlog completion.
+
+The latest reported checkpoint passed 15 windows in 10 provider requests with
+zero invalid items. This is a recent-checkpoint count, not total-run coverage.
+At the probe 3,935 snapshot source versions remained pending and 2,423 windows
+were privacy-parked; these are separate units and do not yield an overall percent.
+
+A fresh visible launcher and exactly one new triage worker were confirmed alive
+in the correct checkout, with progress `awaiting_passphrase`. It uses the same
+authorized Luna route, 200-page/60-row/12-call-per-page bounds, readiness wait,
+and separate pre/post encrypted-vault backup destinations. No actual credential
+classification, completed new backup, or resolved vault is claimed before unlock.
+
+Read-only run accounting since epoch 1791154542.000905 showed $0.731478 in 718
+settled local admissions (one released), versus $0.729765072 dedicated-provider
+monthly usage above the $0.00252758 baseline. The $0.001712928 difference was
+unreconciled. Provider daily usage was $0.073186845 with its $5 daily limit;
+managed $5/day and $50/month policy was not raised. These amounts are a dated
+observation, not measured savings or a guarantee about delayed provider billing.
