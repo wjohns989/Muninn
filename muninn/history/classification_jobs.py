@@ -10,6 +10,7 @@ import time
 import uuid
 
 from muninn.history.credential_crypto import VaultIntegrityError
+from muninn.history.classification_enrollment import ClassificationEnrollmentMixin, related_cohorts
 from muninn.history.memory_classification import (
     VERSION, PreparedClassification, _prepared, validate_classification,
 )
@@ -19,12 +20,13 @@ PURPOSE = "memory-classification-job-v1"
 STATES = {"pending", "running", "staged", "published", "needs_user", "outcome_unknown", "failed"}
 
 
-class CaptureClassificationMixin:
+class CaptureClassificationMixin(ClassificationEnrollmentMixin):
     def _init_classifications(self, db):
         db.execute("CREATE TABLE IF NOT EXISTS memory_classification_jobs("
             "job_id TEXT PRIMARY KEY, sealed BLOB NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS memory_classification_acks("
             "ack_id TEXT PRIMARY KEY, sealed BLOB NOT NULL)")
+        self._init_classification_members(db)
 
     def _classification_job(self, row):
         if (row is None or not isinstance(row["job_id"], str) or len(row["job_id"]) != 32
@@ -113,6 +115,9 @@ class CaptureClassificationMixin:
         queued = 0
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            jobs = {row["job_id"]: self._classification_job(row)
+                    for row in db.execute("SELECT * FROM memory_classification_jobs")}
+            members = self._classification_members(db, candidates, jobs)
             for old in rows:
                 current = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (old["job_id"],)).fetchone()
                 ack = self._read_publication_receipt(current)
@@ -121,36 +126,42 @@ class CaptureClassificationMixin:
                 refs = [ref for ref in ack["refs"] if candidates[ref]["credential_risk"] is False
                     and states[ref] == "provisional" and ref not in humans
                     and (ref not in placements or placements[ref]["status"] == "stale")]
-                # Stable per-candidate enrollment avoids multiplying bills for
-                # duplicate/reused ACKs. Cohort selection is the consumer's job.
-                for ref in refs:
-                    job_id = hmac.new(self._key, b"classification-candidate-v1\0" + ref.encode(), hashlib.sha256).hexdigest()[:32]
-                    value = {"refs": [ref], "state": "pending", "lease": None, "lease_until": None,
-                        "attempt": 0, "prepared": None, "admission": None, "generation": -1, "stage": None, "reason": ""}
-                    existing = db.execute("SELECT * FROM memory_classification_jobs WHERE job_id=?", (job_id,)).fetchone()
-                    if existing is not None:
-                        if self._classification_job(existing)["refs"] != [ref]:
-                            raise VaultIntegrityError("Classification enrollment binding differs")
-                    else:
-                        db.execute("INSERT INTO memory_classification_jobs VALUES(?,?,?,?)",
-                            (job_id, self._seal_search(value, job_id, PURPOSE), "pending", old["created_at"]))
-                        queued += 1
                 db.execute("INSERT OR IGNORE INTO memory_classification_acks VALUES(?,?)",
                     (old["job_id"], self._seal_search(ack, old["job_id"], "classification-source-ack-v1")))
+                available = [ref for ref in refs if self._classification_member_id(ref) not in members]
+                for cohort in related_cohorts([(ref, candidates[ref]["project_ref"]) for ref in available]):
+                    job_id = self._classification_member_id(cohort[0])
+                    value = {"refs": cohort, "state": "pending", "lease": None, "lease_until": None,
+                        "attempt": 0, "prepared": None, "admission": None, "generation": -1, "stage": None, "reason": ""}
+                    db.execute("INSERT INTO memory_classification_jobs VALUES(?,?,?,?)",
+                        (job_id, self._seal_search(value, job_id, PURPOSE), "pending", old["created_at"]))
+                    self._add_classification_members(db, job_id, cohort, old["job_id"], candidates)
+                    members.update({self._classification_member_id(ref): (job_id, ref) for ref in cohort})
+                    queued += 1
         return {"acks": len(rows), "jobs": queued}
 
-    def claim_classification(self, *, now=None):
+    def claim_classification(self, *, now=None, include_pending=True):
+        if type(include_pending) is not bool:
+            raise ValueError("Invalid classification claim gate")
         now = time.time() if now is None else now
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             for row in db.execute("SELECT * FROM memory_classification_jobs WHERE state='running'").fetchall():
                 value = self._classification_job(row)
                 if value["lease_until"] <= now:
-                    value.update(state="outcome_unknown" if value["admission"] else "pending",
-                                 lease=None, lease_until=None, reason="dispatch_unknown" if value["admission"] else "")
+                    unsent = value["admission"] is None
+                    if not unsent:
+                        from muninn.history.remote_accounting import classification_admission_state
+                        unsent = classification_admission_state(self.policy_root, value["admission"], value["generation"],
+                            row["job_id"], value["prepared"]["input_sha256"]) == "released"
+                    if unsent:
+                        value.update(admission=None, generation=-1)
+                    value.update(state="pending" if unsent else "outcome_unknown",
+                                 lease=None, lease_until=None, reason="" if unsent else "dispatch_unknown")
                     self._save_classification(db, row["job_id"], value)
-            row = db.execute("SELECT * FROM memory_classification_jobs WHERE state IN ('staged','pending') "
-                             "ORDER BY CASE state WHEN 'staged' THEN 0 ELSE 1 END,created_at,job_id LIMIT 1").fetchone()
+            row = db.execute("SELECT * FROM memory_classification_jobs WHERE state IN ('staged',?) "
+                             "ORDER BY CASE state WHEN 'staged' THEN 0 ELSE 1 END,created_at,job_id LIMIT 1",
+                             ("pending" if include_pending else "staged",)).fetchone()
             if row is None:
                 return None
             value = self._classification_job(row)
@@ -166,10 +177,45 @@ class CaptureClassificationMixin:
             db.execute("BEGIN IMMEDIATE")
             value = self._classification_job(db.execute("SELECT * FROM memory_classification_jobs WHERE job_id=?", (job_id,)).fetchone())
             if (value["state"] != "running" or value["lease"] != lease or value["lease_until"] <= time.time()
-                    or value["admission"] is not None or value["prepared"] is not None
+                    or value["admission"] is not None
+                    or value["prepared"] is not None and value["prepared"] != asdict(prepared)
                     or [binding["id"] for binding in prepared.bindings()[:len(prepared.payload()["candidates"])]] != value["refs"]):
                 raise ValueError("Classification preparation lease changed")
             value["prepared"] = asdict(prepared)
+            self._save_classification(db, job_id, value)
+
+    def classification_ready(self):
+        owner = self.historical_batch_owner()
+        if owner is not None and owner["phase"] != "passed":
+            return False
+        with self._connect() as db:
+            return (not self._foreground_search_pending(db, time.time())
+                    and db.execute("SELECT 1 FROM history_analysis_jobs WHERE lane=0 AND cancel_requested=0 "
+                        "AND state IN ('pending','retry','running','publishing','publication_pending') "
+                        "AND due_at<=? LIMIT 1", (time.time(),)).fetchone() is None)
+
+    def heartbeat_classification(self, job_id, lease):
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            value = self._classification_job(db.execute("SELECT * FROM memory_classification_jobs WHERE job_id=?", (job_id,)).fetchone())
+            if value["state"] != "running" or value["lease"] != lease or value["lease_until"] <= time.time():
+                return False
+            value["lease_until"] = time.time() + 120
+            self._save_classification(db, job_id, value)
+        return True
+
+    def defer_unsent_classification(self, job_id, lease):
+        """Transport-proven unsent only; exact released bookkeeping survives a crash."""
+        from muninn.history.remote_accounting import classification_admission_state
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            value = self._classification_job(db.execute("SELECT * FROM memory_classification_jobs WHERE job_id=?", (job_id,)).fetchone())
+            if value["state"] != "running" or value["lease"] != lease:
+                raise ValueError("Classification unsent lease changed")
+            if value["admission"] is not None and classification_admission_state(self.policy_root,
+                    value["admission"], value["generation"], job_id, value["prepared"]["input_sha256"]) != "released":
+                raise ValueError("Classification dispatch is not proven unsent")
+            value.update(state="pending", lease=None, lease_until=None, admission=None, generation=-1, reason="")
             self._save_classification(db, job_id, value)
 
     def mark_classification_dispatch(self, job_id, lease, admission, generation):
@@ -253,9 +299,12 @@ class CaptureClassificationMixin:
             settled = value["admission"] is not None and settled_response(
                 self.policy_root, value["admission"], value["generation"], require_unowned=True,
                 classification_job=job_id, classification_input=value["prepared"]["input_sha256"])
+            from muninn.history.remote_accounting import classification_admission_state
+            unsent = value["admission"] is None or classification_admission_state(self.policy_root,
+                value["admission"], value["generation"], job_id, value["prepared"]["input_sha256"]) == "released"
             # Preserve the validated immutable stage for recovery/audit even
             # when evidence changed. Sent work without a bill remains unknown.
-            value.update(state="needs_user" if value["admission"] is None or settled else "outcome_unknown",
+            value.update(state="needs_user" if unsent or settled else "outcome_unknown",
                          lease=None, lease_until=None, reason=reason)
             self._save_classification(db, job_id, value)
 
@@ -281,6 +330,8 @@ class CaptureClassificationMixin:
         with ledger._connect() as db:
             db.execute("BEGIN")
             _report, candidates, _states, _placements, _revisions, _humans, stages = ledger._snapshot(db)
+        with self._connect() as db:
+            self._classification_members(db, candidates, dict(values))
         admissions, claimed_stages = set(), set()
         for _job_id, value in values:
             if value["admission"] is not None:

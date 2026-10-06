@@ -119,27 +119,22 @@ def test_conflicts_remain_visible_for_consultation_without_supersession(tmp_path
 
 
 def test_portable_archive_restore_keeps_placement_and_human_invalidation(tmp_path, monkeypatch):
-    import time
-    from dataclasses import asdict
     from muninn.history.capture_journal import CaptureJournal
-    from muninn.history.classification_jobs import PURPOSE
     from muninn.history.secure_archive import SecureHistoryArchive
-    from tests.test_memory_ledger import PHRASE
-    writer, reader, refs = peers(tmp_path)
-    # Component fixture uses an authenticated synthetic journal owner; the
-    # separate discovery tests prove enrollment from actual publication ACKs.
-    journal = CaptureJournal(writer.archive, recover=False)
+    from tests.test_classification_enrollment import cohort_ack
+    phrase = "synthetic recovery passphrase"
+    journal, archive, refs = cohort_ack(tmp_path)
+    writer, reader = MemoryLedger(archive), MemoryLedger(archive, read_only=True)
+    journal.discover_classifications()
+    job = journal.claim_classification()
     plan = prepare_classification(reader, refs)
     rows = [{"id": row["id"], "bucket": "preference", "disposition": "accepted",
         "evidence_refs": [row["id"]], "reason": "source_supported", "confidence": 0.99}
         for row in plan.payload()["candidates"]]
-    job_id, lease = "f" * 32, "e" * 32
-    value = {"refs": refs, "state": "running", "lease": lease, "lease_until": time.time() + 120,
-        "attempt": 1, "prepared": asdict(plan), "admission": "c" * 32, "generation": 1,
-        "stage": None, "reason": ""}
-    with journal._connect() as db:
-        db.execute("INSERT INTO memory_classification_jobs VALUES(?,?,?,?)",
-                   (job_id, journal._seal_search(value, job_id, PURPOSE), "running", time.time()))
+    job_id, lease = job["job_id"], job["lease"]
+    journal.prepare_classification_job(job_id, lease, plan)
+    monkeypatch.setattr("muninn.history.remote_accounting.unowned_unknown_response", lambda *a, **k: True)
+    journal.mark_classification_dispatch(job_id, lease, "c" * 32, 1)
     monkeypatch.setattr("muninn.history.remote_accounting.settled_response", lambda *a, **k: True)
     monkeypatch.setattr("muninn.history.remote_accounting.classification_admission_state", lambda *a, **k: "settled")
     journal.stage_classification(job_id, lease, json.dumps({"items": rows}), model="synthetic-luna")
@@ -147,7 +142,7 @@ def test_portable_archive_restore_keeps_placement_and_human_invalidation(tmp_pat
     writer.resolve_review(refs[1], state="filed", expected_state="provisional", reason="user_confirmed")
     expected = [writer.get(ref) for ref in refs]
     writer.archive.backup_to(tmp_path / "backup")
-    restored = SecureHistoryArchive.restore_from_backup(tmp_path / "backup", tmp_path / "restored", PHRASE)
+    restored = SecureHistoryArchive.restore_from_backup(tmp_path / "backup", tmp_path / "restored", phrase)
     actual = MemoryLedger(restored, read_only=True)
     assert [actual.get(ref) for ref in refs] == expected
     assert actual.verify_all() == writer.verify_all()

@@ -17,6 +17,31 @@ def policy(root, *, enabled=True):
                         override_ceiling=False, fallback=FALLBACK)
 
 
+def test_classification_pilot_cap_survives_unsent_release_and_reopen(tmp_path):
+    generation = policy(tmp_path).generation
+    admission = reserve(tmp_path, generation, READY, classification_job="b" * 32,
+                        classification_input="a" * 64, classification_limit=1)
+    admission.release_reserved()
+    with pytest.raises(AdmissionError, match="classification_pilot_complete"):
+        reserve(tmp_path, generation, READY, classification_job="c" * 32,
+                classification_input="d" * 64, classification_limit=1)
+    assert status(tmp_path)["unresolved"] == 0
+
+
+def test_classification_pilot_concurrent_reservations_admit_at_most_one(tmp_path):
+    generation = policy(tmp_path).generation
+    def attempt(slot):
+        try:
+            return reserve(tmp_path, generation, READY, classification_job=str(slot) * 32,
+                classification_input="a" * 64, classification_limit=1)
+        except AdmissionError:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(attempt, [1, 2]))
+    assert sum(item is not None for item in results) == 1
+    next(item for item in results if item is not None).release_reserved()
+
+
 def stamp(text):
     return datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp()
 

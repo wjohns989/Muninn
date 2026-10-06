@@ -35,6 +35,9 @@ def setup(monkeypatch, *, phase='passed'):
         calls.append(kwargs)
         return True
     service._process_secure_analysis_once = private
+    async def no_classification(**kwargs):
+        return False  # This fixture isolates private-extraction turn fairness.
+    service._process_secure_classification_once = no_classification
     return service, owner, preparations, steps, calls
 
 

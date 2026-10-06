@@ -221,7 +221,7 @@ def test_backup_rejects_orphan_ledger_event_but_allows_commit_before_ack(tmp_pat
     assert journal.verify_classifications() == 1
     with journal._connect() as db:
         db.execute("DELETE FROM memory_classification_jobs")  # isolated corrupt-copy counterexample
-    with pytest.raises(VaultIntegrityError, match="no journal owner"):
+    with pytest.raises(VaultIntegrityError, match="membership"):
         journal.verify_classifications()
 
 

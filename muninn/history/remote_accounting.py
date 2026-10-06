@@ -159,12 +159,15 @@ def _spent(db, day, month):
 
 
 def reserve(root, generation, provider_status, *, now=None, batch_owner=None,
-            classification_job=None, classification_input=None):
+            classification_job=None, classification_input=None, classification_limit=None):
     """Reserve all remaining admission capacity, allowing one paid call at a time."""
     if not isinstance(provider_status, dict) or provider_status.get("admission_ready") is not True:
         raise AdmissionError("daily_zdr_cap_unverified")
     if batch_owner is not None:
         _check_id(batch_owner)
+    if classification_limit is not None and (classification_job is None
+            or type(classification_limit) is not int or not 1 <= classification_limit <= 10000):
+        raise AdmissionError("remote_accounting_invalid_reference")
     if classification_job is not None or classification_input is not None:
         _check_id(classification_job)
         if (batch_owner is not None or not isinstance(classification_input, str)
@@ -175,6 +178,10 @@ def reserve(root, generation, provider_status, *, now=None, batch_owner=None,
     day, month = _periods(when)
     with _db(root, initialize=True, generation=generation) as (db, _):
         caps = _policy(db, generation)
+        if (classification_limit is not None and db.execute(
+                "SELECT COUNT(*) FROM remote_admissions WHERE classification_job IS NOT NULL").fetchone()[0]
+                >= classification_limit):
+            raise AdmissionError("classification_pilot_complete")
         # reserved is strictly pre-POST: mark_unknown must win its CAS before
         # transport may send. Expiry fences a stalled old worker, never guesses
         # that an unknown request was free. Serialize with the next reservation.

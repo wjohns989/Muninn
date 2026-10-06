@@ -739,6 +739,8 @@ class HistoryService:
             "hook_receipts_error": hook_receipts_error,
             "last_capture_scan": self.last_capture_scan,
             "last_secure_capture": self.last_secure_capture,
+            "memory_classification": (self._capture_journal.classification_status()
+                                      if strict and self._capture_journal is not None else None),
             "capture_enrichment": ({"capture_enabled": _flag("MUNINN_CAPTURE_ENRICHMENT"),
                                     "automatic_analysis_enabled": self._capture_auto_enabled(),
                                     "automatic_remote_enabled": self._capture_remote_enabled(),
@@ -781,9 +783,12 @@ class HistoryService:
                 self._secure_capture_plan_task = asyncio.create_task(self._secure_capture_plan_loop())
             batch_owner = await asyncio.to_thread(self._require_capture_journal().historical_batch_owner)
             recover_batch = batch_owner is not None and batch_owner["phase"] != "passed"
+            recover_classification = (await asyncio.to_thread(
+                self._require_capture_journal().classification_status)).get("staged", 0) > 0
             from muninn.history.batch_activation import read_batch_policy
             batch_enabled = (await asyncio.to_thread(read_batch_policy, self.data_dir))["enabled"]
-            if ((_flag("MUNINN_SECURE_AUTO_ANALYSIS") or self._capture_auto_enabled() or recover_batch or batch_enabled)
+            if ((_flag("MUNINN_SECURE_AUTO_ANALYSIS") or self._capture_auto_enabled()
+                    or recover_batch or recover_classification or batch_enabled)
                     and self._secure_analysis_task is None):
                 self._secure_analysis_task = asyncio.create_task(self._secure_analysis_loop())
             if _flag("MUNINN_HISTORY_INDEX_AUTO") and self._secure_index_task is None:
@@ -1258,6 +1263,16 @@ class HistoryService:
             self._secure_analysis_active = None
         return True
 
+    async def _process_secure_classification_once(self, *, recovery_only=False) -> bool:
+        from muninn.history.classification_worker import process_classification
+        if not recovery_only and not (self._capture_auto_enabled() and self._capture_remote_enabled()
+                                      and self._capture_cadence.attempt_ready()):
+            return False
+        return await process_classification(self._require_capture_journal(),
+            recovery_only=recovery_only,
+            enabled=lambda: self._capture_auto_enabled() and self._capture_remote_enabled(),
+            note_dispatch=lambda: self._capture_cadence.note_attempt(local_opportunity=False, cooldown_seconds=5))
+
     async def _process_secure_batch_once(self) -> bool:
         """Recover a durable batch in the SAME serial inference consumer.
 
@@ -1289,6 +1304,12 @@ class HistoryService:
                     return True
                 # No eligible private work: do not make clean work wait for empty turns.
                 self._private_zdr_opportunities = PRIVATE_ZDR_CHECKPOINT_OPPORTUNITIES
+            if getattr(self, "_classification_checkpoint", None) != owner["id"]:
+                if not self._capture_cadence.attempt_ready():
+                    return True  # Keep this opportunity until its actual cadence.
+                self._classification_checkpoint = owner["id"]
+                if await self._process_secure_classification_once():
+                    return True
         if owner is None or owner["phase"] == "passed":
             policy = await asyncio.to_thread(read_batch_policy, journal.policy_root)
             if not policy["enabled"]:
@@ -1324,6 +1345,11 @@ class HistoryService:
                                                         else ("gathering_batch" if min_items > 1
                                                               else "awaiting_screened_windows"),
                     "gather_remaining_seconds": max(0, self._historical_batch_gather_deadline - time.monotonic())}
+                if (min_items == 1 or not policy["remaining_batches"]):
+                    # Tail work cannot require another clean batch checkpoint,
+                    # nor unused retained-batch quota. All new-call gates remain.
+                    if await self._process_secure_classification_once():
+                        return True
                 if (min_items == 1 and policy["remaining_batches"]
                         and self._capture_auto_enabled() and self._capture_remote_enabled()
                         and self._capture_cadence.attempt_ready()):
@@ -1360,6 +1386,8 @@ class HistoryService:
         """One inference consumer; capture admission is quiet/resource-gated."""
         while True:
             try:
+                if await self._process_secure_classification_once(recovery_only=True):
+                    continue  # Only durable local publication, never inference.
                 if await self._process_secure_batch_once():
                     # While a batch owns the checkpoint, do not start another
                     # inference route. Separate CPU capture/search loops run on.
@@ -1380,6 +1408,11 @@ class HistoryService:
                     # Automatic remote opt-in uses remote-eligible jobs only;
                     # private/local jobs stay parked, with no local fallback.
                     kwargs["capture_remote_only"] = True
+                if not getattr(self, "_classification_last_turn", False):
+                    if await self._process_secure_classification_once():
+                        self._classification_last_turn = True
+                        continue
+                self._classification_last_turn = False
                 processed = (await self._process_secure_analysis_once(
                     **kwargs)
                     if include_search or include_capture else False)

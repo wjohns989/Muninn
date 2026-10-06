@@ -1,6 +1,7 @@
 # Evidence-bound automatic memory placement
 
-Status: accepted design; implementation and live semantic-quality proof pending.
+Status: accepted design; pilot-only consumer implemented in source and isolated
+tests. Live installation and Luna semantic-quality proof pending.
 
 ## Concrete missing dependency
 
@@ -124,6 +125,15 @@ between proven-unsent accounting release and journal cleanup. Proven-unsent work
 is distinct from unknown transport, which is never automatically resent.
 
 Independent review cleared the cohort design and identified the tail-starvation
-counterexample; the design above includes that correction. Consumer integration,
-membership migration, tests and live quality remain pending, not implemented by
-this design note.
+counterexample; the design above includes that correction. Consumer integration
+and membership migration are now implemented and tested; retained evidence is
+in `docs/evidence/evidence-bound-placement-20261006.md`.
+
+Initial live execution is a bounded pilot: pin Luna without fallback, require
+the exact current passed owner again at the transport edge, and reserve at most
+one total classification admission under the accounting writer transaction.
+Count released-unsent admissions as well, so restart or repeated failures cannot
+expand the pilot. Staged local recovery needs no inference consent or provider
+key. Reload refuses running or staged classification writers. There is no full
+expansion marker or automatic approval in this implementation; actual Luna
+semantic quality and consequential review remain prerequisites for that work.

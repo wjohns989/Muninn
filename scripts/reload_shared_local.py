@@ -322,13 +322,19 @@ def pre_reload_mode_matches(report, environment, *, preserve_capture_auto=False)
 
 
 def queue_states(db):
-    return {table: dict(db.execute(f"SELECT state,COUNT(*) FROM {table} GROUP BY state")) for table in TABLES}
+    queues = {table: dict(db.execute(f"SELECT state,COUNT(*) FROM {table} GROUP BY state")) for table in TABLES}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_classification_jobs'").fetchone():
+        queues["memory_classification_jobs"] = dict(db.execute(
+            "SELECT state,COUNT(*) FROM memory_classification_jobs GROUP BY state"))
+    return queues
 
 
 def queues_idle(queues, *, preserve_queued=False, allow_active_capture=False, active_capture_limit=1):
     """Default stops no claim; explicit bounded recovery permits replayable CPU captures."""
     if type(active_capture_limit) is not int or not 1 <= active_capture_limit <= 32:
         return False
+    if any(queues.get("memory_classification_jobs", {}).get(state, 0) for state in ("running", "staged")):
+        return False  # Preserve-queued cannot abandon a classification writer/stage.
     excluded = {"pending", "retry", "publication_pending"} if preserve_queued else set()
     recover_capture = (preserve_queued and allow_active_capture
                        and 0 <= queues["jobs"].get("capturing", 0) <= active_capture_limit)

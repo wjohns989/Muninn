@@ -8,6 +8,18 @@ from scripts import reload_shared_local as reload
 from scripts import local_runtime_preflight as preflight
 
 
+@pytest.mark.parametrize("state", ["running", "staged"])
+@pytest.mark.parametrize("preserve", [True, False])
+def test_classification_writer_blocks_reload_even_when_queued_work_preserved(state, preserve):
+    with sqlite3.connect(":memory:") as db:
+        for table in reload.TABLES:
+            db.execute(f"CREATE TABLE {table}(state TEXT)")
+        assert reload.queues_idle(reload.queue_states(db), preserve_queued=preserve)
+        db.execute("CREATE TABLE memory_classification_jobs(state TEXT)")
+        db.execute("INSERT INTO memory_classification_jobs VALUES(?)", (state,))
+        assert not reload.queues_idle(reload.queue_states(db), preserve_queued=preserve)
+
+
 def test_default_is_read_only_and_enable_requires_restart():
     args = reload.parse_args([])
     assert not args.restart and not args.enable_capture_auto

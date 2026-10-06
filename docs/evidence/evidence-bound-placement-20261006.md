@@ -56,12 +56,47 @@ Validation completed locally on October 6, 2026:
   source clearance, not live activation or full-installation approval.
 - No full repository suite or merge was performed for this checkpoint.
 
-## Required next integration
+## Consumer integration checkpoint
 
-Connect the existing single inference consumer to these durable jobs, with paid
-checkpoint, foreground, consent and spending gates. Select bounded related
-cohorts/peers instead of thousands of single-candidate calls. Install compatible
-readers before any live classification event, retain encrypted preimages, and
-review representative Luna results for semantic quality and total billed cost.
-The current input/staging checks do not prove an active classifier, a resolved
-historical ambiguity queue, complete hooks, or the full local installation.
+The source now connects the existing single inference consumer to the durable
+classification jobs. Enrollment groups candidates from the same project and
+original publication ACK, at most 12 per cohort, with an encrypted membership
+index. Existing jobs are authenticated and seeded without rewriting them;
+missing or foreign members fail verification instead of silently rebilling.
+The 25-ref splitter test proves the helper's 12/12/1 bound, not a fabricated
+25-candidate publication ACK (the actual publication contract is bounded).
+
+The consumer recovers staged publication with inference disabled. New dispatch
+requires the same passed paid owner at selection and immediately before POST,
+fresh source/human revisions, current consent, foreground priority and managed
+spending. Native writes are drained on cancellation. Proven-unsent release is
+recoverable; sent uncertainty is never automatically resent. Tail scheduling
+does not require an additional clean batch or unused batch quota.
+
+Live expansion is deliberately not implemented: the initial worker pins Luna
+without fallback and permits at most ONE classification admission in total,
+counting released-unsent admissions too, under the accounting writer transaction.
+That bound survives restart and concurrent reservation. Reload checks refuse
+running or staged classification writers; legacy journals without the table
+remain compatible. These are source/test properties, not live Luna quality.
+
+Additional completed isolated validation on October 6, 2026:
+
+- The affected enrollment, worker, ledger/retrieval, publication, accounting
+  and service suite passed 302 tests in 141.90 seconds before the final pilot
+  admission limit, Luna-only request and reload-guard changes.
+- After those changes, the worker, accounting, reload and paid-stop-fence suites
+  passed 147 tests in 32.45 seconds. Provider responses remain synthetic; zero
+  provider POSTs or shared schema mutations were made during this validation.
+- Independent source review cleared the pilot-only changes, including the
+  transport-edge revocation/revision gate and cancellation drain. Its scope
+  does not validate a real Luna result or authorize full classification expansion.
+- No full repository suite or merge was performed. The existing paid batch and
+  raw data were retained; no batch was deleted, cancelled, repacked or resent.
+
+Required next proof: install the exact reviewed candidate through the existing
+owned-service/paid-identity/idle/encrypted-preimage fences, verify compatible
+readers, then inspect the bounded real Luna pilot for semantic quality and total
+billed cost before considering expansion. Neither these tests nor the pilot
+cap prove a resolved historical ambiguity queue, complete hooks or full local
+installation.
