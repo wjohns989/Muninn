@@ -278,9 +278,26 @@
                         The app's thresholds are admission limits, not guaranteed hard spending caps.</p>
                     <p id="operations-cost-status" role="status">Provider usage not checked in this session.</p>
                     <button type="button" onclick="loadOperatingCosts()" class="btn-secondary">Check provider usage</button>
-                    <p class="status-note">Run total: not yet exposed in this screen. Dedicated-key usage is not a run total.
-                        Settled batch aggregate bills, failed requests, repairs and baseline reconciliation remain separate accounting evidence.</p>
+                    <p class="status-note">Dedicated-key usage is not a run total. Use the separate interval ledger below.</p>
                     <div class="operator-actions"><button type="button" onclick="showTab('history')" class="btn-secondary">View ZDR consent &amp; budget controls</button></div>
+                </div>
+                <div class="card"><h3>Run charges</h3>
+                    <p class="card-description">Read all managed charges for activity started at or after your chosen UTC time.
+                        This includes other managed work, not only the backlog. Failed calls and repairs count when their charges settle;
+                        each batch aggregate bill counts once. Pending billing is not free.</p>
+                    <label for="run-accounting-start">Run start (UTC)</label>
+                    <input id="run-accounting-start" type="text" placeholder="YYYY-MM-DDTHH:MM:SS.ffffffZ" autocomplete="off" spellcheck="false">
+                    <label for="run-accounting-baseline">Provider monthly usage at run start, in dollars (optional for local read)</label>
+                    <input id="run-accounting-baseline" type="number" min="0" step="any" autocomplete="off">
+                    <p class="status-note">For comparison, enter the usage baseline from the same dedicated key and UTC month as the run start.
+                        A reset monthly counter cannot cover an older run. These values stay in this session and clear on lock.</p>
+                    <div class="operator-actions">
+                        <button id="run-accounting-read" type="button" class="btn-secondary" disabled>Read local run ledger</button>
+                        <button id="run-accounting-compare" type="button" class="btn-secondary" disabled>Compare provider usage</button>
+                    </div>
+                    <p id="run-accounting-status" role="status">Run accounting not loaded.</p>
+                    <p id="run-accounting-ledger">Local settled charges: unknown.</p>
+                    <p id="run-accounting-comparison">Provider comparison not checked.</p>
                 </div>
             </div>
 
@@ -586,6 +603,8 @@
         let sessionEpoch = 0;
         let operatingStatusSequence = 0;
         let operatingCostSequence = 0;
+        let runAccountingSequence = 0;
+        let runAccountingBusy = false;
         let authAttemptSequence = 0;
         let healthStatusSequence = 0;
         let scanStatusSequence = 0;
@@ -730,6 +749,7 @@
             AUTH_TOKEN = '';
             sessionEpoch++;
             if (typeof clearBatchPolicyView === 'function') clearBatchPolicyView();
+            if (typeof clearRunAccounting === 'function') clearRunAccounting(true);
             clearCitedMemoryView();
             authAttemptSequence++;
             historySearchSequence++;
@@ -829,6 +849,8 @@
             lockSession();
             AUTH_TOKEN = token;
             document.getElementById('batch-policy-refresh').disabled = false;
+            document.getElementById('run-accounting-read').disabled = false;
+            document.getElementById('run-accounting-compare').disabled = false;
             document.querySelectorAll('.sidebar, .main-content').forEach(node => { node.inert = false; });
             document.getElementById('auth-modal').classList.remove('active');
             document.getElementById('auth-dot').className = 'status-dot online';
@@ -961,6 +983,10 @@
             document.getElementById('remote-policy-save').addEventListener('click', saveRemotePolicy);
             document.getElementById('batch-policy-refresh').addEventListener('click', loadBatchPolicy);
             document.getElementById('batch-policy-save').addEventListener('click', saveBatchPolicy);
+            document.getElementById('run-accounting-read').addEventListener('click', () => loadRunAccounting(false));
+            document.getElementById('run-accounting-compare').addEventListener('click', () => loadRunAccounting(true));
+            for (const id of ['run-accounting-start', 'run-accounting-baseline'])
+                document.getElementById(id).addEventListener('input', () => clearRunAccounting(false));
             document.getElementById('refresh-local-resources').addEventListener('click', loadLocalResources);
             document.getElementById('credential-metadata-search').addEventListener('click', searchCredentialMetadata);
             document.getElementById('credential-metadata-query').addEventListener('keydown', event => {
@@ -1201,7 +1227,7 @@
             const response = await api('/history/secure/remote-policy/key-status', 'GET', null, 25000);
             if (sequence !== operatingCostSequence || epoch !== sessionEpoch || token !== AUTH_TOKEN) return;
             if (response.error || !response.data) {
-                status.textContent = 'Provider usage unavailable; prior values cleared. Run cost is unknown in this screen.';
+                status.textContent = 'Provider usage unavailable; prior values cleared. This check is not a run total.';
                 return;
             }
             const key = response.data;
@@ -1216,6 +1242,131 @@
                 `Provider hard cap: ${money(key.key_limit_usd)}${['daily', 'monthly'].includes(key.key_reset) ? '/' + key.key_reset : ' (reset unknown)'}; ` +
                 `${money(key.key_remaining_usd)} remaining. Provider-reported, not this run or app-ledger spend. ` +
                 `Checked at ${new Date().toLocaleTimeString()}; billing can be delayed.`;
+        }
+
+        function clearRunAccounting(clearInputs = false) {
+            runAccountingSequence++;
+            runAccountingBusy = false;
+            document.getElementById('run-accounting-ledger').textContent = 'Local settled charges: unknown.';
+            document.getElementById('run-accounting-comparison').textContent = 'Provider comparison not checked.';
+            document.getElementById('run-accounting-status').textContent = 'Run accounting not loaded; prior values cleared.';
+            for (const id of ['run-accounting-read', 'run-accounting-compare'])
+                document.getElementById(id).disabled = !AUTH_TOKEN;
+            if (clearInputs) for (const id of ['run-accounting-start', 'run-accounting-baseline'])
+                document.getElementById(id).value = '';
+        }
+
+        function runAccountingCutoff(value) {
+            if (typeof value !== 'string') return null;
+            const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{1,6})?Z$/.exec(value);
+            if (!match) return null;
+            const millis = Date.parse(match[1] + 'Z');
+            if (!Number.isFinite(millis) || millis < 0 || new Date(millis).toISOString().slice(0, 19) !== match[1]) return null;
+            // Date.parse discards sub-millisecond precision; retain the supplied fraction separately.
+            return millis / 1000 + Number(match[2] || 0);
+        }
+
+        function validRunAccounting(data, cutoff) {
+            const count = value => Number.isSafeInteger(value) && value >= 0;
+            const money = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+            if (!data || data.state !== 'observed' || data.scope !== 'all_managed_admissions_since_start' ||
+                data.rounding !== 'up_per_admission_micro_usd' || data.since !== cutoff ||
+                !money(data.sampled_at) || data.sampled_at < cutoff || !money(data.settled_cost_usd) ||
+                !count(data.global_unresolved)) return false;
+            const states = data.admission_states, resolutions = data.settled_resolutions, batch = data.batch_owned;
+            if (!states || !resolutions || !batch || !['settled', 'released', 'reserved', 'unknown'].every(k => count(states[k])) ||
+                !['response', 'operator'].every(k => count(resolutions[k])) ||
+                resolutions.response + resolutions.operator !== states.settled ||
+                data.global_unresolved < states.reserved + states.unknown) return false;
+            if (batch.state === 'known') return count(batch.settled_admissions) &&
+                batch.settled_admissions <= states.settled && money(batch.settled_cost_usd) &&
+                batch.settled_cost_usd <= data.settled_cost_usd;
+            return batch.state === 'unknown_legacy_schema' && batch.settled_admissions === null && batch.settled_cost_usd === null;
+        }
+
+        async function loadRunAccounting(compareProvider = false) {
+            if (!AUTH_TOKEN || runAccountingBusy) return;
+            clearRunAccounting(false);
+            const startText = document.getElementById('run-accounting-start').value;
+            const baselineText = document.getElementById('run-accounting-baseline').value;
+            const cutoff = runAccountingCutoff(startText);
+            const status = document.getElementById('run-accounting-status');
+            const ledger = document.getElementById('run-accounting-ledger');
+            const comparison = document.getElementById('run-accounting-comparison');
+            if (cutoff === null) {
+                status.textContent = 'Enter a valid UTC run start, including Z and at most six fractional digits.';
+                return;
+            }
+            const baseline = baselineText.trim() === '' ? null : Number(baselineText);
+            if (compareProvider && (baseline === null || !Number.isFinite(baseline) || baseline < 0)) {
+                status.textContent = 'Enter an explicit nonnegative provider monthly baseline from run start; blank is not zero.';
+                return;
+            }
+            const sequence = runAccountingSequence, epoch = sessionEpoch, token = AUTH_TOKEN;
+            const current = () => sequence === runAccountingSequence && epoch === sessionEpoch && token === AUTH_TOKEN &&
+                startText === document.getElementById('run-accounting-start').value &&
+                baselineText === document.getElementById('run-accounting-baseline').value;
+            runAccountingBusy = true;
+            for (const id of ['run-accounting-read', 'run-accounting-compare']) document.getElementById(id).disabled = true;
+            status.textContent = 'Reading the local run ledger...';
+            let localValid = false;
+            try {
+                const response = await api(`/history/secure/remote-policy/accounting/run?since=${cutoff}`, 'GET', null, 30000);
+                if (!current()) return;
+                if (response.error || !validRunAccounting(response.data, cutoff)) {
+                    status.textContent = 'Local run accounting unavailable or incomplete. Charges remain unknown.';
+                    return;
+                }
+                const data = response.data, states = data.admission_states, resolutions = data.settled_resolutions;
+                localValid = true;
+                ledger.textContent = `Local settled charges: $${data.settled_cost_usd.toFixed(6)} across ${states.settled} settled admissions ` +
+                    `(${resolutions.response} provider-response, ${resolutions.operator} operator-settled). ` +
+                    `Released unsent: ${states.released}; reserved: ${states.reserved}; unknown: ${states.unknown}. ` +
+                    `Unresolved across the entire ledger: ${data.global_unresolved}. ` +
+                    (data.batch_owned.state === 'known' ? `Batch-owned aggregate admissions: ${data.batch_owned.settled_admissions}, ` +
+                        `$${data.batch_owned.settled_cost_usd.toFixed(6)} (already included once). ` : 'Legacy batch attribution unknown. ') +
+                    `All managed activity started since ${startText}, not exclusively backlog work. ` +
+                    `Rounded up per admission to a microdollar; unresolved costs are not included. ` +
+                    `Ledger sampled ${new Date(data.sampled_at * 1000).toISOString()}.`;
+                status.textContent = 'Local ledger read complete; settled charges are not proof that work succeeded or billing is complete.';
+                if (!compareProvider) return;
+                comparison.textContent = 'Checking provider comparison...';
+                const provider = await api('/history/secure/remote-policy/key-status', 'GET', null, 30000);
+                if (!current()) return;
+                const usage = provider.data && provider.data.usage_monthly_usd;
+                const first = provider.sample_started_at, last = provider.sample_finished_at;
+                const timestamp = value => typeof value === 'number' && Number.isFinite(value) && value >= cutoff && value <= 253402300799;
+                if (provider.error || typeof usage !== 'number' || !Number.isFinite(usage) || usage < 0 ||
+                    !timestamp(first) || !timestamp(last) || last < first) {
+                    comparison.textContent = 'Provider comparison unavailable; provider run cost is unknown.';
+                    return;
+                }
+                const month = seconds => new Date(seconds * 1000).toISOString().slice(0, 7);
+                if (month(first) !== month(cutoff) || month(last) !== month(cutoff)) {
+                    comparison.textContent = 'Provider monthly counter cannot cover this run across a month reset; full-run provider cost is unknown.';
+                    return;
+                }
+                if (baseline > usage) {
+                    comparison.textContent = 'Provider baseline exceeds current monthly usage; key identity, timing or counter reset needs checking. Run cost is unknown.';
+                    return;
+                }
+                const delta = usage - baseline;
+                comparison.textContent = `Provider monthly usage minus your baseline: $${delta.toFixed(6)}. ` +
+                    `Difference from the local settled total: $${(delta - data.settled_cost_usd).toFixed(6)}. ` +
+                    `Comparison only, not invoice-reconciled even when amounts agree. Baseline timing and same-key identity are user-supplied, ` +
+                    `not independently verified. Earlier activity may bill later; billing may be delayed, and the samples are not simultaneous. ` +
+                    `Provider sampled ${new Date(last * 1000).toISOString()}.`;
+            } catch (_) {
+                if (!current()) return;
+                status.textContent = 'Run accounting check unavailable; no automatic retry was made.';
+                if (!localValid) ledger.textContent = 'Local settled charges: unknown.';
+                comparison.textContent = 'Provider comparison unavailable; provider run cost is unknown.';
+            } finally {
+                if (current()) {
+                    runAccountingBusy = false;
+                    for (const id of ['run-accounting-read', 'run-accounting-compare']) document.getElementById(id).disabled = !AUTH_TOKEN;
+                }
+            }
         }
 
         function historyMessage(message) {

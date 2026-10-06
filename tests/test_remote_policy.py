@@ -1,6 +1,7 @@
 """Persisted ZDR consent is local, auditable, and fail-closed."""
 
 import sqlite3
+import time
 from contextlib import closing
 from types import SimpleNamespace
 
@@ -156,10 +157,15 @@ async def test_provider_key_status_api_requires_main_token_and_returns_only_sani
     local = httpx.ASGITransport(app=server.app, client=("127.0.0.1", 1234))
     async with httpx.AsyncClient(transport=local, base_url="http://localhost") as client:
         assert (await client.get(route)).status_code == 401
+        sample_before = time.time()
         response = await client.get(route, headers={"Authorization": f"Bearer {token}"})
+        sample_after = time.time()
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
-        assert response.json() == {"success": True, "data": expected}
+        result = response.json()
+        assert set(result) == {"success", "data", "sample_started_at", "sample_finished_at"}
+        assert result["success"] is True and result["data"] == expected
+        assert sample_before <= result["sample_started_at"] <= result["sample_finished_at"] <= sample_after
         assert "test-main-auth-token" not in response.text
     remote = httpx.ASGITransport(app=server.app, client=("192.168.1.2", 1234))
     async with httpx.AsyncClient(transport=remote, base_url="http://localhost") as client:

@@ -133,7 +133,8 @@ def test_public_shell_has_no_mock_counts_and_retains_all_existing_tools():
     assert 'id="stat-total">Unknown<' in page
     for tab in ("overview", "ingest", "search", "history", "credentials", "system"):
         assert f'id="tab-{tab}"' in page
-    assert "Run total: not yet exposed" in page
+    assert 'id="run-accounting-ledger"' in page
+    assert 'Local settled charges: unknown.' in page
     assert "Recovery readiness: not reported" in page
     assert "Review queue: not reported" in page
 

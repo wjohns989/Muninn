@@ -1733,6 +1733,8 @@ from fastapi.exception_handlers import request_validation_exception_handler
 
 @app.exception_handler(RequestValidationError)
 async def _private_cited_validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path == "/history/secure/remote-policy/accounting/run":
+        return JSONResponse({"detail": "Invalid run interval"}, status_code=422, headers=NO_STORE)
     if request.url.path.startswith("/history/secure/memories/"):
         # Pydantic's normal error includes the submitted input, which might
         # itself contain a credential. Do not echo private request fields.
@@ -2089,8 +2091,10 @@ async def secure_remote_key_status_endpoint():
     """Show provider-enforced spending state without returning key material."""
     from muninn.history.auto_routing import openrouter_key_status
 
+    sample_started_at = time.time()
     status = await asyncio.to_thread(openrouter_key_status, policy_root=_remote_policy_root())
-    return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
+    return JSONResponse({"success": True, "data": status, "sample_started_at": sample_started_at,
+                         "sample_finished_at": time.time()}, headers=NO_STORE)
 
 
 @app.get("/history/secure/resources", dependencies=[Depends(verify_main_local_token)])
@@ -2111,6 +2115,19 @@ async def secure_remote_accounting_endpoint():
     except AdmissionError:
         raise HTTPException(status_code=503, detail="Remote accounting unavailable",
                             headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
+
+
+@app.get("/history/secure/remote-policy/accounting/run", dependencies=[Depends(verify_main_local_token)])
+async def secure_run_accounting_endpoint(since: float):
+    from muninn.history.remote_accounting import AdmissionError
+    from muninn.history.run_accounting import run_status
+    try:
+        result = await asyncio.to_thread(run_status, _remote_policy_root(), since=since)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid run interval", headers=NO_STORE) from None
+    except AdmissionError:
+        raise HTTPException(status_code=503, detail="Run accounting unavailable", headers=NO_STORE) from None
     return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
 
 
