@@ -1058,7 +1058,9 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
         expected = source.expected_refs(stage_before["window"], stage_before["proposals"],
             model_identity=stage_before["model_identity"],
             **({'source_view': stage_before['source_view']} if 'source_view' in stage_before else {}))
-        if refs != expected or not source.ledger.verify_refs(refs):
+        # An exact empty receipt claims no ledger content. Keep the complete
+        # chain check for real references and the final batch/backup checkpoint.
+        if refs != expected or (refs and not source.ledger.verify_refs(refs)):
             raise SearchJobError("Memory receipt has no matching durable records")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")

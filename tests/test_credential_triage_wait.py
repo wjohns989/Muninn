@@ -265,3 +265,56 @@ def test_progress_rejects_real_linked_ancestor_before_creating_anything(tmp_path
 def test_progress_rejects_parent_traversal_before_normalizing(tmp_path):
     with pytest.raises(ValueError, match='parent traversal'):
         runner.validate_progress_path(tmp_path / 'ignored' / '..' / 'progress.jsonl')
+
+
+@pytest.mark.parametrize('error_name', ['EOFError', 'VaultIntegrityError'])
+def test_prompt_failure_replaces_stale_input_status_without_private_text(tmp_path, monkeypatch, error_name):
+    from muninn.history.credential_crypto import VaultIntegrityError
+    errors = {'EOFError': EOFError, 'VaultIntegrityError': VaultIntegrityError}
+    vault = tmp_path / 'vault'
+    vault.mkdir()
+    log = tmp_path / 'progress' / 'progress.jsonl'
+    output = TTY()
+    monkeypatch.setattr(sys, 'stdin', TTY())
+    monkeypatch.setattr(sys, 'stdout', output)
+    monkeypatch.setattr(sys, 'argv', ['triage', '--root', str(vault),
+        '--model-limit', '0', '--progress-log', str(log)])
+    def fail_prompt(*args):
+        raise errors[error_name]('synthetic-private-never-log')
+    monkeypatch.setattr(runner.getpass, 'getpass', fail_prompt)
+    assert runner.main() == 1
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert rows[0]['passphrase_needed'] is True
+    assert rows[-1] == {'state': 'failed', 'error_category': error_name,
+                        'backup_state': 'not_started', 'passphrase_needed': False,
+                        'post_backup_unavailable': False}
+    assert 'synthetic-private-never-log' not in log.read_text() + output.getvalue()
+
+
+def test_failed_progress_destination_is_not_retried_when_reporting_failure(tmp_path, monkeypatch):
+    vault = tmp_path / 'vault'
+    vault.mkdir()
+    log = tmp_path / 'progress' / 'progress.jsonl'
+    output, writes = TTY(), []
+    monkeypatch.setattr(sys, 'stdin', TTY())
+    monkeypatch.setattr(sys, 'stdout', output)
+    monkeypatch.setattr(sys, 'argv', ['triage', '--root', str(vault),
+        '--model-limit', '0', '--progress-log', str(log)])
+    monkeypatch.setattr(runner.getpass, 'getpass', lambda *args: 'synthetic-local-only-phrase')
+    original = runner.emit_progress
+    def emit(report, path=None):
+        if path is not None:
+            writes.append(report.get('stage') or report.get('state'))
+            if report.get('stage') == 'review_page':
+                raise OSError('synthetic-private-never-log')
+        return original(report, path)
+    def run(**kwargs):
+        kwargs['on_progress']({'stage': 'review_page', 'rows': 1})
+        pytest.fail('failed progress write did not stop review')
+    monkeypatch.setattr(runner, 'emit_progress', emit)
+    monkeypatch.setattr(runner, 'run', run)
+    assert runner.main() == 1
+    assert writes == ['awaiting_passphrase', 'review_page']
+    final = json.loads(output.getvalue().splitlines()[-1])
+    assert final['state'] == 'failed' and final['passphrase_needed'] is False
+    assert 'synthetic-private-never-log' not in output.getvalue()

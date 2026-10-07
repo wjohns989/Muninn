@@ -100,6 +100,51 @@ def test_admitted_publication_cannot_be_cancelled_and_can_acknowledge(tmp_path):
     assert visible["memory_refs"] == refs
 
 
+def test_empty_publication_skips_unrelated_citations_but_checkpoint_verifies_chain(tmp_path, monkeypatch):
+    from muninn.history.memory_ledger import MemoryLedger
+    journal, archive, job, stage, source = queued(tmp_path)
+    stage['proposals'] = []
+    bind_stage(journal, job, stage)
+    assert journal.begin_publication(job.job_id, job.lease_token)
+    assert publish(source, stage) == []
+    monkeypatch.setattr(MemoryLedger, 'verify_refs', lambda *args:
+                        pytest.fail('empty receipt rechecked unrelated citations'))
+    assert journal.acknowledge_publication(job.job_id, job.lease_token, [])
+    assert journal.get_analysis_job(job.job_id)['memory_refs'] == []
+    walks = []
+    original = MemoryLedger._walk
+    def counted(ledger, db):
+        walks.append(True)
+        yield from original(ledger, db)
+    monkeypatch.setattr(MemoryLedger, '_walk', counted)
+    assert journal.verify_publications(job_ids=[job.job_id]) == 1
+    assert walks == [True]
+
+
+@pytest.mark.parametrize('invalid', ['lease', 'expired', 'extra_ref', 'window'])
+def test_empty_publication_retains_stage_window_and_lease_checks(tmp_path, invalid):
+    journal, archive, job, stage, source = queued(tmp_path)
+    stage['proposals'] = []
+    if invalid == 'window':
+        stage['window'] = {**stage['window'], 'input_sha256': '0' * 64}
+        with pytest.raises(ValueError):
+            bind_stage(journal, job, stage)
+        assert journal.get_analysis_job(job.job_id)['state'] == 'running'
+        return
+    bind_stage(journal, job, stage)
+    assert journal.begin_publication(job.job_id, job.lease_token)
+    if invalid == 'lease':
+        assert not journal.acknowledge_publication(job.job_id, 'invalid-lease', [])
+    elif invalid == 'expired':
+        expire(journal, job)
+        assert not journal.acknowledge_publication(job.job_id, job.lease_token, [])
+    else:
+        with pytest.raises(ValueError):
+            journal.acknowledge_publication(job.job_id, job.lease_token,
+                                           ['b' * 64] if invalid == 'extra_ref' else [])
+    assert journal.get_analysis_job(job.job_id)['state'] == 'publishing'
+
+
 @pytest.mark.parametrize("remote", [False, True])
 def test_crash_after_ledger_commit_replays_stage_not_inference(tmp_path, remote):
     journal, archive, job, stage, source = queued(tmp_path)

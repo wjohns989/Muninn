@@ -44,6 +44,11 @@ _PROGRESS_STATES = {'ready', 'failed', 'remote_admission_busy', 'remote_consent_
                     'remote_accounting_invalid_policy', 'remote_cost_unresolved',
                     'credential_context_not_remote_safe', 'source_context_required',
                     'model_limit_reached'}
+_PROGRESS_ERRORS = {'EOFError', 'VaultIntegrityError', 'VaultPermissionError',
+                    'HTTPStatusError', 'AdmissionError', 'OSError', 'PermissionError',
+                    'FileNotFoundError', 'RuntimeError', 'ValueError', 'TypeError',
+                    'OperationalError', 'IntegrityError', 'DatabaseError',
+                    'KeyboardInterrupt', 'UnicodeDecodeError', 'UnicodeEncodeError'}
 
 
 def validate_progress_path(path):
@@ -81,8 +86,12 @@ def emit_progress(report, path=None):
                 safe[name] = value
             elif name in flags and type(value) is bool:
                 safe[name] = value
+            elif name == 'backup_state' and value == 'not_started':
+                safe[name] = value
             elif (name in {'stage', 'backup_state'} and isinstance(value, str)
                   and value in _PROGRESS_STAGES):
+                safe[name] = value
+            elif name == 'error_category' and isinstance(value, str) and value in _PROGRESS_ERRORS:
                 safe[name] = value
             elif (name in {'state', 'model_route'} and isinstance(value, str)
                   and value in _PROGRESS_STATES):
@@ -480,7 +489,14 @@ def main() -> int:
             print(json.dumps({'state': 'progress_log_unavailable',
                               'error_category': type(exc).__name__}), flush=True)
             return 2
-    emit = lambda report: emit_progress(report, args.progress_log)
+    progress_failed = False
+    def emit(report):
+        nonlocal progress_failed
+        try:
+            emit_progress(report, args.progress_log)
+        except BaseException:
+            progress_failed = True
+            raise
     if args.provider == 'openrouter' and (args.model_limit or args.check_readiness):
         report = wait_remote_readiness(args.policy_root, args.wait_for_readiness,
             on_progress=emit)
@@ -539,6 +555,7 @@ def main() -> int:
     except BaseException as exc:
         # Exception text can contain private source context; return only type.
         failure = {"state": "failed", "error_category": type(exc).__name__,
+                          "passphrase_needed": False,
                           "backup_state": backup_state,
                           "post_backup_unavailable": args.backup_after is not None
                           and backup_state != "validated_post_triage_backup"}
@@ -554,8 +571,12 @@ def main() -> int:
                 "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_READONLY", "SQLITE_FULL",
                 "SQLITE_IOERR", "SQLITE_CANTOPEN", "SQLITE_CORRUPT"}:
             failure["sqlite_error_code"] = exc.sqlite_errorname
-        # If the progress destination fails, do not attempt it again on error.
-        emit_progress(failure)
+        # Healthy monitoring must not retain a stale hidden-input prompt.
+        # A failed destination is never retried, recreated or repermissioned.
+        try:
+            emit_progress(failure, None if progress_failed else args.progress_log)
+        except BaseException:
+            emit_progress(failure)
         return 130 if isinstance(exc, KeyboardInterrupt) else 1
     return 0
 

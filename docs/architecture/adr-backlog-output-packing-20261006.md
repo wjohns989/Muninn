@@ -1,6 +1,6 @@
 # Evidence-bound backlog packing at 80 percent of output capacity
 
-Status: implementation and focused validation passed; installed verification pending.
+Status: installed as candidate 035b863; focused checks and protected bridge reads passed.
 
 ## Context and decision
 
@@ -54,3 +54,6 @@ The escaped-character boundary regression failed against the old lexer and passe
 with the writer correction; existing malformed complete caches are not silently
 rebound or repaired. Independent source/fixture review was CLEAR. No full-suite,
 live fifty-window model-quality or measured savings claim is made.
+
+Cold-start and retained-input preservation evidence is recorded in
+`docs/evidence/local-resume-20261007.md`. Existing paid inputs are unchanged.
