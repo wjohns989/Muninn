@@ -80,7 +80,31 @@ The red test failed against the old ACK condition. Empty receipt, final chain
 walk, invalid lease/expiry, forged refs and invalid window checks are covered.
 Affected publication journal, batch worker/jobs and projected publication tests
 passed 93 tests in 88.46 seconds. Independent design/diff review was CLEAR.
-Installed performance verification of this later ACK correction is pending.
+The later correction was installed from candidate `de60101` after the publication
+queue reached idle. The guarded reload validated seven fresh encrypted database
+preimages with zero in-flight/recoverable claims; one process/listener, PID 21148,
+then passed authentication, strict archive and preserved remote-only mode without
+settings writes. The retained 29-window owner reached passed with the same input
+and wire hashes. Post-restart installed-profile/context bridge verification passed
+20 tools and transcript-workflow exposure in 2.052 seconds. Different probe scopes
+and workloads mean this is not a comparison with the earlier two-review-page run.
+No measured end-to-end ACK or throughput saving is claimed yet.
+
+At sample epoch 1791414526.823382, managed run charges were $1.168881 across 780
+settled admissions, with no unresolved managed billing at that sample; the 39 batch
+aggregate admissions still contributed $0.504165. Provider monthly usage minus
+baseline was $1.166878717, $0.002002283 below the local floor. Different sampling,
+delayed billing and per-admission rounding remain disclosed, not reconciled away.
+
+The current passphrase worker is alive and its owner-only progress record states
+awaiting_passphrase. A later read distinguished foreground lane 0 from capture
+lane 1: capture had 3,418 successful windows, 501 reused, 212 no-context, 128 pending,
+6,790 privacy-parked retries and eight uncertain outcomes. Raw journal success
+counts also include 22 foreground jobs; they are not the same denominator. The
+uncertain capture rows have remote_dispatched=1 and no saved extraction/receipt;
+they remain parked, not silently reset or redispatched. All capture-lane counters
+include older work, not only the fixed-cutoff run. Remaining source-version count
+is a separate measure; total unplanned windows and overall percent remain unknown.
 
 The full goal remains open: historical interpretation/ambiguity resolution,
 uncertain outcomes, credential review/unlock, current portable recovery evidence
