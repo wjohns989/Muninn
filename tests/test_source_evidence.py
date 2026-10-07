@@ -48,6 +48,17 @@ def test_oversized_source_has_contiguous_bounded_fragments(tmp_path):
     assert store.verify_all()["units"] == 2
 
 
+def test_escaped_newlines_keep_fragment_bound_and_complete_source_text(tmp_path):
+    text = 'abc\n' * 4000
+    archive, entry = _fixture(tmp_path, text)
+    store = SourceEvidenceStore(archive)
+    attempt = store.build_snapshot(entry, 0)
+    parts = list(store.fragments(entry, 0, attempt))
+    assert max(len(part.text) for part in parts) <= 4096
+    assert ''.join(part.text for part in parts).endswith(text)
+    assert store.verify_all()['units'] == 2
+
+
 def test_unit_fragment_seek_is_bounded_and_does_not_scan_preceding_units(tmp_path, monkeypatch):
     import math
     source = tmp_path / "many.jsonl"

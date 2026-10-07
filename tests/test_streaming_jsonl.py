@@ -69,3 +69,11 @@ def test_oversized_unknown_object_key_is_consumed_without_leaking_its_value() ->
 def test_events_reject_malformed_jsonl_grammar(raw: bytes) -> None:
     with pytest.raises(StreamingJSONError):
         list(events(_pieces(raw, 2)))
+@pytest.mark.parametrize('encoded', [b'"abc\\nZ"', b'"abc\\u0061Z"', b'"abc\\ud83d\\ude00Z"'])
+@pytest.mark.parametrize('byte_chunks', [False, True])
+def test_escape_completing_fragment_boundary_still_flushes(encoded, byte_chunks):
+    from muninn.history.streaming_jsonl import tokens
+    chunks = [encoded[n:n + 1] for n in range(len(encoded))] if byte_chunks else [encoded]
+    pieces = [value for kind, value in tokens(chunks, string_chunk_chars=4) if kind == 'string_chunk']
+    assert max(map(len, pieces)) <= 4
+    assert ''.join(pieces) == json.loads(encoded)

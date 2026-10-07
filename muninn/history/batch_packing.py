@@ -9,7 +9,10 @@ import json
 import re
 import uuid
 
-MAX_PACK = 10
+# New requests can group fifty adjacent, evidence-bound windows (102,400
+# output tokens). Retained cohorts reproduce their own stored size and digest;
+# changing this selection ceiling never repacks an existing paid request.
+MAX_PACK = 50
 _FIELDS = {"version", "request_id", "slot", "size", "scope_ref", "input_sha256", "plan_attempt", "ordinal"}
 
 

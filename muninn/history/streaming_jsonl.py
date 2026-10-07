@@ -106,8 +106,6 @@ def tokens(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
                     if ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF:
                         raise StreamingJSONError("Invalid JSON string character")
                     text_buffer.append(char)
-                if len(text_buffer) >= string_chunk_chars:
-                    yield from flush_text()
             else:
                 if char == '"':
                     yield from flush_scalar()
@@ -125,6 +123,10 @@ def tokens(chunks: Iterable[bytes], *, string_chunk_chars: int = 4096
                     scalar.append(char)
                     if len(scalar) > 128:
                         raise StreamingJSONError("Invalid JSON scalar length")
+            # Escapes and completed Unicode pairs append decoded codepoints
+            # too. Flush at their boundary, not only after the next literal.
+            if len(text_buffer) >= string_chunk_chars:
+                yield from flush_text()
 
     try:
         for chunk in chunks:

@@ -14,7 +14,8 @@ from tests.test_cited_analysis_source import PHRASE, fixture
 
 
 def prepared(tmp_path, count=11):
-    text = ''.join(f'Keep orbital plan {n} for synthetic widget caching.\n' for n in range(1000))
+    text = ''.join(f'Keep orbital plan {n} for synthetic widget caching.\n'
+                   for n in range(max(1000, count * 80)))
     archive, source, cap = fixture(tmp_path, text)
     desc = source.prepare(cap)
     entry = source._window(desc)[0]
@@ -28,7 +29,46 @@ def prepared(tmp_path, count=11):
 
 
 def pack_items(source, items):
-    return _pack_items(source, items, positions=source._packing_positions)
+    # Retain the original ten-window contract as compatibility coverage.
+    return _pack_items(source, items, positions=source._packing_positions, max_windows=10)
+
+
+@pytest.mark.parametrize('count,request_sizes', [(30, [30]), (50, [50]), (51, [50, 1])])
+def test_new_default_packs_fifty_without_changing_window_identity(tmp_path, count, request_sizes):
+    _, source, plain = prepared(tmp_path, count)
+    legacy = copy.deepcopy(payload(plain))
+    packed = _pack_items(source, plain, positions=source._packing_positions)
+    requests = payload(packed)['requests']
+    assert [r['body']['max_tokens'] for r in requests] == [2048 * n for n in request_sizes]
+    assert all(r['body']['max_tokens'] <= 102400 for r in requests)
+    assert [i['window'] for i in packed] == [i['window'] for i in plain]
+    assert payload(plain) == legacy
+    rows = terminal_results(packed, completed(packed))
+    stages = [validate_item(source, item, rows[item['custom_id']])['extraction'] for item in packed]
+    assert [s['window'] for s in stages] == [i['window'] for i in plain]
+    assert len({s['model_identity'] for s in stages}) == count
+
+
+def test_retained_ten_window_wire_is_identical_after_ceiling_increase(tmp_path, monkeypatch):
+    from muninn.history import batch_packing
+    from muninn.history.historical_batch import _wire_json
+    archive, source, plain = prepared(tmp_path)
+    with monkeypatch.context() as prior:
+        prior.setattr(batch_packing, 'MAX_PACK', 10)
+        old = _pack_items(source, plain, positions=source._packing_positions, max_windows=10)
+        wire = _wire_json(payload(old))
+    outbox = BatchOutbox(archive)
+    ident = outbox.prepare(old, consent_generation=1)
+    assert _wire_json(payload(outbox.read(ident)['items'])) == wire
+    assert len(payload(old)['requests']) == 2
+    assert len(payload(_pack_items(source, plain, positions=source._packing_positions))['requests']) == 1
+
+
+@pytest.mark.parametrize('maximum', [51, True, 50.0, 1])
+def test_new_selection_ceiling_cannot_be_bypassed(tmp_path, maximum):
+    _, source, plain = prepared(tmp_path, 2)
+    with pytest.raises(BatchError):
+        _pack_items(source, plain, positions=source._packing_positions, max_windows=maximum)
 
 
 def analysis(window):
@@ -177,7 +217,8 @@ def test_duplicate_json_fields_cannot_hide_a_slot_or_analysis(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_packed_worker_restart_publication_failed_only_repair_and_single_bills(tmp_path):
+@pytest.mark.parametrize('count,failure', [(2, 'quote'), (50, 'quote'), (50, 'truncated')])
+async def test_packed_worker_restart_publication_failed_only_repair_and_single_bills(tmp_path, count, failure):
     from muninn.history.batch_activation import bind_consent, configure_batch, read_batch_policy
     from muninn.history.capture_journal import CaptureJournal
     from muninn.history.cited_analysis_source import CitedAnalysisSource
@@ -186,7 +227,7 @@ async def test_packed_worker_restart_publication_failed_only_repair_and_single_b
     from tests.test_historical_batch_worker import ready
     from muninn.history.remote_policy import write_policy
 
-    archive, source, _ = prepared(tmp_path, 2)
+    archive, source, _ = prepared(tmp_path, count)
     journal = CaptureJournal(archive)
     journal.configure_enrichment(0)
     entry = next(iter(source.ledger._entries.values()))
@@ -194,7 +235,15 @@ async def test_packed_worker_restart_publication_failed_only_repair_and_single_b
     journal.enqueue_enrichment_receipt(receipt)
     write_policy(journal.policy_root, enabled=True, daily_usd=5, monthly_usd=50,
                  override_ceiling=False, fallback=lambda: (False, 1, 30, False))
-    journal.queue_capture_windows(receipt, limit=2, remote_policy_generation=1)
+    configure_batch(journal.policy_root, enabled=True, max_batches=10)
+    # Planning transactions stay bounded independently of provider request packing.
+    queued = 0
+    while queued < count:
+        result = journal.queue_capture_windows(
+            receipt, limit=min(32, count - queued), remote_policy_generation=1)
+        assert result['queued'] > 0
+        queued += result['queued']
+    assert queued == count
     plans = CitedWindowPlanStore(archive)
     positions = {}
     bindings = []
@@ -204,13 +253,13 @@ async def test_packed_worker_restart_publication_failed_only_repair_and_single_b
             positions[row['job_id']] = (target['plan_attempt'], target['ordinal'])
             bindings.append((row['job_id'], plans.window_at(entry, 0, target['plan_attempt'], target['ordinal'])))
     plain = prepare_items(source, bindings)
+    assert len(plain) == count
     outbox = BatchOutbox(archive)
     old = outbox.prepare(plain, consent_generation=1)
     plain.sort(key=lambda i: positions[i['job_id']][1])
     packed = _pack_items(CitedAnalysisSource(archive), plain, positions=positions)
     assert len(payload(packed)['requests']) == 1
     ident = outbox.prepare(packed, consent_generation=1)
-    configure_batch(journal.policy_root, enabled=True, max_batches=10)
     bind_consent(journal, outbox, ident, read_batch_policy(journal.policy_root))
     journal.reserve_historical_batch(ident)
     clock, posts, terminals = [0], [], {}
@@ -226,8 +275,12 @@ async def test_packed_worker_restart_publication_failed_only_repair_and_single_b
         if len(posts) == 1:
             message = result['results'][0]['response']['body']['choices'][0]['message']
             frame = json.loads(message['content'])
-            frame['windows'][1]['analysis']['proposals'][0]['quote'] = 'NONEXISTENT_SYNTHETIC_QUOTE'
-            message['content'] = json.dumps(frame)
+            if failure == 'truncated':
+                message['content'] = message['content'][:-1]
+                result['results'][0]['response']['body']['choices'][0]['finish_reason'] = 'length'
+            else:
+                frame['windows'][count - 1]['analysis']['proposals'][0]['quote'] = 'NONEXISTENT_SYNTHETIC_QUOTE'
+                message['content'] = json.dumps(frame)
         terminals[result['id']] = result
         return {k: v for k, v in {**result, 'status': 'validating'}.items() if k not in {'results', 'usage'}}
 
@@ -236,14 +289,19 @@ async def test_packed_worker_restart_publication_failed_only_repair_and_single_b
                                      send=send, provider_status=ready, clock=lambda: clock[0])
     first = worker()
     await first.step()
-    assert first.status['windows'] == 2 and first.status['provider_requests'] == 1
+    assert first.status['windows'] == count and first.status['provider_requests'] == 1
     clock[0] = 61
     restarted = worker()
     await restarted.step()
-    assert len(posts) == 2 and [len(p['requests']) for p in posts] == [1, 1]
+    repair_count = count if failure == 'truncated' else 1
+    assert len(posts) == 2 and [len(p['requests']) for p in posts] == [1, repair_count]
     children = outbox.repair_records(outbox.read(ident))
-    assert len(children[0]['items']) == 1 and 'pack' not in children[0]['items'][0]
-    assert children[0]['items'][0]['job_id'] == packed[1]['job_id']
+    assert len(children[0]['items']) == repair_count
+    assert all('pack' not in i for i in children[0]['items'])
+    expected_failed = packed if failure == 'truncated' else [packed[count - 1]]
+    assert {i['job_id'] for i in children[0]['items']} == {i['job_id'] for i in expected_failed}
+    with journal._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM history_analysis_jobs WHERE state='succeeded'").fetchone()[0] == count - repair_count
     clock[0] = 122
     await restarted.step()
     clock[0] = 183
@@ -252,14 +310,15 @@ async def test_packed_worker_restart_publication_failed_only_repair_and_single_b
     assert len(posts) == 2
     assert status(journal.policy_root)['daily_cost_usd'] == pytest.approx(0.024)
     with journal._connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM history_analysis_jobs WHERE state='succeeded'").fetchone()[0] == 2
+        assert db.execute("SELECT COUNT(*) FROM history_analysis_jobs WHERE state='succeeded'").fetchone()[0] == count
     assert outbox.read(old)['state'] == 'prepared'  # Nothing deleted or rewritten.
 
 
-def test_packed_submission_restore_and_failed_only_unpacked_child(tmp_path):
+@pytest.mark.parametrize('count', [3, 50])
+def test_packed_submission_restore_and_failed_only_unpacked_child(tmp_path, count):
     from muninn.history.secure_archive import SecureHistoryArchive
-    archive, source, plain = prepared(tmp_path, 3)
-    packed = pack_items(source, plain)
+    archive, source, plain = prepared(tmp_path, count)
+    packed = _pack_items(source, plain, positions=source._packing_positions)
     outbox = BatchOutbox(archive)
     parent = outbox.prepare(packed, consent_generation=1)
     outbox.begin_submission(parent, 0)
