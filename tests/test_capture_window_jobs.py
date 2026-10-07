@@ -456,8 +456,9 @@ async def test_opted_in_capture_worker_stages_remote_only_with_bound_generation(
 
     async def analyze(history, source, descriptor, *, allow_remote, should_cancel,
                       before_remote, remote_not_sent, expected_remote_generation,
-                      prefer_remote, remote_gate):
+                      prefer_remote, remote_gate, retain_remote_reply):
         assert allow_remote and prefer_remote and expected_remote_generation == 1
+        assert callable(retain_remote_reply)
         assert remote_gate()
         assert await before_remote()
         from muninn.history.remote_accounting import reserve
@@ -506,8 +507,9 @@ async def test_remote_first_capture_falls_back_only_when_proven_unsent(
 
     async def analyze(history, source, descriptor, *, allow_remote, prefer_remote=False,
                       should_cancel, before_remote=None, remote_not_sent=None,
-                      expected_remote_generation, remote_gate=None):
+                      expected_remote_generation, remote_gate=None, retain_remote_reply=None):
         attempts.append("remote" if prefer_remote else "local")
+        assert callable(retain_remote_reply) if allow_remote else retain_remote_reply is None
         if prefer_remote:
             assert allow_remote and remote_gate()
             if remote_marked:

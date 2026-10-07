@@ -374,10 +374,107 @@ async def analyze_cited_window(history, source, descriptor, *, private_zdr=False
                                  descriptor=descriptor, cited=True, **kwargs)
 
 
+def _reply_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _reply_json_number(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    raise TypeError("Invalid provider response value")
+
+
+def retained_cited_reply(source, descriptor, body, data, admission_id, http_status):
+    """Private semantic response copy, not a public result or billing substitute.
+
+    Retain the complete decoded reply, including rejected/oversized model content;
+    never truncate it into something that could appear valid on replay. Decimal
+    billing numbers are retained as exact strings; accounting owns their proof.
+    No HTTP headers or API key are included.
+    """
+    reply = {"format": 1, "contract": _CITED_VERSION, "window": descriptor,
+        "request": body, "request_sha256": _reply_digest(body),
+        "input_sha256": _reply_digest(source.reopen(descriptor)),
+        "admission_id": admission_id, "http_status": http_status,
+        "response": json.dumps(data, ensure_ascii=False, allow_nan=False, default=_reply_json_number)}
+    if hasattr(source, "source_view"):
+        reply["source_view"] = source.source_view()
+    return reply  # The journal detaches metadata; immutable response text need not be recopied.
+
+
+def validate_retained_reply(reply, descriptor):
+    """Authenticate shape and exact request contract without interpreting output."""
+    required = {"format", "contract", "window", "request", "request_sha256",
+                "input_sha256", "admission_id", "http_status", "response"}
+    try:
+        if (not isinstance(reply, dict) or set(reply) - {"source_view"} != required
+                or type(reply["format"]) is not int or reply["format"] != 1
+                or reply["contract"] != _CITED_VERSION or reply["window"] != descriptor
+                or not isinstance(reply["request"], dict)
+                or not isinstance(reply["response"], (str, dict))
+                or type(reply["http_status"]) is not int or not 100 <= reply["http_status"] <= 599
+                or not isinstance(reply["admission_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", reply["admission_id"])
+                or any(not isinstance(reply[k], str) or not re.fullmatch(r"[0-9a-f]{64}", reply[k])
+                       for k in ("request_sha256", "input_sha256"))
+                or _reply_digest(reply["request"]) != reply["request_sha256"]):
+            raise ValueError
+        from muninn.history.cited_analysis_source import CitedAnalysisSource
+        CitedAnalysisSource.validate_descriptor(reply["window"])
+        if isinstance(reply["response"], dict):
+            marker = reply["response"]
+            if (set(marker) != {"format", "bytes", "sha256", "chunks"}
+                    or type(marker["format"]) is not int or marker["format"] != 1
+                    or type(marker["bytes"]) is not int or marker["bytes"] <= 131072
+                    or type(marker["chunks"]) is not int
+                    or marker["chunks"] != (marker["bytes"] + 65535) // 65536
+                    or not isinstance(marker["sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", marker["sha256"])):
+                raise ValueError
+        body = reply["request"]
+        if (body.get("provider") != {"zdr": True, "data_collection": "deny", "require_parameters": True}
+                or body.get("response_format") != {"type": "json_schema", "json_schema": {
+                    "name": "secure_excerpt_analysis", "strict": True, "schema": _CITED_SCHEMA}}):
+            raise ValueError
+    except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+        raise ModelOutputInvalid("Retained reply contract is invalid", code="reply_contract") from exc
+
+
+def replay_cited_reply(source, descriptor, reply):
+    """Local validation only. No key lookup, reservation, provider or model call."""
+    validate_retained_reply(reply, descriptor)
+    if "source_view" in reply:
+        from muninn.history.cited_zdr_projection import CitedZDRProjection
+        source = CitedZDRProjection.from_source_view(source, descriptor, reply["source_view"])
+    window = source.reopen(descriptor)
+    if (_reply_digest(window) != reply["input_sha256"]
+            or reply["request"].get("messages") != _cited_prompt(window)):
+        raise ModelOutputInvalid("Retained reply input is invalid", code="reply_contract")
+    if not 200 <= reply["http_status"] < 300:
+        raise ModelOutputInvalid("Remote provider rejected request", code="provider_rejected")
+    if isinstance(reply["response"], dict):
+        # Full ciphertext is retained in journal chunks, never a parseable
+        # truncated prefix. Local recovery stops without allocating it again.
+        raise ModelOutputInvalid("Remote reply requires oversized-output review", code="reply_bound")
+    try:
+        data = json.loads(reply["response"])
+        model = data.get("model")
+        content = data["choices"][0]["message"]["content"]
+        if not isinstance(model, str) or not model or len(model) > 128:
+            raise ValueError
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        raise ModelOutputInvalid("Remote response identity is invalid", code="reply_identity") from exc
+    outcome = _cited_outcome(content, source, descriptor, "openrouter", model)
+    outcome["extraction"]["admission_id"] = reply["admission_id"]
+    return outcome
+
+
 async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=False,
                           should_cancel=None, before_remote=None, remote_not_sent=None,
                           expected_remote_generation=None, source=None, descriptor=None, cited=False,
-                          reuse_completed=None, remote_gate=None, reuse_remote_completed=None):
+                          reuse_completed=None, remote_gate=None, reuse_remote_completed=None,
+                          retain_remote_reply=None):
     if prefer_remote and not allow_remote:
         raise ValueError("A remote preference requires an explicit remote allowance")
     def ensure_active() -> None:
@@ -519,6 +616,15 @@ async def _analyze_window(history, span, *, allow_remote=False, prefer_remote=Fa
                 # unresolved. Keep the pre-POST unknown admission durable so
                 # neither this job nor another can silently spend again.
                 raise AdmissionError("remote_cost_unresolved")
+            if cited and retain_remote_reply is not None:
+                reply = retained_cited_reply(source, descriptor, body, data,
+                    admission.identifier, getattr(response, "status_code", 200))
+                # Save before HTTP/model validation. If retention fails, keep
+                # the original sent marker; never silently re-POST a paid call.
+                if not await retain_remote_reply(reply):
+                    raise RuntimeError("Secure reply retention unavailable")
+                return replay_cited_reply(source._source if hasattr(source, "source_view") else source,
+                                          descriptor, reply)
             response.raise_for_status()
     except AdmissionError as exc:
         return {"status": "deferred", "provider": None, "model": None, "reason": exc.code}

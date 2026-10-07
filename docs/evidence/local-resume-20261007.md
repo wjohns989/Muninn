@@ -111,3 +111,59 @@ uncertain outcomes, credential review/unlock, current portable recovery evidence
 and later UI/client acceptance cannot be inferred from this bounded activation.
 No full repository suite, live fifty-window model-quality, model comparison,
 measured throughput saving, merge or whole-installation completion is claimed.
+
+## Settled synchronous reply recovery (October 7 continuation)
+
+Dependency: a synchronous paid reply could settle its admission then fail output
+validation before an encrypted extraction existed. Its job was subsequently
+indistinguishable from lost transport, with no retained response to inspect or
+replay. The eight pre-existing uncertain capture jobs have no reply evidence;
+this change does not reset or resend them or infer identity from timestamps.
+
+New service calls retain the complete decoded provider reply and screened request
+under journal authenticated encryption before HTTP/output validation. The receipt
+binds job, immutable target/window, projected input, parser contract, policy
+generation, exact returned model and settled unowned admission. Admission
+uniqueness uses a keyed HMAC; no raw admission ID, HTTP headers or key is added to
+the plaintext journal. Reclaiming a retained reply only revalidates the local
+source/projection and stages/publicizes its cited output; no provider lookup,
+reservation or inference is permitted on replay, including after consent revoke.
+Invalid replies stop with fixed diagnostic categories rather than a new POST.
+
+Inline response storage is bounded at 128 KiB. Larger complete semantic response
+copies are preserved, without truncation, as 64 KiB authenticated ciphertext
+chunks in the same database transaction. Their encrypted envelope binds total
+UTF-8 bytes, chunk count and SHA256. Verification streams every chunk; replay stops
+with `remote_reply_bound`, not a prefix that might falsely validate. Existing
+portable runtime backups include the chunk table and settled accounting. The
+retention encoder bounds its additional UTF-8 scratch buffer, but incoming HTTP
+JSON still uses the existing complete response materialization; this is not a
+new streaming-transport claim. The unavoidable settlement-to-retention crash gap
+also remains uncertain and never automatically re-POSTs.
+
+Proof: the initial nine retention tests failed against the absent old behavior.
+All 26 expanded reply tests passed in 22.12 seconds, plus a cross-job/admission
+transplant case passed in 1.85 seconds (27 cases total). Cases include exact
+encrypted Unicode chunk preservation, invalid/oversized replies, missing/reordered/
+altered/extra chunks, source/request/contract/generation/settlement and lease
+binding, cancellation draining, service replay without inference after consent
+revoke, and portable restore with remote policy disabled. Final affected journal,
+publication and batch-job tests passed 68 tests in 47.76 seconds. An earlier
+affected run passed 137 other tests; five mocks required the new callback argument
+and then passed unchanged routing assertions. No real model call was used in
+these checks. Independent design/diff review cleared the corrected keyed-index
+and chunked-retention design; live installation evidence is recorded separately.
+
+Current read-only runtime still had one healthy strict/authenticated listener,
+PID 21148. Owner `c31739ec3e5c447ea09d61a94b967ee4` retained 60 windows / 60 requests
+as submitted to `batch-1791414772-jovQAuiLD50ZHQm5xpzY`; items SHA256
+`843c98c3f3b46d8b777de7ccd13c294a63f6476b46ed27d7014ce6c318ec0517`, wire SHA256
+`1f34fcc11610c4afae8f42676068b4b9ef2ff9c05440e1f14fec96f51a796360`.
+At epoch 1791416321, settled managed charges since the fixed run epoch were
+$1.172315, with one unresolved admission; provider monthly usage minus baseline
+was $1.204476217. The unresolved retained batch and differing sample/billing
+timing prevent calling these an exact reconciliation. Limits remain $5/day and
+$50/month. Historical enrollment is complete, not interpreted coverage; current
+all-capture-lane counts were 3418 succeeded, 501 reused, 212 no-context, 128 pending,
+6942 privacy-parked and eight uncertain, separately from 6180 pending source
+versions. Total unplanned windows and overall completion percent remain unknown.

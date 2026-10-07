@@ -69,11 +69,31 @@ _LOCAL_OUTPUT_FAILURE_CODES = {
     "quote_missing_or_ambiguous": "local_output_quote",
     "analysis_schema": "local_output_analysis_schema",
 }
+_REMOTE_OUTPUT_FAILURE_CODES = {key: value.replace("local_", "remote_", 1)
+                               for key, value in _LOCAL_OUTPUT_FAILURE_CODES.items()}
+_REMOTE_OUTPUT_FAILURE_CODES.update({"reply_contract": "remote_reply_contract",
+    "reply_identity": "remote_reply_identity", "provider_rejected": "remote_provider_rejected",
+    "reply_bound": "remote_reply_bound"})
+_REPLY_INLINE_BYTES = 131072
+_REPLY_CHUNK_BYTES = 65536
+
+
+def _reply_chunks(text):
+    """UTF-8 chunks with bounded scratch memory, including astral characters."""
+    buffer = b""
+    for offset in range(0, len(text), _REPLY_CHUNK_BYTES // 4):
+        buffer += text[offset:offset + _REPLY_CHUNK_BYTES // 4].encode("utf-8")
+        while len(buffer) >= _REPLY_CHUNK_BYTES:
+            yield buffer[:_REPLY_CHUNK_BYTES]
+            buffer = buffer[_REPLY_CHUNK_BYTES:]
+    if buffer:
+        yield buffer
 _ANALYSIS_TERMINAL_CODES = {
     "invalid_target", "queue_full", "vault_integrity", "snapshot_unavailable",
     "insufficient_context", "outcome_unknown", "unknown", "cancelled",
     "local_output_invalid",
-} | set(_LOCAL_OUTPUT_FAILURE_CODES.values())
+    "remote_output_invalid",
+} | set(_LOCAL_OUTPUT_FAILURE_CODES.values()) | set(_REMOTE_OUTPUT_FAILURE_CODES.values())
 
 
 def analysis_deferral_code(outcome: dict[str, Any]) -> str:
@@ -135,6 +155,7 @@ class AnalysisJob:
     window: dict[str, Any] | None = field(default=None, repr=False)
     extraction: dict[str, Any] | None = field(default=None, repr=False)
     lane: int = 0
+    remote_reply: dict[str, Any] | None = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         return (
@@ -214,6 +235,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                 pass
             columns = {row[1] for row in db.execute("PRAGMA table_info(history_analysis_jobs)")}
             for column, definition in (("sealed_window", "BLOB"), ("sealed_extraction", "BLOB"),
+                                       ("sealed_remote_reply", "BLOB"), ("remote_reply_identity", "TEXT"),
                                        ("extraction_id", "TEXT"), ("sealed_receipt", "BLOB"),
                                        ("sealed_reuse", "BLOB"),
                                        ("cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
@@ -221,6 +243,11 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                                        ("lane", "INTEGER NOT NULL DEFAULT 0")):
                 if column not in columns:
                     db.execute(f"ALTER TABLE history_analysis_jobs ADD COLUMN {column} {definition}")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS history_analysis_reply_admission "
+                       "ON history_analysis_jobs(remote_reply_identity) WHERE remote_reply_identity IS NOT NULL")
+            db.execute("CREATE TABLE IF NOT EXISTS history_analysis_reply_chunks ("
+                       "job_id TEXT NOT NULL,chunk_index INTEGER NOT NULL,sealed BLOB NOT NULL,"
+                       "PRIMARY KEY(job_id,chunk_index))")
             for column, definition in (("analysis_job_id", "TEXT"), ("analysis_state", "TEXT")):
                 try:
                     db.execute(f"ALTER TABLE history_search_jobs ADD COLUMN {column} {definition}")
@@ -483,12 +510,17 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                         self._open_search(row["sealed_result"], row["job_id"], "analysis-result")
                     )
                 self._read_analysis_window(row)
+                self._read_remote_reply(row)
                 self._read_extraction(row)
                 self._read_publication_receipt(row)
                 # Mapped capture reuse was fully checked above. Cheap state
                 # validation also rejects stray reuse seals/search-lane reuse,
                 # without repeating every source/ledger proof a second time.
                 self._capture_reuse_state(row)
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_analysis_reply_chunks'").fetchone():
+                if db.execute("SELECT 1 FROM history_analysis_reply_chunks c LEFT JOIN history_analysis_jobs j "
+                              "ON j.job_id=c.job_id WHERE j.job_id IS NULL OR j.sealed_remote_reply IS NULL LIMIT 1").fetchone():
+                    raise VaultIntegrityError("Remote reply chunks have no authenticated receipt")
             return count
 
     def verify_publications(self, *, job_ids=None) -> int:
@@ -859,6 +891,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
             self._read_analysis_window(row),
             self._read_extraction(row),
             row["lane"],
+            self._read_remote_reply(row),
         )
 
     @staticmethod
@@ -971,6 +1004,139 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
         if not settled:
             raise SearchJobError("Remote capture settlement is not verified")
 
+    def _remote_reply_identity(self, admission_id):
+        return hmac.new(self._key, b"analysis-remote-admission-v1\0" + admission_id.encode("ascii"),
+                        hashlib.sha256).hexdigest()
+
+    def _remote_reply_purpose(self, row):
+        window = self._read_analysis_window(row)
+        if window is None:
+            raise VaultIntegrityError("Remote reply has no immutable window")
+        return ("analysis-remote-reply-v1:" + self._window_purpose(row).split(":", 1)[1]
+                + ":" + hashlib.sha256(self._stage_json(window)).hexdigest()
+                + ":" + str(row["remote_policy_generation"]) + ":" + row["remote_reply_identity"])
+
+    def _read_remote_reply(self, row):
+        # Read-only access to an older installed journal must not migrate it.
+        if "sealed_remote_reply" not in row.keys():
+            return None
+        if row["sealed_remote_reply"] is None:
+            if row["remote_reply_identity"] is not None:
+                raise VaultIntegrityError("Remote reply receipt is incomplete")
+            return None
+        from muninn.history.secure_analysis import validate_retained_reply
+        from muninn.history.remote_accounting import settled_response, AdmissionError
+        try:
+            if (row["remote_dispatched"] != 1 or row["remote_policy_generation"] < 1
+                    or not isinstance(row["remote_reply_identity"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", row["remote_reply_identity"])):
+                raise ValueError
+            reply = self._open_search(row["sealed_remote_reply"], row["job_id"], self._remote_reply_purpose(row))
+            validate_retained_reply(reply, self._read_analysis_window(row))
+            if (self._remote_reply_identity(reply["admission_id"]) != row["remote_reply_identity"] or not settled_response(
+                    self.policy_root, reply["admission_id"], row["remote_policy_generation"], require_unowned=True)):
+                raise ValueError
+            with self._connect() as db:
+                if isinstance(reply["response"], dict):
+                    self._verify_remote_reply_chunks(row, reply, db)
+                elif db.execute("SELECT 1 FROM history_analysis_reply_chunks WHERE job_id=? LIMIT 1",
+                                (row["job_id"],)).fetchone():
+                    raise ValueError
+            return reply
+        except (ValueError, TypeError, AdmissionError) as exc:
+            raise VaultIntegrityError("Remote reply authentication failed") from exc
+
+    def _verify_remote_reply_chunks(self, row, reply, db):
+        marker = reply["response"]
+        digest, total, count = hashlib.sha256(), 0, 0
+        for chunk in db.execute("SELECT chunk_index,sealed FROM history_analysis_reply_chunks "
+                                "WHERE job_id=? ORDER BY chunk_index", (row["job_id"],)):
+            if chunk["chunk_index"] != count:
+                raise VaultIntegrityError("Remote reply chunks are incomplete")
+            purpose = self._remote_reply_purpose(row) + ":chunk:" + str(count)
+            sealed = chunk["sealed"]
+            try:
+                raw = AESGCM(self._search_key(row["job_id"])).decrypt(
+                    sealed[:12], sealed[12:], self._search_aad(row["job_id"], purpose))
+            except (InvalidTag, ValueError, TypeError) as exc:
+                raise VaultIntegrityError("Remote reply chunk authentication failed") from exc
+            if not 1 <= len(raw) <= _REPLY_CHUNK_BYTES:
+                raise VaultIntegrityError("Remote reply chunk bound is invalid")
+            digest.update(raw)
+            total += len(raw)
+            count += 1
+        if count != marker["chunks"] or total != marker["bytes"] or digest.hexdigest() != marker["sha256"]:
+            raise VaultIntegrityError("Remote reply chunk receipt differs")
+
+    def retain_analysis_reply(self, job_id, lease_token, reply):
+        """Lease-fenced encrypted settlement receipt; no publication or re-POST."""
+        from muninn.history.secure_analysis import validate_retained_reply
+        from muninn.history.remote_accounting import settled_response, AdmissionError
+        # Detach caller mutations before any asynchronous worker resumes.
+        response_text = reply.get("response") if isinstance(reply, dict) else None
+        if not isinstance(response_text, str):
+            raise SearchJobError("Only a complete new provider reply may be retained")
+        reply = json.loads(self._stage_json({k: v for k, v in reply.items() if k != "response"}))
+        digest, total, count = hashlib.sha256(), 0, 0
+        for chunk in _reply_chunks(response_text):
+            digest.update(chunk)
+            total += len(chunk)
+            count += 1
+        reply["response"] = ({"format": 1, "bytes": total, "sha256": digest.hexdigest(), "chunks": count}
+                             if total > _REPLY_INLINE_BYTES else response_text)
+        if len(self._stage_json(reply)) > 262144:
+            raise SearchJobError("Remote reply envelope exceeds its bounded input contract")
+        before = self._publication_row(job_id)
+        if (before is None or before["state"] != "running" or before["remote_dispatched"] != 1
+                or before["lease_token"] != lease_token or before["lease_until"] <= time.time()):
+            return False
+        try:
+            validate_retained_reply(reply, self._read_analysis_window(before))
+            if not settled_response(self.policy_root, reply["admission_id"],
+                                    before["remote_policy_generation"], require_unowned=True):
+                raise ValueError
+        except (ValueError, TypeError, AdmissionError) as exc:
+            raise SearchJobError("Remote reply settlement or binding is invalid") from exc
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=? AND state='running' "
+                             "AND remote_dispatched=1 AND lease_token=? AND lease_until>?",
+                             (job_id, lease_token, time.time())).fetchone()
+            if row is None:
+                return False
+            if (row["remote_policy_generation"] != before["remote_policy_generation"]
+                    or self._read_analysis_window(row) != reply["window"]):
+                raise SearchJobError("Remote reply binding changed")
+            old = self._read_remote_reply(row)
+            if old is not None:
+                if old != reply:
+                    raise SearchJobError("Remote reply is immutable")
+                return True
+            bound = dict(row)
+            bound["remote_reply_identity"] = self._remote_reply_identity(reply["admission_id"])
+            sealed = self._seal_search(reply, job_id, self._remote_reply_purpose(bound))
+            try:
+                db.execute("UPDATE history_analysis_jobs SET sealed_remote_reply=?,remote_reply_identity=? "
+                           "WHERE job_id=?", (sealed, bound["remote_reply_identity"], job_id))
+                if isinstance(reply["response"], dict):
+                    for index, raw in enumerate(_reply_chunks(response_text)):
+                        nonce = os.urandom(12)
+                        purpose = self._remote_reply_purpose(bound) + ":chunk:" + str(index)
+                        chunk = nonce + AESGCM(self._search_key(job_id)).encrypt(nonce,
+                            raw, self._search_aad(job_id, purpose))
+                        db.execute("INSERT INTO history_analysis_reply_chunks VALUES(?,?,?)", (job_id, index, chunk))
+            except sqlite3.IntegrityError as exc:
+                raise SearchJobError("Remote admission already belongs to another reply") from exc
+            return True
+
+    def fail_retained_reply(self, job_id, lease_token, subcode):
+        row = self._publication_row(job_id)
+        if row is None or self._read_remote_reply(row) is None:
+            return False
+        code = (_REMOTE_OUTPUT_FAILURE_CODES.get(subcode, "remote_output_invalid")
+                if isinstance(subcode, str) else "remote_output_invalid")
+        return self.fail_analysis(job_id, lease_token, code)
+
     def _publication_row(self, job_id):
         with self._connect() as db:
             return db.execute("SELECT * FROM history_analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -1009,6 +1175,11 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                 return False
             if self._read_analysis_window(row) != stage["window"]:
                 raise SearchJobError("Extraction does not match the queued window")
+            reply = self._read_remote_reply(row)
+            if reply is not None and (stage.get("admission_id") != reply["admission_id"]
+                    or stage["result"]["provider"] != "openrouter"
+                    or stage["result"]["model"] != json.loads(reply["response"]).get("model")):
+                raise SearchJobError("Extraction does not match retained response")
             if row["lane"] == 1:
                 provider = stage["result"]["provider"]
                 if not (provider == "ollama" and row["remote_dispatched"] == 0
@@ -1134,10 +1305,11 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
     def _recover_analysis(db, now):
         db.execute("UPDATE history_analysis_jobs SET state=CASE "
                    "WHEN publication_started=1 THEN 'publication_pending' "
-                   "WHEN cancel_requested=1 AND (remote_dispatched=0 OR sealed_extraction IS NOT NULL) THEN 'cancelled' "
+                   "WHEN cancel_requested=1 AND (remote_dispatched=0 OR sealed_extraction IS NOT NULL OR sealed_remote_reply IS NOT NULL) THEN 'cancelled' "
                    "WHEN sealed_extraction IS NOT NULL THEN 'retry' "
+                   "WHEN sealed_remote_reply IS NOT NULL THEN 'retry' "
                    "WHEN remote_dispatched=1 THEN 'outcome_unknown' ELSE 'retry' END,"
-                   "error_code=CASE WHEN remote_dispatched=1 AND sealed_extraction IS NULL THEN 'outcome_unknown' ELSE error_code END,"
+                   "error_code=CASE WHEN remote_dispatched=1 AND sealed_extraction IS NULL AND sealed_remote_reply IS NULL THEN 'outcome_unknown' ELSE error_code END,"
                    "lease_token=NULL,lease_until=NULL,due_at=0,updated_at=? "
                    "WHERE state IN ('running','publishing') AND lease_until IS NOT NULL AND lease_until<=?", (now, now))
 
@@ -1184,7 +1356,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
                     "SELECT * FROM history_analysis_jobs WHERE lane=1 AND lane<=? "
                     "AND state IN ('retry','publication_pending') AND due_at<=? "
                     "AND remote_policy_generation>0 AND (publication_started=1 OR "
-                    "sealed_extraction IS NOT NULL OR error_code='source_not_remote_safe') "
+                    "sealed_extraction IS NOT NULL OR sealed_remote_reply IS NOT NULL OR error_code='source_not_remote_safe') "
                     "ORDER BY created_at,job_id LIMIT 1", (maximum_lane, now)).fetchone()
             else:
                 row = db.execute(
@@ -1273,13 +1445,14 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
         code = code if code in _ANALYSIS_RETRY_CODES | _ANALYSIS_TERMINAL_CODES else "unknown"
         with self._connect() as db:
             row = db.execute(
-                "SELECT attempt,remote_dispatched,cancel_requested,sealed_extraction FROM history_analysis_jobs WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
+                "SELECT * FROM history_analysis_jobs WHERE job_id=? AND state='running' AND lease_token=? AND lease_until>?",
                 (job_id, token, now),
             ).fetchone()
             if not row:
                 return False
+            reply = self._read_remote_reply(row)
             state = (
-                "outcome_unknown" if row["remote_dispatched"] and row["sealed_extraction"] is None
+                "outcome_unknown" if row["remote_dispatched"] and row["sealed_extraction"] is None and reply is None
                 else "cancelled" if code == "cancelled" or row["cancel_requested"]
                 else "retry" if retry and code in _ANALYSIS_RETRY_CODES
                 else "failed"
@@ -1305,7 +1478,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
             if job_id in self._historical_batch_blocked_jobs(db):
                 return False
             cur = db.execute(
-                "UPDATE history_analysis_jobs SET cancel_requested=1,state=CASE WHEN remote_dispatched=1 AND sealed_extraction IS NULL AND state='running' THEN 'outcome_unknown' ELSE 'cancelled' END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND publication_started=0 AND state IN ('pending','retry','running')",
+                "UPDATE history_analysis_jobs SET cancel_requested=1,state=CASE WHEN remote_dispatched=1 AND sealed_extraction IS NULL AND sealed_remote_reply IS NULL AND state='running' THEN 'outcome_unknown' ELSE 'cancelled' END,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND publication_started=0 AND state IN ('pending','retry','running')",
                 (time.time(), job_id),
             )
             return cur.rowcount == 1

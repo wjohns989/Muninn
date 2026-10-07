@@ -1036,8 +1036,16 @@ class HistoryService:
         publishing = job.state == "publishing"
         try:
             from muninn.history.cited_analysis_source import CitedAnalysisSource
+            from muninn.history.secure_analysis import ModelOutputInvalid, replay_cited_reply
             source = await asyncio.to_thread(CitedAnalysisSource, self._require_secure_archive())
             stage = job.extraction
+            if stage is None and job.remote_reply is not None:
+                # A retained settled reply is local recovery, not new dispatch.
+                # Reauthenticate input/projection and the current parser contract.
+                outcome = await asyncio.to_thread(replay_cited_reply, source, job.window, job.remote_reply)
+                stage = outcome["extraction"]
+                if not await asyncio.to_thread(journal.stage_analysis, job.job_id, job.lease_token, stage):
+                    return True
             if stage is not None:
                 # The reply is already validated and encrypted. Recovery never
                 # redispatches inference, including an already charged ZDR call.
@@ -1115,6 +1123,18 @@ class HistoryService:
                     remote_was_not_sent = True
                 return cleared
 
+            async def retain_remote_reply(reply) -> bool:
+                # Drain the actual writer on cancellation; a sent reply must
+                # not be dropped while a background thread still owns its lease.
+                in_flight = asyncio.create_task(asyncio.to_thread(journal.retain_analysis_reply,
+                    job.job_id, job.lease_token, reply))
+                try:
+                    return await asyncio.shield(in_flight)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    await asyncio.gather(in_flight, return_exceptions=True)
+                    raise
+
             from muninn.history.auto_routing import remote_policy_snapshot
             from muninn.history.secure_analysis import analyze_cited_window
 
@@ -1191,6 +1211,8 @@ class HistoryService:
                 expected_remote_generation=remote_generation,
                 remote_gate=capture_remote_gate if job.lane == 1 else None,
             )
+            if remote_enabled:
+                analysis_kwargs["retain_remote_reply"] = retain_remote_reply
             if capture_remote_only and job.lane == 1 and not remote_enabled:
                 self._capture_drain.halt("remote_consent_revoked")
                 await asyncio.to_thread(journal.defer_analysis, job.job_id,
@@ -1258,6 +1280,14 @@ class HistoryService:
         except VaultIntegrityError:
             await asyncio.to_thread(journal.fail_publication if publishing else journal.fail_analysis, job.job_id,
                                     job.lease_token, "vault_integrity")
+        except ModelOutputInvalid as exc:
+            stopped = await asyncio.to_thread(journal.fail_retained_reply, job.job_id,
+                                              job.lease_token, exc.code)
+            if not stopped:
+                # Legacy/no-receipt dispatches still retain uncertainty. A
+                # typed exception alone is never proof that a paid reply exists.
+                await asyncio.to_thread(journal.fail_analysis, job.job_id,
+                                        job.lease_token, "snapshot_unavailable")
         except ValueError:
             await asyncio.to_thread(journal.fail_publication if publishing else journal.fail_analysis, job.job_id,
                                     job.lease_token, "snapshot_unavailable")
