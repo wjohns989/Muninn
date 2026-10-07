@@ -167,3 +167,30 @@ $50/month. Historical enrollment is complete, not interpreted coverage; current
 all-capture-lane counts were 3418 succeeded, 501 reused, 212 no-context, 128 pending,
 6942 privacy-parked and eight uncertain, separately from 6180 pending source
 versions. Total unplanned windows and overall completion percent remain unknown.
+
+Activation: candidate `aba2943` passed the existing guarded reload after idle
+durable workers and unclaimed publication checks. Seven new encrypted database
+preimages were validated; no in-flight/model work or CPU capture needed recovery.
+The existing service alone restarted as PID 73468, with strict archive ready,
+one process/listener, protected endpoints 200, anonymous protected endpoint 401,
+and no token in public HTML. Auto capture, automatic remote analysis and
+remote-only mode were preserved; user settings were not persisted or changed.
+The installed-profile/agent-context bridge passed 20 tools and transcript
+workflow exposure in 3.464 seconds. The same 60-request batch retained the exact
+before/after item/wire hashes and submitted provider identity. The new encrypted
+reply columns and chunk table are installed; all eight old uncertain jobs still
+have no reply and were not retried. The separate PowerShell parent 52128 / Python
+10840 remains genuinely alive at its hidden local passphrase prompt.
+
+Next full-goal dependency identified (not activated): general memory placement
+has a literal `classification_limit=1` lifetime pilot admission cap, with two
+consultation outcomes and 43 pending classification jobs at the inspected break.
+Continuing ambiguity work requires removing that pilot bottleneck while keeping
+serial paid-checkpoint identity/ACK gates, bounded eligible cohorts, source/time
+evidence, no retry of uncertain posts and existing spending policy. Independent
+review also identified that current dollar checks are admission thresholds, not
+per-request maximum-cost reservations; unlimited classification expansion is not
+approved by this receipt. No classification quota, budget, provider or privacy
+policy was changed in this activation. Current retained provider work and the
+local credential unlock remain outstanding; full installation/backlog completion
+is not claimed.
