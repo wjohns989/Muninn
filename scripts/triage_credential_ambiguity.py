@@ -30,6 +30,9 @@ from muninn.history.credential_review_source import CredentialReviewSource
 from muninn.history.credential_store import CredentialStore
 
 _PROGRESS_STAGES = {'zdr_readiness', 'waiting_for_remote_admission', 'awaiting_passphrase',
+                    'passphrase_received', 'opening_pre_backup_vault', 'validating_pre_backup',
+                    'opening_post_backup_vault', 'validating_post_backup', 'starting_review',
+                    'reading_triage_status',
                     'validated_pre_triage_backup', 'validated_post_triage_backup',
                     'review_page', 'source_context_prepare', 'local_context_review',
                     'zdr_context_review', 'remote_context_review', 'triage_status'}
@@ -88,7 +91,7 @@ def emit_progress(report, path=None):
                 safe[name] = value
             elif name == 'backup_state' and value == 'not_started':
                 safe[name] = value
-            elif (name in {'stage', 'backup_state'} and isinstance(value, str)
+            elif (name in {'stage', 'backup_state', 'failure_stage'} and isinstance(value, str)
                   and value in _PROGRESS_STAGES):
                 safe[name] = value
             elif name == 'error_category' and isinstance(value, str) and value in _PROGRESS_ERRORS:
@@ -490,8 +493,13 @@ def main() -> int:
                               'error_category': type(exc).__name__}), flush=True)
             return 2
     progress_failed = False
+    last_stage = None
     def emit(report):
-        nonlocal progress_failed
+        nonlocal progress_failed, last_stage
+        # Last operation entered, not an error diagnosis. Never retain free text.
+        stage = report.get('stage')
+        if isinstance(stage, str) and stage in _PROGRESS_STAGES:
+            last_stage = stage
         try:
             emit_progress(report, args.progress_log)
         except BaseException:
@@ -511,13 +519,17 @@ def main() -> int:
     try:
         emit({'stage': 'awaiting_passphrase', 'passphrase_needed': True})
         passphrase = getpass.getpass("Credential vault passphrase (hidden): ")
+        emit({'stage': 'passphrase_received', 'passphrase_needed': False})
         if args.backup_before is not None:
-            count = CredentialStore(args.root).backup(args.backup_before,
-                                                      passphrase=passphrase)
+            emit({'stage': 'opening_pre_backup_vault'})
+            backup_store = CredentialStore(args.root)
+            emit({'stage': 'validating_pre_backup'})
+            count = backup_store.backup(args.backup_before, passphrase=passphrase)
             backup_state = "validated_pre_triage_backup"
             emit({"stage": "validated_pre_triage_backup",
                               "credential_records": count,
                               "review_queue": CredentialStore(args.root).ambiguity_status()})
+        emit({'stage': 'starting_review'})
         review_source = (CredentialReviewSource(args.archive_root)
                          if args.archive_root is not None and args.model_limit else None)
         cursor = None
@@ -538,13 +550,16 @@ def main() -> int:
                 break
             cursor = report["next_cursor"]
         if args.backup_after is not None:
-            count = CredentialStore(args.root).backup(args.backup_after,
-                                                      passphrase=passphrase)
+            emit({'stage': 'opening_post_backup_vault'})
+            backup_store = CredentialStore(args.root)
+            emit({'stage': 'validating_post_backup'})
+            count = backup_store.backup(args.backup_after, passphrase=passphrase)
             backup_state = "validated_post_triage_backup"
             emit({"stage": "validated_post_triage_backup",
                               "credential_records": count,
                               "review_queue": CredentialStore(args.root).ambiguity_status()})
         if args.apply:
+            emit({'stage': 'reading_triage_status'})
             queue_status = CredentialStore(args.root).ambiguity_status()
             review_resolved = not any(queue_status.get(name, 0)
                                       for name in ("pending", "deferred"))
@@ -559,6 +574,8 @@ def main() -> int:
                           "backup_state": backup_state,
                           "post_backup_unavailable": args.backup_after is not None
                           and backup_state != "validated_post_triage_backup"}
+        if last_stage is not None:
+            failure['failure_stage'] = last_stage
         if isinstance(exc, httpx.HTTPStatusError):
             # The body, URL, headers and exception message may contain secrets.
             status = exc.response.status_code

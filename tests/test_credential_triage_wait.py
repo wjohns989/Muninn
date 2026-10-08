@@ -286,6 +286,7 @@ def test_prompt_failure_replaces_stale_input_status_without_private_text(tmp_pat
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert rows[0]['passphrase_needed'] is True
     assert rows[-1] == {'state': 'failed', 'error_category': error_name,
+                        'failure_stage': 'awaiting_passphrase',
                         'backup_state': 'not_started', 'passphrase_needed': False,
                         'post_backup_unavailable': False}
     assert 'synthetic-private-never-log' not in log.read_text() + output.getvalue()
@@ -314,7 +315,74 @@ def test_failed_progress_destination_is_not_retried_when_reporting_failure(tmp_p
     monkeypatch.setattr(runner, 'emit_progress', emit)
     monkeypatch.setattr(runner, 'run', run)
     assert runner.main() == 1
-    assert writes == ['awaiting_passphrase', 'review_page']
+    assert writes == ['awaiting_passphrase', 'passphrase_received', 'starting_review', 'review_page']
     final = json.loads(output.getvalue().splitlines()[-1])
     assert final['state'] == 'failed' and final['passphrase_needed'] is False
+    assert final['failure_stage'] == 'review_page'
     assert 'synthetic-private-never-log' not in output.getvalue()
+
+
+@pytest.mark.parametrize('operation,expected', [
+    ('constructor', 'opening_pre_backup_vault'),
+    ('backup', 'validating_pre_backup'),
+    ('source', 'starting_review'),
+    ('review', 'starting_review'),
+    ('post_backup', 'validating_post_backup'),
+])
+def test_failure_records_last_entered_operation_without_unlock_material(tmp_path, monkeypatch, operation, expected):
+    from muninn.history.credential_crypto import VaultIntegrityError
+    vault = tmp_path / 'vault'
+    vault.mkdir()
+    log = tmp_path / 'progress' / 'progress.jsonl'
+    output = TTY()
+    monkeypatch.setattr(sys, 'stdin', TTY())
+    monkeypatch.setattr(sys, 'stdout', output)
+    monkeypatch.setattr(sys, 'argv', ['triage', '--root', str(vault),
+        '--archive-root', str(vault), '--apply', '--backup-before', str(tmp_path / 'before'),
+        '--backup-after', str(tmp_path / 'after'), '--progress-log', str(log)])
+    monkeypatch.setattr(runner.getpass, 'getpass', lambda *args: 'synthetic-passphrase-never-log')
+    def fail():
+        raise VaultIntegrityError('synthetic-private-never-log')
+    class Store:
+        def __init__(self, root):
+            if operation == 'constructor':
+                fail()
+        def backup(self, destination, **kwargs):
+            if operation == 'backup' or (operation == 'post_backup' and destination.name == 'after'):
+                fail()
+            return 1
+        def ambiguity_status(self):
+            return {'pending': 0}
+    def source(*args):
+        if operation == 'source':
+            fail()
+        return None
+    def review(**kwargs):
+        if operation == 'review':
+            fail()
+        return {'groups_seen': 0, 'next_cursor': None, 'model_calls': 0,
+                'queue_counts': {'pending': 0}}
+    monkeypatch.setattr(runner, 'CredentialStore', Store)
+    monkeypatch.setattr(runner, 'CredentialReviewSource', source)
+    monkeypatch.setattr(runner, 'run', review)
+    assert runner.main() == 1
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert rows[-1]['failure_stage'] == expected
+    assert rows[-1]['passphrase_needed'] is False
+    assert rows[1] == {'stage': 'passphrase_received', 'passphrase_needed': False}
+    assert all(row.get('passphrase_needed') is not True for row in rows[1:])
+    assert rows[-1]['backup_state'] == ('validated_pre_triage_backup' if operation in {
+        'source', 'review', 'post_backup'} else 'not_started')
+    assert 'synthetic-private-never-log' not in log.read_text() + output.getvalue()
+    assert 'synthetic-passphrase-never-log' not in log.read_text() + output.getvalue()
+
+
+def test_failure_stage_progress_field_rejects_arbitrary_text(tmp_path):
+    from muninn.history.private_acl import create_private_directory, create_private_file
+    create_private_directory(tmp_path / 'progress')
+    log = tmp_path / 'progress' / 'progress.jsonl'
+    create_private_file(log)
+    runner.emit_progress({'state': 'failed', 'failure_stage': 'synthetic-private-never-log'}, log)
+    runner.emit_progress({'state': 'failed', 'failure_stage': 'validating_pre_backup'}, log)
+    assert [json.loads(line) for line in log.read_text().splitlines()] == [
+        {'state': 'failed'}, {'state': 'failed', 'failure_stage': 'validating_pre_backup'}]

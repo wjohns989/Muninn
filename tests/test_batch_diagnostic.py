@@ -223,6 +223,10 @@ def test_expired_watcher_does_not_even_get(tmp_path, monkeypatch):
     ident = store.prepare(parent, 1, retention, READY, request_body())
     record = store.read(ident)
     monkeypatch.setattr(cli, "_local_setting", lambda name: str(store.root) if name == "MUNINN_DATA_DIR" else str(store.archive.root))
+    # This isolated fixture has a known synthetic phrase. Do not assume Windows
+    # DPAPI is available to the Linux CI runner, or change the live unlock path.
+    monkeypatch.setattr(cli, "SecureHistoryArchive", lambda root:
+                        SecureHistoryArchive(root, "isolated synthetic recovery phrase"))
     monkeypatch.setattr(cli, "DiagnosticStore", lambda *_args: store)
     monkeypatch.setattr(cli.time, "time", lambda: record["created_at"] + 86401)
     async def never(*args, **kwargs):
