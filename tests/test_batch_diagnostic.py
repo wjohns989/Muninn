@@ -214,3 +214,18 @@ def test_fresh_usage_and_received_mismatch_never_retry(tmp_path):
     with pytest.raises((AdmissionError, BatchError)):
         asyncio.run(store.submit(ident, send, provider_status=lambda: READY))
     assert calls == ["POST"]
+
+
+def test_expired_watcher_does_not_even_get(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from scripts import probe_luna_batch as cli
+    store, _admission, parent, retention = setup(tmp_path)
+    ident = store.prepare(parent, 1, retention, READY, request_body())
+    record = store.read(ident)
+    monkeypatch.setattr(cli, "_local_setting", lambda name: str(store.root) if name == "MUNINN_DATA_DIR" else str(store.archive.root))
+    monkeypatch.setattr(cli, "DiagnosticStore", lambda *_args: store)
+    monkeypatch.setattr(cli.time, "time", lambda: record["created_at"] + 86401)
+    async def never(*args, **kwargs):
+        pytest.fail("No GET after watcher deadline")
+    monkeypatch.setattr(cli, "transport", never)
+    assert asyncio.run(cli.run(SimpleNamespace(status=None, poll=ident, watch=True))) == 2

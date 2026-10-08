@@ -48,10 +48,19 @@ GET `in_progress`, zero completed/failed at age 95.2 seconds. This proves receip
 acceptance and reachable polling only, NOT inference success, validated output,
 actual billing, or a size-dependent cause of the parent's delay.
 
-The bounded local watcher (tool session 78475) polls the exact stored ID every
+The bounded local watcher (initial tool session 78475, replaced by 41533 solely
+for the deadline correction) polls the exact stored ID every
 minute, stopping on terminal evidence/error or the 24-hour allowance. It never
 POSTs, switches providers or deletes retained evidence. `--status` is a local-only
 read for the existing ten-minute monitor. A lost POST receipt remains unknown
 and requires exact-ID recovery, not another submission. Until the diagnostic
 bill settles, the ordinary paid guard and owned-reload fence may continue to
 block dependent actions; no hold is falsely released to make a check green.
+
+Integration review CLEAR on result/accounting boundaries, with a minor watcher
+deadline overrun FLAG. The watcher now checks expiry before the first GET and
+after a deadline-capped sleep; the new expired-watch fixture forbids even GET.
+Final ten diagnostic checks passed in 4.45s. Only the verified owned GET watcher
+was replaced, never Muninn or a provider batch. Latest observed diagnostic
+`in_progress`, 0 completed/failed of 2, at 376.9 seconds. No actual bill or
+inference success is yet proved.

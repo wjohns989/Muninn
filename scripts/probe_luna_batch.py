@@ -30,6 +30,10 @@ async def run(args):
     if args.status:
         result = store.summary(store.read(args.status))
     elif args.poll:
+        if args.watch and time.time() >= store.read(args.poll)["created_at"] + 86400:
+            print(json.dumps({"stage": "diagnostic_deadline_reached", "diagnostic_id": args.poll,
+                "no_automatic_retry": True}), flush=True)
+            return 2
         result = await store.poll(args.poll, transport)
     else:
         parent = BatchOutbox(archive).read(args.submit_parent)
@@ -63,7 +67,9 @@ async def run(args):
         deadline = record["created_at"] + 86400
         previous = (result["provider_state"], result["completed"], result["failed"])
         while result["local_state"] != "terminal_saved" and time.time() < deadline:
-            await asyncio.sleep(60)
+            await asyncio.sleep(min(60, max(0, deadline - time.time())))
+            if time.time() >= deadline:
+                break
             result = await store.poll(args.poll, transport)
             current = (result["provider_state"], result["completed"], result["failed"])
             if current != previous or result["local_state"] == "terminal_saved":
