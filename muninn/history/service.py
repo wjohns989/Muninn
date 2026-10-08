@@ -179,8 +179,9 @@ class HistoryService:
         if not self._capture_enrichment_configured:
             archive = self._require_secure_archive()
             journal = self._require_capture_journal()
-            with archive._write_lock():
-                journal.configure_enrichment(archive._load_manifest()["generation"])
+            if not journal.enrichment_configuration_ready():
+                with archive._write_lock():
+                    journal.configure_enrichment(archive._load_manifest()["generation"])
             self._capture_enrichment_configured = True
         return True
 

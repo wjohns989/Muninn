@@ -96,3 +96,84 @@ def test_enabling_baseline_holds_archive_writer_lock(monkeypatch, tmp_path):
     assert observed == [archive._load_manifest()["generation"]]
     assert service._configure_capture_enrichment() is True
     assert len(observed) == 1
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="Windows archive lock regression")
+def test_restart_reuses_authenticated_watermark_while_backup_holds_archive_lock(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    service, archive, _source = setup_service(monkeypatch, tmp_path)
+    assert service._configure_capture_enrichment()
+    journal = service._require_capture_journal()
+    with journal._connect() as db:
+        before = (db.execute("SELECT sealed_config FROM capture_enrichment_control").fetchone()[0],
+                  db.execute("SELECT sealed_cursor FROM capture_enrichment_progress").fetchone()[0])
+    restarted = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                               archive_passphrase="test-only portable passphrase")
+    # Use a separate process: same-process thread-lock reentrancy must not hide
+    # the actual Windows file-lock contention observed on the installed host.
+    child = subprocess.Popen([sys.executable, "-c",
+        "import msvcrt,sys; f=open(sys.argv[1],'r+b'); "
+        "msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1); "
+        "print('locked',flush=True); sys.stdin.readline(); "
+        "f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1)",
+        str(archive._lock_path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "locked"
+        assert restarted._configure_capture_enrichment()
+        with journal._connect() as db:
+            after = (db.execute("SELECT sealed_config FROM capture_enrichment_control").fetchone()[0],
+                     db.execute("SELECT sealed_cursor FROM capture_enrichment_progress").fetchone()[0])
+        assert before == after
+    finally:
+        child.communicate(input="release\n", timeout=10)
+    assert child.returncode == 0
+
+
+def test_existing_watermark_integrity_failure_is_not_treated_as_lock_contention(monkeypatch, tmp_path):
+    from muninn.history.credential_crypto import VaultIntegrityError
+
+    service, archive, _source = setup_service(monkeypatch, tmp_path)
+    assert service._configure_capture_enrichment()
+    journal = service._require_capture_journal()
+    with journal._connect() as db:
+        db.execute("UPDATE capture_enrichment_control SET sealed_config=?", (b"not an authenticated baseline",))
+    restarted = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                               archive_passphrase="test-only portable passphrase")
+    with pytest.raises(VaultIntegrityError):
+        restarted._configure_capture_enrichment()
+    assert not restarted._capture_enrichment_configured
+
+
+@pytest.mark.parametrize("fault", ["progress_seal", "progress_missing", "rollback", "cursor",
+                                  "baseline_missing"])
+def test_restart_configuration_fails_closed_on_invalid_progress(monkeypatch, tmp_path, fault):
+    from muninn.history.credential_crypto import VaultIntegrityError
+
+    service, archive, source = setup_service(monkeypatch, tmp_path)
+    assert service._configure_capture_enrichment()
+    journal = service._require_capture_journal()
+    source.write_text("Synthetic local fixture", encoding="utf-8")
+    archive.archive_file(source, "codex")
+    with journal._connect() as db:
+        baseline = journal._enrichment_baseline(db)
+        generation = archive._load_manifest()["generation"]
+        if fault == "progress_seal":
+            db.execute("UPDATE capture_enrichment_progress SET sealed_cursor=?", (b"invalid",))
+        elif fault == "progress_missing":
+            db.execute("DELETE FROM capture_enrichment_progress")
+        elif fault == "baseline_missing":
+            db.execute("DELETE FROM capture_enrichment_control")
+        else:
+            cursor = {"format": 1, "after_generation": baseline,
+                      "through_generation": generation + 1 if fault == "rollback" else generation,
+                      "source_index": 999 if fault == "cursor" else 0, "version_index": 0}
+            db.execute("UPDATE capture_enrichment_progress SET sealed_cursor=?", (
+                journal._seal_search(cursor, "0" * 32, "capture-enrichment-progress-v1"),))
+    restarted = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                               archive_passphrase="test-only portable passphrase")
+    with pytest.raises(VaultIntegrityError):
+        restarted._configure_capture_enrichment()
+    assert not restarted._capture_enrichment_configured

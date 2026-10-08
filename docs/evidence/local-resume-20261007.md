@@ -331,3 +331,17 @@ process; earlier I/O counters showed over 239 GB of reads, not a stopped copy.
 The native independent reviewer cleared both consequential designs and actual
 diffs. Current source fixes await installation after the existing full-backup
 process completes; no repeated full backup or service restart is claimed here.
+
+## Startup lock repair
+
+The guarded 3f0f4cd reload verified seven encrypted database preimages, stopped
+only the owned service, then failed at startup: re-enabling an already sealed
+capture watermark unnecessarily acquired the archive writer lock held by the
+older full-backup process. No rollback or running service was claimed. The
+repair authenticates existing baseline and progress in one read snapshot,
+rejects missing/corrupt or future-generation fences, and validates pinned cursor
+positions. First initialization retains the archive writer lock. A separate
+Windows process holding the actual lock reproduced the old failure. Focused
+enrichment checks passed 31 cases, followed by all 11 service cases after the
+reviewer's missing-baseline and discriminating-fixture corrections. Independent
+source review cleared the corrected repair; live restoration follows this proof.

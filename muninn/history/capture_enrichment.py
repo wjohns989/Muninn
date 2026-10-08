@@ -61,6 +61,30 @@ class CaptureEnrichmentMixin(HistoricalEnrollmentMixin):
                 self._seal_search(cursor, _CONTROL_ID, "capture-enrichment-progress-v1"),))
         return starting_generation
 
+    def enrichment_configuration_ready(self):
+        """Authenticate the immutable restart fence without acquiring a writer.
+
+        Only initial enrollment requires exclusion of archive commits. Existing
+        sealed configuration and progress are read in one database snapshot;
+        neither may refer to a generation missing from the current archive.
+        """
+        with self._connect() as db:
+            db.execute("BEGIN")
+            baseline = self._enrichment_baseline(db)
+            if baseline is None:
+                if (db.execute("SELECT 1 FROM capture_enrichment_progress LIMIT 1").fetchone()
+                        or db.execute("SELECT 1 FROM capture_enrichment_sources LIMIT 1").fetchone()):
+                    raise VaultIntegrityError("Capture enrichment baseline is missing")
+                return False
+            _seal, cursor = self._enrichment_progress(db, baseline)
+            generation = self.archive._load_manifest()["generation"]
+            if baseline > generation or cursor["through_generation"] > generation:
+                raise VaultIntegrityError("Capture enrichment configuration exceeds archive generation")
+            if cursor["after_generation"] != cursor["through_generation"]:
+                self._validate_cursor_position(cursor, self.archive._load_manifest(
+                    generation=cursor["through_generation"]))
+        return True
+
     def _validate_enrichment_receipt(self, value):
         if (not isinstance(value, dict) or set(value) != _FIELDS
                 or value["vault_id"] != self.archive.vault_id
