@@ -4,9 +4,90 @@ import sqlite3
 
 import pytest
 
-from scripts.verify_history_backup_sections import verify_sections
+from scripts.verify_history_backup_sections import ReadOnlyContext, verify_sections
 from muninn.history.credential_crypto import VaultIntegrityError
 from tests.test_paid_history_recovery import paid_history
+
+
+def legacy_context_fixture(tmp_path):
+    from tests.test_credential_context import _fixture
+    from muninn.history.credential_context import CredentialContextStore
+    from muninn.history.secure_archive import SecureHistoryArchive
+
+    archive, entry = _fixture(tmp_path)
+    store = CredentialContextStore(archive)
+    store._parser_revision = 1
+    attempt = store.build_snapshot(entry, 0)
+    store.record_review(entry, 0, attempt, 0, 'a' * 64, 'deferred')
+    store._parser_revision = 2
+    attempt = store.build_snapshot(entry, 0)
+    store.record_review(entry, 0, attempt, 0, 'b' * 64, 'rejected')
+    bundle = tmp_path / 'bundle'
+    from muninn.history.private_acl import create_private_directory
+    create_private_directory(bundle)
+    archive.backup_to(bundle / 'history_secure_archive')
+    backup = SecureHistoryArchive(bundle / 'history_secure_archive')
+    for root in (archive.root, backup.root):
+        with sqlite3.connect(root / 'credential-context' / 'projections.sqlite3') as db:
+            db.execute('DROP TABLE context_remote_calls')
+    return archive, backup, bundle
+
+
+def test_legacy_context_witness_authenticates_without_changing_either_copy(tmp_path, monkeypatch):
+    archive, backup, bundle = legacy_context_fixture(tmp_path)
+    from muninn.history.credential_context import CredentialContextStore
+
+    def writer_forbidden(*args, **kwargs):
+        raise AssertionError('The witness must not initialize a disk writer')
+
+    monkeypatch.setattr(CredentialContextStore, '__init__', writer_forbidden)
+    before = fingerprint(archive.root), fingerprint(bundle)
+    report = ReadOnlyContext(backup).verify_with_source_witness(archive)
+    assert report == {'snapshots': 2, 'contexts': 4,
+                      'source_witness': 'matching_original_contents',
+                      'remote_receipts': 'schema_absent_unknown'}
+    assert (fingerprint(archive.root), fingerprint(bundle)) == before
+    # Generic verification must still reject an unexplained missing table.
+    with pytest.raises(sqlite3.OperationalError):
+        ReadOnlyContext(backup).verify_all()
+    report = verify_sections(bundle, ('credential_context',), legacy_context_source=archive.root)
+    assert report['credential_context']['contexts'] == 4
+    assert (fingerprint(archive.root), fingerprint(bundle)) == before
+
+
+@pytest.mark.parametrize('defect', ['same_database', 'schema', 'row', 'equal_corruption',
+                                  'equal_review_corruption', 'different_vault', 'different_key', 'modern_schema'])
+def test_legacy_context_witness_rejects_missing_or_corrupt_proof(tmp_path, defect):
+    from muninn.history.secure_archive import SecureHistoryArchive
+    from muninn.history.secure_projection_store import ProjectionIntegrityError
+
+    archive, backup, bundle = legacy_context_fixture(tmp_path)
+    if defect == 'same_database':
+        archive = backup
+    elif defect == 'different_vault':
+        archive = SecureHistoryArchive.create(tmp_path / 'other', 'synthetic recovery phrase')
+    elif defect == 'different_key':
+        archive._key = bytes(value ^ 1 for value in archive._key)
+    elif defect == 'schema':
+        with sqlite3.connect(backup.root / 'credential-context' / 'projections.sqlite3') as db:
+            db.execute('CREATE INDEX extra_review_index ON context_reviews(page)')
+    elif defect == 'modern_schema':
+        for root in (archive.root, backup.root):
+            with sqlite3.connect(root / 'credential-context' / 'projections.sqlite3') as db:
+                db.execute('CREATE TABLE context_remote_calls(attempt TEXT, page INTEGER, '
+                           'model_identity TEXT, ciphertext BLOB)')
+    else:
+        roots = (backup.root, archive.root) if defect.startswith('equal_') else (backup.root,)
+        table, column = ('context_reviews', 'page') if defect == 'equal_review_corruption' else ('pages', 'ordinal')
+        for root in roots:
+            with sqlite3.connect(root / 'credential-context' / 'projections.sqlite3') as db:
+                sealed = bytearray(db.execute(f'SELECT ciphertext FROM {table} WHERE {column}=0').fetchone()[0])
+                sealed[-1] ^= 1
+                db.execute(f'UPDATE {table} SET ciphertext=? WHERE {column}=0', (bytes(sealed),))
+    before = fingerprint(archive.root), fingerprint(bundle)
+    with pytest.raises(ProjectionIntegrityError):
+        ReadOnlyContext(backup).verify_with_source_witness(archive)
+    assert (fingerprint(archive.root), fingerprint(bundle)) == before
 
 
 def fingerprint(root):

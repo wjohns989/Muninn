@@ -24,6 +24,49 @@ def run_js(source, checks):
     assert result.returncode == 0, result.stderr.decode(errors="replace")
 
 
+def test_tab_changes_show_heading_without_resetting_same_tab_or_invalid_navigation():
+    source = function("function showTab(tabId)", "// Original log function")
+    run_js(source, r"""
+let overviewStatusSequence = 0;
+const AUTH_TOKEN = ''; const SECURITY_ENABLED = true;
+const HISTORY_SECURITY_MODE = 'strict';
+function element(active = false) {
+    const classes = new Set(active ? ['active'] : []);
+    return {classList: {contains: value => classes.has(value),
+        add: value => classes.add(value), remove: value => classes.delete(value)},
+        removeAttribute() {}, setAttribute() {}};
+}
+const tabs = {operations: element(true), history: element(), overview: element()};
+const nav = {operations: element(true), history: element(), overview: element()};
+const title = {innerText: ''};
+const main = {scrollTop: 1567};
+const document = {
+    getElementById(id) {return id === 'current-tab-name' ? title : tabs[id.slice(4)] || null;},
+    querySelectorAll(selector) {return Object.values(selector === '.tab-content' ? tabs : nav);},
+    querySelector(selector) {
+        if (selector === '.main-content') return main;
+        return nav[selector.match(/data-tab="([^"]+)"/)[1]];
+    }
+};
+showTab('history');
+assert.equal(main.scrollTop, 0, 'a different page must open at its heading');
+assert.equal(tabs.history.classList.contains('active'), true);
+assert.equal(title.innerText, 'History');
+main.scrollTop = 700;
+showTab('history');
+assert.equal(main.scrollTop, 700, 'same-page refresh must preserve reading position');
+const sequence = overviewStatusSequence;
+showTab('missing');
+assert.equal(main.scrollTop, 700);
+assert.equal(tabs.history.classList.contains('active'), true);
+assert.equal(title.innerText, 'History');
+assert.equal(overviewStatusSequence, sequence);
+showTab('operations');
+assert.equal(main.scrollTop, 0);
+assert.equal(title.innerText, 'Backlog & costs');
+""")
+
+
 def test_operating_view_has_distinct_units_enrollment_and_unknown_states():
     source = function("function operatingView(data)", "function renderOperatingStatus(data)")
     run_js(source, r"""
