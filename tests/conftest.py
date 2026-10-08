@@ -1,5 +1,28 @@
 """Explicit fixture for legacy transport tests; real accounting has its own tests."""
+import os
+
 import pytest
+
+
+@pytest.fixture(params=["portable_snapshot", "windows_unattended"])
+def recovery_copy(request, tmp_path):
+    """Keep portable recovery and actual Windows unattended backup distinct."""
+    backend = request.param
+    if backend == "windows_unattended" and os.name != "nt":
+        pytest.skip("Actual unattended backup requires Windows user protection")
+
+    def copy(archive, destination, passphrase, *, policy_root=None, on_staging=None):
+        if backend == "windows_unattended":
+            return archive.backup_to(destination, policy_root=policy_root, on_staging=on_staging)
+        if on_staging is not None:
+            raise ValueError("Portable recovery inputs do not prove unattended staging callbacks")
+        from tests.recovery_fixture import recovery_input
+
+        return recovery_input(archive, destination, passphrase,
+                              temporary_root=tmp_path, policy_root=policy_root)
+
+    copy.backend = backend
+    return copy
 
 
 @pytest.fixture

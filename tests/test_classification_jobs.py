@@ -169,7 +169,7 @@ def test_late_old_job_ack_and_duplicate_results_do_not_lose_or_multiply_work(tmp
     assert journal.verify_classifications() == 1
 
 
-def test_portable_recovery_preserves_staged_classification_without_dispatch(tmp_path, monkeypatch):
+def test_portable_recovery_preserves_staged_classification_without_dispatch(tmp_path, monkeypatch, recovery_copy):
     from muninn.history.secure_archive import SecureHistoryArchive
     journal, archive, refs = acknowledged(tmp_path)
     journal.discover_classifications()
@@ -179,7 +179,7 @@ def test_portable_recovery_preserves_staged_classification_without_dispatch(tmp_
     journal.mark_classification_dispatch(job["job_id"], job["lease"], "c" * 32, 1)
     monkeypatch.setattr("muninn.history.remote_accounting.settled_response", lambda *a, **k: True)
     journal.stage_classification(job["job_id"], job["lease"], reply(plan), model="synthetic-luna")
-    archive.backup_to(tmp_path / "backup")
+    recovery_copy(archive, tmp_path / "backup", "synthetic recovery passphrase")
     restored = SecureHistoryArchive.restore_from_backup(tmp_path / "backup", tmp_path / "restore", "synthetic recovery passphrase")
     reopened = CaptureJournal(restored, recover=False)
     assert reopened.classification_status() == {"staged": 1}
@@ -225,7 +225,7 @@ def test_backup_rejects_orphan_ledger_event_but_allows_commit_before_ack(tmp_pat
         journal.verify_classifications()
 
 
-def test_real_accounting_binding_survives_encrypted_portable_recovery(tmp_path, monkeypatch):
+def test_real_accounting_binding_survives_encrypted_portable_recovery(tmp_path, monkeypatch, recovery_copy):
     from muninn.history.remote_accounting import reserve, settled_response
     from muninn.history.secure_archive import SecureHistoryArchive
     from tests.test_remote_accounting import policy, READY
@@ -242,7 +242,7 @@ def test_real_accounting_binding_survives_encrypted_portable_recovery(tmp_path, 
     journal.mark_classification_dispatch(job["job_id"], job["lease"], admission.identifier, generation)
     assert admission.settle_response({"usage": {"cost": 0.003}})  # synthetic response, real local ledger
     journal.stage_classification(job["job_id"], job["lease"], reply(plan), model="synthetic-luna")
-    archive.backup_to(tmp_path / "backup")
+    recovery_copy(archive, tmp_path / "backup", "synthetic recovery passphrase")
     restored = SecureHistoryArchive.restore_from_backup(tmp_path / "backup", tmp_path / "restore", "synthetic recovery passphrase")
     root = restored.root.parent
     assert settled_response(root, admission.identifier, generation, require_unowned=True,
@@ -253,7 +253,7 @@ def test_real_accounting_binding_survives_encrypted_portable_recovery(tmp_path, 
     assert reopened.verify_classifications() == 1
 
 
-def test_operator_reconciled_unknown_retains_backup_without_publication_or_retry(tmp_path, monkeypatch):
+def test_operator_reconciled_unknown_retains_backup_without_publication_or_retry(tmp_path, monkeypatch, recovery_copy):
     from muninn.history.remote_accounting import reserve, _finish, settled_response
     from muninn.history.secure_archive import SecureHistoryArchive
     from tests.test_remote_accounting import policy, READY
@@ -276,7 +276,7 @@ def test_operator_reconciled_unknown_retains_backup_without_publication_or_retry
     assert journal.claim_classification(now=time.time() + 200) is None
     assert journal.classification_status() == {"outcome_unknown": 1}
     assert journal.verify_classifications() == 1
-    archive.backup_to(tmp_path / "backup")
+    recovery_copy(archive, tmp_path / "backup", "synthetic recovery passphrase")
     restored = SecureHistoryArchive.restore_from_backup(tmp_path / "backup", tmp_path / "restore", "synthetic recovery passphrase")
     reopened = CaptureJournal(restored, recover=False)
     assert reopened.verify_classifications() == 1

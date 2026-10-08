@@ -9,7 +9,22 @@ from muninn.history.credential_crypto import VaultIntegrityError
 from tests.test_paid_history_recovery import paid_history
 
 
-def legacy_context_fixture(tmp_path):
+@pytest.fixture
+def explicit_fixture_unlock(recovery_copy, monkeypatch):
+    """Portable library proof uses a real phrase; Windows CLI proof is unchanged."""
+    def unlock(phrase):
+        if recovery_copy.backend == 'portable_snapshot':
+            from scripts import verify_history_backup_sections as verifier
+            from muninn.history.secure_archive import SecureHistoryArchive
+
+            # Only this standalone verifier's constructor gets the fixture's
+            # explicit synthetic phrase. No DPAPI, key or verifier is mocked.
+            monkeypatch.setattr(verifier, 'SecureHistoryArchive',
+                                lambda path: SecureHistoryArchive(path, phrase))
+    return unlock
+
+
+def legacy_context_fixture(tmp_path, recovery_copy):
     from tests.test_credential_context import _fixture
     from muninn.history.credential_context import CredentialContextStore
     from muninn.history.secure_archive import SecureHistoryArchive
@@ -25,16 +40,18 @@ def legacy_context_fixture(tmp_path):
     bundle = tmp_path / 'bundle'
     from muninn.history.private_acl import create_private_directory
     create_private_directory(bundle)
-    archive.backup_to(bundle / 'history_secure_archive')
-    backup = SecureHistoryArchive(bundle / 'history_secure_archive')
+    recovery_copy(archive, bundle / 'history_secure_archive', 'synthetic portable recovery phrase')
+    backup = SecureHistoryArchive(bundle / 'history_secure_archive', 'synthetic portable recovery phrase')
     for root in (archive.root, backup.root):
         with sqlite3.connect(root / 'credential-context' / 'projections.sqlite3') as db:
             db.execute('DROP TABLE context_remote_calls')
     return archive, backup, bundle
 
 
-def test_legacy_context_witness_authenticates_without_changing_either_copy(tmp_path, monkeypatch):
-    archive, backup, bundle = legacy_context_fixture(tmp_path)
+def test_legacy_context_witness_authenticates_without_changing_either_copy(tmp_path, monkeypatch,
+                                                                       recovery_copy, explicit_fixture_unlock):
+    archive, backup, bundle = legacy_context_fixture(tmp_path, recovery_copy)
+    explicit_fixture_unlock('synthetic portable recovery phrase')
     from muninn.history.credential_context import CredentialContextStore
 
     def writer_forbidden(*args, **kwargs):
@@ -57,11 +74,11 @@ def test_legacy_context_witness_authenticates_without_changing_either_copy(tmp_p
 
 @pytest.mark.parametrize('defect', ['same_database', 'schema', 'row', 'equal_corruption',
                                   'equal_review_corruption', 'different_vault', 'different_key', 'modern_schema'])
-def test_legacy_context_witness_rejects_missing_or_corrupt_proof(tmp_path, defect):
+def test_legacy_context_witness_rejects_missing_or_corrupt_proof(tmp_path, defect, recovery_copy):
     from muninn.history.secure_archive import SecureHistoryArchive
     from muninn.history.secure_projection_store import ProjectionIntegrityError
 
-    archive, backup, bundle = legacy_context_fixture(tmp_path)
+    archive, backup, bundle = legacy_context_fixture(tmp_path, recovery_copy)
     if defect == 'same_database':
         archive = backup
     elif defect == 'different_vault':
@@ -96,7 +113,8 @@ def fingerprint(root):
 
 
 @pytest.mark.asyncio
-async def test_selected_backup_sections_keep_all_bytes_and_abandoned_stages(tmp_path, monkeypatch):
+async def test_selected_backup_sections_keep_all_bytes_and_abandoned_stages(tmp_path, monkeypatch,
+                                                                        recovery_copy, explicit_fixture_unlock):
     from muninn.history.capture_journal import CaptureJournal
 
     journal, archive, _outbox, _ident, _bindings = await paid_history(tmp_path)
@@ -104,7 +122,8 @@ async def test_selected_backup_sections_keep_all_bytes_and_abandoned_stages(tmp_
     source.write_text('isolated capture locator fixture', encoding='utf-8')
     assert journal.enqueue(source, 'codex', force=True) == 'queued'
     bundle = tmp_path / 'bundle'
-    archive.backup_to(bundle)
+    recovery_copy(archive, bundle, 'test-only portable passphrase')
+    explicit_fixture_unlock('test-only portable passphrase')
     database = bundle / 'history_secure_archive' / 'source-evidence' / 'projections.sqlite3'
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO attempts SELECT ?,vault,blob,sha,size,version,'building',count,digest,completion "
@@ -128,7 +147,8 @@ async def test_selected_backup_sections_keep_all_bytes_and_abandoned_stages(tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('defect', ['ciphertext', 'provider', 'source_key'])
-async def test_backup_capture_locators_still_authenticate_without_writer_init(tmp_path, monkeypatch, defect):
+async def test_backup_capture_locators_still_authenticate_without_writer_init(tmp_path, monkeypatch, defect,
+                                                                           recovery_copy, explicit_fixture_unlock):
     from muninn.history.capture_journal import CaptureJournal
 
     journal, archive, _outbox, _ident, _bindings = await paid_history(tmp_path)
@@ -136,7 +156,8 @@ async def test_backup_capture_locators_still_authenticate_without_writer_init(tm
     source.write_text('isolated capture locator fixture', encoding='utf-8')
     journal.enqueue(source, 'codex', force=True)
     bundle = tmp_path / 'bundle'
-    archive.backup_to(bundle)
+    recovery_copy(archive, bundle, 'test-only portable passphrase')
+    explicit_fixture_unlock('test-only portable passphrase')
     database = bundle / 'history_secure_archive' / 'capture-jobs.db'
     with sqlite3.connect(database) as db:
         if defect == 'ciphertext':
@@ -159,10 +180,11 @@ async def test_backup_capture_locators_still_authenticate_without_writer_init(tm
 
 
 @pytest.mark.asyncio
-async def test_invalid_section_has_no_backup_effects(tmp_path):
+async def test_invalid_section_has_no_backup_effects(tmp_path, recovery_copy, explicit_fixture_unlock):
     _journal, archive, _outbox, _ident, _bindings = await paid_history(tmp_path)
     bundle = tmp_path / 'bundle'
-    archive.backup_to(bundle)
+    recovery_copy(archive, bundle, 'test-only portable passphrase')
+    explicit_fixture_unlock('test-only portable passphrase')
     before = fingerprint(bundle)
     with pytest.raises(ValueError):
         verify_sections(bundle, ('unknown',))

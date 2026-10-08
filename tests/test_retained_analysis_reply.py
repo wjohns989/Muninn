@@ -240,7 +240,7 @@ async def test_real_worker_replays_after_restart_and_consent_revocation(tmp_path
 
 
 @pytest.mark.parametrize('oversized', [False, True])
-def test_portable_backup_restores_reply_and_accounting_without_remote_authority(tmp_path, oversized):
+def test_portable_backup_restores_reply_and_accounting_without_remote_authority(tmp_path, oversized, recovery_copy):
     from muninn.history.secure_archive import SecureHistoryArchive
     from muninn.history.auto_routing import remote_policy_snapshot
     journal, archive, job, source, reply = retained_fixture(tmp_path)
@@ -248,7 +248,7 @@ def test_portable_backup_restores_reply_and_accounting_without_remote_authority(
         reply['response'] += ' ' * 131073
     assert journal.retain_analysis_reply(job.job_id, job.lease_token, reply)
     expected = journal._read_remote_reply(journal._publication_row(job.job_id))
-    archive.backup_to(tmp_path / 'backup')
+    recovery_copy(archive, tmp_path / 'backup', 'synthetic recovery passphrase')
     restored = SecureHistoryArchive.restore_from_backup(tmp_path / 'backup', tmp_path / 'recovery',
                                                        'synthetic recovery passphrase')
     recovered_journal = CaptureJournal(restored, recover=False)

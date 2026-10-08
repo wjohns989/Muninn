@@ -78,13 +78,13 @@ def test_normal_cancellation_cannot_detach_owned_member(tmp_path, sent):
     assert journal.claim_analysis(include_capture=True) is None
 
 
-def test_portable_archive_restore_keeps_unsent_ownership_and_outbox(tmp_path):
+def test_portable_archive_restore_keeps_unsent_ownership_and_outbox(tmp_path, recovery_copy):
     from muninn.history.secure_archive import SecureHistoryArchive
 
     journal, archive, outbox, ident, _bindings = fixture(tmp_path)
     journal.reserve_historical_batch(ident)
     destination = tmp_path / "portable-backup"
-    report = archive.backup_to(destination)
+    report = recovery_copy(archive, destination, "test-only portable passphrase")
     assert report["historical_batches_verified"] == 1
     restored = SecureHistoryArchive.restore_from_backup(destination, tmp_path / "restored",
                                                        "test-only portable passphrase")

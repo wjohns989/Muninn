@@ -272,11 +272,11 @@ async def test_repaired_checkpoint_rejects_authenticated_cross_store_mismatch(tm
 
 
 @pytest.mark.asyncio
-async def test_passed_repair_checkpoint_verifies_after_portable_restore(tmp_path):
+async def test_passed_repair_checkpoint_verifies_after_portable_restore(tmp_path, recovery_copy):
     journal, archive, outbox, parent, bindings, _provider = await _completed_repair(tmp_path)
     other = tmp_path / "fresh-parent"
     other.mkdir()
-    archive.backup_to(other / "backup")
+    recovery_copy(archive, other / "backup", "test-only portable passphrase")
     restored = SecureHistoryArchive.restore_from_backup(
         other / "backup", other / "restored", "test-only portable passphrase",
     )

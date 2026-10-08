@@ -1,4 +1,5 @@
 """Paid publication recovery must not depend on the original runtime directory."""
+import os
 import sqlite3
 
 import pytest
@@ -26,7 +27,7 @@ async def paid_history(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_paid_archive_backup_and_restore_under_a_fresh_parent(tmp_path):
+async def test_paid_archive_backup_and_restore_under_a_fresh_parent(tmp_path, recovery_copy):
     from muninn.history.batch_activation import read_batch_policy
     from muninn.history.remote_accounting import AdmissionError, reserve, status
     from muninn.history.remote_policy import read_policy, write_policy
@@ -39,8 +40,10 @@ async def test_paid_archive_backup_and_restore_under_a_fresh_parent(tmp_path):
     other_machine.mkdir()
     backup = other_machine / "backup"
     announced = []
-    report = archive.backup_to(backup, on_staging=announced.append)
-    assert announced and announced[0].parent == other_machine
+    options = {"on_staging": announced.append} if recovery_copy.backend == "windows_unattended" else {}
+    report = recovery_copy(archive, backup, "test-only portable passphrase", **options)
+    if recovery_copy.backend == "windows_unattended":
+        assert announced and announced[0].parent == other_machine
     assert report["runtime_bundle"] == 1
     assert report["publication_receipts_verified"] == 2
     restored = SecureHistoryArchive.restore_from_backup(
@@ -68,14 +71,14 @@ async def test_paid_archive_backup_and_restore_under_a_fresh_parent(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("defect", ["missing_cipher", "tampered_cipher", "missing_marker"])
-async def test_runtime_restore_requires_authenticated_accounting(tmp_path, defect):
+async def test_runtime_restore_requires_authenticated_accounting(tmp_path, defect, recovery_copy):
     from muninn.history.credential_crypto import VaultIntegrityError
     from muninn.history.portable_accounting import MARKER, SNAPSHOT
     from muninn.history.private_acl import VaultPermissionError
 
     _journal, archive, _outbox, _ident, _bindings = await paid_history(tmp_path)
     backup = tmp_path / "backup"
-    archive.backup_to(backup)
+    recovery_copy(archive, backup, "test-only portable passphrase")
     snapshot = backup / "history_secure_archive" / SNAPSHOT
     if defect == "missing_cipher":
         snapshot.rename(snapshot.with_suffix(".retained"))
@@ -95,12 +98,12 @@ async def test_runtime_restore_requires_authenticated_accounting(tmp_path, defec
 
 
 @pytest.mark.asyncio
-async def test_plaintext_book_is_not_the_restore_authority(tmp_path):
+async def test_plaintext_book_is_not_the_restore_authority(tmp_path, recovery_copy):
     from muninn.history.remote_accounting import status
 
     _journal, archive, _outbox, _ident, _bindings = await paid_history(tmp_path)
     backup = tmp_path / "backup"
-    archive.backup_to(backup)
+    recovery_copy(archive, backup, "test-only portable passphrase")
     with sqlite3.connect(backup / "remote_policy" / "policy.sqlite3") as db:
         db.execute("UPDATE remote_admissions SET cost_micro=99999999")
         db.execute("UPDATE policy SET enabled=1")
@@ -113,12 +116,12 @@ async def test_plaintext_book_is_not_the_restore_authority(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_restored_runtime_can_be_backed_up_again(tmp_path):
+async def test_restored_runtime_can_be_backed_up_again(tmp_path, recovery_copy):
     _journal, archive, _outbox, _ident, bindings = await paid_history(tmp_path)
-    archive.backup_to(tmp_path / "first-backup")
+    recovery_copy(archive, tmp_path / "first-backup", "test-only portable passphrase")
     restored = SecureHistoryArchive.restore_from_backup(
         tmp_path / "first-backup", tmp_path / "first-restore", "test-only portable passphrase")
-    restored.backup_to(tmp_path / "second-backup")
+    recovery_copy(restored, tmp_path / "second-backup", "test-only portable passphrase")
     again = SecureHistoryArchive.restore_from_backup(
         tmp_path / "second-backup", tmp_path / "second-restore", "test-only portable passphrase")
     from muninn.history.capture_journal import CaptureJournal
@@ -152,6 +155,7 @@ async def test_batch_verification_requires_exact_paid_admission(tmp_path, phase,
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Actual unattended backup requires Windows user protection")
 async def test_corrupt_emitted_snapshot_is_not_published(tmp_path, monkeypatch):
     from muninn.history import portable_accounting
     from muninn.history.credential_crypto import VaultIntegrityError
@@ -172,6 +176,7 @@ async def test_corrupt_emitted_snapshot_is_not_published(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Actual unattended backup requires Windows user protection")
 async def test_unsupported_accounting_runtime_fails_before_copy(tmp_path, monkeypatch):
     from muninn.history import portable_accounting
     from muninn.history.credential_crypto import VaultIntegrityError
@@ -191,13 +196,36 @@ async def test_unsupported_accounting_runtime_fails_before_copy(tmp_path, monkey
     assert not list(tmp_path.glob(".unsupported-*.incomplete-*"))
 
 
-def test_legacy_archive_does_not_require_sqlite_serialization(tmp_path, monkeypatch):
+def test_legacy_archive_does_not_require_sqlite_serialization(tmp_path, monkeypatch, recovery_copy):
     from muninn.history import portable_accounting
     archive = SecureHistoryArchive.create(tmp_path / "archive", "test-only portable passphrase")
     def unavailable():
         raise AssertionError("Legacy path must not require serialization")
     monkeypatch.setattr(portable_accounting, "require_snapshot_support", unavailable)
-    archive.backup_to(tmp_path / "backup")
+    recovery_copy(archive, tmp_path / "backup", "test-only portable passphrase")
     restored = SecureHistoryArchive.restore_from_backup(tmp_path / "backup", tmp_path / "restore",
                                                        "test-only portable passphrase")
     assert restored.vault_id == archive.vault_id
+
+
+@pytest.mark.asyncio
+async def test_portable_runtime_restore_requires_serialization_before_any_copy(tmp_path, monkeypatch,
+                                                                            recovery_copy):
+    from muninn.history import portable_accounting
+    from muninn.history.credential_crypto import VaultIntegrityError
+
+    _journal, archive, _outbox, _ident, _bindings = await paid_history(tmp_path)
+    recovery_copy(archive, tmp_path / "backup", "test-only portable passphrase")
+
+    def unavailable():
+        raise VaultIntegrityError("SQLite serialization unavailable")
+
+    monkeypatch.setattr(portable_accounting, "require_snapshot_support", unavailable)
+    monkeypatch.setattr(SecureHistoryArchive, "_copy_archive_files",
+                        lambda *a, **kw: pytest.fail("Unsupported runtime copied archive files"))
+    destination = tmp_path / "unsupported-restore"
+    with pytest.raises(VaultIntegrityError, match="serialization unavailable"):
+        SecureHistoryArchive.restore_from_backup(tmp_path / "backup", destination,
+                                                "test-only portable passphrase")
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".unsupported-restore.incomplete-*"))

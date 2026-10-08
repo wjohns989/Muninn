@@ -118,7 +118,7 @@ def test_conflicts_remain_visible_for_consultation_without_supersession(tmp_path
     assert writer.get(refs[0])["truth_status"] == "model_inferred"
 
 
-def test_portable_archive_restore_keeps_placement_and_human_invalidation(tmp_path, monkeypatch):
+def test_portable_archive_restore_keeps_placement_and_human_invalidation(tmp_path, monkeypatch, recovery_copy):
     from muninn.history.capture_journal import CaptureJournal
     from muninn.history.secure_archive import SecureHistoryArchive
     from tests.test_classification_enrollment import cohort_ack
@@ -141,7 +141,7 @@ def test_portable_archive_restore_keeps_placement_and_human_invalidation(tmp_pat
     journal.publish_classification(job_id)
     writer.resolve_review(refs[1], state="filed", expected_state="provisional", reason="user_confirmed")
     expected = [writer.get(ref) for ref in refs]
-    writer.archive.backup_to(tmp_path / "backup")
+    recovery_copy(writer.archive, tmp_path / "backup", phrase)
     restored = SecureHistoryArchive.restore_from_backup(tmp_path / "backup", tmp_path / "restored", phrase)
     actual = MemoryLedger(restored, read_only=True)
     assert [actual.get(ref) for ref in refs] == expected

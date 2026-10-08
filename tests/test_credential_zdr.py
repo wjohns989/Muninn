@@ -278,17 +278,14 @@ def test_portable_restore_preserves_remote_receipt_without_another_post(tmp_path
     assert len(posts) == 1
 
 
-def test_independent_runtime_restore_reuses_paid_receipt_with_disabled_consent(tmp_path, monkeypatch):
-    import os
-
+def test_independent_runtime_restore_reuses_paid_receipt_with_disabled_consent(tmp_path, monkeypatch, recovery_copy):
     from muninn.history.auto_routing import remote_policy_snapshot
     from muninn.history.secure_archive import SecureHistoryArchive
-    if os.name != 'nt':
-        pytest.skip('unattended archive backup requires Windows protection')
     source, prepared, kwargs, posts = setup(tmp_path, monkeypatch)
     route.review_context(item(), source, prepared, 0, **kwargs)
     backup = tmp_path / 'runtime-backup'
-    assert source.contexts.archive.backup_to(backup, policy_root=kwargs['policy_root'])['runtime_bundle'] == 1
+    assert recovery_copy(source.contexts.archive, backup, 'synthetic portable recovery phrase',
+                         policy_root=kwargs['policy_root'])['runtime_bundle'] == 1
     restored_root = tmp_path / 'independent-runtime'
     restored = SecureHistoryArchive.restore_from_backup(
         backup, restored_root, 'synthetic portable recovery phrase')
