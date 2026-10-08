@@ -42,6 +42,8 @@ dependencies = [
     "python-multipart",
     "requests",
     "httpx>=0.24.0",
+    # Retained synthetic batch diagnostics validate the actual reply schema.
+    "jsonschema>=4.25.1",
     # Imported by muninn.extraction.vision_adapter on the core ingestion path
     "aiohttp>=3.9.0",
     # Legacy MCP SSE transport (muninn.mcp.sse), mounted by server.py

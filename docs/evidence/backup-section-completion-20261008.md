@@ -41,7 +41,8 @@ acceptance, live interpretation completion and upstream promotion remain open.
 
 Independent integration review cleared no-replace publication of the exact
 unchanged stage. Publication succeeded to
-`C:/Users/wjohn/muninn_backups/history-runtime-full-20261007-classification-10e0ae5`:
+`C:/Users/user/muninn_backups/history-runtime-full-20261007-classification-10e0ae5`
+(public account placeholder):
 10,711 files, 40,296,599,306 bytes, 7,256 snapshot versions, zero deleted files.
 The scope and unknown historical remote-receipt limitation were preserved.
 

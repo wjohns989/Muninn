@@ -284,7 +284,7 @@ was made. Recovery-copy accumulation, not code worktrees, is the material storag
 efficiency issue; a deduplicated backup design is not installed by this audit.
 
 The full encrypted runtime backup to
-`C:\Users\wjohn\muninn_backups\history-runtime-full-20261007-classification-10e0ae5`
+`C:\Users\user\muninn_backups\history-runtime-full-20261007-classification-10e0ae5`
 is still running/validating, with its incomplete stage preserved. This receipt
 does not assert its publication, completion or cross-machine restore. The backup
 excludes the separately protected credential vault and environment configuration.
@@ -469,7 +469,7 @@ on PATH. The official Restic 0.19.1 Windows AMD64 ZIP and SHA256SUMS were checke
 against pinned release digests. The extracted binary SHA-256 is
 `b0dd1fd21eea5d8fe1325f55f7118213c21f36de8a261e04c0624a5ab9fd7830`.
 It is owner-private at
-`C:\Users\wjohn\AppData\Local\Muninn\tools\restic\0.19.1\restic.exe`,
+`C:\Users\user\AppData\Local\Muninn\tools\restic\0.19.1\restic.exe`,
 not on PATH/startup. No PGP-signature verification claim is made. The adapter
 rechecks the pinned executable hash before use.
 

@@ -91,11 +91,11 @@ def test_cancellation_after_projection_prevents_admission(tmp_path):
 
 def test_private_path_and_adjacent_values_not_retained(tmp_path):
     _, source, cap = fixture(tmp_path,
-        'Keep orbital caching.\nC:\\Users\\fixture-user\\secret.env\nTOKEN=short-value\nKeep SQLite.')
+        'Keep orbital caching.\nC:\\Users\\user\\synthetic-private\\secret.env\nTOKEN=short-value\nKeep SQLite.')
     descriptor = source.prepare(cap)
     window = CitedZDRProjection(source, descriptor).remote_input(descriptor)
     assert window is not None
-    assert 'fixture-user' not in window['text'] and 'short-value' not in window['text']
+    assert 'synthetic-private' not in window['text'] and 'short-value' not in window['text']
     assert 'Keep SQLite.' in window['text']
 
 

@@ -17,7 +17,7 @@ def mapped(chunks):
     'token: "escaped \\" quoted private value"\nPublic decision.',
     'API_KEY=is another-value; status stored.',
     'API_KEY="unterminated value stays private',
-    'Visit C:\\Users\\synthetic\\project and user@example.invalid.',
+    'Visit C:\\Users\\user\\synthetic-project and user@example.invalid.',
     'literal [REDACTED_SENSITIVE_VALUE] text.',
     'A' * 10000 + '\nEnd of a long opaque value.',
 ])

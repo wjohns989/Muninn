@@ -38,9 +38,9 @@ database recovery, not proof that historical application versions can run today.
 Run bounded compaction from the canonical repository:
 
 ```powershell
-& 'C:\Users\wjohn\miniconda3\python.exe' -B -m scripts.compact_restart_recovery compact `
-  --archive-root 'C:\Users\wjohn\muninn_mcp\.muninn_runtime\history_secure_archive' `
-  --pool-root 'C:\Users\wjohn\muninn_backups\restart-recovery-pool-v1' `
+& 'C:\Users\user\miniconda3\python.exe' -B -m scripts.compact_restart_recovery compact `
+  --archive-root 'C:\Users\user\muninn_mcp\.muninn_runtime\history_secure_archive' `
+  --pool-root 'C:\Users\user\muninn_backups\restart-recovery-pool-v1' `
   --keep-full 4 --limit 1 --retire
 ```
 
@@ -48,8 +48,8 @@ Restore a selected compacted DB to a new directory; the recovery passphrase is
 prompted locally, never sent to an agent:
 
 ```powershell
-& 'C:\Users\wjohn\miniconda3\python.exe' -B -m scripts.compact_restart_recovery restore `
-  --pool-root 'C:\Users\wjohn\muninn_backups\restart-recovery-pool-v1' `
+& 'C:\Users\user\miniconda3\python.exe' -B -m scripts.compact_restart_recovery restore `
+  --pool-root 'C:\Users\user\muninn_backups\restart-recovery-pool-v1' `
   --snapshot-id '<original restart folder name>' `
   --destination '<new empty recovery destination>'
 ```

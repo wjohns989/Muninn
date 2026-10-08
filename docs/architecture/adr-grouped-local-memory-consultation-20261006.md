@@ -41,11 +41,11 @@ The preimage depends on the archive key/source and is not a portable full backup
 Run only when ready to review actual candidates. No model call is made:
 
 ```powershell
-Set-Location -LiteralPath 'C:\Users\wjohn\muninn_mcp'
-& 'C:\Users\wjohn\miniconda3\python.exe' -B -m muninn.cli memories triage `
-  --archive-root 'C:\Users\wjohn\muninn_mcp\.muninn_runtime\history_secure_archive' `
+Set-Location -LiteralPath 'C:\Users\user\muninn_mcp'
+& 'C:\Users\user\miniconda3\python.exe' -B -m muninn.cli memories triage `
+  --archive-root 'C:\Users\user\muninn_mcp\.muninn_runtime\history_secure_archive' `
   --limit 6 `
-  --backup-before 'C:\Users\wjohn\muninn_backups\memory-review-20261006-first'
+  --backup-before 'C:\Users\user\muninn_backups\memory-review-20261006-first'
 ```
 
 Use a fresh destination under a private existing backup parent. An existing
