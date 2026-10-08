@@ -113,6 +113,10 @@ class RecoveryPool:
             raise VaultIntegrityError("Recovery pool belongs to another archive")
         self._key = hmac.digest(self.anchor._key, b"muninn-recovery-pool-aead-v1", "sha256")
         self._ids = hmac.digest(self.anchor._key, b"muninn-recovery-pool-address-v1", "sha256")
+        self.snapshots = unlinked(self.root / "snapshots")
+        if not self.snapshots.exists():
+            create_private_directory(self.snapshots)
+        verify_private(self.snapshots)
 
     def _aad(self, purpose, identity):
         return ("muninn-recovery-pool-v1\0" + self.anchor.vault_id + "\0" + purpose + "\0" + identity).encode()
@@ -186,6 +190,51 @@ class RecoveryPool:
             raise VaultIntegrityError("Recovered preimage bytes differ")
         integrity(target)
 
+    def _central_manifest(self, marker, snapshot):
+        manifest = self._read_manifest(marker, snapshot)
+        central = self.snapshots / (snapshot + ".enc")
+        raw = marker.read_bytes()
+        if central.exists():
+            private_file(central)
+            if central.read_bytes() != raw:
+                raise VaultIntegrityError("Central recovery manifest conflicts")
+        else:
+            self._publish(central, raw)
+        if self._read_manifest(central, snapshot) != manifest:
+            raise VaultIntegrityError("Central recovery manifest differs")
+        return manifest
+
+    def backfill_manifests(self, archive):
+        """Close portable references for already retired, verified old copies.
+
+        Validate each unique ciphertext chunk once, without rewriting chunks or
+        replaying SQLite validation for byte-identical retained snapshot data.
+        Call only after the previous compaction process has completed.
+        """
+        parent = unlinked(archive.root / "operator-preimages")
+        seen = set()
+        count = 0
+        with self.anchor._write_lock():
+            for snapshot in sorted(parent.iterdir()):
+                if not _SNAPSHOT.fullmatch(snapshot.name):
+                    continue
+                snapshot = self._snapshot(archive, snapshot)
+                marker = snapshot / MARKER
+                # Never grant a completed-copy claim to a prepared/incomplete
+                # marker whose original DB is still present.
+                if not marker.exists() or (snapshot / RELATIVE).exists():
+                    continue
+                manifest = self._read_manifest(marker, snapshot.name)
+                for identity, length in manifest["chunks"]:
+                    if (identity, length) not in seen:
+                        self._chunk(identity, length)
+                        seen.add((identity, length))
+                self._central_manifest(marker, snapshot.name)
+                count += 1
+            for directory in (self.root, self.root / "chunks", self.snapshots):
+                durability_barrier(directory)
+        return {"central_manifests": count, "unique_chunks_authenticated": len(seen)}
+
     def _snapshot(self, archive, snapshot):
         path = unlinked(snapshot)
         expected = unlinked(archive.root / "operator-preimages")
@@ -234,6 +283,7 @@ class RecoveryPool:
                 self._publish(marker, self._seal("manifest", snapshot.name,
                     json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()))
                 manifest = self._read_manifest(marker, snapshot.name)
+            manifest = self._central_manifest(marker, snapshot.name)
             if on_stage:
                 on_stage("manifest_published")
             proof = snapshot / (".recovery-proof-" + uuid.uuid4().hex + ".sqlite3")
@@ -248,7 +298,8 @@ class RecoveryPool:
             if retire and fingerprint is not None:
                 # Also cover a Linux retry after rename succeeded but fsync
                 # failed: existing markers/chunks must not bypass durability.
-                for directory in (self.root / "key-anchor", self.root, self.root / "chunks", snapshot):
+                for directory in (self.root / "key-anchor", self.root, self.root / "chunks",
+                                  self.snapshots, snapshot):
                     durability_barrier(directory)
                 if private_file(source) != fingerprint:
                     raise VaultIntegrityError("Preimage changed before retirement")
@@ -271,6 +322,15 @@ class RecoveryPool:
         snapshot = unlinked(snapshot)
         verify_private(snapshot)
         manifest = self._read_manifest(snapshot / MARKER, snapshot.name)
+        return self._restore_manifest(manifest, destination)
+
+    def restore_id(self, snapshot_id, destination):
+        if not isinstance(snapshot_id, str) or not _SNAPSHOT.fullmatch(snapshot_id):
+            raise VaultIntegrityError("Invalid restart snapshot identity")
+        manifest = self._read_manifest(self.snapshots / (snapshot_id + ".enc"), snapshot_id)
+        return self._restore_manifest(manifest, destination)
+
+    def _restore_manifest(self, manifest, destination):
         destination = unlinked(destination)
         if destination.exists():
             raise FileExistsError("Recovery destination must be new")
@@ -279,4 +339,4 @@ class RecoveryPool:
         create_private_directory(staging / "source-evidence")
         self._reconstruct(manifest, staging / RELATIVE)
         durable_publish(staging, destination)
-        return {"snapshot": snapshot.name, "bytes": manifest["size"], "recovery_verified": True}
+        return {"snapshot": manifest["snapshot"], "bytes": manifest["size"], "recovery_verified": True}

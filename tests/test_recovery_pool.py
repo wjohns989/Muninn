@@ -166,3 +166,44 @@ def test_existing_manifest_retry_requires_retirement_barrier(tmp_path, monkeypat
     assert (first / RELATIVE).exists()
     monkeypatch.setattr(recovery_pool, "durability_barrier", barrier)
     assert pool.pack(archive, first, retire=True)["retired_bytes"] > 0
+
+
+def test_central_only_portable_restore_without_original_directory(tmp_path):
+    archive, parent, pool = fixture(tmp_path)
+    first = snapshot(parent, 1)
+    original = (first / RELATIVE).read_bytes()
+    pool.pack(archive, first, retire=True)
+    identity = first.name
+    first.rename(parent / "unavailable-original-directory")
+    portable = RecoveryPool(pool.root, passphrase="synthetic recovery passphrase")
+    portable.restore_id(identity, tmp_path / "central-restored")
+    assert (tmp_path / "central-restored" / RELATIVE).read_bytes() == original
+
+
+def test_backfill_exact_bytes_retry_and_conflicting_central_marker(tmp_path):
+    archive, parent, pool = fixture(tmp_path)
+    first = snapshot(parent, 1)
+    pool.pack(archive, first, retire=True)
+    central = pool.snapshots / (first.name + ".enc")
+    central.unlink()  # Simulate an older pool that had only per-folder markers.
+    raw = (first / MARKER).read_bytes()
+    assert pool.backfill_manifests(archive)["central_manifests"] == 1
+    assert central.read_bytes() == raw
+    assert pool.backfill_manifests(archive)["central_manifests"] == 1
+    central.write_bytes(b"conflicting synthetic marker")
+    with pytest.raises(VaultIntegrityError, match="conflicts"):
+        pool.backfill_manifests(archive)
+
+
+def test_central_publication_failure_preserves_original(tmp_path, monkeypatch):
+    archive, parent, pool = fixture(tmp_path)
+    first = snapshot(parent, 1)
+    publish = pool._publish
+    def denied(target, data):
+        if target.parent == pool.snapshots:
+            raise OSError("synthetic central publication failure")
+        return publish(target, data)
+    monkeypatch.setattr(pool, "_publish", denied)
+    with pytest.raises(OSError):
+        pool.pack(archive, first, retire=True)
+    assert (first / RELATIVE).exists()

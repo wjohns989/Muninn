@@ -18,13 +18,15 @@ growth bounded after the initial backlog is compacted; full runtime backups are
 still standalone and are not automatically thinned or expired.
 
 The pool stores independently authenticated encrypted 1 MiB chunks once.
-Each original restart folder retains its own authenticated encrypted manifest.
+Each original restart folder retains its own authenticated encrypted manifest;
+the pool retains an identical central manifest as well, so it can recover the
+packed database without the original runtime folder.
 Original database bytes are retired only after reconstructing the complete
 database, checking its SHA-256, SQLite integrity, and the unchanged original.
 Interrupted work leaves an original or a complete recoverable pool reference.
 
-Compacted restart folders are **not self-contained backups**. Preserve the pool
-along with all restart manifests. Four recent full preimages and separately
+Compacted restart folders are **not self-contained backups**. Preserve the pool,
+including its key anchor, chunks and central snapshot manifests. Four recent full preimages and separately
 validated full backups remain independent recovery paths. This is byte-preserving
 database recovery, not proof that historical application versions can run today.
 
@@ -43,7 +45,7 @@ prompted locally, never sent to an agent:
 ```powershell
 & 'C:\Users\wjohn\miniconda3\python.exe' -B -m scripts.compact_restart_recovery restore `
   --pool-root 'C:\Users\wjohn\muninn_backups\restart-recovery-pool-v1' `
-  --snapshot '<absolute original restart folder>' `
+  --snapshot-id '<original restart folder name>' `
   --destination '<new empty recovery destination>'
 ```
 
@@ -51,3 +53,9 @@ Do not copy a recovered DB into a running service. Restore other retained
 preimage files using the normal operator recovery procedure. Do not remove
 original full history backups merely because newer archives exist: they may
 contain unique legacy memory stores or policy recovery files.
+
+The initial migration predates central manifests. After that process finishes,
+`backfill --archive-root <root> --pool-root <pool>` authenticates each retained
+unique chunk and durably copies the existing encrypted manifests centrally.
+It rewrites neither database bytes nor chunks. Do not overlap backfill with an
+older compactor that does not yet know the central-manifest protocol.

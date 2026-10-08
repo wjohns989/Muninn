@@ -21,10 +21,11 @@ def eligible_snapshots(archive, keep_full=4, excluded=()):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("compact", "restore"))
+    parser.add_argument("action", choices=("compact", "restore", "backfill"))
     parser.add_argument("--pool-root", type=Path, required=True)
     parser.add_argument("--archive-root", type=Path)
     parser.add_argument("--snapshot", type=Path)
+    parser.add_argument("--snapshot-id")
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--keep-full", type=int, default=4)
     parser.add_argument("--limit", type=int, default=1)
@@ -43,16 +44,21 @@ def main():
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
     if args.action == "restore":
-        if not args.snapshot or not args.destination:
-            parser.error("restore requires snapshot and new destination")
+        if not args.destination or bool(args.snapshot) == bool(args.snapshot_id):
+            parser.error("restore requires snapshot OR snapshot-id and a new destination")
         pool = RecoveryPool(args.pool_root, passphrase=getpass.getpass("History recovery passphrase (hidden): "))
-        emit(pool.restore(args.snapshot, args.destination))
+        emit(pool.restore_id(args.snapshot_id, args.destination) if args.snapshot_id else
+             pool.restore(args.snapshot, args.destination))
         return
     if not args.archive_root or args.keep_full < 4 or args.limit < 1:
         parser.error("compact requires archive-root, keep-full >= 4, limit >= 1")
     if any(not _SNAPSHOT.fullmatch(item) for item in args.exclude_snapshot):
         parser.error("excluded snapshot identity is invalid")
     archive = SecureHistoryArchive(unlinked(args.archive_root))
+    if args.action == "backfill":
+        pool = RecoveryPool(args.pool_root, archive=archive)
+        emit({"stage": "backfill_complete", **pool.backfill_manifests(archive)})
+        return
     candidates = eligible_snapshots(archive, args.keep_full, args.exclude_snapshot)
     if args.snapshot:
         candidates = [p for p in candidates if p == unlinked(args.snapshot)]
