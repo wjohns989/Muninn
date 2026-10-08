@@ -345,3 +345,65 @@ Windows process holding the actual lock reproduced the old failure. Focused
 enrichment checks passed 31 cases, followed by all 11 service cases after the
 reviewer's missing-baseline and discriminating-fixture corrections. Independent
 source review cleared the corrected repair; live restoration follows this proof.
+
+## Safe duplicate recovery-copy cleanup completed
+
+W explicitly authorized safe duplicate storage cleanup on October 7. The owned
+service was restored as PID 67212 on the single original loopback listener
+42069, using the canonical `.muninn_runtime` and exact Miniconda interpreter.
+Final read-only checks returned health/authenticated history 200, anonymous
+protected endpoint 401, no auth token in public HTML, strict archive ready,
+and automatic remote-only processing preserved. The same 60-request paid
+checkpoint remained awaiting its provider; this cleanup dispatched no models.
+
+The dominant restart-preimage source-evidence copies were converted to a private,
+portable encrypted chunk pool, not deleted by age. Each of 53 older original
+databases was fully reconstructed, matched by SHA-256, checked with SQLite
+integrity_check, and checked against its unchanged original before retirement.
+Two initial copies and 51 subsequent copies completed; zero eligible copies
+remain. Every snapshot identity/local encrypted manifest remains. Backfill then
+authenticated 8,079 unique encrypted chunks and durably retained all 53 central
+manifests, allowing pool-only DB restoration without the runtime folder.
+
+Original DB bytes retired: 122,621,526,016. Entire pool including key anchor,
+chunks, central manifests and logs: 8,462,964,875 bytes. Retained per-folder
+manifests: 9,020,020 bytes. Net file-data reduction: about 106.310 GiB. The
+operator-preimage namespace now measures 19.315 GiB; the pool measures 7.882 GiB.
+This is byte-accounted reduction, not a claimed isolated C: free-space delta
+amid other concurrent activity. No disposable recovery-proof DB remains.
+
+The newest four full restart source-evidence copies were protected. All 12
+existing historical-batches.db files, including eight in the subsequently
+compacted directories, have unchanged pre/post SHA-256 hashes. Capture journals,
+other databases, logs/flags, archive manifests/blobs/unfinished forensic copies,
+credential vaults, full backups, rehearsal folders and code worktrees were not
+retired. Independent examination confirmed the completed receipts, 53 central
+and local markers, and latest-four presence; parent performed byte-hash and
+runtime authentication checks. No cross-machine live restore was claimed.
+
+Focused pool proof passed 14 synthetic cases including portable passphrase
+unlock, exact DB recovery, central-only restore with the original folder absent,
+tamper/missing-chunk rejection, interrupted retirement, changed-original refusal,
+newest-four protection, batch-neighbor preservation, durable-publication failure
+and exact/idempotent central backfill. The prior combined pool/lifecycle run
+had 103 passing cases and four existing lifecycle mocks needed adaptation for
+the additional maintenance child; all 16 affected lifecycle cases then passed.
+Native independent reviews cleared design, actual diffs and final metadata.
+
+Future verified owned reloads launch one bounded old-copy compaction, excluding
+their exact newly created preimage as well as preserving four full copies. The
+hidden helper inherits no service/provider credentials, uses the exact interpreter
+and repo without a shell, logs privately, and cannot reverse successful restart
+status on maintenance launch failure. Both minimal-environment module import
+and read-only actual pool unlock were checked with exit 0.
+
+The separate full encrypted runtime backup remains under validation as PID
+75332/session 61006. It retains its older archive-lock scope; recent capture
+retries therefore do not imply the full backup finished or the capture backlog
+is complete. Its stage and older standalone recovery backups were preserved;
+no claim that they are redundant/safe to prune is made. The credential hidden-
+passphrase worker PID 10840 also remains unchanged. No GitHub push was performed.
+
+Implementation: local commits be5b088 (startup fence), 2742cf9 (incremental pool
+and bounded maintenance), and bde9f79 (central portable references). Operator
+instructions are in `docs/operations/incremental-restart-recovery.md`.
