@@ -1159,6 +1159,10 @@ select.input-base {
 .status-list dt { font-weight: 600; font-size: 0.87rem; color: #d9d4ef; }
 .status-list dd { font-size: 0.87rem; color: var(--text-muted); line-height: 1.65; overflow-wrap: anywhere; }
 .operator-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 1.2rem; }
+.triage-attention { border: 2px solid #e9b75d; border-radius: 12px; background: #292116; padding: 1.2rem; margin-bottom: 1.5rem; overflow-wrap: anywhere; }
+.triage-attention[hidden] { display: none; }
+.triage-attention h2 { color: #ffdc98; margin: 0 0 0.6rem; font-size: 1.2rem; }
+.triage-attention p { color: #fff4de; line-height: 1.6; margin-bottom: 0.8rem; }
 .status-note { border-left: 3px solid #ab925b; padding: 0.8rem 1rem; color: #e0d9c8;
     background: #25221b; line-height: 1.6; margin: 1rem 0; }
 .overview-status-text { line-height: 1.65; }

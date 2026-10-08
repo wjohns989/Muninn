@@ -220,11 +220,13 @@ let api = async (path, method) => {calls++; assert.equal(path, '/history/secure/
 
 def test_lock_clears_private_dom_capabilities_and_pollers():
     source = function("function lockSession()", "function startStatusPolling()")
+    source += function("function renderCredentialTriageStatus", "async function loadCredentialTriageStatus")
     run_js(source, r"""
 let AUTH_TOKEN = 'fixture'; let sessionEpoch = 0; let authAttemptSequence = 0;
 let historySearchSequence = 0, historyTranscriptSequence = 0, historyStatusSequence = 0;
 let overviewStatusSequence = 0, operatingStatusSequence = 0, operatingCostSequence = 0;
 let remotePolicyLoadSequence = 0, resourceStatusSequence = 0, credentialSearchSequence = 0;
+let triageStatusSequence = 0;
 let healthStatusSequence = 0, scanStatusSequence = 0;
 let historySearchJobId = 'private-capability'; let historyTranscriptNextCursor = 'private-cursor';
 let historyTranscriptPageNumber = 5, remotePolicyLoadedEnabled = true, remotePolicySavePending = true;
@@ -252,6 +254,9 @@ assert.equal(nodes.get('modal-token-input').value, '');
 assert.equal(nodes.get('stat-total').textContent, 'Unknown');
 assert.equal(nodes.get('ingest-badge').textContent, '');
 assert.equal(nodes.get('ingest-badge').style.display, 'none');
+assert.equal(triageStatusSequence, 1);
+assert.equal(nodes.get('triage-attention').hidden, true);
+assert.equal(nodes.get('triage-attention-message').textContent, '');
 """)
 
 

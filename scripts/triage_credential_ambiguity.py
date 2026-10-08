@@ -28,6 +28,9 @@ from muninn.history.ambiguity_triage import (
 from muninn.history.auto_routing import choose_route, probe_gpu, probe_ollama
 from muninn.history.credential_review_source import CredentialReviewSource
 from muninn.history.credential_store import CredentialStore
+from muninn.history.triage_status import progress_identity, runtime_binding
+
+_progress_runtime_binding = None
 
 _PROGRESS_STAGES = {'zdr_readiness', 'waiting_for_remote_admission', 'awaiting_passphrase',
                     'passphrase_received', 'opening_pre_backup_vault', 'validating_pre_backup',
@@ -104,6 +107,7 @@ def emit_progress(report, path=None):
                               if state in {'pending', 'accepted', 'rejected', 'deferred'}
                               and type(count) is int and 0 <= count < 2**63}
         # Existing file only: a removed destination is never silently recreated.
+        safe.update(progress_identity(_progress_runtime_binding))
         with path.open('r+', encoding='utf-8') as stream:
             stream.seek(0, 2)
             stream.write(json.dumps(safe, sort_keys=True) + '\n')
@@ -405,6 +409,8 @@ def run(*, root: Path, passphrase: str, limit: int, model_limit: int,
 
 
 def main() -> int:
+    global _progress_runtime_binding
+    _progress_runtime_binding = None
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--archive-root", type=Path,
@@ -477,6 +483,9 @@ def main() -> int:
                 parser.error('Progress log cannot use a backup destination')
     except (OSError, RuntimeError, ValueError):
         parser.error("Invalid vault or backup destination")
+    if args.archive_root is not None and args.policy_root is not None:
+        _progress_runtime_binding = runtime_binding(args.root, args.archive_root,
+            args.policy_root, Path(__file__).resolve().parents[1], Path(sys.executable))
     if (args.wait_for_readiness or args.progress_log is not None) and (
             not sys.stdin.isatty() or not sys.stdout.isatty()):
         print(json.dumps({"state": "interactive_terminal_required"}), flush=True)

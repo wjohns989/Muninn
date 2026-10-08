@@ -1554,6 +1554,19 @@ def _credential_store_for_api():
         raise HTTPException(status_code=404, detail="Unavailable") from None
 
 
+@app.get("/credentials/triage/status", dependencies=[Depends(verify_main_local_token)])
+async def credential_triage_status_endpoint():
+    """Process/private-progress evidence only. Never construct or unlock a vault."""
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Unavailable", headers=NO_STORE)
+    from muninn.history.triage_status import operational_status
+    runtime = Path(memory.config.data_dir)
+    archive = Path(os.environ.get('MUNINN_HISTORY_ARCHIVE_DIR') or runtime / 'history_secure_archive')
+    data = await asyncio.to_thread(operational_status, runtime,
+        repo=Path(__file__).resolve().parent, interpreter=Path(sys.executable), archive_root=archive)
+    return JSONResponse({'data': data}, headers=NO_STORE)
+
+
 @app.get("/credentials/search")
 async def credential_metadata_search_endpoint(request: Request):
     authenticate_local(request)

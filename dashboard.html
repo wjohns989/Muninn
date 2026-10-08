@@ -154,6 +154,11 @@
         </header>
 
         <div class="container">
+            <section id="triage-attention" class="triage-attention" role="alert" aria-live="assertive" hidden>
+                <h2 id="triage-attention-heading">Credential review needs attention</h2>
+                <p id="triage-attention-message"></p>
+                <button type="button" onclick="showTab('credentials')" class="btn-secondary">View review status</button>
+            </section>
             <!-- TAB: OVERVIEW -->
             <div id="tab-overview" class="tab-content active">
                 <div class="control-hero">
@@ -177,7 +182,7 @@
                     <div class="card">
                         <h3>Readiness still to verify</h3>
                         <dl class="status-list">
-                            <div><dt>Ambiguity review</dt><dd>Review queue: not reported by this screen. An empty search is not a resolved queue.</dd></div>
+                            <div><dt>Ambiguity review</dt><dd id="overview-triage-status">Review queue: not reported. Authenticate to inspect the local review worker. An empty search is not a resolved queue.</dd></div>
                             <div><dt>Backup and restore</dt><dd>Recovery readiness: not reported. A running service does not prove a current recoverable backup.</dd></div>
                             <div><dt>Connected clients</dt><dd>Accepted hooks below are endpoint receipts. Natural client events and completed archival need separate evidence.</dd></div>
                         </dl>
@@ -516,6 +521,9 @@
                             placeholder="Service, project, or source hint..." maxlength="64">
                         <button type="button" id="credential-metadata-search" class="btn-primary search-btn-absolute">Search metadata</button>
                     </div>
+                    <p id="credential-triage-status" role="status" aria-live="polite">Authenticate to inspect the local review worker.</p>
+                    <button type="button" onclick="loadCredentialTriageStatus()" class="btn-secondary">Refresh review status</button>
+                    <p>Hidden password input stays in the existing local review window, never in this dashboard. Status refresh does not start or retry a worker.</p>
                     <p id="credential-metadata-status" role="status" aria-live="polite">Enter the main local token, then search on demand.</p>
                     <div id="credential-metadata-results"></div>
                 </div>
@@ -598,6 +606,7 @@
         let batchPolicyBusy = false;
         let resourceStatusSequence = 0;
         let credentialSearchSequence = 0;
+        let triageStatusSequence = 0;
         let healthPoll = null;
         let scanPoll = null;
         let sessionEpoch = 0;
@@ -761,6 +770,8 @@
             remotePolicyLoadSequence++;
             resourceStatusSequence++;
             credentialSearchSequence++;
+            triageStatusSequence++;
+            renderCredentialTriageStatus(null, true);
             healthStatusSequence++;
             scanStatusSequence++;
             historySearchJobId = null;
@@ -817,6 +828,52 @@
             updateScanBadge();
             healthPoll = setInterval(checkHealth, 30000);
             scanPoll = setInterval(updateScanBadge, 60000);
+        }
+
+        function renderCredentialTriageStatus(data, locked = false) {
+            const states = {
+                idle: 'No active credential-review worker. No password input is currently requested.',
+                awaiting_passphrase: 'Credential review is waiting for your hidden password input in the existing local review window. Do not enter it in chat or this dashboard.',
+                waiting_for_admission: 'Credential review is waiting for the existing managed request to release admission. No password input is requested yet.',
+                backup_validation: 'Credential review is validating a local backup. Unlock and backup success are not yet confirmed.',
+                reviewing: 'The credential-review worker is running. Review completion is not yet confirmed.',
+                finished: 'The last credential-review worker finished. Unresolved review items may remain.',
+                previous_run_failed: 'The previous credential-review run failed. No automatic retry or new password request has been started.',
+                worker_exited: 'The credential-review worker exited without a terminal progress record. No password input is currently requested.',
+                unknown: 'Credential-review status is unavailable or its worker identity could not be verified. No password request is confirmed.'
+            };
+            let state = data && Object.hasOwn(states, data.state) ? data.state : 'unknown';
+            // Input flags alone must never produce a prompt.
+            if (state === 'awaiting_passphrase' && (data.input_needed !== true || data.worker_count !== 1)) state = 'unknown';
+            let message = locked ? 'Session locked. Authenticate to inspect the local review worker.' : states[state];
+            if (!locked && data && data.counters && typeof data.counters === 'object') {
+                const counters = ['page', 'rows', 'groups_seen', 'model_calls', 'contexts_reused', 'left_pending'];
+                const text = counters.filter(key => Number.isSafeInteger(data.counters[key]) && data.counters[key] >= 0)
+                    .map(key => `${key.replaceAll('_', ' ')}: ${data.counters[key]}`).join(', ');
+                if (text) message += ` Last reported counters — ${text}.`;
+            }
+            for (const id of ['credential-triage-status', 'overview-triage-status']) {
+                const node = document.getElementById(id);
+                if (node.textContent !== message) node.textContent = message;
+            }
+            const attention = document.getElementById('triage-attention');
+            const urgent = !locked && ['awaiting_passphrase', 'previous_run_failed', 'worker_exited', 'unknown'].includes(state);
+            const heading = state === 'awaiting_passphrase' ? 'Local input needed: credential review is waiting' :
+                state === 'unknown' ? 'Credential-review status could not be verified' : 'Credential review stopped';
+            document.getElementById('triage-attention-heading').textContent = locked ? '' : heading;
+            const alertMessage = document.getElementById('triage-attention-message');
+            if (alertMessage.textContent !== message) alertMessage.textContent = locked ? '' : message;
+            attention.hidden = !urgent;
+        }
+
+        async function loadCredentialTriageStatus() {
+            if (!AUTH_TOKEN || !SECURITY_ENABLED) return;
+            const sequence = ++triageStatusSequence;
+            const token = AUTH_TOKEN;
+            const epoch = sessionEpoch;
+            const response = await api('/credentials/triage/status');
+            if (sequence !== triageStatusSequence || token !== AUTH_TOKEN || epoch !== sessionEpoch) return;
+            renderCredentialTriageStatus(response.error ? null : response.data);
         }
 
         function checkAuthOnLoad() {
@@ -2658,6 +2715,7 @@
             if (document.getElementById('tab-overview').classList.contains('active')) loadOverviewStatus();
             if (document.getElementById('tab-operations').classList.contains('active')) loadOperatingStatus();
             if (document.getElementById('tab-history').classList.contains('active')) loadHistoryStatus();
+            if (AUTH_TOKEN) loadCredentialTriageStatus();
         }
 
         async function updateScanBadge() {

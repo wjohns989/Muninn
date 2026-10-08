@@ -165,6 +165,20 @@ def test_wait_rejects_inapplicable_or_unbounded_requests(tmp_path, monkeypatch, 
     assert caught.value.code == 2
 
 
+def operational_fields(record):
+    """Check additive identity separately; preserve original exact safe payloads."""
+    import os
+    import psutil
+    assert record['format'] == 2
+    assert record['worker_pid'] == os.getpid()
+    assert record['worker_started_at'] == psutil.Process().create_time()
+    assert record['recorded_at'] >= record['worker_started_at']
+    binding = record['runtime_binding']
+    assert binding is None or (isinstance(binding, str) and len(binding) == 64)
+    return {key: value for key, value in record.items() if key not in
+            {'format', 'worker_pid', 'worker_started_at', 'recorded_at', 'runtime_binding'}}
+
+
 def test_progress_file_is_live_and_excludes_text_values_and_cursors(tmp_path, capsys):
     from muninn.history.private_acl import create_private_directory, create_private_file, verify_private
     create_private_directory(tmp_path / 'progress')
@@ -175,7 +189,7 @@ def test_progress_file_is_live_and_excludes_text_values_and_cursors(tmp_path, ca
                          'candidate': 'synthetic-secret-never-persist',
                          'next_cursor': {'id': 'synthetic-secret-cursor'},
                          'queue_counts': {'pending': 2, 'private-name': 5}}, log)
-    assert json.loads(log.read_text()) == {
+    assert operational_fields(json.loads(log.read_text())) == {
         'stage': 'review_page', 'rows': 3, 'queue_counts': {'pending': 2}}
     runner.emit_progress({'stage': 'awaiting_passphrase', 'passphrase_needed': True}, log)
     assert len(log.read_text().splitlines()) == 2
@@ -285,7 +299,7 @@ def test_prompt_failure_replaces_stale_input_status_without_private_text(tmp_pat
     assert runner.main() == 1
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert rows[0]['passphrase_needed'] is True
-    assert rows[-1] == {'state': 'failed', 'error_category': error_name,
+    assert operational_fields(rows[-1]) == {'state': 'failed', 'error_category': error_name,
                         'failure_stage': 'awaiting_passphrase',
                         'backup_state': 'not_started', 'passphrase_needed': False,
                         'post_backup_unavailable': False}
@@ -369,7 +383,7 @@ def test_failure_records_last_entered_operation_without_unlock_material(tmp_path
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert rows[-1]['failure_stage'] == expected
     assert rows[-1]['passphrase_needed'] is False
-    assert rows[1] == {'stage': 'passphrase_received', 'passphrase_needed': False}
+    assert operational_fields(rows[1]) == {'stage': 'passphrase_received', 'passphrase_needed': False}
     assert all(row.get('passphrase_needed') is not True for row in rows[1:])
     assert rows[-1]['backup_state'] == ('validated_pre_triage_backup' if operation in {
         'source', 'review', 'post_backup'} else 'not_started')
@@ -384,5 +398,5 @@ def test_failure_stage_progress_field_rejects_arbitrary_text(tmp_path):
     create_private_file(log)
     runner.emit_progress({'state': 'failed', 'failure_stage': 'synthetic-private-never-log'}, log)
     runner.emit_progress({'state': 'failed', 'failure_stage': 'validating_pre_backup'}, log)
-    assert [json.loads(line) for line in log.read_text().splitlines()] == [
+    assert [operational_fields(json.loads(line)) for line in log.read_text().splitlines()] == [
         {'state': 'failed'}, {'state': 'failed', 'failure_stage': 'validating_pre_backup'}]
