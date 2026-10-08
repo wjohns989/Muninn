@@ -380,6 +380,41 @@ def preimage_databases(archive, journal):
     return databases
 
 
+def launch_recovery_compaction(repo, archive, destination):
+    """Bounded post-success maintenance; cannot reverse a verified restart.
+
+    No service/model credentials are inherited. The helper retires only one old
+    source-evidence preimage, preserving four full copies AND this exact new
+    preimage, including when the local wall clock moved backward.
+    """
+    try:
+        require_unlinked_path(destination)
+        verify_private(destination)
+        pool = Path.home() / "muninn_backups" / "restart-recovery-pool-v1"
+        stdout_path = destination / "recovery-compaction.stdout.log"
+        stderr_path = destination / "recovery-compaction.stderr.log"
+        create_private_file(stdout_path)
+        create_private_file(stderr_path)
+        environment = {name: value for name, value in os.environ.items()
+                       if name.upper() in {"SYSTEMROOT", "WINDIR", "USERPROFILE",
+                                           "LOCALAPPDATA", "APPDATA", "TEMP", "TMP"}}
+        environment["PYTHONUTF8"] = "1"
+        command = [sys.executable, "-B", "-m", "scripts.compact_restart_recovery", "compact",
+                   "--archive-root", str(archive), "--pool-root", str(pool),
+                   "--keep-full", "4", "--limit", "1", "--retire",
+                   "--exclude-snapshot", destination.name,
+                   "--log-path", str(destination / "recovery-compaction.progress.jsonl")]
+        with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
+            child = subprocess.Popen(command, cwd=repo, env=environment, stdin=subprocess.DEVNULL,
+                                     stdout=stdout, stderr=stderr,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        print(json.dumps({"stage": "recovery_compaction_started", "pid": child.pid,
+                          "max_snapshots": 1, "full_preimages_preserved": 4}), flush=True)
+    except Exception as exc:
+        print(json.dumps({"stage": "recovery_compaction_deferred",
+                          "error_category": type(exc).__name__}), flush=True)
+
+
 def load_capture_flag_preimage(archive, preimage):
     require_unlinked_path(preimage)
     require(preimage.parent.resolve(strict=True) == (archive / "operator-preimages").resolve(strict=True),
@@ -665,6 +700,7 @@ def run(args):
                                       "strict_archive_ready": True, "automatic_local_capture": expected_auto,
                                       "automatic_remote_capture": expected_remote,
                                       "capture_settings_persisted": user_before is not None}), flush=True)
+                    launch_recovery_compaction(repo, archive, destination)
                     return
             except (httpx.HTTPError, ConnectionError):
                 pass

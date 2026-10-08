@@ -2,10 +2,46 @@
 import pytest
 import sqlite3
 import sys
+import subprocess
 from types import SimpleNamespace
 
 from scripts import reload_shared_local as reload
 from scripts import local_runtime_preflight as preflight
+
+
+def test_post_success_compactor_excludes_current_and_has_no_secrets(tmp_path, monkeypatch, capsys):
+    from muninn.history.private_acl import create_private_directory
+    destination = tmp_path / "restart-20261007-010203-00000000000000000000000000000001"
+    create_private_directory(destination)
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", "synthetic-service-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-provider-token")
+    calls = []
+    def launched(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(pid=123)
+    monkeypatch.setattr(reload.subprocess, "Popen", launched)
+    reload.launch_recovery_compaction(tmp_path, tmp_path / "archive", destination)
+    command, options = calls[0]
+    assert command[:4] == [sys.executable, "-B", "-m", "scripts.compact_restart_recovery"]
+    assert command[command.index("--limit") + 1] == "1"
+    assert command[command.index("--exclude-snapshot") + 1] == destination.name
+    assert options["cwd"] == tmp_path and options["stdin"] == subprocess.DEVNULL
+    assert "shell" not in options
+    assert all("TOKEN" not in key and "KEY" not in key for key in options["env"])
+    assert "recovery_compaction_started" in capsys.readouterr().out
+
+
+def test_post_success_compactor_failure_does_not_fail_restart(tmp_path, monkeypatch, capsys):
+    from muninn.history.private_acl import create_private_directory
+    destination = tmp_path / "restart-20261007-010203-00000000000000000000000000000001"
+    create_private_directory(destination)
+    def denied(*args, **kwargs):
+        raise OSError("synthetic private launch failure")
+    monkeypatch.setattr(reload.subprocess, "Popen", denied)
+    reload.launch_recovery_compaction(tmp_path, tmp_path / "archive", destination)
+    text = capsys.readouterr().out
+    assert "recovery_compaction_deferred" in text
+    assert "synthetic private launch failure" not in text
 
 
 @pytest.mark.parametrize("state", ["running", "staged"])
@@ -210,6 +246,8 @@ def test_preserve_rejects_publication_pending_with_active_lease(tmp_path):
 def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
         tmp_path, monkeypatch, claim_race, foreign_owner, backup_failure, remote_enabled, active_capture):
     report, process = isolated_installation(tmp_path, monkeypatch)
+    maintenance = []
+    monkeypatch.setattr(reload, "launch_recovery_compaction", lambda *args: maintenance.append(args))
     report["capture_enrichment"] = {"capture_enabled": True,
         "automatic_analysis_enabled": True, "automatic_remote_enabled": remote_enabled}
     original = process.environ()
@@ -309,6 +347,7 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
     else:
         reload.run(args)
         assert created_preimages_under_fence == [True]
+        assert len(maintenance) == 1
         assert stopped == [True] and launched == [environment]
         assert stopped_child == []
         with sqlite3.connect(journal) as db:
