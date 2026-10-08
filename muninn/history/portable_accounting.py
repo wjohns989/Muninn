@@ -6,6 +6,7 @@ snapshot is bound to the portable history key; plaintext sibling bookkeeping is
 never the restore authority.
 """
 import os
+import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -28,7 +29,8 @@ _COLUMNS = {
     "audit": {"generation", "changed_at", "enabled", "daily_usd", "monthly_usd", "override_ceiling"},
     "remote_admissions": {"id", "generation", "state", "started", "start_day", "start_month",
                           "finished", "end_day", "end_month", "cost_micro", "resolution", "batch_owner",
-                          "classification_job", "classification_input"},
+                          "classification_job", "classification_input", "diagnostic_parent"},
+    "batch_diagnostics": {"id", "sealed"},
     "batch_policy": {"id", "enabled", "generation", "max_batches"},
     "batch_policy_audit": {"generation", "changed_at", "enabled", "max_batches"},
     "batch_consent": {"batch_id", "retention_generation", "remote_generation", "input_sha256"},
@@ -59,6 +61,28 @@ def _validate(db):
         raise VaultIntegrityError("Recovery accounting sentinel is inconsistent")
     if "remote_admissions" in tables:
         fields = {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}
+        if "diagnostic_parent" in fields:
+            if "batch_diagnostics" not in tables:
+                raise VaultIntegrityError("Recovery diagnostic evidence is missing")
+            for ident, parent, owner in db.execute(
+                    "SELECT id,diagnostic_parent,batch_owner FROM remote_admissions WHERE diagnostic_parent IS NOT NULL"):
+                if (not all(isinstance(value, str) and len(value) == 32 and
+                        all(c in "0123456789abcdef" for c in value) for value in (ident, parent, owner))
+                        or not db.execute("SELECT 1 FROM batch_diagnostics WHERE id=?", (ident,)).fetchone()):
+                    raise VaultIntegrityError("Recovery diagnostic binding is invalid")
+            expected_indexes = {
+                "one_remote_admission": "CREATE UNIQUE INDEX one_remote_admission ON remote_admissions((1)) "
+                    "WHERE state IN ('reserved','unknown') AND diagnostic_parent IS NULL",
+                "one_diagnostic_admission": "CREATE UNIQUE INDEX one_diagnostic_admission ON remote_admissions((1)) "
+                    "WHERE state IN ('reserved','unknown') AND diagnostic_parent IS NOT NULL",
+                "one_diagnostic_per_parent": "CREATE UNIQUE INDEX one_diagnostic_per_parent ON remote_admissions(diagnostic_parent) "
+                    "WHERE diagnostic_parent IS NOT NULL",
+            }
+            normalize = lambda value: re.sub(r"\s+", "", value or "").lower()
+            for name, definition in expected_indexes.items():
+                actual = db.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)).fetchone()
+                if not actual or normalize(actual[0]) != normalize(definition):
+                    raise VaultIntegrityError("Recovery diagnostic admission fences are invalid")
         bound = {"classification_job", "classification_input"}
         if fields & bound and not bound <= fields:
             raise VaultIntegrityError("Recovery classification binding is incomplete")

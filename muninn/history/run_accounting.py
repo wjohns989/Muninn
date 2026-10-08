@@ -41,6 +41,7 @@ def run_status(root, *, since, now=None):
         if not managed:
             return result
         columns = {row[1] for row in db.execute("PRAGMA table_info(remote_admissions)")}
+        diagnostics = "diagnostic_parent" in columns
         attribution = "batch_owner" in columns
         rows = db.execute("SELECT state,started,finished,cost_micro,resolution," +
                           ("batch_owner" if attribution else "NULL") + " FROM remote_admissions")
@@ -82,4 +83,12 @@ def run_status(root, *, since, now=None):
         if attribution:
             result["batch_owned"] = {"state": "known", "settled_admissions": batch_settled,
                                      "settled_cost_usd": batch_cost / 1_000_000}
+        if diagnostics:
+            diagnostic_counts = dict(db.execute("SELECT state,COUNT(*) FROM remote_admissions "
+                "WHERE diagnostic_parent IS NOT NULL AND started>=? GROUP BY state", (since,)))
+            diagnostic_cost = db.execute("SELECT COALESCE(SUM(cost_micro),0) FROM remote_admissions "
+                "WHERE diagnostic_parent IS NOT NULL AND started>=? AND state='settled'", (since,)).fetchone()[0]
+            result["diagnostics"] = {"admission_states": diagnostic_counts,
+                "settled_cost_usd": diagnostic_cost / 1_000_000,
+                "included_in_total": True, "backlog_publications": 0}
     return result
