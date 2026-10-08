@@ -14,7 +14,7 @@ import httpx
 
 from muninn.history.batch_diagnostic import DiagnosticStore
 from muninn.history.historical_batch import BatchError, MODEL, MODEL_IDENTITIES, _wire_json
-from muninn.history.remote_accounting import Admission, _db
+from muninn.history.remote_accounting import Admission, AdmissionError, _MAX, _db, _micros
 
 MAX_RECEIPT_BYTES = 16 * 1024
 
@@ -151,6 +151,40 @@ async def transport(body):
 
 
 class StreamingStore(DiagnosticStore):
+    def retained_status(self, ident):
+        """Read one authenticated snapshot; operator debits are not provider bills."""
+        with _db(self.root) as (db, _):
+            record = self._read(db, ident)
+            if record.get("kind") != "streaming":
+                raise BatchError("stream_kind_invalid")
+            state, cost, resolution = db.execute(
+                "SELECT state,cost_micro,resolution FROM remote_admissions WHERE id=?", (ident,)
+            ).fetchone()
+            response_settled = state == "settled" and resolution == "response"
+            if state == "settled":
+                if (type(cost) is not int or not 0 <= cost <= _MAX
+                        or resolution not in {"response", "operator"}):
+                    raise BatchError("stream_accounting_invalid")
+                if response_settled:
+                    response = record.get("response") or {}
+                    usage = response.get("usage")
+                    try:
+                        if (response.get("identity_valid") is not True or not isinstance(usage, dict)
+                                or usage.get("is_byok") is not False or _micros(usage.get("cost")) != cost):
+                            raise BatchError("stream_accounting_mismatch")
+                    except AdmissionError as exc:
+                        raise BatchError("stream_accounting_mismatch") from exc
+            elif not (cost is None and (
+                    state in {"reserved", "unknown"} and resolution is None
+                    or state == "released" and resolution == "unsent")):
+                raise BatchError("stream_accounting_invalid")
+            result = self.stream_summary(record, settled=response_settled)
+            result.update(admission_settled=state == "settled", admission_resolution=resolution,
+                          provider_billing="confirmed" if response_settled else "unknown")
+            if state == "settled" and resolution == "operator":
+                result["operator_reconciled_cost_usd"] = cost / 1_000_000
+            return result
+
     async def submit_stream(self, ident, send=transport, *, provider_status):
         record = await self.begin_submission(ident, provider_status=provider_status, kind="streaming")
         response = await send(record["body"])

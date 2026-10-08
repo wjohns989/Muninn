@@ -6,7 +6,7 @@ import pytest
 
 from muninn.history.historical_batch import BatchError, MODEL
 from muninn.history.portable_accounting import _validate
-from muninn.history.remote_accounting import AdmissionError, _db, reserve, status
+from muninn.history.remote_accounting import AdmissionError, _db, _finish, reserve, status
 from muninn.history.run_accounting import run_status
 from muninn.history.streaming_diagnostic import StreamReceipt, StreamingStore, request_body, MAX_RECEIPT_BYTES
 from tests.test_batch_diagnostic import setup, receipt
@@ -36,6 +36,71 @@ def streamed(*, text="1 2 3 4 5", usage=True, done=True):
     for byte in wire.encode():  # Every byte boundary, including CRLF framing.
         collector.feed(bytes([byte]))
     return collector.finish()
+
+
+def saved_stream(tmp_path, response):
+    store, parent, retention, _batch = accepted_batch(tmp_path)
+    ident = store.prepare(parent, 1, retention, READY, request_body(), kind="streaming")
+    async def send(body):
+        return response
+    asyncio.run(store.submit_stream(ident, send, provider_status=lambda: READY))
+    return store, ident
+
+
+def test_operator_adjustment_never_becomes_actual_provider_bill(tmp_path):
+    collector = StreamReceipt()
+    collector.value.update(http_status=404, error="stream_http_rejected")
+    store, ident = saved_stream(tmp_path, collector.finish())
+    _finish(store.root, ident, 10000, "operator")  # Isolated synthetic ledger only.
+    path = store.root / "remote_policy" / "policy.sqlite3"
+    before = path.read_bytes()
+    result = store.retained_status(ident)
+    assert result["admission_settled"] is True and result["admission_resolution"] == "operator"
+    assert result["operator_reconciled_cost_usd"] == .01
+    assert result["provider_billing"] == "unknown" and result["billing_settled"] is False
+    assert "actual_cost_usd" not in result and result["backlog_publications"] == 0
+    assert path.read_bytes() == before
+
+
+def test_retained_response_bill_matches_rounded_ledger_and_does_not_write(tmp_path):
+    store, ident = saved_stream(tmp_path, streamed())
+    path = store.root / "remote_policy" / "policy.sqlite3"
+    before = path.read_bytes()
+    result = store.retained_status(ident)
+    assert result["admission_settled"] is True and result["admission_resolution"] == "response"
+    assert result["provider_billing"] == "confirmed" and result["billing_settled"] is True
+    assert result["actual_cost_usd"] == .000123 and "operator_reconciled_cost_usd" not in result
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("assignment", ["cost_micro=124", "generation=2", "diagnostic_parent='mismatch'"])
+def test_retained_status_rejects_mismatched_admission_proof(tmp_path, assignment):
+    store, ident = saved_stream(tmp_path, streamed())
+    with _db(store.root) as (db, _):
+        db.execute("UPDATE remote_admissions SET " + assignment + " WHERE id=?", (ident,))
+    # The shared accounting reader intentionally masks downstream diagnostics.
+    with pytest.raises(AdmissionError, match="remote_accounting_unavailable") as rejected:
+        store.retained_status(ident)
+    assert isinstance(rejected.value.__cause__, BatchError)
+
+
+def test_retained_pending_bill_stays_unknown_and_cli_is_read_only(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from scripts import probe_luna_stream as cli
+    store, ident = saved_stream(tmp_path, streamed(usage=False))
+    monkeypatch.setattr(cli, "_local_setting", lambda name:
+        str(store.root) if name == "MUNINN_DATA_DIR" else str(store.archive.root))
+    monkeypatch.setattr(cli, "SecureHistoryArchive", lambda root: store.archive)
+    monkeypatch.setattr(cli, "StreamingStore", lambda *args: store)
+    monkeypatch.setattr(store, "reconcile", lambda *args: pytest.fail("Status reconciled billing"))
+    monkeypatch.setattr(cli, "batch_transport", lambda *args, **kwargs: pytest.fail("Status used network"))
+    path = store.root / "remote_policy" / "policy.sqlite3"
+    before = path.read_bytes()
+    assert asyncio.run(cli.run(SimpleNamespace(status=ident, reconcile=None, submit_parent=None))) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["admission_settled"] is False and result["provider_billing"] == "unknown"
+    assert result["billing_settled"] is False and "actual_cost_usd" not in result
+    assert path.read_bytes() == before
 
 
 def test_split_sse_usage_keepalive_and_bound():

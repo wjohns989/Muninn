@@ -12,7 +12,6 @@ from muninn.history.batch_diagnostic import verify_price
 from muninn.history.historical_batch import BatchError, BatchOutbox, MODEL, MODEL_IDENTITIES
 from muninn.history.historical_batch_worker import transport as batch_transport
 from muninn.history.secure_archive import SecureHistoryArchive
-from muninn.history.remote_accounting import _db
 from muninn.history.streaming_diagnostic import StreamingStore, request_body
 
 
@@ -21,10 +20,7 @@ async def run(args):
     archive = SecureHistoryArchive(Path(_local_setting("MUNINN_HISTORY_ARCHIVE_DIR") or root / "history_secure_archive"))
     store = StreamingStore(archive, root)
     if args.status:
-        record = store.read(args.status)
-        with _db(root) as (db, _):
-            settled = db.execute("SELECT state FROM remote_admissions WHERE id=?", (args.status,)).fetchone() == ("settled",)
-        result = store.stream_summary(record, settled=settled)
+        result = store.retained_status(args.status)
     elif args.reconcile:
         result = store.reconcile(args.reconcile)  # Saved receipt only; no model request.
     else:

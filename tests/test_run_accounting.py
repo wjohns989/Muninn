@@ -46,6 +46,7 @@ def test_run_total_spans_rollover_and_counts_aggregate_once(tmp_path):
     assert report["settled_cost_usd"] == .169
     assert report["admission_states"] == {"settled": 4, "released": 1, "reserved": 0, "unknown": 1}
     assert report["settled_resolutions"] == {"response": 3, "operator": 1}
+    assert report["settled_resolution_cost_usd"] == {"response": .162, "operator": .007}
     assert report["batch_owned"] == {"state": "known", "settled_admissions": 2, "settled_cost_usd": .15}
     assert report["global_unresolved"] == 1
     assert path.read_bytes() == before
@@ -57,6 +58,7 @@ def test_uninitialized_is_unknown_and_does_not_initialize(tmp_path):
     report = run_status(tmp_path, since=0, now=10)
     assert report["state"] == "uninitialized"
     assert report["settled_cost_usd"] is None and report["admission_states"] is None
+    assert report["settled_resolution_cost_usd"] is None
     assert not (tmp_path / "remote_policy" / "admission-managed").exists()
 
 

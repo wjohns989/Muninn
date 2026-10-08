@@ -36,8 +36,15 @@ restore and explicit-passphrase archive restore ran; neither was skipped. The
 original negative, paid-work, rollback, lease and cancellation assertions remain
 unchanged. Independent review cleared the actual test-only split for commit/push.
 
-The new Linux full-suite run must supply its own terminal result. Focused local
-passes and the four already-green PR gates do not establish full-suite success,
-live candidate identity, credential recovery, resumed backlog or installation
-completion. The unresolved streaming bill still requires an explicit operator
-decision; no test fix supplies that authority.
+Candidate `44eda15` again passed those four gates; its full Linux suite reached
+757 passes and eight skips before another unguarded Windows-only archive backup
+call in classification recovery. The remaining direct/helper callers need a
+grouped platform-proof audit, preserving portable encrypted managed-state
+recovery and real Windows assertions. This is not full-suite success.
+
+Focused local passes and the four already-green PR gates do not establish full
+installation completion, live candidate identity or credential recovery. The
+separately approved diagnostic adjustment and verified live backlog resumption
+are recorded in [the resumption evidence](backlog-resumption-20261008.md);
+no test fix supplied that authority or converted unknown provider billing into
+an actual charge.

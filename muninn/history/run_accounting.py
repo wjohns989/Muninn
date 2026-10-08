@@ -29,6 +29,7 @@ def run_status(root, *, since, now=None):
         "since_utc": datetime.fromtimestamp(since, timezone.utc).isoformat(timespec="microseconds"),
         "sampled_at": sampled, "state": "uninitialized", "settled_cost_usd": None,
         "admission_states": None, "settled_resolutions": None, "global_unresolved": None,
+        "settled_resolution_cost_usd": None,
         "batch_owned": {"state": "unknown_legacy_schema", "settled_admissions": None,
                         "settled_cost_usd": None}}
     with _db(root, initialize=False) as (db, managed):
@@ -47,6 +48,7 @@ def run_status(root, *, since, now=None):
                           ("batch_owner" if attribution else "NULL") + " FROM remote_admissions")
         counts = {state: 0 for state in ("settled", "released", "reserved", "unknown")}
         resolutions = {"response": 0, "operator": 0}
+        resolution_cost = {"response": 0, "operator": 0}
         cost_total = batch_cost = batch_settled = unresolved = 0
         for state, started, finished, cost, resolution, batch in rows:
             # Validate before interval filtering: malformed earlier rows must not
@@ -74,11 +76,14 @@ def run_status(root, *, since, now=None):
             if state == "settled":
                 cost_total += cost
                 resolutions[resolution] += 1
+                resolution_cost[resolution] += cost
                 if batch is not None:
                     batch_cost += cost
                     batch_settled += 1
         result.update(state="observed", settled_cost_usd=cost_total / 1_000_000,
                       admission_states=counts, settled_resolutions=resolutions,
+                      settled_resolution_cost_usd={name: cost / 1_000_000
+                                                   for name, cost in resolution_cost.items()},
                       global_unresolved=unresolved)
         if attribution:
             result["batch_owned"] = {"state": "known", "settled_admissions": batch_settled,
