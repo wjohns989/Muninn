@@ -194,3 +194,48 @@ approved by this receipt. No classification quota, budget, provider or privacy
 policy was changed in this activation. Current retained provider work and the
 local credential unlock remain outstanding; full installation/backlog completion
 is not claimed.
+
+## General-memory classification continuation
+
+Replaced the worker's installation-lifetime one-admission pilot with a durable
+one-paid-attempt-per-classification-job check in the existing serialized billing
+transaction. Unrelated historical cohorts can continue; settled/unknown attempts
+remain fenced, while exact proven-unsent releases can retry. The legacy optional
+pilot API remains unchanged. No new schema, quota, provider consent or user
+settings are introduced. Existing two consultation results stay unresolved.
+
+Classification still requires the exact passed historical checkpoint, foreground
+priority, fresh source/projection/review revisions, strict ZDR and Luna only.
+It now reads bounded public Luna catalog metadata without credentials/private
+inputs, applies provider max_price (prompt $0.25/M, completion $1/M, request $0),
+and checks headroom against both local settled cost and provider usage. A full
+catalog context is counted for BOTH input and output, not an estimated token
+ratio or expected bill; the inspected 1,050,000-token context reserves $1.3125
+headroom while charging only actual settled usage. Missing metadata, changed
+request contract, insufficient headroom or revoked consent defer proven-unsent.
+The same hold is rechecked after evidence/writer waits with fresh provider usage.
+The 90-second bounded transport cannot begin in the last 120 seconds of a UTC
+day, and a hold crossing day/month boundaries is rejected. Tools, web plugins,
+fallbacks and premium tiers are excluded by the exact request contract.
+
+This is a conservative classification admission bound, not a whole-application
+invoice guarantee: unmanaged concurrent key usage and delayed provider billing
+remain outside the local transaction. Other existing lanes retain their documented
+threshold controls. Primary contract reference:
+https://openrouter.ai/docs/guides/routing/provider-selection (max_price), and
+https://openrouter.ai/docs/api_reference/parameters (completion/reasoning caveat).
+
+Validation: six new accounting regressions initially failed on the missing
+behavior. The first focused accounting/worker run passed 50 cases in 19.11s.
+Expanded classification/accounting/service/enrollment/placement checks passed
+132 cases; the remaining test used an invalid 13-proposal fixture, then patched
+the wrong imported grouping reference. Corrected to two valid singleton review
+jobs at the actual consumer seam, it passed in 2.23s. Thus 133 relevant cases
+have passing evidence, not a claimed clean full-suite run. Native independent
+review examined the actual design/diff and returned CLEAR, with the external-key
+usage limit disclosed. Live service activation is recorded separately below.
+The 15 paid-history portable recovery cases also passed in 25.22s; no billing
+schema/allowlist changes were needed. Pre-activation batch identity/counts and
+item/wire hashes still match the prior activation's retained 60-request batch.
+The same credential-review parent 52128 / child 10840 remains awaiting a hidden
+local passphrase; no new worker or secret channel was created.

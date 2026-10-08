@@ -158,11 +158,31 @@ def _spent(db, day, month):
     return daily, monthly
 
 
-def reserve(root, generation, provider_status, *, now=None, batch_owner=None,
-            classification_job=None, classification_input=None, classification_limit=None):
-    """Reserve all remaining admission capacity, allowing one paid call at a time."""
+def _reported_usage(provider_status):
     if not isinstance(provider_status, dict) or provider_status.get("admission_ready") is not True:
         raise AdmissionError("daily_zdr_cap_unverified")
+    return tuple(_micros(provider_status.get(k)) for k in ("usage_daily_usd", "usage_monthly_usd"))
+
+
+def _require_headroom(db, caps, reported, day, month, ceiling):
+    spent = _spent(db, day, month)
+    if any(max(local, remote) >= cap for local, remote, cap in zip(spent, reported, caps)):
+        raise AdmissionError("remote_admission_threshold_reached")
+    if ceiling is not None and any(max(local, remote) + ceiling > cap
+                                  for local, remote, cap in zip(spent, reported, caps)):
+        raise AdmissionError("remote_admission_headroom_insufficient")
+
+
+def reserve(root, generation, provider_status, *, now=None, batch_owner=None,
+            classification_job=None, classification_input=None, classification_limit=None,
+            classification_once=False, cost_ceiling_usd=None):
+    """Reserve all remaining admission capacity, allowing one paid call at a time."""
+    reported = _reported_usage(provider_status)
+    ceiling = None if cost_ceiling_usd is None else _micros(cost_ceiling_usd)
+    if ceiling == 0:
+        raise AdmissionError("remote_accounting_invalid_cost")
+    if type(classification_once) is not bool or classification_once and classification_job is None:
+        raise AdmissionError("remote_accounting_invalid_reference")
     if batch_owner is not None:
         _check_id(batch_owner)
     if classification_limit is not None and (classification_job is None
@@ -173,7 +193,6 @@ def reserve(root, generation, provider_status, *, now=None, batch_owner=None,
         if (batch_owner is not None or not isinstance(classification_input, str)
                 or len(classification_input) != 64 or any(c not in "0123456789abcdef" for c in classification_input)):
             raise AdmissionError("remote_accounting_invalid_reference")
-    reported = tuple(_micros(provider_status.get(k)) for k in ("usage_daily_usd", "usage_monthly_usd"))
     when = time.time() if now is None else now
     day, month = _periods(when)
     with _db(root, initialize=True, generation=generation) as (db, _):
@@ -189,11 +208,14 @@ def reserve(root, generation, provider_status, *, now=None, batch_owner=None,
                    "end_day=?,end_month=?,resolution='unsent' "
                    "WHERE state='reserved' AND started<=?",
                    (when, day, month, when - _RESERVED_TIMEOUT))
+        if classification_once and db.execute(
+                "SELECT 1 FROM remote_admissions WHERE classification_job=? "
+                "AND NOT(state='released' AND resolution='unsent' AND cost_micro IS NULL) LIMIT 1",
+                (classification_job,)).fetchone():
+            raise AdmissionError("classification_already_admitted")
         if db.execute("SELECT 1 FROM remote_admissions WHERE state IN ('reserved','unknown') LIMIT 1").fetchone():
             raise AdmissionError("remote_admission_busy")
-        spent = _spent(db, day, month)
-        if any(max(local, remote) >= cap for local, remote, cap in zip(spent, reported, caps)):
-            raise AdmissionError("remote_admission_threshold_reached")
+        _require_headroom(db, caps, reported, day, month, ceiling)
         identifier = uuid.uuid4().hex
         db.execute("INSERT INTO remote_admissions(id,generation,state,started,start_day,start_month,batch_owner,"
                    "classification_job,classification_input) VALUES(?,?,'reserved',?,?,?,?,?,?)",
@@ -206,6 +228,25 @@ class Admission:
     root: Path
     identifier: str
     generation: int
+
+    def check_headroom(self, provider_status, *, cost_ceiling_usd, now=None):
+        """Recheck this existing global hold immediately before transport.
+
+        The caller must separately enforce the provider price/token contract.
+        Unmanaged concurrent key usage is not made atomic by our local hold.
+        """
+        reported = _reported_usage(provider_status)
+        ceiling = _micros(cost_ceiling_usd)
+        if not ceiling:
+            raise AdmissionError("remote_accounting_invalid_cost")
+        day, month = _periods(time.time() if now is None else now)
+        with _db(self.root) as (db, _):
+            caps = _policy(db, self.generation)
+            row = db.execute("SELECT state,start_day,start_month FROM remote_admissions "
+                             "WHERE id=? AND generation=?", (self.identifier, self.generation)).fetchone()
+            if not row or row[0] not in ("reserved", "unknown") or row[1:] != (day, month):
+                raise AdmissionError("remote_accounting_conflict")
+            _require_headroom(db, caps, reported, day, month, ceiling)
 
     def mark_unknown(self, *, policy_guard=None):
         with _db(self.root) as (db, _):

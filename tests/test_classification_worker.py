@@ -5,7 +5,10 @@ import json
 import httpx
 import pytest
 
-from muninn.history.classification_worker import process_classification
+from muninn.history.classification_worker import (
+    process_classification, _dispatch_period_open as utc_period_open,
+    _model_context_bound as public_model_bound,
+)
 from muninn.history.memory_classification import prepare_classification
 from muninn.history.memory_ledger import MemoryLedger
 from muninn.history.remote_accounting import reserve
@@ -19,6 +22,9 @@ def completed_paid_checkpoint(monkeypatch):
     # Isolate classification after the existing checkpoint gate; real paid
     # checkpoint ownership/publication proofs have their own integration tests.
     monkeypatch.setattr(CaptureJournal, "historical_batch_owner", lambda _: {"phase": "passed", "id": "f" * 32})
+    from muninn.history import classification_worker as module
+    monkeypatch.setattr(module, "_model_context_bound", lambda: 1050000)
+    monkeypatch.setattr(module, "_dispatch_period_open", lambda: True)
 
 
 def response(body, *, cost=0.003, malformed=False):
@@ -38,7 +44,8 @@ async def test_grouped_workflow_publishes_once_and_recovers_without_provider(tmp
     async def send(body, *, before_post):
         assert await before_post()
         calls.append(body)
-        assert body["provider"] == {"zdr": True, "data_collection": "deny", "require_parameters": True}
+        assert body["provider"] == {"zdr": True, "data_collection": "deny", "require_parameters": True,
+                                    "max_price": {"prompt": 0.25, "completion": 1, "request": 0}}
         assert all(ref not in json.dumps(body) for ref in refs)
         return response(body)
     assert await process_classification(journal, enabled=lambda: True, send=send, key_status=lambda: READY)
@@ -46,6 +53,111 @@ async def test_grouped_workflow_publishes_once_and_recovers_without_provider(tmp
     assert all(MemoryLedger(archive, read_only=True).get(ref)["placement"]["status"] == "accepted" for ref in refs)
     assert not await process_classification(journal, enabled=lambda: False, recovery_only=True, send=send)
     assert journal.verify_classifications() == 1
+
+
+@pytest.mark.asyncio
+async def test_distinct_cohorts_continue_after_lifetime_pilot(tmp_path, monkeypatch):
+    from muninn.history import classification_jobs
+    # Separate two valid singleton review jobs; cohort grouping itself has
+    # independent tests, and one extraction intentionally permits at most 12.
+    monkeypatch.setattr(classification_jobs, "related_cohorts", lambda rows: [[row[0]] for row in rows])
+    journal, archive, refs = cohort_ack(tmp_path, count=2)
+    policy(tmp_path)
+    calls = []
+    async def send(body, *, before_post):
+        assert await before_post()
+        calls.append(body)
+        return response(body)
+    for _ in range(2):
+        assert await process_classification(journal, enabled=lambda: True, send=send, key_status=lambda: READY), (
+            len(calls), journal.classification_status())
+    assert len(calls) == 2 and journal.classification_status() == {"published": 2}
+    assert journal.verify_classifications() == 2
+    assert all(MemoryLedger(archive, read_only=True).get(ref)["placement"]["status"] == "accepted" for ref in refs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["headroom", "catalog", "price", "rollover"])
+async def test_presend_failure_stays_pending_without_charge(tmp_path, monkeypatch, failure):
+    from muninn.history import classification_worker as module
+    from muninn.history.remote_accounting import AdmissionError, status
+    journal, archive, _refs = cohort_ack(tmp_path)
+    policy(tmp_path)
+    checks, posts = [], []
+    def key_status():
+        checks.append(True)
+        return {**READY, "usage_daily_usd": 4.0 if failure == "headroom" and len(checks) > 1 else 0}
+    if failure == "catalog":
+        def unavailable():
+            raise AdmissionError("classification_catalog_unavailable")
+        monkeypatch.setattr(module, "_model_context_bound", unavailable)
+    async def send(body, *, before_post):
+        if failure == "price":
+            body["provider"].pop("max_price")
+        if failure == "rollover":
+            monkeypatch.setattr(module, "_dispatch_period_open", lambda: False)
+        if not await before_post():
+            return None
+        posts.append(True)
+        return response(body)
+    assert not await process_classification(journal, enabled=lambda: True, send=send, key_status=key_status)
+    assert posts == [] and status(tmp_path)["unresolved"] == 0
+    assert journal.classification_status() == {"pending": 1}
+
+
+def test_price_contract_full_context_bound_and_mutations(tmp_path):
+    from decimal import Decimal
+    from muninn.history import classification_worker as module
+    journal, archive, refs = cohort_ack(tmp_path)
+    prepared = prepare_classification(MemoryLedger(archive, read_only=True), refs)
+    body = module.request_body(prepared)
+    assert module._cost_ceiling(body, 1050000) == Decimal("1.3125")
+    import copy
+    for field, value in [("models", ["other-model"]), ("model", "other-model"),
+                         ("max_completion_tokens", 4097), ("tools", []),
+                         ("plugins", [{"id": "web"}]), ("service_tier", "priority")]:
+        altered = copy.deepcopy(body)
+        altered[field] = value
+        with pytest.raises(module.AdmissionError, match="price_contract"):
+            module._cost_ceiling(altered, 1050000)
+    for context in (None, True, 0, "1050000", 8000001):
+        with pytest.raises(module.AdmissionError):
+            module._cost_ceiling(body, context)
+
+
+@pytest.mark.parametrize("offset,allowed", [(86100, True), (86280, False), (86399, False), (86400, True)])
+def test_utc_boundary_guard(monkeypatch, offset, allowed):
+    from muninn.history import classification_worker as module
+    monkeypatch.setattr(module.time, "time", lambda: offset)
+    assert utc_period_open() is allowed
+
+
+@pytest.mark.parametrize("data,valid", [
+    ([{"id": "openai/gpt-6-luna-pro", "context_length": 1050000}], True),
+    ([], False), ([{"id": "other-model", "context_length": 1050000}], False),
+    ([{"id": "openai/gpt-6-luna-pro", "context_length": True}], False),
+    ([{"id": "openai/gpt-6-luna-pro", "context_length": "1050000"}], False),
+    ([None], False),
+    ([{"id": "openai/gpt-6-luna-pro", "context_length": 1050000}] * 2, False),
+])
+def test_public_catalog_identity_and_bounds(monkeypatch, data, valid):
+    from muninn.history import classification_worker as module
+    # Capture original before the fixture's synthetic metadata injection.
+    client_class = httpx.Client
+    def handler(request):
+        assert request.method == "GET" and request.url.host == "openrouter.ai"
+        assert request.url.params["q"] == "openai/gpt-6-luna-pro"
+        assert "authorization" not in request.headers
+        return httpx.Response(200, json={"data": data})
+    def client(**kwargs):
+        assert kwargs["trust_env"] is False and kwargs["follow_redirects"] is False
+        return client_class(transport=httpx.MockTransport(handler), **kwargs)
+    monkeypatch.setattr(module.httpx, "Client", client)
+    if valid:
+        assert public_model_bound() == 1050000
+    else:
+        with pytest.raises(module.AdmissionError, match="catalog_unavailable"):
+            public_model_bound()
 
 
 @pytest.mark.asyncio
