@@ -496,3 +496,45 @@ backup PID 75332 remained alive at 7179.55 CPU seconds; its publication remains
 unproven and capture retries remain behind its old lock scope. The hidden local
 passphrase worker was not replaced. See
 `docs/architecture/adr-incremental-history-repository.md` for the migration gates.
+
+## Legacy source-fragment compatibility and validation handoff
+
+The existing copied full-backup stage failed strict source-evidence verification:
+attempt `de732953feb040b8af2c45feca4f5043`, version zero, page 23 contained
+4,097 decoded characters. Its 433 physical pages and 412 units authenticated;
+every unit's original-source text digest and complete metadata matched a fresh
+authenticated source parse in 1.3 seconds. All other shape, sequence and final
+checks passed; the database identity was unchanged. This is old escaped-character
+fragmentation, not permission to ignore corruption or discard the original.
+
+Independent review rejected splitting the full reader because citation IDs use
+physical page ordinals. The accepted implementation retains legacy physical
+pages/ciphertext/attempts, checks the existing bounded envelope before decoding,
+and preserves exact coordinates. New writers independently enforce the 4,096
+bound and complete unit metadata/termination. Cited windows remain at most 3,000
+characters and require whole-unit plus exact-window privacy screening; direct
+whole-page input remains capped at 4,096. Only NEW appended child attempts split
+inherited legacy text; existing parents remain immutable.
+
+The original synthetic checks exposed ten failures. The changed focused source,
+cited, ledger and append run passed 152 checks; its only failure was an incorrect
+test expectation that SQLite backup preserves the entire database file header.
+The corrected test compares all sealed ciphertext rows and the unchanged source
+file instead. Final 19 legacy checks passed in 8.09 seconds; affected append and
+paid-history recovery checks passed 27 in 36.35 seconds. Independent actual-diff
+review CLEAR. No full-suite or upstream merge is claimed.
+
+The actual frozen stage's source-evidence verification subsequently passed:
+3,228 snapshots, 6,169,223 units, 6,742,249 physical fragments. No existing
+evidence was rewritten and no second full backup was created.
+
+After independent handoff review, old CLI validator PID 75332 was checked twice:
+same creation epoch 1791417892.9737885, exact Miniconda executable/cwd/arguments,
+stable write bytes 40,296,651,746, and 10,711 unchanged private stage-file
+identities. It still had the incompatible, quadratic verifier loaded and had
+read over 1.3 TB. Only that PID was terminated; every stage file was preserved
+and all identities remained unchanged. The existing service was not stopped by
+this action. A subsequent canonical archive writer-lock probe acquired/released
+the lock successfully. Full stage publication, incremental enrollment and
+broader retention remain separate unfinished gates; no older full bundle or
+batch was retired on this evidence alone.

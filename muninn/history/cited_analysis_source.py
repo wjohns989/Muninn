@@ -14,6 +14,7 @@ from muninn.history.secure_projection_store import ProjectionIntegrityError
 from muninn.history.streaming_jsonl import StreamingJSONError
 from muninn.history.structured_projector import UnsupportedTranscript
 from muninn.history.transcript_units import PARSER_VERSION
+from muninn.history.source_evidence import SourceEvidenceStore
 
 _FIELDS = {"format", "blob", "sha256", "version", "attempt", "page", "offset",
            "length", "parser_version", "input_sha256", "boundary_hit", "prefix"}
@@ -95,7 +96,7 @@ class CitedAnalysisSource:
                 or type(value["parser_version"]) is not int or value["parser_version"] != PARSER_VERSION
                 or any(type(value[k]) is not int or value[k] < 0 for k in ("version", "page", "offset"))
                 or type(value["length"]) is not int or not 1 <= value["length"] <= 3000
-                or value["offset"] + value["length"] > 4096
+                or value["offset"] + value["length"] > SourceEvidenceStore.max_page_chars
                 or type(value["boundary_hit"]) is not bool
                 or not isinstance(value["blob"], str) or len(value["blob"]) != 32
                 or any(c not in "0123456789abcdef" for c in value["blob"])
@@ -109,7 +110,7 @@ class CitedAnalysisSource:
                     or any(type(prefix[k]) is not int or prefix[k] < 0 for k in prefix)
                     or not 1 <= prefix["length"] <= 1000
                     or prefix["page"] + 1 != value["page"]
-                    or prefix["offset"] + prefix["length"] > 4096
+                    or prefix["offset"] + prefix["length"] > SourceEvidenceStore.max_page_chars
                     or prefix["length"] + value["length"] > 3000
                     or value["offset"] != 0 or not value["boundary_hit"]):
                 raise CitedSourceError("Invalid cited boundary descriptor")
@@ -166,11 +167,12 @@ class CitedAnalysisSource:
         window = self.reopen(descriptor)
         entry = self._window(descriptor)[0]
         # This drains/authenticates the whole unit, not just the chosen excerpt.
-        approved = self.ledger.remote_input(entry, descriptor["version"], descriptor["attempt"],
-                                            descriptor["page"])
+        unit, _page = self.ledger._source(entry, descriptor["version"], descriptor["attempt"],
+                                         descriptor["page"])
+        approved = self.ledger._unit_info(entry, descriptor["version"], descriptor["attempt"], unit)[0]
         # Opaque project refs are not supplied to the content sanitizer as prose.
         content = {k: v for k, v in window.items() if k != "project_ref"}
-        return window if approved is not None and self.ledger._screen(content) else None
+        return window if approved and self.ledger._screen(content) else None
 
     def validated_proposals(self, descriptor, proposals):
         window = self.reopen(descriptor)

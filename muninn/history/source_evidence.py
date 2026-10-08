@@ -194,17 +194,32 @@ class SourceEvidenceStore(SecureProjectionStore):
             pages = self._iter_sealed_pages(parent_entry, version - 1, parent_attempt,
                                            check_cancel=check_cancel)
             try:
-                yield from self._decoded_fragments(pages, count, parent_stats)
+                # Only a NEW child attempt gets bounded replacement fragments.
+                # Existing parent physical pages/citations remain immutable.
+                for part in self._decoded_fragments(pages, count, parent_stats):
+                    if part.final or not part.text:
+                        yield part
+                    else:
+                        for start in range(0, len(part.text), 4096):
+                            yield UnitFragment(part.unit, part.text[start:start + 4096])
             finally:
                 pages.close()
 
         def project(source: Iterable[bytes]) -> Iterator[str]:
             fragment = 0
             emitted = False
+            expected_unit, current = 0, None
             for part in transcript_units(
                     self.archive, entry, source, should_cancel=should_cancel,
                     _prefix_entry=parent[0] if parent else None,
                     _parent_parts=parent_parts if parent else None):
+                if (not isinstance(part, UnitFragment) or not isinstance(part.unit, SourceUnit)
+                        or type(part.unit.ordinal) is not int or part.unit.ordinal != expected_unit
+                        or current is not None and current != part.unit
+                        or not isinstance(part.text, str) or len(part.text) > 4096
+                        or type(part.final) is not bool or part.final and part.text):
+                    raise ProjectionIntegrityError("invalid source-unit writer fragment")
+                current = part.unit
                 yield json.dumps({"unit": asdict(part.unit), "fragment": fragment,
                                   "text": part.text, "final": part.final},
                                  ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -214,6 +229,9 @@ class SourceEvidenceStore(SecureProjectionStore):
                     stats["source_units"] += 1
                     stats["conversational_units" if emitted else "omitted_units"] += 1
                     fragment, emitted = 0, False
+                    expected_unit, current = expected_unit + 1, None
+            if current is not None:
+                raise ProjectionIntegrityError("source-unit writer coverage is incomplete")
 
         return super().build(entry, version, project, stats=stats)
 
@@ -249,8 +267,9 @@ class SourceEvidenceStore(SecureProjectionStore):
             db.execute("BEGIN")
             count, stats = self._authenticated_count(db, ident, attempt)
             cipher = AESGCM(self._key())
-            rows = db.execute("SELECT ordinal,length,ciphertext FROM pages WHERE attempt=? ORDER BY ordinal",
-                              (attempt,))
+            rows = db.execute("SELECT ordinal,length,CASE WHEN length BETWEEN 1 AND ? "
+                              "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
+                              "FROM pages WHERE attempt=? ORDER BY ordinal", (self.max_page_chars * 4, attempt))
             yield from self._fragments(db, rows, ident, attempt, count, stats, cipher)
 
     def _fragments(self, db, rows, ident, attempt, count, stats, cipher) -> Iterator[UnitFragment]:
@@ -263,26 +282,60 @@ class SourceEvidenceStore(SecureProjectionStore):
                 yield self._decrypt_page(ident, attempt, ordinal, (length, ciphertext), cipher)
         yield from self._decoded_fragments(pages(), count, stats)
 
+    def _decrypt_page(self, ident, attempt, ordinal, page, cipher=None):
+        # Legacy v1 writers bounded JSON envelopes, not all decoded fragments.
+        # Reject oversized ciphertext BEFORE decryption and oversized decoded
+        # envelopes before JSON parsing; never renumber immutable physical pages.
+        if (not page or type(page[0]) is not int or not 1 <= page[0] <= self.max_page_chars * 4
+                or not isinstance(page[1], bytes) or len(page[1]) != page[0] + 28):
+            raise ProjectionIntegrityError("source-unit envelope is unavailable")
+        raw = super()._decrypt_page(ident, attempt, ordinal, page, cipher)
+        if len(raw) > self.max_page_chars:
+            raise ProjectionIntegrityError("source-unit envelope exceeds its bound")
+        return raw
+
+    def get_page(self, entry, version, attempt, ordinal):
+        ident = self._identity(entry, version)
+        if type(ordinal) is not int or ordinal < 0:
+            raise ProjectionIntegrityError("invalid source-unit page reference")
+        with self._connect() as db:
+            db.execute("BEGIN")
+            count, _stats = self._authenticated_count(db, ident, attempt)
+            if ordinal >= count:
+                raise ProjectionIntegrityError("source-unit page unavailable")
+            row = db.execute("SELECT length,CASE WHEN length BETWEEN 1 AND ? "
+                             "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
+                             "FROM pages WHERE attempt=? AND ordinal=?",
+                             (self.max_page_chars * 4, attempt, ordinal)).fetchone()
+            return self._decrypt_page(ident, attempt, ordinal, row)
+
+    def _decoded_page(self, page):
+        try:
+            if not isinstance(page, str) or not 1 <= len(page) <= self.max_page_chars:
+                raise ValueError
+            data = json.loads(page)
+            if (not isinstance(data, dict) or set(data) != {"unit", "fragment", "text", "final"}
+                    or type(data["fragment"]) is not int or data["fragment"] < 0
+                    or type(data["final"]) is not bool or not isinstance(data["text"], str)
+                    or data["final"] and data["text"]):
+                raise ValueError
+            unit = SourceUnit(**data["unit"])
+            if type(unit.ordinal) is not int or unit.ordinal < 0:
+                raise ValueError
+            return unit, data
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ProjectionIntegrityError("source-unit evidence authentication failed") from exc
+
     def _decoded_fragments(self, pages, count, stats) -> Iterator[UnitFragment]:
         expected_unit, expected_fragment = 0, 0
         unit = None
         seen = 0
         for page in pages:
             seen += 1
-            try:
-                data = json.loads(page)
-                if (set(data) != {"unit", "fragment", "text", "final"}
-                        or type(data["fragment"]) is not int or data["fragment"] != expected_fragment
-                        or type(data["final"]) is not bool or not isinstance(data["text"], str)
-                        or len(data["text"]) > 4096):
-                    raise ValueError
-                current = SourceUnit(**data["unit"])
-                if current.ordinal != expected_unit or (unit is not None and current != unit):
-                    raise ValueError
-                if data["final"] and data["text"]:
-                    raise ValueError
-            except (TypeError, ValueError, KeyError) as exc:
-                raise ProjectionIntegrityError("source-unit evidence authentication failed") from exc
+            current, data = self._decoded_page(page)
+            if (data["fragment"] != expected_fragment or current.ordinal != expected_unit
+                    or unit is not None and current != unit):
+                raise ProjectionIntegrityError("source-unit fragment sequence is incomplete")
             unit = current
             yield UnitFragment(unit, data["text"], data["final"])
             expected_fragment += 1
@@ -321,14 +374,8 @@ class SourceEvidenceStore(SecureProjectionStore):
                              "FROM pages WHERE attempt=? AND ordinal=?",
                              (self.max_page_chars * 4, attempt, ordinal)).fetchone()
             try:
-                data = json.loads(self._decrypt_page(ident, attempt, ordinal, row, cipher))
-                if (set(data) != {"unit", "fragment", "text", "final"}
-                        or type(data["fragment"]) is not int or data["fragment"] < 0
-                        or type(data["final"]) is not bool or not isinstance(data["text"], str)
-                        or len(data["text"]) > 4096 or data["final"] and data["text"]):
-                    raise ValueError
-                unit = SourceUnit(**data["unit"])
-                if type(unit.ordinal) is not int or not 0 <= unit.ordinal < stats["source_units"]:
+                unit, data = self._decoded_page(self._decrypt_page(ident, attempt, ordinal, row, cipher))
+                if unit.ordinal >= stats["source_units"]:
                     raise ValueError
                 return unit, data
             except (ValueError, TypeError, KeyError) as exc:
@@ -375,8 +422,9 @@ class SourceEvidenceStore(SecureProjectionStore):
                     raise ProjectionIntegrityError("source evidence has no authenticated snapshot")
                 ident = self._identity(entry, version)
                 count, stats = self._authenticated_count(db, ident, attempt)
-                pages = db.execute("SELECT ordinal,length,ciphertext FROM pages WHERE attempt=? ORDER BY ordinal",
-                                   (attempt,))
+                pages = db.execute("SELECT ordinal,length,CASE WHEN length BETWEEN 1 AND ? "
+                                   "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
+                                   "FROM pages WHERE attempt=? ORDER BY ordinal", (self.max_page_chars * 4, attempt))
                 for part in self._fragments(db, pages, ident, attempt, count, stats, cipher):
                     report["fragments"] += 1
                     report["units"] += int(part.final)

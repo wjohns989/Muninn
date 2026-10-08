@@ -206,14 +206,8 @@ class MemoryLedger(MemoryPlacementMixin):
         try:
             if type(version) is not int or self._entries.get((entry.get("blob"), version)) != entry:
                 raise ValueError
-            data = json.loads(self.units.get_page(entry, version, attempt, page))
-            if (set(data) != {"unit", "fragment", "text", "final"}
-                    or type(data["fragment"]) is not int or data["fragment"] < 0
-                    or data["final"] is not False or not isinstance(data["text"], str)
-                    or not 1 <= len(data["text"]) <= 4096):
-                raise ValueError
-            unit = SourceUnit(**data["unit"])
-            if type(unit.ordinal) is not int or unit.ordinal < 0:
+            unit, data = self.units._decoded_page(self.units.get_page(entry, version, attempt, page))
+            if data["final"] is not False or not data["text"]:
                 raise ValueError
             return unit, data
         except (ProjectionIntegrityError, ValueError, TypeError, KeyError) as exc:
@@ -308,6 +302,10 @@ class MemoryLedger(MemoryPlacementMixin):
 
     def remote_input(self, entry, version, attempt, page):
         unit, data = self._source(entry, version, attempt, page)
+        # Legacy physical pages may be larger; only cited windows can use those.
+        # Do not expand this direct whole-page model input boundary.
+        if len(data["text"]) > 4096:
+            return None
         body = {"text": data["text"], "provider": unit.provider,
                 "role": unit.role.casefold() if unit.role else None,
                 "event_at": unit.event_at, "time_basis": unit.time_basis,
