@@ -538,3 +538,22 @@ this action. A subsequent canonical archive writer-lock probe acquired/released
 the lock successfully. Full stage publication, incremental enrollment and
 broader retention remain separate unfinished gates; no older full bundle or
 batch was retired on this evidence alone.
+
+The approved Muninn-only reload to 52a5cbc passed the existing paid-stop fence,
+seven encrypted database preimages and zero-inflight-job check. Exactly one
+Miniconda service PID 79192 owns port 42069. Current health/history/authenticated
+checks returned 200; anonymous protected access returned 401 and public HTML did
+not contain the token. Strict archive readiness and remote-only capture remain
+enabled. Captures advanced from 3,382 to 3,565 archived jobs; the previously
+blocked pending/retry captures cleared. Two unavailable captures remain. The
+retained provider checkpoint remains awaiting provider with 60 requests/windows.
+This is capture recovery, not historical interpretation completion.
+
+The remaining copied-stage sections are being checked by
+`scripts.verify_history_backup_sections`, in an owned monitored process. It
+creates no copy, publishes nothing and reports only section counts/static error
+types. Scoped read-only constructors avoid derived-stage cleanup/schema writes.
+Two synthetic helper checks passed in 4.89 seconds, including whole-tree SHA
+preservation with a deliberately retained building attempt. Independent helper
+review CLEAR. It excludes the already verified source-evidence section and does
+not assert full backup validity until the other checks finish.
