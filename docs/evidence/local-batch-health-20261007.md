@@ -39,3 +39,43 @@ about four hours. That is degraded/unknown progress, not proof of a dead API or
 successful inference. No diagnostic model request was launched.
 
 Reference: [OpenRouter batch status/results contract](https://openrouter.ai/docs/batch-quickstart).
+
+## Installed proof
+
+The owned reload of candidate `9459b6f` passed its existing paid-stop fence,
+seven encrypted database preimages and zero-inflight-job check. One exact
+Miniconda/canonical-repo service PID 18936 (creation epoch 1791430246.7302876)
+owns port 42069. Capture/remote settings were preserved, not reauthorized or
+changed; four full restart preimages remain protected while incremental restart
+compaction operates separately.
+
+Authenticated history status returned 200 and anonymous access 401. The current
+batch stayed `awaiting_provider`, with 60 requests/windows. Its health is
+`degraded_unknown`: provider `in_progress`, completed 0, failed 0, total 60,
+last successful poll 1791430275.2363436, zero consecutive polling errors,
+age 15535.1 seconds, deadline 1791501172. The warning survived restart because
+its zero-outcome age comes from provider creation, not service uptime.
+
+The isolated live Edge check passed operating-status and actual window-count
+comparison (11209 recorded capture jobs). Parent inspection of the rendered
+screen confirmed readable warning, age 4.3 hours, counts 0/60, last-poll UTC and
+deadline UTC. No token, transcript text or credential value is displayed. The
+check did not issue transcript search, credential reveal or model inference.
+The screenshot is a temporary local status artifact, not a portable recovery
+receipt. Backlog completion and automatic alternative routing remain unproven:
+this change supplies honest visibility, not permission to bypass checkpoints.
+
+The existing ten-minute heartbeat was updated through the application tool, not
+by rewriting scheduler files. Its exact policy preimage was copied and SHA-256
+checked first. Read-back confirmed the same ID/kind/name/status/cadence/target
+and the complete prior prompt preserved as a prefix. Added instructions report
+new degraded/unknown, polling and deadline warnings without repeated unchanged
+notifications, provider dispatch, cancellation or checkpoint bypass.
+
+This reload's existing restart-pool compaction completed in 47.1s. It retired
+one older 3266338816-byte source-evidence preimage only after full reconstruction,
+hash and database recovery checks, adding 114322440 bytes of encrypted chunks.
+Four independent full restart preimages remain protected; the retired copy is
+recoverable through its retained manifest and pool. No batch or standalone full
+backup was deleted. This measured reduction is separate from the unfinished
+whole-bundle migration.
