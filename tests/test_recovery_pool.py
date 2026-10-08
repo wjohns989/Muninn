@@ -16,8 +16,44 @@ def fixture(tmp_path):
     archive = SecureHistoryArchive.create(tmp_path / "archive", "synthetic recovery passphrase")
     parent = archive.root / "operator-preimages"
     create_private_directory(parent)
-    pool = RecoveryPool(tmp_path / "pool", archive=archive)
+    pool = RecoveryPool(tmp_path / "pool", archive=archive,
+                        passphrase="synthetic recovery passphrase")
     return archive, parent, pool
+
+
+def test_portable_fixture_explicitly_unlocks_real_encrypted_anchor(tmp_path, monkeypatch):
+    from muninn.history import recovery_pool
+    constructor = recovery_pool.SecureHistoryArchive
+    supplied = []
+    def observed(root, passphrase=None, **kwargs):
+        assert root.resolve() == (tmp_path / 'pool' / 'key-anchor').resolve()
+        supplied.append(passphrase)
+        return constructor(root, passphrase, **kwargs)
+    monkeypatch.setattr(recovery_pool, 'SecureHistoryArchive', observed)
+    archive, _, pool = fixture(tmp_path)
+    assert supplied == ['synthetic recovery passphrase']
+    assert pool.anchor.vault_id == archive.vault_id
+    assert pool.anchor._key == archive._key
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Actual Windows user-protected unattended unlock')
+def test_windows_unattended_pool_unlock_and_foreign_identity(tmp_path):
+    archive, _, portable = fixture(tmp_path)
+    unattended = RecoveryPool(portable.root, archive=archive)
+    assert unattended.anchor.vault_id == archive.vault_id
+    assert unattended.anchor._key == archive._key
+    foreign = SecureHistoryArchive.create(tmp_path / 'foreign', 'synthetic recovery passphrase')
+    with pytest.raises(VaultIntegrityError, match='another archive'):
+        RecoveryPool(portable.root, archive=foreign)
+
+
+def test_portable_pool_rejects_wrong_passphrase_without_changing_anchor(tmp_path):
+    _, _, pool = fixture(tmp_path)
+    header = pool.root / 'key-anchor' / 'header.json'
+    before = header.read_bytes()
+    with pytest.raises(VaultIntegrityError):
+        RecoveryPool(pool.root, passphrase='wrong synthetic recovery passphrase')
+    assert header.read_bytes() == before
 
 
 def snapshot(parent, index, payload=None):
@@ -104,7 +140,7 @@ def test_foreign_archive_and_outside_snapshot_fail_closed(tmp_path):
     archive, parent, pool = fixture(tmp_path)
     foreign = SecureHistoryArchive.create(tmp_path / "foreign", "synthetic recovery passphrase")
     with pytest.raises(VaultIntegrityError):
-        RecoveryPool(pool.root, archive=foreign)
+        RecoveryPool(pool.root, archive=foreign, passphrase="synthetic recovery passphrase")
     with pytest.raises(VaultIntegrityError):
         pool.pack(archive, tmp_path)
 

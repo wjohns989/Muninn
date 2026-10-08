@@ -63,6 +63,23 @@ def test_default_is_read_only_and_enable_requires_restart():
         reload.parse_args(["--enable-capture-auto"])
 
 
+def test_recovery_retirement_requires_its_own_explicit_restart_choice():
+    args = reload.parse_args([])
+    assert args.retire_one_old_recovery_preimage is False
+    args = reload.parse_args(['--restart', '--expected-revision', 'abcdef0'])
+    assert args.retire_one_old_recovery_preimage is False
+    args = reload.parse_args(['--restart', '--expected-revision', 'abcdef0',
+                              '--retire-one-old-recovery-preimage'])
+    assert args.retire_one_old_recovery_preimage is True
+    for flags in ([], ['--expected-revision', 'abcdef0'], ['--restart'],
+                  ['--finalize-capture-auto', '--expected-revision', 'abcdef0',
+                   '--preimage-root', 'fixture'],
+                  ['--restart', '--finalize-capture-auto', '--expected-revision', 'abcdef0',
+                   '--preimage-root', 'fixture']):
+        with pytest.raises(SystemExit):
+            reload.parse_args([*flags, '--retire-one-old-recovery-preimage'])
+
+
 def test_preserve_mode_requires_restart_and_cannot_activate_or_finalize():
     with pytest.raises(SystemExit):
         reload.parse_args(["--preserve-capture-auto"])
@@ -243,11 +260,17 @@ def test_preserve_rejects_publication_pending_with_active_lease(tmp_path):
     (False, False, True)])
 @pytest.mark.parametrize("remote_enabled", [False, True])
 @pytest.mark.parametrize("active_capture", [False, True])
+@pytest.mark.parametrize("retire_preimage", [False, True])
 def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
-        tmp_path, monkeypatch, claim_race, foreign_owner, backup_failure, remote_enabled, active_capture):
+        tmp_path, monkeypatch, claim_race, foreign_owner, backup_failure, remote_enabled, active_capture,
+        retire_preimage, capsys):
     report, process = isolated_installation(tmp_path, monkeypatch)
     maintenance = []
-    monkeypatch.setattr(reload, "launch_recovery_compaction", lambda *args: maintenance.append(args))
+    def record_maintenance(*args):
+        assert stopped == [True] and launched == [environment]
+        assert poststart_checks and report['listener_owners'] == [child.pid]
+        maintenance.append(args)
+    monkeypatch.setattr(reload, "launch_recovery_compaction", record_maintenance)
     report["capture_enrichment"] = {"capture_enabled": True,
         "automatic_analysis_enabled": True, "automatic_remote_enabled": remote_enabled}
     original = process.environ()
@@ -328,26 +351,33 @@ def test_preserve_run_retains_queued_rows_and_rejects_claim_before_stop(
     monkeypatch.setattr(reload, "persist_capture_flags", forbidden)
     args = reload.parse_args(["--repo", str(tmp_path), "--restart", "--preserve-capture-auto",
                               "--expected-revision", "abcdef0", *(["--recover-active-capture"]
-                                                                   if active_capture else [])])
+                                                                   if active_capture else []),
+                              *(['--retire-one-old-recovery-preimage'] if retire_preimage else [])])
     if claim_race:
         with pytest.raises(RuntimeError, match="Queue changed"):
             reload.run(args)
         assert stopped == launched == []
+        assert maintenance == []
     elif backup_failure:
         with pytest.raises(OSError, match="fixture preimage failure"):
             reload.run(args)
         assert stopped == launched == []
+        assert maintenance == []
         with sqlite3.connect(journal, timeout=0) as db:
             db.execute("UPDATE jobs SET state='retry'")
     elif foreign_owner:
         with pytest.raises(RuntimeError, match="Candidate ownership differs"):
             reload.run(args)
         assert stopped == [True] and launched == [environment]
+        assert maintenance == []
         assert stopped_child == ([True] if remote_enabled else [])
     else:
         reload.run(args)
         assert created_preimages_under_fence == [True]
-        assert len(maintenance) == 1
+        assert len(maintenance) == int(retire_preimage)
+        if not retire_preimage:
+            assert 'recovery_preimages_preserved' in capsys.readouterr().out
+            assert not list(tmp_path.rglob('recovery-compaction.*'))
         assert stopped == [True] and launched == [environment]
         assert stopped_child == []
         with sqlite3.connect(journal) as db:
@@ -549,7 +579,8 @@ def test_read_only_run_never_prepares_destinations_or_changes_processes(tmp_path
     assert not (tmp_path / ".muninn_runtime").exists()
 
 
-def test_dirty_candidate_rejected_before_backup_stop_or_settings(tmp_path, monkeypatch):
+@pytest.mark.parametrize('retire_preimage', [False, True])
+def test_dirty_candidate_rejected_before_backup_stop_or_settings(tmp_path, monkeypatch, retire_preimage):
     if reload.os.name != "nt":
         pytest.skip("Windows reload path")
     isolated_installation(tmp_path, monkeypatch)
@@ -561,8 +592,10 @@ def test_dirty_candidate_rejected_before_backup_stop_or_settings(tmp_path, monke
     monkeypatch.setattr(reload, "create_private_directory", forbidden)
     monkeypatch.setattr(reload.subprocess, "Popen", forbidden)
     monkeypatch.setattr(reload, "read_user_flag", forbidden)
+    monkeypatch.setattr(reload, 'launch_recovery_compaction', forbidden)
     args = reload.parse_args(["--repo", str(tmp_path), "--restart",
-                              "--enable-capture-auto", "--expected-revision", "abcdef0"])
+                              "--enable-capture-auto", "--expected-revision", "abcdef0",
+                              *(['--retire-one-old-recovery-preimage'] if retire_preimage else [])])
     with pytest.raises(RuntimeError, match="source differs"):
         reload.run(args)
 
@@ -613,6 +646,58 @@ def test_untracked_runtime_files_reject_even_with_clean_tracked_diff(tmp_path, m
     monkeypatch.setattr(reload.subprocess, "run", lambda *args, **kwargs: next(results))
     with pytest.raises(RuntimeError, match="Untracked program"):
         reload.verify_candidate(tmp_path, "abcdef0")
+
+
+def test_candidate_comparison_includes_operator_and_live_ui(tmp_path, monkeypatch):
+    calls = []
+    def checked(command, **kwargs):
+        calls.append(command)
+        if 'rev-parse' in command:
+            return SimpleNamespace(stdout='abcdef012345\n')
+        if 'diff' in command:
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(stdout=b'')
+    monkeypatch.setattr(reload.subprocess, 'run', checked)
+    reload.verify_candidate(tmp_path, 'abcdef0')
+    required = {'dashboard.html', 'dashboard.css', 'scripts/reload_shared_local.py',
+                'scripts/compact_restart_recovery.py'}
+    for command in calls[1:]:
+        assert required <= set(command)
+    assert '--exclude-standard' not in calls[2]
+
+
+@pytest.mark.parametrize('filename', ['dashboard.html', 'dashboard.css'])
+def test_untracked_live_ui_is_not_exempt_from_tested_candidate(tmp_path, monkeypatch, filename):
+    results = iter([SimpleNamespace(stdout='abcdef012345\n'), SimpleNamespace(returncode=0),
+                    SimpleNamespace(stdout=filename.encode() + b'\0')])
+    monkeypatch.setattr(reload.subprocess, 'run', lambda *args, **kwargs: next(results))
+    with pytest.raises(RuntimeError, match='Untracked program'):
+        reload.verify_candidate(tmp_path, 'abcdef0')
+
+
+@pytest.mark.skipif(reload.os.name != 'nt', reason='Actual Windows operator run path')
+@pytest.mark.parametrize('filename', ['dashboard.html', 'dashboard.css',
+    'scripts/reload_shared_local.py', 'scripts/compact_restart_recovery.py'])
+def test_dirty_operator_or_live_ui_refuses_reload_before_effects(tmp_path, monkeypatch, filename):
+    isolated_installation(tmp_path, monkeypatch)
+    def git(command, **kwargs):
+        if 'rev-parse' in command:
+            return SimpleNamespace(stdout='abcdef012345\n')
+        if 'diff' in command:
+            return SimpleNamespace(returncode=int(filename in command))
+        return SimpleNamespace(stdout=b'')
+    monkeypatch.setattr(reload.subprocess, 'run', git)
+    def forbidden(*args, **kwargs):
+        pytest.fail('Untested controls reached an operational effect')
+    for name in ('prepare_preimage_destination', 'persist_capture_flags', 'read_user_flag',
+                 'launch_recovery_compaction'):
+        monkeypatch.setattr(reload, name, forbidden)
+    monkeypatch.setattr(reload.subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(reload, 'verify_stop_ownership', forbidden)
+    args = reload.parse_args(['--repo', str(tmp_path), '--restart', '--enable-capture-auto',
+                             '--expected-revision', 'abcdef0', '--retire-one-old-recovery-preimage'])
+    with pytest.raises(RuntimeError, match='Program source differs'):
+        reload.run(args)
 
 
 @pytest.mark.parametrize("source", [b"ignored_shadow.py", b"sourceless_shadow.pyc", b"shadow.pyd"])

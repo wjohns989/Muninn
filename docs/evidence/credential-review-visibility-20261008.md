@@ -11,6 +11,11 @@ credential vault, retries inference, or changes policy.
 This is component and isolated rendered proof, **not installed/live-worker
 notification proof**. The existing service PID 18936 was preserved without a
 restart or reload. Its authenticated new-status endpoint is not yet available.
+Read-only HTTP comparison later confirmed the HTML/CSS are hot-read from the
+checkout and already match these files; the banner shell is therefore served
+now. The Python status endpoint still returned authenticated HTTP 404. Until
+an authorized reload installs it, the banner reports unverified status, not a
+verified hidden-input wait.
 No credential-triage retry was performed. The old private progress record's
 failure cannot retrospectively establish the failure stage or a wrong password.
 

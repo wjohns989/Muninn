@@ -36,9 +36,12 @@ ACTIVE = {"jobs": {"pending", "retry", "capturing"},
           "history_search_jobs": {"pending", "retry", "running"},
           "history_analysis_jobs": {"pending", "retry", "running", "publishing", "publication_pending"}}
 PROGRAM_PATHS = ("server.py", "muninn", "mcp.py", "mcp_wrapper.py", "pyproject.toml",
-                 "uv.lock", "requirements*.txt", "scripts/start_shared_local.ps1")
+                 "uv.lock", "requirements*.txt", "scripts/start_shared_local.ps1",
+                 "dashboard.html", "dashboard.css", "scripts/reload_shared_local.py",
+                 "scripts/compact_restart_recovery.py")
 RUNTIME_SOURCE_SUFFIXES = {".py", ".pyw", ".js", ".mjs", ".cjs", ".ps1", ".toml",
-                           ".lock", ".txt", ".json", ".yaml", ".yml", ".pyd", ".so"}
+                           ".lock", ".txt", ".json", ".yaml", ".yml", ".pyd", ".so",
+                           ".html", ".css"}
 
 
 class PersistenceError(RuntimeError):
@@ -147,6 +150,9 @@ def parse_args(argv=None):
     parser.add_argument("--repo", type=Path, default=REPO_DEFAULT)
     parser.add_argument("--port", type=int, default=42069)
     parser.add_argument("--restart", action="store_true", help="Requires explicit operator authorization")
+    parser.add_argument('--retire-one-old-recovery-preimage', action='store_true',
+                        help='Separate explicit choice after verified restart: compact/retire at most one '
+                             'old recovery preimage, preserving four full copies and the new preimage')
     parser.add_argument("--enable-capture-auto", action="store_true", help="Enable local-only new-capture processing")
     parser.add_argument("--preserve-capture-auto", action="store_true",
                         help="Reload already enabled local capture without changing settings or queued work")
@@ -165,6 +171,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("invalid local port")
+    if args.retire_one_old_recovery_preimage and not args.restart:
+        parser.error('Recovery preimage retirement requires an explicitly authorized restart')
     if args.enable_capture_auto and not args.restart:
         parser.error("capture activation requires an explicitly authorized restart")
     if args.preserve_capture_auto and (not args.restart or args.enable_capture_auto or args.finalize_capture_auto):
@@ -700,7 +708,12 @@ def run(args):
                                       "strict_archive_ready": True, "automatic_local_capture": expected_auto,
                                       "automatic_remote_capture": expected_remote,
                                       "capture_settings_persisted": user_before is not None}), flush=True)
-                    launch_recovery_compaction(repo, archive, destination)
+                    if args.retire_one_old_recovery_preimage:
+                        launch_recovery_compaction(repo, archive, destination)
+                    else:
+                        print(json.dumps({'stage': 'recovery_preimages_preserved',
+                                          'retirement_requested': False,
+                                          'maintenance_started': False}), flush=True)
                     return
             except (httpx.HTTPError, ConnectionError):
                 pass

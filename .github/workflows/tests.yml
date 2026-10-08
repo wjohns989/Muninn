@@ -48,6 +48,7 @@ jobs:
           tests/test_credential_zdr.py
           tests/test_verify_history_backup_sections.py
           tests/test_paid_reload_fence.py
+          tests/test_recovery_pool.py
 
       - name: Run tests
         env:

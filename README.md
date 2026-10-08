@@ -148,6 +148,12 @@ and `--expected-revision` with the tested Git commit hash. Use the same Python
 interpreter as the service; `--repo` and `--port` support other checkout locations
 and ports. By default this procedure requires capture enrichment to be off and
 the durable queues to be idle; it is not an unattended upgrade mechanism.
+An ordinary reload preserves all recovery preimages and starts no maintenance
+worker. Retirement is a separate destructive operator choice:
+`--retire-one-old-recovery-preimage`, only with an explicitly authorized restart
+and its tested revision. After the replacement is verified, that choice may
+compact and retire at most one old preimage, preserving four full recovery
+copies and excluding the new preimage. It does not delete retained batches.
 
 For an already enabled installation, add `--preserve-capture-auto`
 to an explicitly authorized reload. This requires both the authenticated
