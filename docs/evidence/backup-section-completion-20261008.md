@@ -54,3 +54,29 @@ owned process was alive and hashing the validated bundle; no snapshot, repositor
 data-check, exact-restore completion, or off-device proof is claimed yet.
 The full published original remains intact, and this drill has no prune/delete
 operation or provider transport.
+
+## Terminal exact-recovery proof, October 8
+
+The owned recovery drill exited zero. The encrypted snapshot ID is
+`c4068af1578dd4b7bdff0252f944e5c28b0ed5c53d7b5bcd694c6b725bdbb7cd`.
+Its full repository data check passed, followed by exact-ID restore and
+byte-identical tree verification: 10,711 files / 40,296,599,306 bytes.
+Cold-read checks authenticated accounting with remote and batch policies
+disabled, all 40 retained batches, and seven SQLite structural checks.
+The restored manifest contains 7,256 snapshot versions. Full prior section
+proofs carry through exact file-path, length and SHA256 equality; they were
+not unnecessarily rerun.
+
+After cold reads, both restored and original trees were hashed and compared
+again. The terminal receipt reports `original_preserved=true`,
+`deleted_files=0`, elapsed 469.9 seconds,
+`source_witness=matching_original_contents`, and
+`remote_receipts=schema_absent_unknown`. Independent examination cleared the
+helper's exact-ID, cold-read, preservation and privacy controls against this
+terminal result and identified the previously pending prose above as stale.
+
+This closes the actual same-disk exact-restore gate. It does not prove
+off-device or cross-machine recovery, a backup of subsequent live changes,
+complete historical credential remote receipts, full installation acceptance,
+or upstream promotion. No service restart, provider call, billing-hold release,
+prune or deletion was performed.
