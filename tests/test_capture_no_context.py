@@ -1,4 +1,6 @@
 """Authenticated empty-window completion is not inference or model reuse."""
+import os
+
 import pytest
 
 from muninn.history.capture_journal import CaptureJournal
@@ -165,7 +167,22 @@ def test_damaged_original_plan_cannot_commit_empty_completion(tmp_path):
         assert tuple(db.execute("SELECT * FROM capture_enrichment_sources").fetchone()) == source_before
 
 
-def test_empty_proof_survives_actual_portable_backup_restore(tmp_path):
+def test_empty_proof_survives_portable_archive_restore(tmp_path):
+    from muninn.history.secure_archive import SecureHistoryArchive
+    journal, archive, receipt, job = queued(tmp_path)
+    assert journal.acknowledge_capture_no_context(job.job_id, lease_token=job.lease_token)
+    # Portable passphrase restoration is supported on every host. The source
+    # here is an isolated encrypted archive, not an unattended Windows backup.
+    restored = SecureHistoryArchive.restore_from_backup(archive.root, tmp_path / "restored",
+                                                       "test-only portable passphrase")
+    restored_journal = CaptureJournal(restored, recover=False)
+    assert restored_journal.verify_all() == 0
+    assert restored_journal.get_analysis_job(job.job_id)["coverage_basis"] == "authenticated_whitespace"
+    assert restored_journal.capture_window_status(receipt)["state"] == "no_context"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Unattended backup requires Windows user protection")
+def test_empty_proof_survives_actual_windows_backup_restore(tmp_path):
     from muninn.history.secure_archive import SecureHistoryArchive
     journal, archive, receipt, job = queued(tmp_path)
     assert journal.acknowledge_capture_no_context(job.job_id, lease_token=job.lease_token)
