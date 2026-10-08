@@ -14,7 +14,9 @@ jobs:
   pytest:
     name: Full test suite (locked dependencies)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Prior run reached 63% in 782s plus 128s affected checks. A 20-minute
+    # ceiling cannot accommodate that measured gate; retain bounded headroom.
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,6 +47,7 @@ jobs:
           tests/test_paid_history_recovery.py
           tests/test_credential_zdr.py
           tests/test_verify_history_backup_sections.py
+          tests/test_paid_reload_fence.py
 
       - name: Run tests
         env:
