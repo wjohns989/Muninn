@@ -59,6 +59,13 @@ context.api = async path => { assert.equal(path, '/history/status');
     let batch = document.getElementById('history-batch-status').textContent;
     assert.match(batch, /1 window.*9.window checkpoint.*round 1/);
     assert.match(batch, /waiting for provider/);
+    state.capture_enrichment.historical_batch.health = {state: 'degraded_unknown', age_seconds: 14400,
+        completed_requests: 0, failed_requests: 0, total_requests: 60};
+    await vm.runInContext('loadHistoryStatus()', context);
+    batch = document.getElementById('history-batch-status').textContent;
+    assert.match(batch, /Delayed: no reported progress; internal activity unknown/);
+    assert.match(batch, /4.0 hours; 0 completed \/ 60 requests, 0 failed/);
+    assert.match(batch, /No streaming results/);
     state.capture_enrichment.window_jobs.states.pending = '<img>';
     state.capture_enrichment.historical_batch = {state: '<img>', items: '<script>'};
     await vm.runInContext('loadHistoryStatus()', context);

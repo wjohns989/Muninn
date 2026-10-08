@@ -765,7 +765,7 @@ class HistoryService:
                                     "automatic_analysis_enabled": self._capture_auto_enabled(),
                                     "automatic_remote_enabled": self._capture_remote_enabled(),
                                     "automatic_remote_only": self._capture_remote_enabled(),
-                                    "historical_batch": (self._historical_batch_worker.status
+                                    "historical_batch": (self._historical_batch_worker.snapshot()
                                                          if self._historical_batch_worker is not None
                                                          else {"state": "inactive"}),
                                     "cadence": self._capture_cadence.snapshot(),
@@ -1427,7 +1427,8 @@ class HistoryService:
             await asyncio.gather(task, return_exceptions=True)
             raise
         except Exception as exc:
-            self._historical_batch_worker.status = {"state": "recovery_deferred",
+            self._historical_batch_worker.status = {**self._historical_batch_worker.status,
+                                                   "state": "recovery_deferred",
                                                    "error_category": type(exc).__name__}
             raise
         return True

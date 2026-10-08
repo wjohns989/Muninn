@@ -1165,6 +1165,26 @@
                 }
                 if (batch.state === 'awaiting_provider' || batch.state === 'submitted')
                     batchText += 'Pending, not failed or complete. Provider completion allowance is up to 24 hours.';
+                const health = object(batch.health);
+                const healthLabels = {degraded_unknown: 'Delayed: no reported progress; internal activity unknown',
+                    polling_error: 'Provider polling error', polling_stale: 'Local polling overdue',
+                    deadline_overdue: '24-hour deadline overdue; provider still nonterminal',
+                    metrics_unknown: 'Provider progress metrics unavailable', awaiting_progress: 'Awaiting reported progress',
+                    progress_observed: 'Provider reports progress', provider_completed: 'Provider completed; local checks still required',
+                    provider_failed: 'Provider reports failure', provider_expired: 'Provider reports expiry',
+                    provider_cancelled: 'Provider reports cancellation'};
+                if (Object.prototype.hasOwnProperty.call(healthLabels, health.state)) {
+                    const age = typeof health.age_seconds === 'number' && Number.isFinite(health.age_seconds) && health.age_seconds >= 0 ?
+                        `${(health.age_seconds / 3600).toFixed(1)} hours` : 'unknown age';
+                    batchText += ` ${healthLabels[health.state]}; ${age}; ${count(health.completed_requests)} completed / ` +
+                        `${count(health.total_requests)} requests, ${count(health.failed_requests)} failed. No streaming results.`;
+                    const stamp = value => {
+                        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 'unknown';
+                        const date = new Date(value * 1000);
+                        return Number.isNaN(date.getTime()) ? 'unknown' : date.toISOString();
+                    };
+                    batchText += ` Last successful poll: ${stamp(health.last_successful_poll_at)}; deadline: ${stamp(health.deadline_at)}.`;
+                }
             }
             const drain = object(enrichment.backlog_drain);
             let drainText = 'Catch-up state unknown; not evidence of completion.';
@@ -1500,6 +1520,26 @@
                     }
                     batchStatus.textContent += 'Up to 128 windows per batch, each up to 3,000 characters. ' +
                         'The next unrelated batch waits for checkpoint validation and publication.';
+                    const health = batch.health && typeof batch.health === 'object' && !Array.isArray(batch.health) ? batch.health : {};
+                    const healthLabels = {degraded_unknown: 'Delayed: no reported progress; internal activity unknown',
+                        polling_error: 'Provider polling error', polling_stale: 'Local polling overdue',
+                        deadline_overdue: '24-hour deadline overdue; provider still nonterminal',
+                        metrics_unknown: 'Provider progress metrics unavailable', awaiting_progress: 'Awaiting reported progress',
+                        progress_observed: 'Provider reports progress', provider_completed: 'Provider completed; local checks still required',
+                        provider_failed: 'Provider reports failure', provider_expired: 'Provider reports expiry',
+                        provider_cancelled: 'Provider reports cancellation'};
+                    if (Object.prototype.hasOwnProperty.call(healthLabels, health.state)) {
+                        const age = typeof health.age_seconds === 'number' && Number.isFinite(health.age_seconds) && health.age_seconds >= 0 ?
+                            `${(health.age_seconds / 3600).toFixed(1)} hours` : 'unknown age';
+                        batchStatus.textContent += ` ${healthLabels[health.state]}; ${age}; ${count(health.completed_requests)} completed / ` +
+                            `${count(health.total_requests)} requests, ${count(health.failed_requests)} failed. No streaming results.`;
+                        const stamp = value => {
+                            if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 'unknown';
+                            const date = new Date(value * 1000);
+                            return Number.isNaN(date.getTime()) ? 'unknown' : date.toISOString();
+                        };
+                        batchStatus.textContent += ` Last successful poll: ${stamp(health.last_successful_poll_at)}; deadline: ${stamp(health.deadline_at)}.`;
+                    }
                 }
             }
             if (queue && typeof queue === 'object' && !Array.isArray(queue)) {

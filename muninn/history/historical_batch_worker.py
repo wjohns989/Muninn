@@ -93,18 +93,37 @@ class HistoricalBatchWorker:
     """
     def __init__(self, journal, *, authorize_submit=lambda generation: False,
                  authorize_transaction=None, send=transport, provider_status=None, clock=time.monotonic,
-                 repair_id=None):
+                 repair_id=None, wall_clock=time.time):
         self.journal = journal
         self.authorize_submit = authorize_submit
         self.authorize_transaction = authorize_transaction
         self.send = send
         self.provider_status = provider_status
         self.clock = clock
+        self.wall_clock = wall_clock
+        self._health = None
+        self._health_owner = None
         self.next_poll = 0.0
         self.status = {"state": "idle"}
         self.next_step = 0.0
         self.repair_id = repair_id
         self.repair_worker = None
+
+    def snapshot(self):
+        result = dict(self.status)
+        if self._health is not None:
+            result['health'] = self._health.snapshot(self.wall_clock())
+        return result
+
+    def _observe_provider(self, reply, expected, *, poll=True):
+        self._health.observe(reply, expected=expected, now=self.wall_clock(), poll=poll)
+
+    async def _get(self, provider_id):
+        try:
+            return await self.send('GET', provider_id=provider_id)
+        except Exception:
+            self._health.poll_failed()
+            raise
 
     def _private_owner(self):
         with self.journal._connect() as db:
@@ -163,14 +182,18 @@ class HistoricalBatchWorker:
             self.status["items"] = owner["items"]
         units = {"windows": len(record["items"]),
                  "provider_requests": len(payload(record["items"])["requests"])}
+        if self._health_owner != record['id']:
+            from muninn.history.batch_health import BatchHealth
+            self._health_owner, self._health = record['id'], BatchHealth()
         self.status.update(units)
         if record["state"] == "submission_unknown":
             candidate = record.get("recovery_candidate")
             if candidate is None:
                 self.status["state"] = "submission_unknown"
                 return True  # Block advance, without hot polling or blind retry.
-            reply = await self.send("GET", provider_id=candidate)
+            reply = await self._get(candidate)
             if reply.get("id") != candidate:
+                self._health.poll_failed()
                 raise BatchError("batch_poll_identity_invalid")
             if reply.get("status") != "completed":
                 self.status["state"] = "awaiting_provider_identity"
@@ -249,6 +272,7 @@ class HistoricalBatchWorker:
                     raise
                 reply = await self.send("POST", body=body)
                 await asyncio.to_thread(outbox.save_submission, owner["id"], record["revision"] + 1, reply)
+                self._observe_provider(reply, units['provider_requests'], poll=False)
                 self.next_poll = self.clock() + 60
                 self.status["state"] = "submitted"
                 return True
@@ -261,11 +285,13 @@ class HistoricalBatchWorker:
                 self.status["state"] = "awaiting_provider"
                 return True
             self.next_poll = self.clock() + 60
-            reply = await self.send("GET", provider_id=record["provider_id"])
+            reply = await self._get(record['provider_id'])
             if (reply.get("id") != record["provider_id"] or reply.get("model") not in MODEL_IDENTITIES
                     or reply.get("endpoint") != "/v1/chat/completions"
                     or reply.get("status") not in {"validating", "in_progress", "finalizing", *TERMINAL}):
+                self._health.poll_failed()
                 raise BatchError("batch_poll_identity_invalid")
+            self._observe_provider(reply, units['provider_requests'])
             if reply["status"] not in TERMINAL:
                 self.status["state"] = "awaiting_provider"
                 return True
@@ -316,13 +342,19 @@ class HistoricalBatchWorker:
             if self.repair_worker is None or self.repair_worker.repair_id != child_id:
                 self.repair_worker = HistoricalBatchWorker(self.journal, authorize_submit=self.authorize_submit,
                     authorize_transaction=self.authorize_transaction, send=self.send,
-                    provider_status=self.provider_status, clock=self.clock, repair_id=child_id)
-            await self.repair_worker.step()
+                    provider_status=self.provider_status, clock=self.clock, repair_id=child_id,
+                    wall_clock=self.wall_clock)
             updated = await asyncio.to_thread(outbox.read, parent_id)
-            self.status = {**self.repair_worker.status, "repair_only": True,
-                           "parent_items": len(parent["items"]),
-                           "parent_provider_requests": len(payload(parent["items"])["requests"]),
-                           "repair_round": len(updated["repairs"])}
+            try:
+                await self.repair_worker.step()
+            finally:
+                # Observability must reach the parent even when a child's GET
+                # fails. No state/identity/charge fence is changed by this copy.
+                self.status = {**self.repair_worker.snapshot(), "repair_only": True,
+                               "parent_items": len(parent["items"]),
+                               "parent_provider_requests": len(payload(parent["items"])["requests"]),
+                               "repair_round": len(updated["repairs"])}
+                self._health = self.repair_worker._health
         return True
 
     async def _publish(self, source, job, stage):
