@@ -47,7 +47,35 @@ Windows. Added checks use real encrypted constructors, reject a wrong phrase
 without changing the header, and separately prove actual Windows unattended
 unlock and foreign-archive rejection. Production recovery/unlock code is
 unchanged. This file joins the affected portable CI group; the full locked
-suite remains required. A new exact-head Linux result is still required.
+suite remains required. At that checkpoint, a new exact-head Linux result was
+still required; the terminal result follows below.
+
+### Terminal exact-head gate and conditional reload review
+
+Tests run 37834757988 completed successfully for
+`20d630d436aca8dc53f6e15c07f2c0811f4cadde`. The affected portable group passed
+179 tests, with 43 skipped, in 92.93 seconds. The locked full Linux suite
+passed 3997 tests, with 101 skipped and two warnings, in 766.93 seconds.
+Clean-install imports, privacy, incident replay and benchmark checks also
+passed for that head. Skips do not constitute platform behavior proof; the
+160 focused Windows tests remain the separate Windows evidence.
+
+Independent examination of the unchanged candidate and conditional reload
+proof plan returned CLEAR. This is not human execution permission. The
+prepared action preserves capture/remote settings and permits replay of at
+most one interrupted CPU capture; it contains no retirement, new activation,
+new diagnostic or credential-worker flag. Fresh uncertainty in paid binding,
+candidate, queue/lease, ownership or validated preimages must refuse stop.
+
+Read-only preimage inventory found seven private, unlinked databases totaling
+3,501,576,192 bytes and 417,836,204,032 bytes free on the destination volume.
+No new preimage was copied and copy duration remains unknown. After permission
+and execution, actual acceptance still requires one replacement listener,
+strict/authenticated readiness, an authenticated no-store triage-status GET
+that is no longer 404, no password request when no worker exists, unchanged
+paid owner/request identities/input hashes and preserved queues/settings/copies.
+Existing authorized worker progress may legitimately advance checkpoint state.
+No such live reload or acceptance is claimed here.
 
 ## Read-only live observation
 
