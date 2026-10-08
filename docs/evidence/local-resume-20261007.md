@@ -461,3 +461,38 @@ CLEAR after both corrections. A metadata-only invocation of the installed
 selector against the canonical archive reported zero eligible old full copies
 with the four-full-copy floor. It accessed no archive key, changed no databases,
 and retired no further files. Broader backup rotation remains unfinished.
+
+## Whole-bundle incremental repository pilot
+
+The previous goal turn delivered local commit 3ee23c4. No Restic/Borg/Kopia was
+on PATH. The official Restic 0.19.1 Windows AMD64 ZIP and SHA256SUMS were checked
+against pinned release digests. The extracted binary SHA-256 is
+`b0dd1fd21eea5d8fe1325f55f7118213c21f36de8a261e04c0624a5ab9fd7830`.
+It is owner-private at
+`C:\Users\wjohn\AppData\Local\Muninn\tools\restic\0.19.1\restic.exe`,
+not on PATH/startup. No PGP-signature verification claim is made. The adapter
+rechecks the pinned executable hash before use.
+
+The actual native 128 KiB canary passed in 9.96s: stdin initialization/reopen,
+portable anchor unlock, repeated snapshot with zero new data, full repository
+data check and verified exact-byte restore. The managed-runtime fixture then
+passed actual Restic transport AND Muninn cold restore, exact batch DB SHA,
+two publications and disabled remote/batch permissions. Provider calls were
+fakes. Independent review required a public application-backup API, pre-effect
+network-path rejection, bounded output and same-vault key equality; all are
+implemented. The wrong-key regression failed before the constant-time fix.
+Final eight adapter checks passed in 22.00s. The earlier adapter/paid-history
+combined run passed 22 checks in 74.48s; its unchanged paid-history evidence is
+reused, not claimed as a new full-suite run. Final actual-diff review CLEAR on
+the candidate properties, not real enrollment or migration.
+
+No real bundle or credential vault was enrolled, no original/batch/snapshot was
+deleted, and no expiry/GC/schedule was enabled. Prior 106.310 GiB cleanup remains
+the measured reduction; synthetic deduplication does not predict live savings.
+Read-only readiness still showed the single owned PID 67212, strict archive,
+health/authenticated endpoints 200, anonymous protected 401, and unchanged
+remote-only 60-window awaiting-provider checkpoint. At the latest process check
+backup PID 75332 remained alive at 7179.55 CPU seconds; its publication remains
+unproven and capture retries remain behind its old lock scope. The hidden local
+passphrase worker was not replaced. See
+`docs/architecture/adr-incremental-history-repository.md` for the migration gates.
