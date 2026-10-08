@@ -36,3 +36,21 @@ snapshot. Those require the separate no-replace publication, repository data
 check, exact-ID restore, byte-identical tree checks and read-only restored-store
 proof. A same-disk restore is not off-device recovery. Full installation
 acceptance, live interpretation completion and upstream promotion remain open.
+
+## Reviewed publication and recovery drill
+
+Independent integration review cleared no-replace publication of the exact
+unchanged stage. Publication succeeded to
+`C:/Users/wjohn/muninn_backups/history-runtime-full-20261007-classification-10e0ae5`:
+10,711 files, 40,296,599,306 bytes, 7,256 snapshot versions, zero deleted files.
+The scope and unknown historical remote-receipt limitation were preserved.
+
+The parent-owned migration helper now gates on these combined proofs rather
+than the old failed verifier's exit code and carries the credential limitation
+in its final receipt. The actual encrypted repository/exact-restore drill was
+started in new `history-recovery-v1` and
+`history-recovery-v1-restore-drill-20261008` destinations. At this checkpoint the
+owned process was alive and hashing the validated bundle; no snapshot, repository
+data-check, exact-restore completion, or off-device proof is claimed yet.
+The full published original remains intact, and this drill has no prune/delete
+operation or provider transport.
