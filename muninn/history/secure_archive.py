@@ -871,35 +871,38 @@ class SecureHistoryArchive:
                 raise VaultIntegrityError("History accounting changed during backup; retry is required")
             if backup.vault_id != self.vault_id:
                 raise VaultIntegrityError("History backup identity mismatch")
-            report = backup.verify_all()
-            report["runtime_bundle"] = int(runtime)
-            if (archive_staging / "historical-batches-managed").exists():
-                from muninn.history.historical_batch import BatchOutbox
+        # The private copy is now frozen. Authenticate it without holding the
+        # live archive's writer lock: subsequent live captures cannot change
+        # these copied files, and a failed proof still prevents publication.
+        report = backup.verify_all()
+        report["runtime_bundle"] = int(runtime)
+        if (archive_staging / "historical-batches-managed").exists():
+            from muninn.history.historical_batch import BatchOutbox
 
-                report["historical_batches_verified"] = BatchOutbox(backup).verify_all()["batches"]
-            journal = CaptureJournal(backup, recover=False)
-            journal.verify_all()
-            report["publication_receipts_verified"] = journal.verify_publications()
-            report["classification_jobs_verified"] = journal.verify_classifications()
-            if (archive_staging / "source-evidence").exists():
-                from muninn.history.source_evidence import SourceEvidenceStore
+            report["historical_batches_verified"] = BatchOutbox(backup).verify_all()["batches"]
+        journal = CaptureJournal(backup, recover=False)
+        journal.verify_all()
+        report["publication_receipts_verified"] = journal.verify_publications()
+        report["classification_jobs_verified"] = journal.verify_classifications()
+        if (archive_staging / "source-evidence").exists():
+            from muninn.history.source_evidence import SourceEvidenceStore
 
-                report["evidence_snapshots_verified"] = SourceEvidenceStore(backup).verify_all()["snapshots"]
-            if (archive_staging / "credential-context").exists():
-                from muninn.history.credential_context import CredentialContextStore
+            report["evidence_snapshots_verified"] = SourceEvidenceStore(backup).verify_all()["snapshots"]
+        if (archive_staging / "credential-context").exists():
+            from muninn.history.credential_context import CredentialContextStore
 
-                report["credential_context_snapshots_verified"] = (
-                    CredentialContextStore(backup).verify_all()["snapshots"])
-            if (archive_staging / "memory-ledger").exists():
-                from muninn.history.memory_ledger import MemoryLedger
+            report["credential_context_snapshots_verified"] = (
+                CredentialContextStore(backup).verify_all()["snapshots"])
+        if (archive_staging / "memory-ledger").exists():
+            from muninn.history.memory_ledger import MemoryLedger
 
-                report["memory_candidates_verified"] = MemoryLedger(backup).verify_all()["candidates"]
-            if (archive_staging / "cited-windows").exists():
-                from muninn.history.cited_windows import CitedWindowPlanStore
+            report["memory_candidates_verified"] = MemoryLedger(backup).verify_all()["candidates"]
+        if (archive_staging / "cited-windows").exists():
+            from muninn.history.cited_windows import CitedWindowPlanStore
 
-                report["cited_windows_verified"] = CitedWindowPlanStore(backup).verify_all()["windows"]
-            self._publish_staging(staging, destination)
-            return report
+            report["cited_windows_verified"] = CitedWindowPlanStore(backup).verify_all()["windows"]
+        self._publish_staging(staging, destination)
+        return report
 
     def metadata_catalog(self, *, provider: str | None = None, offset: int = 0,
                          limit: int = 100) -> list[SafeHistoryMetadata]:

@@ -239,3 +239,95 @@ schema/allowlist changes were needed. Pre-activation batch identity/counts and
 item/wire hashes still match the prior activation's retained 60-request batch.
 The same credential-review parent 52128 / child 10840 remains awaiting a hidden
 local passphrase; no new worker or secret channel was created.
+
+## Installed continuation and storage/ETA audit
+
+Candidate `10e0ae51647a271467cb1dc283888d4c33e947b5` passed the guarded existing-only
+reload with seven verified encrypted database preimages and idle durable workers.
+Strict/authenticated readiness, automatic capture and remote-only processing were
+preserved; no user policy was persisted or changed. The installed context/profile
+bridge passed 20 tools and transcript workflow exposure in 1.830s. The retained
+60-window/60-request batch above kept its exact identity and item/wire hashes.
+The listener subsequently checked as PID 44860 on loopback port 42069.
+
+The dashboard smoke helper's obsolete authentication placeholder and navigation
+expectations were corrected to the installed accessible label and seven actual
+sidebar links. Six focused tests passed in 0.51s. A bounded installed-browser
+check passed authenticated history, capture status, recorded window counts and
+eight keyboard navigation checks, without model/resource calls or policy writes.
+The rendered screenshot was manually inspected. This is installed dashboard
+smoke proof, not completion of the UI overhaul.
+
+Read-only samples around 2026-10-08 00:15 UTC: the same retained provider batch
+was in_progress with total 60, completed 0, failed 0 and no bill yet, created at
+2026-10-07 23:12:52 UTC. Incomplete requests are pending, not failures. Lane-1
+journal states were succeeded 3418, reused 501, no_context 212, pending 128,
+privacy-parked retry 6942 and outcome_unknown 8. There were 593 currently
+successful jobs updated in the preceding 24 hours. The 7070 pending/parked windows
+would represent about 11.9 days at that pace IF parked work becomes eligible;
+this is a conditional yardstick, not an entire-backlog ETA. Unplanned source
+versions, credential review and uncertain jobs remain separate, so total remaining
+windows and overall completion percentage remain unknown. Current larger packing
+has not supplied a measured completed cohort supporting a faster projection.
+
+Metadata-only sizing skipped junctions/symlinks and did not read/hash large data.
+These are logical apparent GiB, not allocated disk bytes or proven identical
+duplicates. Fifteen additional Git worktrees together used approximately 0.13
+GiB excluding Git internals/shared links. Canonical runtime used 192.852 GiB;
+130.255 GiB of that was 58 archive operator-preimage directories. Archive blobs
+used 46.657 GiB including 389 preserved temporary files; 7256 committed encrypted
+blobs alone totaled about 27.75 GiB. Separate muninn_backups used 143.142 GiB,
+including the current incomplete full-backup stage at 37.529 GiB. Four rehearsal
+installations together used 28.314 GiB. C: had about 435 GiB free at the audit.
+No deletion, move, linking, pruning or claim of reclaimable byte-identical data
+was made. Recovery-copy accumulation, not code worktrees, is the material storage
+efficiency issue; a deduplicated backup design is not installed by this audit.
+
+The full encrypted runtime backup to
+`C:\Users\wjohn\muninn_backups\history-runtime-full-20261007-classification-10e0ae5`
+is still running/validating, with its incomplete stage preserved. This receipt
+does not assert its publication, completion or cross-machine restore. The backup
+excludes the separately protected credential vault and environment configuration.
+
+## Capture identity correction and backup availability
+
+The six installed capture-scan errors were reproduced without queue mutation:
+all were native-origin conflicts, not proven divergent byte branches. The queue
+used the first UUID from allowed `rollout-...-UUID_UUID.jsonl` names, whereas
+archive lineage correctly declines to infer a native identity from multiple
+UUIDs. This conflated distinct physical transcripts with the single-ID parent.
+Fresh capture/discovery keys now follow the archive boundary: single-ID native
+keys remain unchanged; ambiguous names use the existing physical-path fallback.
+Existing encrypted rows/backups are still verifiable using their exact legacy
+first-UUID HMAC, confined to verification, never fresh enqueue. No archive
+manifest, schema, paid identity, provider permission or budget was changed.
+The mutable legacy queue locator can refresh through normal revision-fenced
+enqueue; immutable old archive versions and timestamps are not rewritten.
+
+Two new capture regressions failed against the old implementation. The original
+36-case relocation run passed in 17.97s; after expanding the new scanner test to
+both discovery orders and preexisting archived legacy rows, all six new cases
+passed in 5.42s. The unchanged 32 original cases plus these six establish 38
+covered relocation cases, not a new clean full-suite claim. Related journal,
+strict-gate, enrichment and enrollment checks passed 52 cases in 30.96s.
+A read-only projection on the current inventory found zero duplicate physical
+groups under candidate keys, zero existing locator identity mismatches and four
+compatible legacy rows. This is candidate evidence, not installed scan closure.
+
+Unattended backup validation previously held the live archive writer lock after
+copying, preventing capture for the full proof duration. It now releases that
+lock only after the isolated private copy, journal, accounting snapshot/read-back
+and vault identity check are complete. Every integrity/publication/classification/
+source/context/window proof remains; final publication is still last. Later live
+appends cannot mutate the copied staging, and rejected proofs leave private
+staging unpublished. Both concurrency regressions failed against the old scope;
+the 30 archive and paid portable-recovery cases passed in 38.14s after the fix.
+These tests use a separate live archive object and actual file-lock contention,
+not a mocked lock. No hardlinks, shared live databases, pruning or skipped proof
+was introduced. The already-running live backup retains its older code/lock
+scope and was not interrupted. Metadata at 00:34 UTC still showed its live
+process; earlier I/O counters showed over 239 GB of reads, not a stopped copy.
+
+The native independent reviewer cleared both consequential designs and actual
+diffs. Current source fixes await installation after the existing full-backup
+process completes; no repeated full backup or service restart is claimed here.

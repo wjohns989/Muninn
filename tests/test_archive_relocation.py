@@ -529,3 +529,119 @@ async def test_real_scan_conflicting_branches_enqueue_nothing(tmp_path, monkeypa
     assert service._require_capture_journal().status().get("pending", 0) == 0
     assert not await service._process_capture_job_once()
     assert archive.status()["snapshots"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ambiguous_first", [False, True])
+@pytest.mark.parametrize("preexisting_ambiguous", [False, True])
+async def test_scan_preserves_distinct_multi_uuid_transcripts(
+        tmp_path, monkeypatch, ambiguous_first, preexisting_ambiguous):
+    import hashlib
+    import hmac
+    from unittest.mock import Mock
+    from muninn.history.service import HistoryService
+    from muninn.history.vault import HistoryVault
+
+    for name in ("MUNINN_HISTORY_HOMES", "CODEX_HOME", "CLAUDE_CONFIG_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "strict")
+    monkeypatch.setenv("MUNINN_CAPTURE_ENRICHMENT", "0")
+    root = tmp_path / "archive"
+    monkeypatch.setenv("MUNINN_HISTORY_ARCHIVE_DIR", str(root))
+    archive = SecureHistoryArchive.create(root, _PASSPHRASE)
+    directory = tmp_path / ".codex" / "sessions" / "2026" / "01"
+    directory.mkdir(parents=True)
+    suffixes = (_SESSION, f"{_SESSION}_{_OTHER}",
+                f"{_SESSION}_2a58fb79-befa-4e3e-8adb-1d192327ce34")
+    paths, contents = [], {}
+    for number, suffix in enumerate(suffixes):
+        path = directory / f"rollout-2026-01-02T03-04-05-{suffix}.jsonl"
+        raw = (json.dumps({"type": "session_meta", "timestamp": f"2026-01-0{number+2}T03:04:05Z",
+                           "payload": {"id": suffix, "cwd": f"isolated-project-{number}"}})
+               + "\n" + json.dumps({"type": "event_msg", "timestamp": f"2026-01-0{number+2}T03:04:06Z",
+                                    "payload": {"type": "user_message", "message": f"isolated observation {number}"}})
+               + "\n").encode()
+        path.write_bytes(raw)
+        paths.append(path)
+        contents[str(path.resolve())] = raw
+    inventory = [{"path": path, "provider": "codex", "kind": "transcript"} for path in paths]
+    if ambiguous_first:
+        inventory.reverse()
+    monkeypatch.setattr(HistoryVault, "_source_files", staticmethod(
+        lambda source: iter(inventory) if source.provider == "codex" else iter(())))
+    service = HistoryService(Mock(), tmp_path / "unused", home=tmp_path,
+                             archive_passphrase=_PASSPHRASE)
+    monkeypatch.setattr("muninn.history.service.STRICT_VERIFY_BUCKETS", 1)
+    journal = service._require_capture_journal()
+    before_entry = None
+    if preexisting_ambiguous:
+        archive.archive_file(paths[1], "codex")
+        before_entry = copy.deepcopy(archive._load_manifest()["files"][str(paths[1].resolve())])
+        legacy = hmac.new(journal._key, ("codex\0" + _SESSION).encode(), hashlib.sha256).hexdigest()
+        with monkeypatch.context() as patch:
+            patch.setattr(journal, "_source_key", lambda path, provider: legacy)
+            journal.enqueue(paths[1], "codex", immediate=True)
+            assert journal.finish(journal.claim_due(), archived=True)
+    assert len({journal.source_key(path, "codex") for path in paths}) == 3
+    report = await service.scan_capture_sources()
+    assert report["errors"] == 0 and report["queued"] == 3
+    for _ in paths:
+        assert await service._process_capture_job_once()
+    assert archive.status()["sources"] == archive.status()["snapshots"] == 3
+    manifest = archive._load_manifest()
+    assert set(manifest["files"]) == set(contents)
+    for path in paths:
+        assert archive.read_file(path) == contents[str(path.resolve())]
+    if before_entry is not None:
+        assert manifest["files"][str(paths[1].resolve())] == before_entry
+    assert journal.verify_all() == 3
+
+
+def test_legacy_multi_uuid_capture_journal_remains_portably_verifiable(tmp_path, monkeypatch):
+    import hashlib
+    import hmac
+    from muninn.history.capture_journal import CaptureJournal
+
+    archive = SecureHistoryArchive.create(tmp_path / "archive", _PASSPHRASE)
+    path = _source(tmp_path / "original", "codex", f"{_SESSION}_{_OTHER}")
+    archive.archive_file(path, "codex")
+    journal = CaptureJournal(archive)
+    legacy_key = hmac.new(journal._key, ("codex\0" + _SESSION).encode(), hashlib.sha256).hexdigest()
+    with monkeypatch.context() as patch:
+        patch.setattr(journal, "_source_key", lambda path, provider: legacy_key)
+        assert journal.enqueue(path, "codex", immediate=True) == "queued"
+        job = journal.claim_due()
+        assert job is not None and journal.finish(job, archived=True)
+    assert journal.source_key(path, "codex") != legacy_key
+    assert journal.verify_all() == 1
+    restored = SecureHistoryArchive.restore_from_backup(archive.root, tmp_path / "restored", _PASSPHRASE)
+    assert CaptureJournal(restored, recover=False).verify_all() == 1
+    assert restored.read_file(path) == path.read_bytes()
+    # Legacy compatibility is not permission to accept an unrelated key.
+    with journal._connect() as db:
+        db.execute("UPDATE jobs SET source_key=?", ("f" * 64,))
+    with pytest.raises(VaultIntegrityError, match="source identity mismatch"):
+        journal.verify_all()
+
+
+def test_claimed_legacy_multi_uuid_row_cannot_complete_over_parent_intent(tmp_path, monkeypatch):
+    import hashlib
+    import hmac
+    from muninn.history.capture_journal import CaptureJournal
+
+    archive = SecureHistoryArchive.create(tmp_path / "archive", _PASSPHRASE)
+    parent = _source(tmp_path / "parent", "codex")
+    ambiguous = _source(tmp_path / "ambiguous", "codex", f"{_SESSION}_{_OTHER}")
+    journal = CaptureJournal(archive)
+    legacy = hmac.new(journal._key, ("codex\0" + _SESSION).encode(), hashlib.sha256).hexdigest()
+    with monkeypatch.context() as patch:
+        patch.setattr(journal, "_source_key", lambda path, provider: legacy)
+        assert journal.enqueue(ambiguous, "codex", immediate=True) == "queued"
+        old_claim = journal.claim_due()
+    assert journal.enqueue(ambiguous, "codex", immediate=True) == "queued"
+    assert journal.enqueue(parent, "codex", immediate=True) == "queued"
+    assert not journal.finish(old_claim, archived=True)
+    claims = [journal.claim_due(), journal.claim_due()]
+    assert all(claim is not None for claim in claims)
+    assert {claim.path for claim in claims} == {parent.resolve(), ambiguous.resolve()}
+    assert journal.verify_all() == 2

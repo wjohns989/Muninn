@@ -21,3 +21,23 @@ def test_no_fields_or_duplicate_fields_do_not_prove_rendered_counts():
     for text in ('unknown', 'Recorded windows (all capture jobs): 1 total; 1 pending, 1 pending. Retry includes '):
         with pytest.raises(RuntimeError, match='^Rendered window counts differ'):
             _assert_window_counts(report, text)
+
+
+def test_browser_probe_matches_current_accessible_auth_and_all_sidebar_tabs():
+    from html.parser import HTMLParser
+    from pathlib import Path
+    from scripts.smoke_dashboard_browser import AUTH_LABEL, NAV_LINKS
+    class Elements(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.fields, self.links = [], []
+        def handle_starttag(self, tag, attrs):
+            row = dict(attrs)
+            if tag == "input" and row.get("type") == "password":
+                self.fields.append(row.get("aria-label"))
+            if row.get("role") == "button" and row.get("data-tab"):
+                self.links.append((row.get("aria-label"), row["data-tab"]))
+    page = Elements()
+    page.feed((Path(__file__).resolve().parents[1] / "dashboard.html").read_text(encoding="utf-8"))
+    assert AUTH_LABEL in page.fields
+    assert tuple(page.links) == NAV_LINKS

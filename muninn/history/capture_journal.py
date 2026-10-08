@@ -297,9 +297,26 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
     def _source_key(self, path: Path, provider: str) -> str:
         if provider not in {"codex", "claude_code", "gemini_cli"}:
             raise ValueError("Unsupported capture provider")
-        match = _SESSION_UUID.search(path.name) if provider in {"codex", "claude_code"} else None
-        identity = match.group(0).lower() if match else str(path)
+        from muninn.history.archive_lineage import native_identity
+
+        native = native_identity(str(path), provider, "transcript")
+        # Match the archive's identity boundary. A multi-UUID filename is not
+        # evidence that its first UUID owns the transcript; keep that physical
+        # source separate rather than suppressing another capture intent.
+        identity = native[2] if native is not None else str(path)
         return hmac.new(self._key, (provider + "\0" + identity).encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _verified_capture_key(self, path: Path, provider: str, stored: str) -> bool:
+        if hmac.compare_digest(stored, self._source_key(path, provider)):
+            return True
+        matches = _SESSION_UUID.findall(path.name) if provider in {"codex", "claude_code"} else []
+        if len(matches) <= 1:
+            return False
+        # Read compatibility only: old encrypted queue snapshots used the first
+        # UUID. Never return this legacy key to discovery or fresh enqueue.
+        legacy = hmac.new(self._key, (provider + "\0" + matches[0].lower()).encode("utf-8"),
+                          hashlib.sha256).hexdigest()
+        return hmac.compare_digest(stored, legacy)
 
     def source_key(self, path: Path, provider: str) -> str:
         """Opaque source identity for scanner checkpoints, never a display path."""
@@ -488,7 +505,7 @@ class CaptureJournal(CaptureEnrichmentMixin, CaptureWindowJobsMixin, HistoricalB
             count = 0
             for row in db.execute("SELECT source_key, sealed_locator, provider FROM jobs"):
                 path = self._open(row["sealed_locator"], row["provider"])
-                if row["source_key"] != self._source_key(path, row["provider"]):
+                if not self._verified_capture_key(path, row["provider"], row["source_key"]):
                     raise VaultIntegrityError("Capture journal source identity mismatch")
                 count += 1
             for row in db.execute("SELECT * FROM history_search_jobs"):

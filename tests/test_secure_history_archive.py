@@ -222,3 +222,57 @@ def test_unattended_backup_accepts_relative_archive_root(tmp_path, monkeypatch):
 
     assert report["snapshots_verified"] == 0
     assert (tmp_path / "backup" / "capture-jobs.db").is_file()
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="unattended backup uses Windows DPAPI")
+@pytest.mark.parametrize("verification_fails", [False, True])
+def test_backup_validation_does_not_hold_live_capture_lock(tmp_path, monkeypatch, verification_fails):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from muninn.history.private_acl import verify_private
+
+    source = tmp_path / "chat.jsonl"
+    source.write_bytes(b"isolated pinned version\n")
+    original = SecureHistoryArchive.create(tmp_path / "original", PASSPHRASE)
+    original.archive_file(source, "codex")
+    before = original.status()
+    destination = tmp_path / "backup"
+    verifying, release = threading.Event(), threading.Event()
+    staging = []
+    real_verify = SecureHistoryArchive.verify_all
+
+    def paused_verify(archive):
+        assert archive.root != original.root
+        verifying.set()
+        assert release.wait(10), "isolated validation release missing"
+        if verification_fails:
+            raise VaultIntegrityError("isolated backup proof rejected")
+        return real_verify(archive)
+
+    monkeypatch.setattr(SecureHistoryArchive, "verify_all", paused_verify)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        backup = pool.submit(original.backup_to, destination, on_staging=staging.append)
+        assert verifying.wait(10), "copied backup never reached validation"
+        source.write_bytes(b"isolated pinned version\nnew live append\n")
+        # A separate archive object contends for the actual live file lock.
+        writer = SecureHistoryArchive(original.root, PASSPHRASE)
+        capture = pool.submit(writer.archive_file, source, "codex")
+        try:
+            assert capture.result(timeout=1)["status"] == "captured"
+            assert not destination.exists(), "unvalidated backup was published"
+        finally:
+            release.set()
+        if verification_fails:
+            with pytest.raises(VaultIntegrityError, match="isolated backup proof rejected"):
+                backup.result(timeout=10)
+        else:
+            report = backup.result(timeout=10)
+            assert report["generation"] == before["generation"]
+            copied = SecureHistoryArchive(destination, PASSPHRASE)
+            assert copied.read_file(source) == b"isolated pinned version\n"
+    assert original.read_file(source) == source.read_bytes()
+    assert original.status()["snapshots"] == 2
+    if verification_fails:
+        assert not destination.exists()
+        assert len(staging) == 1 and staging[0].is_dir()
+        verify_private(staging[0])

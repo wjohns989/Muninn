@@ -16,6 +16,13 @@ from pathlib import Path
 from tempfile import mkstemp
 from urllib.parse import urlsplit
 
+AUTH_LABEL = "Local Muninn authentication token"
+NAV_LINKS = (
+    ("Overview", "overview"), ("Backlog & costs", "operations"), ("Ingestion", "ingest"),
+    ("Ordinary Search", "search"), ("Encrypted History", "history"),
+    ("Credential Metadata", "credentials"), ("System", "system"),
+)
+
 def _token() -> str | None:
     value = os.environ.get("MUNINN_AUTH_TOKEN")
     if value or os.name != "nt":
@@ -119,8 +126,8 @@ def main() -> int:
                             window_reports.append(data)
                 page.on('response', collect_status)
             page.goto(args.base, wait_until="domcontentloaded", timeout=15000)
-            expect(page.get_by_placeholder("Paste your Auth Token here...")).to_be_visible()
-            page.get_by_placeholder("Paste your Auth Token here...").fill(token)
+            expect(page.get_by_label(AUTH_LABEL, exact=True)).to_be_visible()
+            page.get_by_label(AUTH_LABEL, exact=True).fill(token)
             page.get_by_role("button", name="Authenticate & Enter").click()
             expect(page.locator("#auth-modal")).to_be_hidden()
             if args.home_status:
@@ -139,12 +146,8 @@ def main() -> int:
             if args.keyboard_nav:
                 page.get_by_role("button", name="Overview", exact=True).focus()
                 page.keyboard.press("Tab")
-                expect(page.get_by_role("button", name="Ingestion", exact=True)).to_be_focused()
-                for index, (name, tab) in enumerate((
-                    ("Overview", "overview"), ("Ingestion", "ingest"),
-                    ("Ordinary Search", "search"), ("Encrypted History", "history"),
-                    ("Credential Metadata", "credentials"), ("System", "system"),
-                )):
+                expect(page.get_by_role("button", name="Backlog & costs", exact=True)).to_be_focused()
+                for index, (name, tab) in enumerate(NAV_LINKS):
                     nav = page.get_by_role("button", name=name, exact=True)
                     nav.focus()
                     expect(nav).to_be_focused()
