@@ -25,6 +25,7 @@ class ReadOnlyJournal(CaptureJournal):
         self.policy_root = archive.root.parent
         self.path = (archive.root / "capture-jobs.db").absolute()
         self._key = hmac.new(archive._key, b"muninn-capture-journal-key-v1", hashlib.sha256).digest()
+        self._aad = b"muninn-capture-locator-v1\0" + archive.vault_id.encode("ascii")
 
     @contextmanager
     def _connect(self, **kwargs):
