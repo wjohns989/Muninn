@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from muninn.history.private_acl import create_private_file, verify_private
 
-from muninn.history.recovery_pool import RecoveryPool, RELATIVE, MARKER, _SNAPSHOT, unlinked
+from muninn.history.recovery_pool import RecoveryPool, RELATIVE, MARKER, _SNAPSHOT, unlinked, private_file
 from muninn.history.secure_archive import SecureHistoryArchive
 
 
@@ -15,8 +15,14 @@ def eligible_snapshots(archive, keep_full=4, excluded=()):
         raise ValueError("At least four full restart preimages must remain")
     parent = unlinked(archive.root / "operator-preimages")
     snapshots = sorted(unlinked(p) for p in parent.iterdir()
-                       if _SNAPSHOT.fullmatch(p.name) and p.is_dir())
-    return [p for p in snapshots[:-keep_full] if p.name not in excluded and (p / RELATIVE).exists()]
+                       if _SNAPSHOT.fullmatch(p.name) and p.is_dir() and (p / RELATIVE).exists())
+    for snapshot in snapshots:
+        # Fail closed before selecting any retirement if a retained slot is a
+        # linked/shared file, a non-file, or no longer privately accessible.
+        private_file(snapshot / RELATIVE)
+    # Count actual full databases, not newer directories already represented by
+    # pooled manifests. Clock-skewed names must not consume the full-copy floor.
+    return [p for p in snapshots[:-keep_full] if p.name not in excluded]
 
 
 def main():

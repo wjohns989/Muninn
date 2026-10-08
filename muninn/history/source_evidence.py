@@ -64,6 +64,12 @@ class SourceEvidenceStore(SecureProjectionStore):
             with super()._connect() as db:
                 yield db
             return
+        with self._read_connection() as db:
+            yield db
+
+    @contextmanager
+    def _read_connection(self):
+        """Read without changing the source's journal mode or writer policy."""
         verify_private(self.db_path)
         db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=30)
         try:
@@ -299,73 +305,87 @@ class SourceEvidenceStore(SecureProjectionStore):
         with self._connect() as db:
             db.execute("BEGIN")
             count, stats = self._authenticated_count(db, ident, attempt)
-            if stats is None or unit_ordinal >= stats["source_units"]:
-                raise ProjectionIntegrityError("source unit is unavailable")
             cipher = AESGCM(self._key())
+            yield from self._unit_fragments(db, ident, attempt, unit_ordinal, count, stats, cipher)
 
-            def read(ordinal):
-                row = db.execute("SELECT length,CASE WHEN length BETWEEN 1 AND ? "
-                                 "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
-                                 "FROM pages WHERE attempt=? AND ordinal=?",
-                                 (self.max_page_chars * 4, attempt, ordinal)).fetchone()
-                try:
-                    data = json.loads(self._decrypt_page(ident, attempt, ordinal, row, cipher))
-                    if (set(data) != {"unit", "fragment", "text", "final"}
-                            or type(data["fragment"]) is not int or data["fragment"] < 0
-                            or type(data["final"]) is not bool or not isinstance(data["text"], str)
-                            or len(data["text"]) > 4096 or data["final"] and data["text"]):
-                        raise ValueError
-                    unit = SourceUnit(**data["unit"])
-                    if type(unit.ordinal) is not int or not 0 <= unit.ordinal < stats["source_units"]:
-                        raise ValueError
-                    return unit, data
-                except (ValueError, TypeError, KeyError) as exc:
-                    raise ProjectionIntegrityError("source-unit evidence authentication failed") from exc
+    def _unit_fragments(self, db, ident, attempt, unit_ordinal, count, stats, cipher):
+        # Metadata may be reused only within the same pinned read transaction.
+        if type(unit_ordinal) is not int or unit_ordinal < 0:
+            raise ProjectionIntegrityError("invalid source unit reference")
+        if stats is None or unit_ordinal >= stats["source_units"]:
+            raise ProjectionIntegrityError("source unit is unavailable")
 
-            def lower_bound(target):
-                lo, hi = 0, count
-                while lo < hi:
-                    mid = (lo + hi) // 2
-                    unit, _data = read(mid)
-                    if unit.ordinal < target:
-                        lo = mid + 1
-                    else:
-                        hi = mid
-                return lo
+        def read(ordinal):
+            row = db.execute("SELECT length,CASE WHEN length BETWEEN 1 AND ? "
+                             "AND length(ciphertext)=length+28 THEN ciphertext ELSE NULL END "
+                             "FROM pages WHERE attempt=? AND ordinal=?",
+                             (self.max_page_chars * 4, attempt, ordinal)).fetchone()
+            try:
+                data = json.loads(self._decrypt_page(ident, attempt, ordinal, row, cipher))
+                if (set(data) != {"unit", "fragment", "text", "final"}
+                        or type(data["fragment"]) is not int or data["fragment"] < 0
+                        or type(data["final"]) is not bool or not isinstance(data["text"], str)
+                        or len(data["text"]) > 4096 or data["final"] and data["text"]):
+                    raise ValueError
+                unit = SourceUnit(**data["unit"])
+                if type(unit.ordinal) is not int or not 0 <= unit.ordinal < stats["source_units"]:
+                    raise ValueError
+                return unit, data
+            except (ValueError, TypeError, KeyError) as exc:
+                raise ProjectionIntegrityError("source-unit evidence authentication failed") from exc
 
-            first, end = lower_bound(unit_ordinal), lower_bound(unit_ordinal + 1)
-            if first >= end:
-                raise ProjectionIntegrityError("source unit is unavailable")
-            expected, metadata = 0, None
-            for ordinal in range(first, end):
-                unit, data = read(ordinal)
-                if (unit.ordinal != unit_ordinal or data["fragment"] != expected
-                        or metadata is not None and unit != metadata
-                        or data["final"] != (ordinal == end - 1)):
-                    raise ProjectionIntegrityError("source-unit fragment sequence is incomplete")
-                metadata = unit
-                expected += 1
-                yield UnitFragment(unit, data["text"], data["final"])
+        def lower_bound(target):
+            lo, hi = 0, count
+            while lo < hi:
+                mid = (lo + hi) // 2
+                unit, _data = read(mid)
+                if unit.ordinal < target:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            return lo
+
+        first, end = lower_bound(unit_ordinal), lower_bound(unit_ordinal + 1)
+        if first >= end:
+            raise ProjectionIntegrityError("source unit is unavailable")
+        expected, metadata = 0, None
+        for ordinal in range(first, end):
+            unit, data = read(ordinal)
+            if (unit.ordinal != unit_ordinal or data["fragment"] != expected
+                    or metadata is not None and unit != metadata
+                    or data["final"] != (ordinal == end - 1)):
+                raise ProjectionIntegrityError("source-unit fragment sequence is incomplete")
+            metadata = unit
+            expected += 1
+            yield UnitFragment(unit, data["text"], data["final"])
 
     def verify_all(self) -> dict[str, int]:
         entries = {(entry["blob"], entry["sha256"], version): entry
                    for versions in self.archive._load_manifest()["files"].values()
                    for version, entry in enumerate(versions)}
         report = {"snapshots": 0, "units": 0, "fragments": 0}
-        with self._connect() as db:
+        with self._read_connection() as db:
+            db.execute("BEGIN")
+            cipher = AESGCM(self._key())
+            verified = {}
             attempts = db.execute("SELECT attempt,blob,sha,version FROM attempts WHERE state='complete'").fetchall()
-        for attempt, blob, sha, version in attempts:
-            entry = entries.get((blob, sha, version))
-            if entry is None:
-                raise ProjectionIntegrityError("source evidence has no authenticated snapshot")
-            for part in self.fragments(entry, version, attempt):
-                report["fragments"] += 1
-                report["units"] += int(part.final)
-            report["snapshots"] += 1
-        # Cache entries are ciphertext-only and included by SQLite backup. Even
-        # obsolete screen-policy entries must authenticate against their exact
-        # archived source/attempt/unit; corruption cannot hide behind a miss.
-        with self._connect() as db:
+            for attempt, blob, sha, version in attempts:
+                entry = entries.get((blob, sha, version))
+                if entry is None:
+                    raise ProjectionIntegrityError("source evidence has no authenticated snapshot")
+                ident = self._identity(entry, version)
+                count, stats = self._authenticated_count(db, ident, attempt)
+                pages = db.execute("SELECT ordinal,length,ciphertext FROM pages WHERE attempt=? ORDER BY ordinal",
+                                   (attempt,))
+                for part in self._fragments(db, pages, ident, attempt, count, stats, cipher):
+                    report["fragments"] += 1
+                    report["units"] += int(part.final)
+                verified[attempt] = (ident, count, stats)
+                report["snapshots"] += 1
+            # Retain seal metadata per attempt, never source text or unit bodies.
+            # Every cache record, including old screen policies, must still bind
+            # to exact authenticated pages in this same snapshot. Recounting all
+            # pages per screen made recovery quadratic in pages * screen rows.
             rows = db.execute("SELECT ref,CASE WHEN length(ciphertext)<=65536 THEN ciphertext ELSE NULL END "
                               "FROM unit_screens")
             for ref, ciphertext in rows:
@@ -376,8 +396,11 @@ class SourceEvidenceStore(SecureProjectionStore):
                     entry = entries[(source["blob"], source["hash"], source["version"])]
                     if source != self._identity(entry, source["version"]):
                         raise ValueError
+                    ident, count, stats = verified[binding["attempt"]]
+                    if source != ident:
+                        raise ValueError
                     unit = SourceUnit(**binding["unit"])
-                    parts = self.unit_fragments(entry, source["version"], binding["attempt"], unit.ordinal)
+                    parts = self._unit_fragments(db, ident, binding["attempt"], unit.ordinal, count, stats, cipher)
                     try:
                         if next(parts).unit != unit:
                             raise ValueError

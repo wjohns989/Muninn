@@ -129,14 +129,48 @@ def test_cli_keeps_latest_four_and_preserves_neighboring_batch_db(tmp_path):
     batch = rows[0] / "historical-batches.db"
     create_private_file(batch)
     batch.write_bytes(b"synthetic retained batch fixture")
-    candidates = eligible_snapshots(archive)
+    candidates = eligible_snapshots(archive, keep_full=4)
     assert candidates == rows[:2]
-    assert eligible_snapshots(archive, excluded=[rows[0].name]) == rows[1:2]
+    assert eligible_snapshots(archive, keep_full=4, excluded=[rows[0].name]) == rows[1:2]
     pool.pack(archive, candidates[0], retire=True)
     assert batch.read_bytes() == b"synthetic retained batch fixture"
     assert all((row / RELATIVE).exists() for row in rows[-4:])
     with pytest.raises(ValueError):
         eligible_snapshots(archive, 3)
+
+
+def test_cli_counts_full_copies_not_already_packed_newer_directories(tmp_path):
+    from scripts.compact_restart_recovery import eligible_snapshots
+    archive, parent, pool = fixture(tmp_path)
+    rows = [snapshot(parent, index) for index in range(8)]
+    for row in rows[-2:]:
+        pool.pack(archive, row, retire=True)
+    candidates = eligible_snapshots(archive, excluded=[rows[0].name])
+    assert candidates == rows[1:2]
+    for row in candidates:
+        pool.pack(archive, row, retire=True)
+    assert all((row / RELATIVE).exists() for row in rows[2:-2])
+    assert (rows[0] / RELATIVE).exists()
+
+
+def test_cli_does_not_retire_when_fewer_than_floor_full_copies_remain(tmp_path):
+    from scripts.compact_restart_recovery import eligible_snapshots
+    archive, parent, pool = fixture(tmp_path)
+    rows = [snapshot(parent, index) for index in range(6)]
+    for row in rows[-3:]:
+        pool.pack(archive, row, retire=True)
+    assert eligible_snapshots(archive) == []
+
+
+def test_cli_refuses_linked_full_copy_instead_of_counting_it_as_retained(tmp_path):
+    from scripts.compact_restart_recovery import eligible_snapshots
+    archive, parent, _pool = fixture(tmp_path)
+    rows = [snapshot(parent, index) for index in range(6)]
+    (rows[-1] / RELATIVE).unlink()  # Replace only this synthetic fixture DB.
+    os.link(rows[-2] / RELATIVE, rows[-1] / RELATIVE)
+    with pytest.raises(VaultIntegrityError, match="independent"):
+        eligible_snapshots(archive)
+    assert all((row / RELATIVE).exists() for row in rows)
 
 
 def test_publication_failure_leaves_original_untouched(tmp_path, monkeypatch):

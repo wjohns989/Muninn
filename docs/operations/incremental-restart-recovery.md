@@ -5,7 +5,12 @@ only. The source-evidence database dominates accumulated restart preimages.
 
 `scripts.compact_restart_recovery` packs only the closed
 `source-evidence/projections.sqlite3` copy in older restart recovery folders.
-The newest four folders stay full. Every other file, batch database, full
+The newest four actual full database copies stay full, plus the exact new
+restart preimage when it is explicitly excluded. Already-compacted folders do
+not consume that floor, even if their names sort newest after clock changes.
+Full slots must pass the existing private, regular-file and independent/unlinked
+path checks; an invalid slot refuses selection before any retirement.
+Every other file, batch database, full
 backup, archive blob and unfinished forensic copy is excluded. No chunk garbage
 collection or snapshot expiration is implemented.
 

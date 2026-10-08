@@ -407,3 +407,57 @@ passphrase worker PID 10840 also remains unchanged. No GitHub push was performed
 Implementation: local commits be5b088 (startup fence), 2742cf9 (incremental pool
 and bounded maintenance), and bde9f79 (central portable references). Operator
 instructions are in `docs/operations/incremental-restart-recovery.md`.
+
+## Recovery verification repeated-read correction
+
+The next bounded recovery dependency was source-evidence verification, not a
+new full backup. Its prior screen-binding loop recounted all pages per cached
+unit, after already authenticating the full source. The one-attempt synthetic
+regression observed three seal/count checks instead of one; the multi-attempt
+case also failed against unchanged old code. One pinned read-only transaction
+now authenticates each complete attempt once, still decrypts/checks every page,
+and checks every screen's exact source, attempt and unit through indexed seeks.
+It retains no plaintext units and changes no schema or journal policy.
+
+Focused evidence/source-append/screen-cache tests passed 50 cases in 29.23s.
+Archive/paid-portable-recovery/projection checks passed 42 cases in 41.71s.
+New regressions reject missing/extra pages, changed completion, page/screen
+authentication failure and correctly sealed false source/unit/attempt bindings.
+Concurrent synthetic WAL mutation leaves the pinned proof consistent, while
+the next proof rejects the changed pages. Independent actual-diff review CLEAR.
+No full-suite, measured live speedup or backup completion is claimed. At the
+latest process check the existing backup PID 75332 remained alive with 6001.86
+CPU seconds; service PID 67212 remained alive. Neither process was restarted.
+The running backup still retains its previously loaded verifier. Future CLI
+verification/restores use this source change; no second full backup was launched
+to benchmark it. The snapshot/read-lock trade-off is recorded in
+`docs/architecture/adr-source-evidence-verification-snapshot.md`.
+
+## Full-copy selection floor correction
+
+W clarified that one or two backup copies was a suggestion, not a hard retention
+requirement. No copy-count reduction or further live retirement was performed.
+Independent review found that the selector counted all sorted restart folders
+before filtering out those whose source database had already been compacted.
+With clock-skewed names, packed folders could consume the four-full-copy floor.
+The new regression failed on the old selector: it selected three databases
+instead of the one safe candidate. The corrected selector counts actual full
+databases first, then retains four and excludes the exact new preimage.
+
+Pool and owned-reload checks passed 112 cases in 17.97s, covering newest-packed
+folders, fewer-than-floor full copies, exact-current exclusion, preserved batch
+neighbors, failed durable publication and portable reconstruction. No snapshot
+expiration, chunk collection or standalone-full-backup pruning is installed by
+this change. Deduplicated versioned storage remains distinct from independent
+offline/off-device recovery: many copies on the same disk cannot prove that.
+
+The final selection review also required the existing `private_file` checks on
+all counted full copies, before returning any retirement candidates. A synthetic
+hard-linked retained DB reproduced the flaw (the prior selector did not refuse
+it); the selector now fails closed on shared, linked, nonregular or nonprivate
+slots. The final 17 pool checks passed in 18.62s. Unchanged reload-helper behavior
+retains the earlier focused lifecycle proof. Independent actual-diff review
+CLEAR after both corrections. A metadata-only invocation of the installed
+selector against the canonical archive reported zero eligible old full copies
+with the four-full-copy floor. It accessed no archive key, changed no databases,
+and retired no further files. Broader backup rotation remains unfinished.

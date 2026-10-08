@@ -211,3 +211,105 @@ def test_abandoned_stage_is_invisible_and_recovered_without_touching_complete(tm
     assert reopened.find_snapshot(entry, 0) == attempt
     with reopened._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM attempts WHERE state='building'").fetchone()[0] == 0
+
+
+def _screened_fixture(tmp_path, *, second_attempt=False):
+    archive, entry = _fixture(tmp_path, "ordinary synthetic source " * 500)
+    store = SourceEvidenceStore(archive)
+    attempt = store.build_snapshot(entry, 0)
+    items = [(entry, attempt)]
+    if second_attempt:
+        source = tmp_path / "second.jsonl"
+        source.write_text(json.dumps({"type": "event_msg", "payload": {
+            "type": "user_message", "message": "different synthetic observation"}}) + "\n",
+            encoding="utf-8")
+        archive.archive_file(source, "codex")
+        second = archive._load_manifest()["files"][str(source.resolve())][0]
+        items.append((second, store.build_snapshot(second, 0)))
+    for current_entry, current in items:
+        units = [part.unit for part in store.fragments(current_entry, 0, current) if part.final]
+        for unit in units:
+            store._store_screen_info(current_entry, 0, current, unit,
+                                     raw_sha="a" * 64, screened_sha="a" * 64,
+                                     body_length=0, body_sha="b" * 64)
+    return archive, entry, store, [attempt for _entry, attempt in items]
+
+
+@pytest.mark.parametrize("second_attempt", [False, True])
+def test_verify_screens_authenticates_page_count_once_per_attempt(tmp_path, monkeypatch, second_attempt):
+    _archive, _entry, store, attempts = _screened_fixture(tmp_path, second_attempt=second_attempt)
+    seals = []
+    original = store._authenticated_count
+
+    def tracked(db, ident, attempt):
+        seals.append(attempt)
+        return original(db, ident, attempt)
+
+    monkeypatch.setattr(store, "_authenticated_count", tracked)
+    assert store.verify_all()["snapshots"] == len(attempts)
+    assert sorted(seals) == sorted(attempts)
+
+
+@pytest.mark.parametrize("damage", ["missing_page", "extra_page", "completion", "page_aead",
+                                   "screen_aead", "unit", "source", "attempt"])
+def test_verify_screens_preserves_integrity_rejections(tmp_path, damage):
+    _archive, entry, store, attempts = _screened_fixture(tmp_path)
+    attempt = attempts[0]
+    with store._connect() as db:
+        if damage == "missing_page":
+            db.execute("DELETE FROM pages WHERE attempt=? AND ordinal=0", (attempt,))
+        elif damage == "extra_page":
+            db.execute("INSERT INTO pages SELECT attempt,9999,length,ciphertext FROM pages "
+                       "WHERE attempt=? AND ordinal=0", (attempt,))
+        elif damage == "completion":
+            db.execute("UPDATE attempts SET completion=zeroblob(length(completion)) WHERE attempt=?", (attempt,))
+        elif damage == "page_aead":
+            db.execute("UPDATE pages SET ciphertext=zeroblob(length(ciphertext)) WHERE attempt=? AND ordinal=0", (attempt,))
+        else:
+            ref, ciphertext = db.execute("SELECT ref,ciphertext FROM unit_screens LIMIT 1").fetchone()
+            if damage == "screen_aead":
+                db.execute("UPDATE unit_screens SET ciphertext=zeroblob(length(ciphertext)) WHERE ref=?", (ref,))
+            else:
+                # Correctly sealed but false binding: AEAD-only validation is insufficient.
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                from muninn.history.secure_projection_store import _j
+                record = store._decode_screen(ref, ciphertext)
+                if damage == "unit":
+                    record["binding"]["unit"]["cwd"] = "C:/different-synthetic-project"
+                elif damage == "source":
+                    record["binding"]["source"]["kind"] = "different"
+                else:
+                    record["binding"]["attempt"] = "f" * 32
+                replacement = store._screen_ref(record["binding"])
+                nonce = b"s" * 12  # Synthetic fixture only.
+                sealed = nonce + AESGCM(store._screen_key()).encrypt(
+                    nonce, _j(record), b"unit-screen-v1\0" + replacement.encode("ascii"))
+                db.execute("DELETE FROM unit_screens WHERE ref=?", (ref,))
+                db.execute("INSERT INTO unit_screens VALUES(?,?)", (replacement, sealed))
+    with pytest.raises(ProjectionIntegrityError):
+        store.verify_all()
+
+
+def test_verify_screens_pins_count_and_unit_lookup_to_same_snapshot(tmp_path, monkeypatch):
+    import sqlite3
+    _archive, _entry, store, attempts = _screened_fixture(tmp_path)
+    with store._connect() as db:
+        assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    original = store._decode_screen
+    mutated = False
+
+    def mutate_after_pages(ref, ciphertext):
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            # Preserve WAL: the ordinary writer helper deliberately sets DELETE.
+            with sqlite3.connect(store.db_path, timeout=1) as writer:
+                writer.execute("DELETE FROM pages WHERE attempt=? AND ordinal=0", (attempts[0],))
+        return original(ref, ciphertext)
+
+    monkeypatch.setattr(store, "_decode_screen", mutate_after_pages)
+    assert store.verify_all()["snapshots"] == 1
+    assert mutated
+    # Prior success applies only to the pinned snapshot, never a persistent cache.
+    with pytest.raises(ProjectionIntegrityError):
+        store.verify_all()
