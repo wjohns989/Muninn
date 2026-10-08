@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import aiohttp
 import requests
+from muninn.extraction.ollama_slot import async_ollama_slot, ollama_slot
 
 logger = logging.getLogger("Muninn.Vision")
 
@@ -28,12 +29,14 @@ class VisionAdapter:
         base_url: str = "http://localhost:11434",
         model: str = "llava",
         timeout_seconds: float = 30.0,
+        ollama_keep_alive: str = "0",
     ):
         self.enabled = enabled
         self.provider = provider
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout_seconds
+        self.ollama_keep_alive = ollama_keep_alive
 
     def describe_image_sync(self, image_path: str, prompt: str = "Describe this image in detail.") -> Optional[str]:
         """
@@ -90,21 +93,23 @@ class VisionAdapter:
             "prompt": prompt,
             "images": [base64_image],
             "stream": False,
+            "keep_alive": self.ollama_keep_alive,
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self.base_url}/api/generate",
-                json=payload,
-                timeout=self.timeout
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.error("Ollama vision error %d: %s", resp.status, text)
-                    return None
-                
-                result = await resp.json()
-                return result.get("response", "").strip()
+        async with async_ollama_slot():
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.base_url}/api/generate",
+                    json=payload,
+                    timeout=self.timeout
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error("Ollama vision error %d: %s", resp.status, text)
+                        return None
+
+                    result = await resp.json()
+                    return result.get("response", "").strip()
 
     def _describe_ollama_sync(self, path: Path, prompt: str) -> Optional[str]:
         """Synchronous Ollama call."""
@@ -117,13 +122,15 @@ class VisionAdapter:
             "prompt": prompt,
             "images": [base64_image],
             "stream": False,
+            "keep_alive": self.ollama_keep_alive,
         }
 
-        resp = requests.post(
-            f"{self.base_url}/api/generate",
-            json=payload,
-            timeout=self.timeout
-        )
+        with ollama_slot():
+            resp = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=self.timeout
+            )
         
         if resp.status_code != 200:
             logger.error("Ollama vision error %d: %s", resp.status_code, resp.text)

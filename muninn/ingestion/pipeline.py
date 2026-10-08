@@ -115,6 +115,7 @@ def _ingest_worker(
                 base_url=vision_config.get("ollama_url", "http://localhost:11434"),
                 model=vision_config.get("model", "llava"),
                 timeout_seconds=vision_config.get("timeout_seconds", 30.0),
+                ollama_keep_alive=vision_config.get("ollama_keep_alive", "0"),
             )
             text = vision.describe_image_sync(str(path))
             if not text:

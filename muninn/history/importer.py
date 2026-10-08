@@ -164,6 +164,10 @@ def turn_memories(thread: Thread, index: int, turn: parsers.Turn) -> List[Dict[s
         body.append(f"Assistant: {turn.assistant}")
     if turn.actions:
         body.append("Actions: " + "; ".join(dict.fromkeys(turn.actions)))
+    if turn.tool_events:
+        body.append("Tool results: " + "; ".join(
+            event.summary() for event in turn.tool_events[:20]
+        ))
     pieces = _split(redact("\n\n".join(body)), PART_CHARS)
     header = f"[{_stamp(turn.at)}] {thread.header(index)}"
     memories = []
@@ -260,6 +264,18 @@ class Collected:
     threads: List[Thread] = field(default_factory=list)
     prompts: List[parsers.PromptEntry] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+
+
+class VaultListing:
+    """Stable manifest listing; vault files themselves are atomically replaced."""
+
+    def __init__(self, entries: Iterable[Any]):
+        self.entries = tuple(entries)
+
+    def files(self, provider: Optional[str] = None, kind: Optional[str] = None) -> List[Any]:
+        return [item for item in self.entries
+                if (provider is None or item.provider == provider)
+                and (kind is None or item.kind == kind)]
 
 
 def collect(
@@ -374,7 +390,7 @@ async def _write(memory: "MuninnMemory", fn: Callable[..., Any], *args: Any, **k
 
 async def _add(memory: "MuninnMemory", item: Dict[str, Any], scope: str) -> Optional[str]:
     # Bulk history uses the fast rule-based entity pass, not a per-turn LLM call.
-    metadata = dict(item["metadata"], operator_model_profile="low_latency", muninn_extraction_timeout_seconds=10)
+    metadata = dict(item["metadata"], muninn_rule_only_extraction=True)
     result = await memory.add(
         content=item["content"],
         user_id="global_user",
@@ -390,6 +406,55 @@ async def _add(memory: "MuninnMemory", item: Dict[str, Any], scope: str) -> Opti
     return memory_id
 
 
+def _part_identity(metadata: Dict[str, Any]) -> Optional[Tuple[str, int, int]]:
+    """Logical identity of a raw history part, independent of its generated memory ID."""
+    kind = metadata.get("kind")
+    if kind == "conversation_turn":
+        return kind, int(metadata["turn_index"]), int(metadata.get("part", 1))
+    if kind == "compaction_summary":
+        return kind, int(metadata["compaction_index"]), int(metadata.get("part", 1))
+    if kind == "thread_summary":
+        return kind, -1, 1
+    return None
+
+
+async def _existing_parts(memory: "MuninnMemory", thread_key: str) -> Dict[Tuple[str, int, int], Any]:
+    """Include uncheckpointed parts left by an interrupted import."""
+    found: Dict[Tuple[str, int, int], Any] = {}
+    offset = 0
+    while True:
+        records = await asyncio.to_thread(memory._metadata.get_thread_memories, thread_key, offset, 500)
+        for record in records:
+            meta = record.metadata or {}
+            if meta.get("import_source") != IMPORT_SOURCE:
+                continue
+            key = _part_identity(meta)
+            if key is None:
+                continue
+            if key in found:
+                raise RuntimeError("duplicate logical history part; import stopped")
+            found[key] = record
+        if len(records) < 500:
+            return found
+        offset += len(records)
+
+
+async def _verify_part(memory: "MuninnMemory", record: Any,
+                       item: Dict[str, Any], scope: str) -> None:
+    """A checkpoint may skip a part only when its searchable stores agree."""
+    if record.content != item["content"] or record.scope != scope:
+        raise RuntimeError("history part content or scope mismatch; import stopped")
+    expected_digest = hashlib.sha256(item["content"].encode("utf-8")).hexdigest()
+    vector = await asyncio.to_thread(memory._vectors.get_integrity, record.id)
+    dimensions = getattr(getattr(getattr(memory, "config", None), "vector", None), "dimensions", None)
+    if (vector is None or vector.get("memory_id") != record.id
+            or vector.get("content_sha256") != expected_digest
+            or (dimensions is not None and vector.get("dimension") != dimensions)):
+        raise RuntimeError("history part vector missing or mismatched; import stopped")
+    if memory._bm25.content_digest(record.id) != expected_digest:
+        raise RuntimeError("history part BM25 entry missing or mismatched; import stopped")
+
+
 async def import_history(
     memory: "MuninnMemory",
     vault: HistoryVault,
@@ -399,20 +464,26 @@ async def import_history(
     since: Optional[float] = None,
     progress: Optional[Dict[str, Any]] = None,
     sources: Optional[Iterable[str]] = None,
+    vault_files: Optional[Iterable[Any]] = None,
+    unit_lock: Optional[asyncio.Lock] = None,
 ) -> Dict[str, Any]:
     """Dry run by default: report what would be imported. With ``apply`` write only what is new."""
-    collected = await asyncio.to_thread(collect, vault, providers, since, sources)
+    from muninn.history.vault import require_legacy_history_disabled
+    require_legacy_history_disabled()
+    listing = VaultListing(vault_files) if vault_files is not None else vault
+    collected = await asyncio.to_thread(collect, listing, providers, since, sources)
     store = memory._metadata
     progress = progress if progress is not None else {}
     report: Dict[str, Any] = {
         "apply": apply, "threads": 0, "threads_new": 0, "threads_grown": 0, "turn_memories": 0,
-        "compaction_memories": 0, "summaries": 0, "recovered_prompts": 0, "by_project": {}, "by_agent": {},
+        "compaction_memories": 0, "summaries": 0, "already_present_parts": 0,
+        "recovered_prompts": 0, "by_project": {}, "by_agent": {},
         "oldest": None, "newest": None, "errors": collected.errors,
     }
     progress.update({"threads_total": len(collected.threads), "threads_done": 0})
     report["duplicate_turns"] = 0
     batch_seen: Dict[str, str] = {}   # fingerprints claimed earlier in this run (threads go oldest first)
-    for thread in collected.threads:
+    async def process_thread(thread: Thread) -> None:
         session = thread.session
         state = await asyncio.to_thread(store.get_history_thread, thread.key)
         done_turns = state["turns_imported"] if state else 0
@@ -452,25 +523,45 @@ async def import_history(
                 report["newest"] = max(report["newest"] or stamp, stamp)
         needs_summary = bool(items or compactions or state is None)
         report["summaries"] += needs_summary
+        existing = await _existing_parts(memory, thread.key) if needs_summary else {}
+        item_keys = [_part_identity(item["metadata"]) for item in items + compactions]
+        if len(item_keys) != len(set(item_keys)):
+            raise RuntimeError("duplicate logical history part in source; import stopped")
+        report["already_present_parts"] += sum(key in existing for key in item_keys)
         if apply and needs_summary:
             # Always project-scoped: conversations outside any repository file under "global" and
             # show up in unfiltered searches, but do not leak into every project's results.
             scope = "project"
-            semaphore = asyncio.Semaphore(4)
-
-            async def add_one(item: Dict[str, Any]) -> None:
-                async with semaphore:
-                    await _add(memory, item, scope)
-
-            await asyncio.gather(*(add_one(item) for item in items + compactions))
-            await _write(memory, store.mark_turns, fresh_fps)
+            # Qdrant's embedded local collection is not safe for overlapping
+            # count/upsert calls. Keep each complete memory.add sequential.
+            for item, key in zip(items + compactions, item_keys):
+                if key in existing:
+                    await _verify_part(memory, existing[key], item, scope)
+                    continue
+                memory_id = await _add(memory, item, scope)
+                if not memory_id:
+                    raise RuntimeError("history part was not persisted; import stopped")
+                record = await asyncio.to_thread(store.get, memory_id)
+                await _verify_part(memory, record, item, scope)
+                existing[key] = record
             summary = summary_memory(thread, continues)
+            previous_summary = existing.get(_part_identity(summary["metadata"]))
             summary_id = state["summary_memory_id"] if state else None
-            if summary_id and await asyncio.to_thread(store.get, summary_id):
+            if summary_id and previous_summary and summary_id != previous_summary.id:
+                raise RuntimeError("history summary identity mismatch; import stopped")
+            if previous_summary and summary_id:
                 await memory.update(summary_id, data=summary["content"], metadata_patch=summary["metadata"])
                 await _write(memory, store.update, summary_id, created_at=float(summary["created_at"] or time.time()))
+                previous_summary = await asyncio.to_thread(store.get, summary_id)
+            elif previous_summary:
+                summary_id = previous_summary.id
             else:
                 summary_id = await _add(memory, summary, scope)
+                if not summary_id:
+                    raise RuntimeError("history summary was not persisted; import stopped")
+                previous_summary = await asyncio.to_thread(store.get, summary_id)
+            await _verify_part(memory, previous_summary, summary, scope)
+            await _write(memory, store.mark_turns, fresh_fps)
             await _write(memory, store.upsert_history_thread, {
                 "thread_key": thread.key, "provider": session.provider, "agent": session.agent,
                 "session_id": session.session_id, "project": thread.project_name, "directory": session.cwd,
@@ -482,11 +573,23 @@ async def import_history(
             })
         progress["threads_done"] = progress.get("threads_done", 0) + 1
 
+    for thread in collected.threads:
+        if apply and unit_lock is not None:
+            async with unit_lock:
+                await process_thread(thread)
+        else:
+            await process_thread(thread)
+
     prompts = [p for p in recovered_prompts(collected)
                if not await asyncio.to_thread(store.history_prompt_seen, _prompt_digest(p))]
-    report["recovered_prompts"] = len(prompts)
+    report["recovered_prompts"] = len(prompts) if not apply else 0
     if apply and prompts:
-        for entry in prompts:
+        async def add_prompt(entry: parsers.PromptEntry) -> None:
+            digest = _prompt_digest(entry)
+            # Another importer may have completed this prompt while this run
+            # waited for the per-unit lock.
+            if await asyncio.to_thread(store.history_prompt_seen, digest):
+                return
             project = project_for_directory(entry.cwd)
             agent = {"claude_code": "claude-code", "codex": "codex", "gemini_cli": "gemini-cli"}.get(
                 entry.provider, entry.provider)
@@ -495,12 +598,30 @@ async def import_history(
                            f"(transcript no longer on disk)\nUser: {redact(entry.text)}",
                 "created_at": entry.at,
                 "metadata": {"import_source": IMPORT_SOURCE, "kind": "recovered_prompt", "provider": entry.provider,
-                             "agent": agent, "project": project or "global",
+                             "agent": agent, "project": project or "global", "history_prompt_digest": digest,
                              **({"directory": entry.cwd} if entry.cwd else {}),
                              **({"session_id": entry.session_id} if entry.session_id else {})},
             }
-            await _add(memory, item, "project")
-        await _write(memory, store.mark_history_prompts, [_prompt_digest(p) for p in prompts])
+            existing_prompts = await asyncio.to_thread(store.get_history_prompt_memories, digest)
+            if len(existing_prompts) > 1:
+                raise RuntimeError("duplicate recovered prompt identity; import stopped")
+            if existing_prompts:
+                await _verify_part(memory, existing_prompts[0], item, "project")
+            else:
+                memory_id = await _add(memory, item, "project")
+                if not memory_id:
+                    raise RuntimeError("recovered prompt was not persisted; import stopped")
+                record = await asyncio.to_thread(store.get, memory_id)
+                await _verify_part(memory, record, item, "project")
+                report["recovered_prompts"] += 1
+            await _write(memory, store.mark_history_prompts, [digest])
+
+        for entry in prompts:
+            if unit_lock is not None:
+                async with unit_lock:
+                    await add_prompt(entry)
+            else:
+                await add_prompt(entry)
     for key in ("oldest", "newest"):
         if report[key]:
             report[key] = _stamp(report[key])

@@ -109,6 +109,7 @@ class EmbeddingConfig(BaseModel):
     model: str = "nomic-embed-text"
     dimensions: int = 768
     ollama_url: str = "http://localhost:11434"
+    ollama_keep_alive: str = "0"
 
 
 class VectorConfig(BaseModel):
@@ -131,6 +132,9 @@ class MetadataConfig(BaseModel):
 
 class ExtractionConfig(BaseModel):
     """Extraction pipeline configuration."""
+    # Chat capture must remain available without a running inference model.
+    # Richer understanding of captured threads is handled by history analysis.
+    defer_llm_on_add: bool = True
     enable_xlam: bool = True
     xlam_url: str = "http://localhost:8001/v1"
     xlam_model: str = "xLAM"
@@ -143,6 +147,8 @@ class ExtractionConfig(BaseModel):
     legacy_ingestion_model_profile: str = "balanced"
     ollama_balanced_model: str = DEFAULT_BALANCED_MODEL
     ollama_high_reasoning_model: str = DEFAULT_HIGH_REASONING_MODEL
+    ollama_keep_alive: str = "0"
+    ollama_timeout_seconds: float = 120.0
     vram_budget_gb: Optional[float] = None
     # Instructor-based extraction (v3.1.0)
     enable_instructor: bool = True
@@ -238,6 +244,7 @@ class VisionConfig(BaseModel):
     provider: str = "ollama"
     model: str = "llava"
     ollama_url: str = "http://localhost:11434"
+    ollama_keep_alive: str = "0"
     timeout_seconds: float = 30.0
 
 
@@ -366,6 +373,7 @@ class MuninnConfig(BaseModel):
                 model=embedding_model,
                 dimensions=embedding_dims,
                 ollama_url=ollama_url,
+                ollama_keep_alive=os.environ.get("MUNINN_OLLAMA_KEEP_ALIVE", "0"),
             ),
             vector=VectorConfig(
                 path=os.path.join(data_dir, "qdrant_v8"),
@@ -378,6 +386,8 @@ class MuninnConfig(BaseModel):
                 path=os.path.join(data_dir, "metadata.db"),
             ),
             extraction=ExtractionConfig(
+                defer_llm_on_add=os.environ.get("MUNINN_DEFER_LLM_ON_ADD", "true").lower()
+                in ("1", "true", "yes", "on"),
                 enable_xlam=os.environ.get("MUNINN_XLAM_ENABLED", "true").lower() == "true",
                 xlam_url=os.environ.get("MUNINN_XLAM_URL", "http://localhost:8001/v1"),
                 xlam_model=os.environ.get("MUNINN_XLAM_MODEL", "xLAM"),
@@ -394,6 +404,8 @@ class MuninnConfig(BaseModel):
                 ollama_high_reasoning_model=os.environ.get(
                     "MUNINN_OLLAMA_HIGH_REASONING_MODEL", profile_models["high_reasoning"]
                 ),
+                ollama_keep_alive=os.environ.get("MUNINN_OLLAMA_KEEP_ALIVE", "0"),
+                ollama_timeout_seconds=float(os.environ.get("MUNINN_OLLAMA_TIMEOUT_SEC", "120")),
                 vram_budget_gb=vram_budget_gb,
                 # Instructor extraction (v3.1.0)
                 enable_instructor=os.environ.get("MUNINN_INSTRUCTOR_ENABLED", "true").lower() == "true",
@@ -541,6 +553,7 @@ class MuninnConfig(BaseModel):
                 provider=os.environ.get("MUNINN_VISION_PROVIDER", "ollama"),
                 model=os.environ.get("MUNINN_VISION_MODEL", "llava"),
                 ollama_url=ollama_url,
+                ollama_keep_alive=os.environ.get("MUNINN_OLLAMA_KEEP_ALIVE", "0"),
                 timeout_seconds=float(os.environ.get("MUNINN_VISION_TIMEOUT_SEC", "30.0")),
             ),
             audio=AudioConfig(

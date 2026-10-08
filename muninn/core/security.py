@@ -18,7 +18,7 @@ _GLOBAL_AUTH_TOKEN_SOURCE: str = "unset"  # 'env', 'configured', 'generated'
 
 def initialize_security(configured_token: Optional[str] = None) -> str:
     """Initialize or generate the global auth token."""
-    global _GLOBAL_AUTH_TOKEN
+    global _GLOBAL_AUTH_TOKEN, _GLOBAL_AUTH_TOKEN_SOURCE
     
     # Check priority: 1. Passed arg, 2. Env Var, 3. Generation
     # Accept both MUNINN_AUTH_TOKEN and MUNINN_SERVER_AUTH_TOKEN for compatibility
@@ -35,12 +35,7 @@ def initialize_security(configured_token: Optional[str] = None) -> str:
     else:
         _GLOBAL_AUTH_TOKEN = secrets.token_urlsafe(32)
         _GLOBAL_AUTH_TOKEN_SOURCE = "generated"
-        logger.warning("-" * 60)
-        logger.warning("! SECURITY WARNING !")
-        logger.warning("No MUNINN_AUTH_TOKEN configured. Generated temporary token:")
-        logger.warning(f"MUNINN_AUTH_TOKEN={_GLOBAL_AUTH_TOKEN}")
-        logger.warning("! SECURITY WARNING !")
-        logger.warning("-" * 60)
+        logger.warning("No Muninn authentication token configured; set MUNINN_AUTH_TOKEN before using protected endpoints")
     
     return _GLOBAL_AUTH_TOKEN
 
@@ -50,6 +45,15 @@ def get_token() -> str:
     if _GLOBAL_AUTH_TOKEN is None:
         return initialize_security()
     return _GLOBAL_AUTH_TOKEN
+
+
+def verify_main_token(token: Optional[str]) -> bool:
+    """Private local capabilities require an explicitly configured main bearer."""
+    expected = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
+    return bool(
+        is_security_enabled() and expected and len(expected) >= 32 and token
+        and secrets.compare_digest(token, expected)
+    )
 
 def verify_token(token: Optional[str]) -> bool:
     """Verify if the provided token matches any configured or runtime token.
@@ -94,10 +98,9 @@ def verify_token(token: Optional[str]) -> bool:
     if not is_security_enabled():
         return True
 
-    # Default: no explicit tokens configured and security enabled — allow.
-    # This mirrors historical behaviour where a runtime token is generated
-    # when no env tokens are present and the system remains accessible.
-    return True
+    # A generated runtime bearer is still required when no explicit token was
+    # configured. The bearer is not logged or served in anonymous HTML.
+    return bool(token and secrets.compare_digest(token, get_token()))
 
 
 def verify_api_token(token: Optional[str]) -> bool:
@@ -105,9 +108,7 @@ def verify_api_token(token: Optional[str]) -> bool:
 
     Rules:
       - If `MUNINN_API_KEY` is set to a non-empty value, require it.
-      - Empty string or unset `MUNINN_API_KEY` is treated as dev-mode.
-      - If security is disabled via `MUNINN_NO_AUTH=1` or `MUNINN_DEV_MODE=true`, allow.
-      - Otherwise, allow by default to preserve historical behaviour.
+      - Otherwise, use the core bearer policy (including explicit no-auth mode).
     """
     env_api_key = os.environ.get("MUNINN_API_KEY")
     if env_api_key is not None and env_api_key.strip() != "":
@@ -115,10 +116,7 @@ def verify_api_token(token: Optional[str]) -> bool:
             return False
         return secrets.compare_digest(token, env_api_key)
 
-    if not is_security_enabled():
-        return True
-
-    return True
+    return verify_token(token)
 
 def is_security_enabled() -> bool:
     """Check if security should be enforced."""

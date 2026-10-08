@@ -15,6 +15,7 @@ from muninn.core.types import (
     MemoryRecord, MemoryType, Provenance, ExtractionResult,
 )
 from muninn.scoring.importance import calculate_importance, calculate_novelty
+from muninn.core.credential_boundary import require_credential_free
 
 logger = logging.getLogger("Muninn.Ingestion")
 
@@ -42,6 +43,7 @@ class IngestionManager:
         """
         Execute the full ingestion pipeline: extract -> embed -> dedup -> conflict -> score -> store.
         """
+        require_credential_free(content, metadata, user_id, agent_id, namespace)
         self._otel.add_event(
             "muninn.add.request",
             {"content_preview": self._otel.maybe_content(content)},
@@ -64,6 +66,10 @@ class IngestionManager:
             or self.config.extraction.model_profile
         )
         skip_extraction = bool(scoped_metadata.get("muninn_skip_extraction", False))
+        rule_only_extraction = bool(scoped_metadata.get("muninn_rule_only_extraction", False)) or (
+            getattr(self.config.extraction, "defer_llm_on_add", False)
+            and not scoped_metadata.get("muninn_force_llm_extraction", False)
+        )
         extraction_timeout_value = scoped_metadata.get("muninn_extraction_timeout_seconds")
         extraction_timeout_seconds: Optional[float] = None
         if extraction_timeout_value is not None:
@@ -78,6 +84,12 @@ class IngestionManager:
         if skip_extraction:
             extraction = ExtractionResult()
             entity_names = []
+        elif rule_only_extraction:
+            from muninn.extraction.rules import rule_based_extract
+            extraction = rule_based_extract(content)
+            entity_names = self.memory._extract_entity_names(extraction)
+            if entity_names:
+                scoped_metadata["entity_names"] = entity_names
         else:
             with self._otel.span("muninn.ingestion.extract", {"model_profile": extraction_profile}):
                 if extraction_timeout_seconds is not None:
@@ -105,6 +117,9 @@ class IngestionManager:
                 if entity_names:
                     scoped_metadata["entity_names"] = entity_names
         
+        # Model/rule output is untrusted too; protect derived graph/index writes.
+        require_credential_free(extraction.model_dump(), scoped_metadata)
+
         # 2. Embedding
         with self._otel.span("muninn.ingestion.embed"):
             try:
@@ -176,7 +191,8 @@ class IngestionManager:
                         candidate_records = [
                             candidate
                             for candidate in all_candidates
-                            if self.memory._record_matches_scope(candidate, namespace, user_id)
+                            if not candidate._credential_projection
+                            and self.memory._record_matches_scope(candidate, namespace, user_id)
                         ]
                         if candidate_records:
                             conflicts = await asyncio.to_thread(

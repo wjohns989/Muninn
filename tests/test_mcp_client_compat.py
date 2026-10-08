@@ -134,6 +134,9 @@ def test_default_toolset_is_full_and_backward_compatible():
 def test_core_toolset_fits_cursor_and_readonly_has_no_writes():
     core = _listed("core")
     assert "add_memory" in core and "search_memory" in core and len(core) <= 20
+    assert {"start_secure_history_search", "poll_secure_history_search",
+            "fetch_secure_history", "analyze_secure_history",
+            "search_credential_metadata"} <= set(core)
     readonly = _listed("readonly")
     assert readonly and all(tool["annotations"]["readOnlyHint"] for tool in readonly.values())
 

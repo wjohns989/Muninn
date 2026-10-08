@@ -29,7 +29,8 @@ def test_normalizes_mem0_export():
     assert item["user_id"] == "global_user" and item["scope"] == "global"
     assert item["created_at"] == pytest.approx(1714582800.123)
     assert item["metadata"] == {"category": "ops", "legacy_user_id": "wjohn",
-                                "legacy_id": "8c1f-legacy", "import_source": "mem0"}
+                                "legacy_id": "8c1f-legacy", "import_source": "mem0",
+                                "muninn_rule_only_extraction": True}
 
 
 def test_normalize_handles_other_shapes():
@@ -47,7 +48,8 @@ def test_normalize_keeps_type_archive_flag_and_json_metadata_of_a_muninn_row():
     assert item["memory_type"].value == "procedural" and item["archived"] is True
     assert item["scope"] == "project" and item["metadata"]["tags"] == ["ops"]
     assert normalize_legacy_record({"content": "x", "memory_type": "working"})["memory_type"] is None
-    assert normalize_legacy_record({"content": "x", "metadata": "not json"})["metadata"] == {"import_source": "legacy"}
+    assert normalize_legacy_record({"content": "x", "metadata": "not json"})["metadata"] == {
+        "import_source": "legacy", "muninn_rule_only_extraction": True}
 
 
 @pytest.mark.asyncio
@@ -115,6 +117,22 @@ async def test_import_dry_run_then_apply_keeps_timestamps_and_skips_duplicates(t
 
 
 @pytest.mark.asyncio
+async def test_import_does_not_revive_archived_content(tmp_path):
+    engine = _engine(tmp_path)
+    engine._metadata.add(MemoryRecord(id="archived", content="Retired fact"))
+    engine._metadata.update("archived", archived=True)
+    engine.add = AsyncMock()
+
+    dry = await import_memories(engine, [{"content": "retired  FACT"}])
+    applied = await import_memories(engine, [{"content": "retired  FACT"}], dry_run=False)
+
+    assert dry["duplicates"] == applied["duplicates"] == 1
+    assert dry["imported"] == applied["imported"] == 0
+    engine.add.assert_not_awaited()
+    assert engine._metadata.get("archived").archived is True
+
+
+@pytest.mark.asyncio
 async def test_reindex_rebuilds_vectors_and_bm25_from_metadata(tmp_path):
     engine = _engine(tmp_path, with_vectors=True)
     try:
@@ -151,6 +169,34 @@ def test_cli_reads_jsonl_array_and_mem0_response(tmp_path):
     assert [r["memory"] for r in _read_export(jsonl)] == ["a", "b"]
     assert [r["memory"] for r in _read_export(array)] == ["c"]
     assert [r["memory"] for r in _read_export(mem0)] == ["d", "e"]
+
+
+def test_cli_dry_run_counts_duplicates_across_batches(tmp_path, monkeypatch, capsys):
+    from muninn import cli
+
+    path = tmp_path / "repeated.jsonl"
+    rows = [{"memory": "same fact"} for _ in range(201)]
+    path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    calls = []
+
+    def fake_post(_args, endpoint, payload):
+        calls.append(payload)
+        assert endpoint == "/admin/import"
+        assert payload["dry_run"] is True
+        batch = payload["records"]
+        return {"dry_run": True, "read": len(batch), "invalid": 0,
+                "duplicates": len(batch) - len({row["memory"] for row in batch}),
+                "imported": len({row["memory"] for row in batch}),
+                "merged": 0, "skipped": 0, "archived": 0}
+
+    monkeypatch.setattr(cli, "_admin_post", fake_post)
+    args = cli.build_parser().parse_args(["import", str(path), "--source", "mem0"])
+    assert cli.cmd_import(args) == 0
+    report = json.loads(capsys.readouterr().out.split("\nDry run only.")[0])
+    assert report["read"] == 201
+    assert report["duplicates"] == 200
+    assert report["imported"] == 1
+    assert sum(len(call["records"]) for call in calls) == 1
 
 
 def test_detect_legacy_stores_reports_booleans_only(tmp_path, monkeypatch):

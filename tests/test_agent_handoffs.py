@@ -142,7 +142,11 @@ def test_rest_handoff_flow(monkeypatch, memory):
     import server
 
     monkeypatch.setattr(server, "memory", memory)
-    client = TestClient(server.app)
+    monkeypatch.setenv("MUNINN_NO_AUTH", "0")
+    token = "test-handoff-bearer-" + "x" * 32
+    monkeypatch.setenv("MUNINN_AUTH_TOKEN", token)
+    assert TestClient(server.app).post("/handoffs", json={"project": "p", "summary": "s"}).status_code == 401
+    client = TestClient(server.app, headers={"Authorization": f"Bearer {token}"})
 
     created = client.post("/handoffs", json={"project": "p", "summary": "s", "from_agent": "codex"}).json()["data"]
     assert client.get("/handoffs", params={"project": "p", "status": "open"}).json()["data"][0]["id"] == created["id"]

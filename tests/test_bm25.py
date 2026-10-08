@@ -1,7 +1,23 @@
 """Tests for muninn.retrieval.bm25 — In-memory BM25 keyword search."""
 
+import hashlib
+
 import pytest
+
 from muninn.retrieval.bm25 import BM25Index
+
+
+def test_content_digest_tracks_add_update_rebuild_and_remove():
+    index = BM25Index()
+    assert index.content_digest("part") is None
+    index.add("part", "one")
+    assert index.content_digest("part") == hashlib.sha256(b"one").hexdigest()
+    index.add("part", "two")
+    assert index.content_digest("part") == hashlib.sha256(b"two").hexdigest()
+    index.rebuild({"part": "three"})
+    assert index.content_digest("part") == hashlib.sha256(b"three").hexdigest()
+    index.remove("part")
+    assert index.content_digest("part") is None
 
 
 class TestBM25Index:

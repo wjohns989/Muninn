@@ -135,7 +135,7 @@ summary, all under project `Muninn`, re-read in order and found by search.
 ### Hooks and thread understanding (2026-09-26)
 
 - `POST /hooks/{agent}` plus `python -m muninn.cli hooks install`. Claude Code
-  uses `http` hooks; Codex uses command hooks through `muninn/hook_client.py`
+  and Codex use command hooks through `muninn/hook_client.py`
   (standard library only, about 50 ms startup, always exits 0). SessionStart
   injects the project briefing. PreCompact, Stop (throttled) and SessionEnd
   vault and import that one thread in the background; the endpoint answers in

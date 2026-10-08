@@ -1,0 +1,578 @@
+# Provenance-aware memory routing (source-unit foundation implemented; filing pending)
+
+## Current verified checkpoint (supersedes earlier gap descriptions below)
+
+The implementation notes below retain their historical design context. They
+must not be interpreted as saying that the ledger, worker or agent reads still
+need to be built. The following checkpoint is authoritative for current scope:
+
+- Durable cited extraction is active locally: a real archived conversation
+  automatically produced five encrypted provisional memories through the
+  pertinent-search worker, with immutable source binding, staged publication
+  and an authenticated receipt. Ollama returned to zero resident models.
+- Agent search, lookup and source-following are active. Real authenticated HTTP
+  MCP retrieved a saved memory and its redacted transcript page. The actual
+  configured stdio bridge, launched outside the checkout, retrieved a real
+  memory and listed the corrected 20-tool core profile. Ordinary memory search
+  does not yet federate this separate cited ledger.
+- Codex and Claude have observed receipts for all four configured lifecycle
+  hooks. Gemini has real SessionStart/SessionEnd receipts; AfterAgent and
+  PreCompress remain unverified. Client bindings were inspected, not rewritten.
+- A journal connection contention fix is reviewed and pushed, with isolated
+  red-first/focused checks passing. Exact-candidate `e2236f3` Linux CI passed
+  2,434 tests / 13 skips; all five PR checks passed. The full suite took
+  163.47 seconds. This closes the demonstrated connection-setup regression;
+  the live process has not been reloaded for this later fix.
+
+Remaining dependencies, not completion claims:
+
+1. **Automatic coverage:** add resumable bounded windows for new captured
+   history, separately from pertinent-search interpretation. Reserve capacity
+   for active searches, keep CPU capture independent, and record actual window
+   coverage rather than claiming an entire source was interpreted. Cross-version
+   deduplication must preserve distinct occurrences and partial-message growth.
+2. **Classification:** evidence-gated project/type/time/conflict decisions and
+   agent/user consultation remain incomplete. Source lookup and a supported
+   quote alone do not resolve ambiguity. The credential queue needs its separate
+   authenticated local-context classification and representative proof.
+3. **Backfill admission:** measure cumulative encrypted-ledger validation cost
+   and implement durable spending reservations/accounting before broad paid
+   scheduling. Provider quota availability is not a reservation. Local and ZDR
+   short-source transport proofs do not establish historical coverage/accuracy.
+4. **Operational recovery/privacy:** validate current full archive, ledger and
+   staged-job backup/restore together; audit legacy indexed metadata with a
+   recoverable quarantine plan. Component recovery proofs are narrower.
+5. **Client and UI closure:** obtain the remaining real Gemini hook receipts;
+   then expose coverage, provisional/review state, resource routing and privacy/
+   budget controls coherently in the localhost UI. UI overhaul remains last.
+
+See `docs/evidence/2026-09-30-source-unit-integration.md` for exact proof scopes
+and known limits. Keep the service running; subsequent activation/reload still
+requires its own scoped authority and idle-queue/recovery checks.
+
+### Next bounded automatic-coverage slice
+
+**Query-independent plan component implemented:** `CitedWindowPlanStore` seals
+descriptor-only encrypted pages after archive and source-evidence EOF. It
+partitions supported user/assistant body fragments into bounded windows without
+search terms or a total-message cutoff; generated role labels are not model
+work. Cached lookup/seals bind the exact evidence attempt, parser/plan algorithm
+and window width. Supported old geometry can still be verified; an unknown
+future algorithm fails closed pending explicit migration. Cancellation/late
+integrity failure cannot expose a partial plan, including after staging commits.
+Portable archive copy/backup/restore now includes this derived store. A sealed
+plan proves selected source-window coverage, not that inference/classification
+has run. Capture-triggered queuing and processing coverage are still next.
+
+Read-only independent examination confirmed that search targeting cannot serve
+as automatic capture coverage: its target requires query terms and selects a
+matching window. Do not fabricate a search query or count one such hit as a
+whole-source pass. Add a query-independent immutable source/window target.
+
+After archive commit, resolve that exact snapshot identity and idempotently
+enqueue capture enrichment before acknowledging the capture revision. An
+`unchanged` replay must still recover an enqueue interrupted after archive
+commit. Queue saturation is deferred work, not coverage. Changed snapshots and
+growing partial messages must not silently erase or conflate prior occurrences.
+
+**Independent crash-gap finding:** capture retry alone is insufficient if the
+source changes before retry. Obtain the committed blob/hash/version while the
+archive write lock still pins that commit, and add watermark-bound reconciliation
+of every post-enable committed version absent from the outbox. Do not resolve
+the latest path version after releasing the lock, and do not turn reconciliation
+into accidental pre-enable historical backfill. The corresponding crash-after-
+commit/source-change/no-pre-watermark-work case is an admission test.
+
+**Capture-outbox source integration implemented, default off:** exact optional
+receipts are obtained under the commit lock and stripped from ordinary capture
+results. An immutable encrypted watermark is established under the same archive
+writer before eligible capture/start/scan. Transient post-commit journal locks
+leave the raw capture successful; reconciliation recovers each committed version.
+An encrypted checkpoint pins a retained authenticated manifest generation and
+source/version position. Each batch examines at most 128 entries, including
+legacy/excluded entries; receipt inserts and checkpoint advance commit atomically
+with a concurrent-checkpoint comparison. It does not reload all known outbox IDs
+or repeatedly enumerate the completed prefix. Portable recovery verifies pending
+receipts and the partial checkpoint. Flag disable pauses new outbox insertion
+and reconciliation, not deletion or reset of the existing watermark/work.
+
+This boundary excludes **pre-watermark archive commits**, not every historical
+file that could first be archived later. It is not a processing scheduler: typed
+window jobs, foreground priority, cadence and completion acknowledgments are
+still required. A zero-insert reconciliation batch does not prove EOF: it may
+have examined only old/ineligible entries. Existing manifest decryption/key-list
+loading is O(catalog size) per call; large-backlog cost and recovery latency remain
+explicit gates before activation/backfill, not a bounded-CPU claim.
+
+**Next typed-window admission boundary:** retain legacy term-targeted search
+jobs without a fabricated query for capture work. Automatic window targets must
+bind the authenticated plan attempt, ordinal and exact descriptor/source-evidence
+attempt. Derive the automatic lane only inside the trusted capture-outbox enqueue
+path; callers cannot supply it. Validate lane/target consistency again at claim
+and publication, not only insertion. Reserve foreground capacity and do not
+advance the outbox planning cursor when the job queue is full. Keep automatic
+jobs local-only until durable remote-cost reservation is complete, regardless
+of general saved ZDR consent. Before activation, close cross-version occurrence
+dedup/partial-growth, measured manifest cost and a short bounded recovery cadence
+(the existing 30-minute discovery scan is not sufficient worker cadence).
+The source is complete only after sealed plan EOF and acknowledged outcomes for
+all its windows; queued/planned/deferred/stale/unsupported are not completed.
+Independent review specifically requires proving that an ordinary search caller
+cannot manufacture an automatic job or cross its routing/coverage boundary.
+
+**Typed-window integration implemented (source-only, 2026-10-01):** the trusted
+outbox queue builds/authenticates a query-independent plan, seals exact ordinal
+targets and descriptor digests, and advances source scheduling in the same journal
+transaction as job/mapping insertion. Automatic capacity is 24 within the shared
+32-job cap; search jobs claim first and active/due foreground searches suppress
+automatic claims. Existing consumers default to `include_capture=False`. Explicit
+internal capture claims reopen the exact planned window and reuse encrypted stage,
+publication and ACK recovery, with remote use forced off irrespective of general
+saved consent. Result-only legacy completion cannot acknowledge an automatic window.
+Whole-source completion requires every sealed plan window's publication ACK;
+zero selected windows are `no_context`, not analyzed. Failed/cancelled/deferred
+windows stay unresolved. Completed/no-context receipts remain retained/verifiable
+but leave the pending/planning selectors.
+
+Scheduling mirrors are only hints. Sealed pending/plannable totals are checked
+before indexed exclusion; receipt insertion, plan advance and final ACK update
+those totals in the same transaction. Selected hints must agree with the source's
+sealed plan. Missing established totals fail closed rather than rebootstrap.
+Counts/selected-row checks do not replace full mapping/plan verification or prove
+constant cost: matching index counts and manifest loading still scale. Fairness
+timestamps select round-robin candidates, not eligibility/completion authority.
+
+**Next missing activation dependency:** certify same-origin append/prefix or
+stable-native-occurrence evidence before reusing prior acknowledged inputs across
+snapshot growth; never deduplicate by text alone across occurrences/projects.
+Partial changed windows must stay dirty. Then measure actual local catalog/ledger
+cost and establish bounded planner/model cadence plus failure visibility. No
+automatic scheduler loop or new live model dispatch was activated by this stage.
+
+**Reviewed next growth primitive:** during the existing encrypted capture byte
+pass, hash the prefix of the previous same-path/provider/kind snapshot's length.
+An optional manifest-authenticated `prefix_of` link is admissible only for a
+strictly longer capture with an exact old-prefix SHA and stable source identity
+through EOF. It certifies preserved bytes, not interpretation coverage; rewrites
+and legacy entries acquire no invented certificate. JSONL append can use this
+boundary; rewritten JSON still needs stronger occurrence evidence or no reuse.
+
+Later reuse needs an explicit encrypted coverage record for the new plan ordinal,
+not reuse of the old job's uniquely bound mapping or re-publication of old quotes
+as new coordinates. Verify a prior durable publication ACK and same-origin/unit/
+window/input evidence. Also require the *current* analysis contract and model
+identity: `secure_analysis._cited_outcome` already hashes `_CITED_VERSION`, schema,
+full prompt, provider/model and local weights digest into the staged identity.
+Recompute that current identity, require equality with the acknowledged stage,
+and invalidate/bump the contract on classifier-semantic changes. Prompt/schema/
+classifier/weights mutation tests must reject reuse; unrelated docs are not an
+invalidation. Cloud alias reuse is not admitted in the initial local-only lane.
+
+**Growth prerequisites implemented (source-only, 2026-10-01):** new capture hashes
+the previous-size prefix during its existing encryption pass, with no old blob
+decryption or extra source pass. Strictly longer same-path/provider/kind captures
+with stable open/path identity and size/mtime may carry `prefix_of`; rewritten,
+shorter, changed-origin and legacy snapshots acquire no invented link. Full blob
+authentication checks certified prefix bytes; full archive verification/portable
+restore also check the immediate same-origin parent. Equal unchanged bytes no
+longer conceal a provider/kind change.
+
+`preserved_parent_window` requires the authenticated exact source, an existing
+parent plan, matching partition/parser/input and complete sealed unit provenance
+(including native ID, physical line, ordinal, cwd and timestamps). It reopens
+both windows and returns no match when proof is missing or the window changed.
+It builds no parent plan and grants no publication/coverage authority. The shared
+`_cited_model_identity` preserves the existing staged hash formula and enables a
+fresh contract comparison without inference. Contract/schema/prompt/weights and
+input mutation checks verify invalidation. These primitives do not yet implement
+cross-version coverage records or activate a worker. Parent-plan matching still
+loads manifest metadata; amortized batch cost remains a measured admission gate.
+
+**Planner fairness implemented (source-only, 2026-10-01):** every outbox source
+has authenticated zero/retry/blocked planning state; the scheduler's encrypted
+v1-to-v2 marker and all existing-row initialization commit in one transaction.
+Missing state under established v2 fails closed, not rebootstrap. Eligibility
+uses authenticated state, never SQL due/blocked exclusion. The ordered candidate
+scan is not a bounded-CPU claim. IO/cancellation defer with backoff; unsupported,
+integrity and unknown preparation failures stay unresolved and review-blocked.
+Errors use fixed categories, not source/exception prose. Transitions compare both
+observed plan and retry ciphertexts, so a stale failure cannot replace newer
+progress. Successful scheduling clears retry state. The worker drains its
+off-thread preparation on cancellation before acknowledging shutdown/deferral.
+Root totals/index mirrors and source plan/ACK status are read from one database
+snapshot, so a legitimate concurrent commit cannot masquerade as corruption.
+
+This closes source failure fairness, not durable large-source progress. Current
+projection staging is discarded on interruption; short repeated wall-time
+cancellation can restart the same large source forever. Preserve sustained
+in-process preparation with cooperative foreground/resource pauses, then design
+and verify portable parser/staging checkpoints before claiming restart-resumable
+bounded work. Do not expose source pages/window coverage before authenticated EOF.
+No automatic cadence, live schema migration or service reload occurs here.
+
+Reuse sealed source-unit streaming, encrypted staging, model-origin provisional
+publication and existing crash recovery. Record window-level coverage and
+unsupported/no-context/integrity/deferred states explicitly. Search work has
+priority and reserved capacity. Begin this new lane with a bounded local-only
+cadence; persisted ZDR consent must not override that lane's temporary backfill
+cost gate. This is an incremental admission boundary, not a permanent removal
+of the requested automatic resource-aware ZDR fallback.
+
+Smallest proof: isolated crash-between-commit-and-enqueue replay, changed-version
+recapture, bounded long-source window continuity, queue saturation, search
+priority, local-only admission despite enabled remote consent, and stage-only
+publication recovery. Representative real-source/model validation follows
+component proof and a separately prepared activation; fixtures are not evidence
+that the live installation has automatically enriched newly captured history.
+
+## Decision and observable outcome
+
+Muninn must not treat a model's interpretation as a verified memory merely
+because it is fluent. It must capture original material durably, classify
+bounded candidate knowledge, file only evidence-supported high-confidence
+items in the right project/type/time scope, and preserve unresolved cases for
+agent or user review. Agents must be able to follow an item back to its
+authenticated source and surrounding transcript. Credential *values* remain
+in the separate portable credential vault and never enter ordinary search.
+
+The user chose evidence-gated automatic filing on 2026-09-30. A later
+contradictory statement is not by itself proof that the earlier one was false.
+The local model may reject clear noncredentials; it cannot silently promote
+uncertain credential candidates. User consultation is required when the
+evidence cannot settle a consequential classification or conflict.
+
+## Current behavior that this design must not mistake for completion
+
+- The strict archive encrypts full source snapshots and retains source path,
+  provider, capture time, source mtime, and version. Capture time is **not**
+  the event time of a statement. Provider-level message timestamps exist in
+  some parsers, but the present secure-hit model window passes message text
+  alone. A 256 KiB physical-line limit in its fast path can also lose
+  structured context even though the streaming projection supports large
+  values.
+  **Update:** the model-window fast path now uses authenticated streaming source
+  units, eliminating that physical-line cap. Encrypted sidecars preserve unit
+  provenance for review; ordinary analysis still lacks durable claim filing.
+- Strict secure analysis interprets a pertinent search hit in a bounded
+  window. It does not provide full historical-archive enrichment coverage.
+  The encrypted analysis result in the search journal expires after 24 hours;
+  it is not durable knowledge with a source citation.
+- Legacy history insight storage is disabled in strict mode. Even there,
+  output is marked model-inferred/unverified, not claim-to-source verified.
+  Optional ordinary-memory conflict detection and semantic deduplication
+  default off. Enabling the legacy conflict resolver unchanged would allow
+  age/importance heuristics to supersede or merge claims without sufficient
+  temporal evidence.
+- Historical ordinary import code can store source paths in searchable
+  metadata and can collapse divergent equal-key sessions by keeping only the
+  fullest one. Existing derived records need a metadata-only privacy/coverage
+  audit and recoverable quarantine or reindex plan. The authenticated raw
+  archive remains the source of truth; migration must not delete it.
+- Credential ambiguity has its own encrypted queue and explicit local review
+  path. It is a special lane of this workflow, not a substitute for review of
+  project identity, duplicate versus distinct, facts, decisions, tasks, and
+  contradictory or time-scoped claims.
+- Current transcript credential scanning records provider as the queue's
+  `project` and does not carry original source path or message timestamp into
+  the classifier input. Its value-based review groups can span distinct
+  source snapshots. A model judgment about one representative must not reject
+  an entire cross-source group until all relevant contexts are evaluated.
+  Existing transcript rows can be joined back to an authenticated archive
+  blob by recomputing the recorded SHA-256 fingerprint of
+  `vault_id:blob_id:content_sha256`. The manifest then supplies the original
+  path/version, mtime, and capture time; none is a substitute for an absent
+  provider event timestamp. A missing or nonunique join is `source_unverified`.
+  Keep full paths inside encrypted state or a local ephemeral lookup; models
+  receive only the bounded project/source-type context they need.
+  For Codex specifically, session file location identifies a session/date,
+  not reliably its project. Parse `session_meta` and each `turn_context.cwd`
+  as bounded provider metadata, attaching the applicable cwd to each turn;
+  never apply the session's final cwd retroactively to earlier turns.
+
+**Implemented foundation:** immutable encrypted source-unit pages, per-occurrence
+credential context replay, model-weight-bound review caches, keyset review
+pagination that retains UNKNOWN as pending, and portable sidecar recovery.
+Both streaming source passes authenticate their complete size/hash before
+publication. Gemini supports pretty-printed container JSON; other providers
+retain strict JSONL. See the source-unit integration evidence receipt for the
+bounded real-provider/model checks and exact remaining gaps.
+
+The 2026-09-30 read-only local join audit found 24,627 ambiguity rows across
+1,074 transcript snapshots, with 0 missing and 0 nonunique archive joins.
+This proves source lookup coverage for those rows, **not** that their values
+are credentials, that message event times are available, or that group-wide
+model decisions are safe. Do not run a mass classifier pass on the current
+name/reason/value-only input.
+
+## Options considered
+
+1. **Chosen: encrypted evidence ledger attached to immutable archive
+   snapshots.** Small, durable claim/review records reference authenticated
+   source units. It reuses local encryption and backup boundaries while
+   keeping provisional content out of ordinary vector/BM25 indexes.
+2. **Rejected: add review flags directly to current memory records.** Less
+   code, but uncertain text could enter searchable indexes, source/turn
+   evidence would be weak, and rollback of bad model assertions would be hard.
+3. **Deferred: separate temporal knowledge-graph service.** Useful for much
+   larger multi-user reasoning, but unnecessary operational and recovery
+   complexity for this local installation.
+
+## Data and state boundaries
+
+Each source unit carries an opaque source ID, immutable snapshot blob/hash
+and version, provider, authenticated record/turn ordinal (or byte-range where
+safe), role/content type, source path held only inside encrypted state,
+project evidence, and separate timestamps: provider event time, source mtime,
+archive capture time. Timestamp value and *basis* travel together; absent or
+unparseable event time is `unknown`, never backfilled from file mtime as if it
+were the conversation time. Native IDs and content digests deduplicate units
+across append-only snapshots without conflating distinct occurrences.
+
+Candidates have type (`fact`, `preference`, `decision`, `task`, `procedure`,
+`project_attribution`, `duplicate`, `conflict`, or `possible_credential`),
+proposed destination, scope, temporal qualifier, confidence, source-unit
+reference(s), model/rule version, and state. States are `pending`,
+`provisional`, `filed`, `rejected`, `superseded_with_evidence`, and
+`needs_user`. All changes append an audit decision; no model can erase the
+source or prior interpretation. A candidate is filed only if its source is
+authenticated, the type/project/temporal scope is supported, no unresolved
+contradiction or secret risk exists, and the policy threshold is met.
+Potential secrets divert to the local credential lane before any ZDR request.
+No candidate enters an ordinary content, metadata, vector, or BM25 index
+until a mandatory secret-diversion/redaction gate has passed. Existing legacy
+indexed records need a verified-backup migration; fixing future writes alone
+does not close prior exposure.
+
+The ledger stores sensitive text only encrypted. Ordinary agent search may
+return bounded redacted text, provenance metadata, status, and an opaque
+source capability. A local authorized interpreter may inspect the original
+window; ZDR may do so only under the user's persisted consent, provider ZDR
+constraints, and spending thresholds. Credential values never appear in
+ordinary agent results. Agent/user review can ask for surrounding source
+pages before deciding; explicit local credential use remains separate.
+
+## Processing order and resource policy
+
+1. Capture and authenticate immutable raw snapshots immediately; do not wait
+   for a model, GPU, remote provider, or review. CPU-only indexing and bounded
+   redacted projection continue independently.
+2. Stream source units into resumable, coverage-tracked work keyed by snapshot
+   and parser version. Long JSON strings and multi-GB transcripts are chunked
+   with bounded buffers; completion requires end-to-end authentication and
+   contiguous unit coverage. A retry skips verified units, not whole files by
+   name alone.
+3. Prioritize pertinent active-conversation units, then new history, then the
+   historical backlog. Batch candidate extraction under measured resource
+   limits; reuse an eligible resident local model only while GPU idle and
+   headroom remains, use only short bounded model residency during a batch and
+   return to idle afterward, and use the approved ZDR
+   path only where privacy/budget gates permit. Defer without losing work if
+   no safe route fits. Capture/search remain available throughout.
+4. Apply deterministic rules first, then bounded model classification with
+   cited evidence, then user review only for unresolved consequential cases.
+   Search must distinguish verified/filed, provisional, and source-only hits.
+   Agents can retrieve related transcript pages if a summary is insufficient.
+   Divergent sessions with one native ID remain distinct observations until
+   their relationship is resolved.
+
+## Failures, recovery, and tests
+
+The implementation must handle source growth during a pass, malformed or
+unknown provider records, missing event time, conflicting project evidence,
+large single messages, cross-snapshot duplicates, late archive corruption,
+model refusal/malformed output, GPU contention/OOM, provider outage, budget
+exhaustion, user consent revocation, crash during ledger publication, and
+backup/restore on another machine. Failures retain source and checkpoint or
+defer; they cannot turn an incomplete pass into a `filed` claim.
+
+Before live activation: red-first unit tests for provenance/time precedence,
+dedup and temporal conflicts; integrity/rollback and secret-exclusion tests;
+bounded-memory long-source tests; local and ZDR routing tests; restore drill
+including the ledger; representative real-history end-to-end checks for
+agent source-following and correct project/time filing; independent review of
+design, persistence/security diff, and actual live result. Record observed
+durations and resource peaks rather than promising a fixed time. Keep the
+current live listener running until migration is backed up and separately
+authorized for restart.
+
+The privacy gate must assert that a synthetic credential-like value and
+private path are absent from ordinary content, metadata, vector payload,
+BM25, logs, and agent responses. A separate nonsecret source-reference test
+must prove authorized local interpretation can recover the original location
+and provider event time. Verify model residency returns to idle within its
+configured short duration even on early termination.
+
+## Implementation slices
+
+1. Fix proven resident-model route regression and verify live triage can
+   continue without leaving a model resident indefinitely.
+2. Add source-unit provenance extraction and immutable encrypted ledger with
+   crash-safe coverage/checkpoints and portable backup.
+3. Add evidence-gated classifier/review decisions, credential diversion,
+   temporal conflict rules, and agent-facing metadata/source navigation.
+4. Backfill historical snapshots under resource/budget policy; validate real
+   local/ZDR and restore paths; then add UI controls after the core is proven.
+
+## Next implementation boundary: durable candidate ledger
+
+The next slice is an isolated encrypted ledger and evidence gate, not immediate
+activation of an archive-wide inference job. Its observable outcome is that a
+bounded source window produces durable typed candidates with exact citations;
+failed, missing or contradictory evidence cannot become a filed item. This
+closes the current 24-hour-analysis-expiry gap before scheduling more inference.
+
+- Store under the archive recovery envelope in `memory-ledger/ledger.sqlite3`,
+  with an independent HKDF/AAD domain. Only opaque HMAC identifiers, sequence
+  numbers and necessary structural states are plaintext. Text, project labels,
+  source references, model proposals and review decisions are encrypted.
+  Events form an AEAD-authenticated sequence with an encrypted committed head
+  and previous-ciphertext digest. Reads/restore validate the full chain before
+  returning a public result. This detects corruption, missing events and changed
+  references, but cannot detect replacement of the entire database by a valid
+  older copy without an external freshness anchor; rollback resistance is not
+  claimed. Writes commit event and head in one FULL-synchronous transaction.
+  The first publication API validates the whole chain in its write transaction;
+  an authenticated tail is insufficient proof that an earlier prefix is sound.
+  Measure/amortize that validation for background batches before large backfill.
+- An immutable citation identifies snapshot hash/blob/version, source-unit
+  ordinal, parser version and bounded window offsets/digest. Quote checks use
+  the original authenticated source, not model paraphrases. Context must retain
+  the source role, cwd evidence and event-time basis. A source observation is
+  not a world-fact verification. Assistant output remains model-inferred.
+- Candidate extraction can propose type/scope/text plus an exact supporting
+  quote. Candidate IDs bind source occurrence, schema/policy version and model
+  weight identity. Repeating a job is idempotent without collapsing distinct
+  occurrences or conflicting snapshot versions. Decisions append; they do not
+  destroy earlier candidates or sources. No automatic newest-wins rule.
+- `filed` requires exact quote, known project/event basis, a passed secret gate
+  and a narrowly supported source assertion. Unsupported paraphrases, missing
+  scope/time, assistant assertions and possible contradictions are provisional.
+  Any possible credential is diverted to credential review and cannot be an
+  ordinary filing. Model confidence by itself never authorizes promotion.
+- Until conflict identity is evidence-supported, automatic filing is restricted
+  to source observations, not consolidated truth. Typed summaries and temporal
+  relationships remain provisional. User-review decisions must name evidence
+  or explicit user authority and preserve contrary observations.
+- Persist `epistemic_kind=source_observation` and `truth_status=unverified_assertion`
+  for a filed verbatim user observation; assistant/model interpretations are
+  always explicitly labeled and provisional. The first gate only auto-files
+  type `observation` only for whole-user-message equality, never a stripped
+  quotation, negation or reported speech; proposed facts/preferences/decisions/tasks need further
+  type/conflict evidence. Public read/search contracts retain these labels.
+- Screen the entire serialized remote model input, including the evidence
+  window and supporting quote, before dispatch. Unknown screening outcome
+  blocks ZDR. Safe claim text cannot exempt a credential-bearing context. No
+  private cwd/path/native ID enters that input; project references are opaque.
+  Local credential interpretation remains in its separate approved lane.
+- The initial citation targets an independently authenticated bounded encrypted
+  source-fragment page from a fully sealed SourceEvidenceStore attempt. This
+  avoids rereading a multi-GB source for each candidate. Fragment-boundary
+  claims remain provisional or await a contiguous-window citation; the source
+  is not discarded or declared fully interpreted because one page was handled.
+  The gate streams the complete authenticated source unit through redaction
+  before exposing/admitting any selected window, so labels/open quotes cannot
+  hide in earlier chunks. Indexed binary seeks locate the unit's encrypted
+  fragment range, without scanning preceding conversations. Digest state and
+  a 128-entry immutable-unit screening cache keep memory bounded. There is no
+  whole-unit size cap. Cross-fragment claim citations and automatic enrichment
+  scheduling remain subsequent dependencies, not proven by this gate alone.
+- Publication is transactional after complete source verification. A crash or
+  late corruption leaves no published page/checkpoint. Bounded windows and
+  continuation offsets support arbitrarily long records; no whole-source size
+  ceiling and no claim of completion on a partial iterator.
+- Backups take a consistent SQLite ciphertext snapshot and verify ledger
+  integrity before declaring restore success. No new key or passphrase prompt
+  is necessary beyond the existing archive recovery credential.
+
+Cheapest proof: isolated red-first cases for quote mismatch, unknown event/cwd,
+assistant-vs-user role, secret diversion, distinct same-text occurrences,
+idempotent retry, crash-before-publication, temporal disagreement retention,
+ciphertext/AAD tamper and portable restore. Then one bounded real source window,
+local and approved ZDR route, source-following search, and idle-model release.
+Only after those pass does the scheduling slice prioritize active/new/backlog
+work. UI controls and historical backfill are subsequent dependencies, not
+implied by the ledger's unit tests.
+
+## Automatic integration admission requirements
+
+Independent review of the actual ledger/analysis boundary identified these
+remaining blockers before connecting model results to automatic filing:
+
+1. Bind a bounded source-fragment window and its exact offsets to the existing
+   encrypted analysis job **before** inference. The current summary window
+   supplies no authenticated claim citation. Persist parser/schema/model
+   identity and input digest; retry must reuse that window, not silently select
+   a different excerpt. Cross-fragment coverage is separate resumable work.
+   **Component implemented:** `CitedAnalysisSource` produces/reopens a private
+   descriptor bound to snapshot, attempt, page coordinates, parser and canonical
+   input digest. Boundary hits retain authenticated adjacent-page context in a
+   bounded window; explicit single-page citation ranges reject cross-page
+   fabricated quotes. **Worker integration implemented:** the immutable
+   descriptor is bound before inference and reused on retry. Model input keeps
+   role/event/project-basis metadata; local opaque project IDs stay in the ledger.
+2. Add exact-quote proposals to the internal extraction contract. Check each
+   against the persisted source window. Model-origin proposals stay explicitly
+   provisional even when they echo a whole user message; quote equality is
+   source support, not approval of the proposed type, scope or truth. Preserve
+   the public four-field analysis response until agent contracts are updated.
+   **Component implemented:** the model-only batch API fixes proposal origin
+   to `model` and cannot accept a caller's source-rule override. Those candidates
+   remain provisional even for whole-message exact echoes. Trusted direct-source
+   rule callers retain the single-record API and historical ref derivation.
+   Model refs bind their origin separately; older records report
+   `legacy_unrecorded`, not an invented origin. Portable recovery retains this
+   distinction. **Worker integration implemented:** the internal cited schema
+   validates supported quotes, preserves private proposals only in encrypted
+   staging, and publishes the model-only batch before acknowledging success.
+   Ordinary enrichment excludes the separate credential-only proposal type.
+3. Screen the complete actual serialized remote request, not merely the claim
+   or response. Credential-bearing or unknown inputs stay in the local lane;
+   consent, budget, lease and ZDR settings do not override that boundary.
+   **Implemented for cited and archive-backed legacy on-demand routes:** whole
+   unit admission precedes budget lookup; nested strings and the complete request
+   envelope are screened, with a final body/policy check at HTTP admission.
+   Exact bundled public model IDs are recognized only in structural model
+   configuration fields; transcript/prompt/unknown values receive no exception.
+4. Reuse existing lease, remote-dispatch/unsent markers and consent-generation
+   checks. An interrupted possibly sent request is outcome-unknown, not an
+   automatic duplicate paid request. Persist accepted proposal refs atomically
+   before marking extraction complete; recover ledger-commit/job-ack crashes
+   by deterministic idempotency. Do not confuse a quota availability query
+   with a spend reservation.
+   **Reviewed queue design:** short transactions bind the window, stage validated
+   encrypted extraction, and fence publication admission/acknowledgment.
+   Source authentication and ledger append run outside the journal writer lock,
+   so CPU capture and heartbeats are not blocked by a growing ledger scan.
+   A durable publication-only state replays the immutable stage without another
+   model call. Deterministic candidate refs recover a ledger-commit/job-ack crash.
+   Cancellation and publication admission are mutually exclusive; after
+   publication admission cancellation must report that it is too late, not
+   pretend already committed claims can be rolled back. Expired staged local
+   publication is retryable; possibly dispatched remote work with no durable
+   response remains outcome-unknown. Stage AAD binds job, target/window and
+   result identity. Prove cancel/admission races, stale-lease acknowledgment,
+   no duplicate inference after publication crash, and tampered stage rejection.
+   **Implemented and tested:** recovery bypasses inference when a validated
+   extraction exists, publication failures retry only the stage (integrity
+   failures are terminal), and ACK proves the exact refs exist in the ledger.
+   Resource/privacy deferrals retain their immutable input and back off rather
+   than becoming unknown permanent failures.
+5. The bounded `record_batch` component validates all citations before a single
+   transaction and authenticates the prior ledger chain once for up to 64
+   proposals. Single-record callers retain the same semantics. This amortizes
+   validation but does **not** remove quadratic cumulative full-chain cost.
+   Measure representative growth before enabling a historical backfill; add
+   an authenticated scalable validation boundary if needed, without accepting
+   an unverified old prefix or holding a source reader through inference.
+
+The worker integration is tested independently of the running service and has
+not been activated by a restart. It does not by
+itself activate historical inference, resolve conflicts, establish extraction
+coverage, or federate ledger results into agent search.
+
+Representative short real-source previews passed through actual local Ollama
+and ZDR OpenRouter with no memory publication. Exact source coordinate recovery
+uses unique unchanged quotes, not fuzzy matches or model arithmetic. Existing
+local-only credential review remains distinct. Live restart, durable agent
+search federation, temporal/type conflict filing, budget reservations, and
+historical coverage are still separate unfinished dependencies.

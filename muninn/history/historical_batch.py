@@ -1,0 +1,524 @@
+"""Encrypted batch recovery boundary; deliberately no HTTP or queue activation.
+
+This is not a substitute for capture ownership, consent or budget escrow. The
+caller must establish those before dispatch. No transport is exposed here until
+that integration exists. Records use the portable archive key, never a bearer.
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import re
+import sqlite3
+import uuid
+from contextlib import contextmanager
+from decimal import Decimal
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from muninn.history.credential_crypto import VaultIntegrityError
+from muninn.history.private_acl import create_private_file, verify_private
+
+MODEL = "openai/gpt-6-luna-pro"
+# Verified live batch endpoint identity, not an arbitrary fallback/model family.
+MODEL_IDENTITIES = {MODEL, "openai/gpt-6-luna-pro-20260922"}
+PROVIDER = "openai"
+MAX_ITEMS = 128  # A bounded batch, not a whole-source or historical size limit.
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+TERMINAL = {"completed", "failed", "expired", "cancelled"}
+_STATES = {"prepared", "submission_unknown", "submitted", "terminal_saved", "cleaned"}
+_MARKER = b"muninn-historical-batch-outbox-v1\n"
+
+
+class BatchError(ValueError):
+    """Fixed categories only: never echo a provider body or transcript."""
+
+
+def _json(value):
+    try:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":")).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        raise BatchError("batch_json_invalid") from exc
+
+
+def _wire_json(value):
+    """Exact serialization used for the POST envelope and its byte bound."""
+    try:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        raise BatchError("batch_json_invalid") from exc
+
+
+def _opaque(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) is not None
+
+
+def _provider_id(value):
+    return isinstance(value, str) and re.fullmatch(r"batch[-_][A-Za-z0-9_-]{1,160}", value) is not None
+
+
+def prepare_items(source, bindings):
+    """Authenticate and screen each actual source before constructing a prompt.
+
+    Binding tuples are (opaque job ID, immutable cited descriptor). Acquisition
+    of exclusive capture ownership is a separate required integration step.
+    """
+    from muninn.history.secure_analysis import _CITED_SCHEMA, _cited_prompt, _request_safe
+    if not isinstance(bindings, list) or not 1 <= len(bindings) <= MAX_ITEMS:
+        raise BatchError("batch_item_count_invalid")
+    items, seen = [], set()
+    for job_id, descriptor in bindings:
+        if not _opaque(job_id) or job_id in seen:
+            raise BatchError("batch_binding_invalid")
+        seen.add(job_id)
+        window = source.remote_input(descriptor)
+        if window is None:
+            raise BatchError("source_not_remote_safe")
+        body = {"messages": _cited_prompt(window), "max_tokens": 2048,
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "secure_excerpt_analysis", "strict": True, "schema": _CITED_SCHEMA}}}
+        if not _request_safe(body):
+            raise BatchError("source_not_remote_safe")
+        items.append({"custom_id": uuid.uuid4().hex, "job_id": job_id,
+                      "window": descriptor, "body": body})
+    return json.loads(_json(items))  # Detach caller-owned mutable descriptors.
+
+
+def payload(items):
+    """Required routing fields precede requests for OpenRouter's stream parser."""
+    from muninn.history.cited_analysis_source import CitedAnalysisSource
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_ITEMS:
+        raise BatchError("batch_item_count_invalid")
+    custom_ids, jobs = set(), set()
+    for item in items:
+        if (not isinstance(item, dict) or set(item) not in (
+                {"custom_id", "job_id", "window", "body"},
+                {"custom_id", "job_id", "window", "body", "pack"})
+                or not _opaque(item["custom_id"]) or not _opaque(item["job_id"])
+                or item["custom_id"] in custom_ids or item["job_id"] in jobs
+                or not isinstance(item["body"], dict)):
+            raise BatchError("batch_binding_invalid")
+        CitedAnalysisSource.validate_descriptor(item["window"])
+        custom_ids.add(item["custom_id"])
+        jobs.add(item["job_id"])
+    from muninn.history.batch_packing import requests
+    value = {"endpoint": "/v1/chat/completions", "model": MODEL,
+             "provider": {"only": [PROVIDER]}, "completion_window": "24h",
+             "requests": requests(items)}
+    if len(_wire_json(value)) > MAX_REQUEST_BYTES:
+        raise BatchError("batch_request_bound")
+    return json.loads(_json(value))
+
+
+def terminal_results(items, response):
+    """Transport-only reconciliation; HTTP 200 is NOT accepted cited output.
+
+    Count checks describe provider requests, not memory success. Every matched
+    item still requires validate_item(), budget settlement and fenced staging.
+    """
+    expected = {r["custom_id"] for r in payload(items)["requests"]}
+    if not isinstance(response, dict) or response.get("status") != "completed":
+        raise BatchError("batch_not_completed")
+    rows = response.get("results")
+    if not isinstance(rows, list) or len(rows) != len(expected):
+        raise BatchError("batch_results_incomplete")
+    matched = {}
+    succeeded = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            raise BatchError("batch_result_invalid")
+        ident = row.get("custom_id")
+        if not _opaque(ident) or ident not in expected or ident in matched:
+            raise BatchError("batch_result_binding_invalid")
+        reply, error = row.get("response"), row.get("error")
+        if (reply is None) == (error is None):
+            raise BatchError("batch_result_invalid")
+        if reply is not None:
+            if not isinstance(reply, dict) or type(reply.get("status_code")) is not int:
+                raise BatchError("batch_result_invalid")
+            if reply["status_code"] == 200:
+                body = reply.get("body")
+                if not isinstance(body, dict) or body.get("model") not in MODEL_IDENTITIES:
+                    raise BatchError("batch_result_model_mismatch")
+                succeeded += 1
+        elif not isinstance(error, dict):
+            raise BatchError("batch_result_invalid")
+        matched[ident] = row
+    counts = response.get("request_counts")
+    expected_counts = {"total": len(expected), "completed": succeeded,
+                       "failed": len(expected) - succeeded}
+    if (not isinstance(counts, dict) or any(type(counts.get(k)) is not int
+            or counts[k] != v for k, v in expected_counts.items())):
+        raise BatchError("batch_result_counts_invalid")
+    return {i["custom_id"]: matched[i.get("pack", {}).get("request_id", i["custom_id"])] for i in items}
+
+
+def validate_item(source, item, row, *, _frame_cache=None):
+    """Validate one stored reply against its exact authenticated cited window.
+
+    Returns an unstaged extraction, NOT publication authority or a source ACK.
+    No item-level cost is invented from an aggregate batch bill.
+    """
+    from muninn.history.secure_analysis import _cited_outcome
+    if not isinstance(row, dict) or row.get("custom_id") != item.get("pack", {}).get("request_id", item["custom_id"]):
+        raise BatchError("batch_result_binding_invalid")
+    reply = row.get("response")
+    if (row.get("error") is not None or not isinstance(reply, dict)
+            or type(reply.get("status_code")) is not int or reply["status_code"] != 200):
+        raise BatchError("batch_item_failed")
+    body = reply.get("body")
+    if not isinstance(body, dict) or body.get("model") not in MODEL_IDENTITIES:
+        raise BatchError("batch_result_model_mismatch")
+    choices = body.get("choices")
+    if (not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict)
+            or choices[0].get("finish_reason") != "stop"
+            or not isinstance(choices[0].get("message"), dict)
+            or not isinstance(choices[0]["message"].get("content"), str)):
+        raise BatchError("batch_item_output_invalid")
+    content = choices[0]["message"]["content"]
+    if "pack" not in item:
+        return _cited_outcome(content, source, item["window"], "openrouter", MODEL)
+    from muninn.history.batch_packing import slot_analysis, model_identity
+    analysis = slot_analysis(item, content, _frame_cache)
+    outcome = _cited_outcome(_json(analysis).decode("utf-8"), source, item["window"], "openrouter", MODEL)
+    stage = outcome["extraction"]
+    stage["model_identity"] = model_identity(item, stage["model_identity"])
+    return outcome
+
+
+def billed_cost(response):
+    """Missing/nonfinite/BYOK cost is unresolved, never silently zero."""
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict) or usage.get("is_byok") is not False:
+        raise BatchError("batch_cost_unresolved")
+    cost = usage.get("cost")
+    if type(cost) not in (int, float):
+        raise BatchError("batch_cost_unresolved")
+    amount = Decimal(str(cost))
+    if not amount.is_finite() or amount < 0:
+        raise BatchError("batch_cost_unresolved")
+    return amount
+
+
+def resolved_extractions(outbox, parent, source, policy_root, admission_id):
+    """Shared reply, source, admission proof for publication and recovery.
+
+    Only schema/quote/provider-item failures are repairable; bindings, source
+    integrity, model identity and unknown billing never authorize a retry.
+    """
+    from muninn.history.remote_accounting import settled_response
+    from muninn.history.secure_analysis import ModelOutputInvalid
+    resolved = {}
+    unresolved = {item["job_id"] for item in parent["items"]}
+    for index, record in enumerate([parent, *outbox.repair_records(parent)]):
+        if record["state"] not in {"terminal_saved", "cleaned"}:
+            break
+        paid_id = admission_id if index == 0 else record.get("repair_admission")
+        if not paid_id or not settled_response(policy_root, paid_id, record["consent_generation"],
+                                               batch_owner=record["id"]):
+            raise BatchError("batch_cost_unresolved")
+        billed_cost(record["terminal"])
+        from muninn.history.batch_packing import verify_scopes
+        verify_scopes(source, record["items"])
+        rows = terminal_results(record["items"], record["terminal"])
+        frame_cache = {}  # One authenticated reply parse per cohort in this call only.
+        for item in record["items"]:
+            if item["job_id"] not in unresolved:
+                raise BatchError("batch_repair_repeated_success")
+            try:
+                outcome = validate_item(source, item, rows[item["custom_id"]], _frame_cache=frame_cache)
+            except ModelOutputInvalid:
+                continue
+            except BatchError as exc:
+                if str(exc) in {"batch_item_failed", "batch_item_output_invalid"}:
+                    continue
+                raise
+            resolved[item["job_id"]] = {**outcome["extraction"], "admission_id": paid_id}
+            unresolved.remove(item["job_id"])
+    return resolved, unresolved
+
+
+class BatchOutbox:
+    """FULL-synchronous encrypted CAS records, portable with the archive key.
+
+    An uncertainty marker is irreversible here. No timeout clears it, and there
+    is intentionally no approximate workspace-list recovery or retry operation.
+    Restoring this store requires its marker AND database, alongside the archive.
+    """
+
+    def __init__(self, archive):
+        self.archive = archive
+        self.path = archive.root.absolute() / "historical-batches.db"
+        self.marker = archive.root.absolute() / "historical-batches-managed"
+        self._key = hmac.new(archive._key, b"muninn-historical-batch-v1", hashlib.sha256).digest()
+        self._aad = b"muninn-historical-batch-v1\0" + archive.vault_id.encode("ascii")
+        verify_private(archive.root)
+        exists = self.path.exists() or self.path.is_symlink()
+        managed = self.marker.exists() or self.marker.is_symlink()
+        if exists != managed:
+            raise VaultIntegrityError("Batch outbox recovery pair is incomplete")
+        if not managed:
+            create_private_file(self.marker)
+            with self.marker.open("wb") as stream:
+                stream.write(_MARKER)
+                stream.flush()
+                os.fsync(stream.fileno())
+            create_private_file(self.path)
+            with self._db(check_schema=False) as db:
+                db.execute("CREATE TABLE batches(id TEXT PRIMARY KEY, revision INTEGER NOT NULL, "
+                           "state TEXT NOT NULL, sealed BLOB NOT NULL)")
+                db.execute("CREATE TABLE sentinel(version INTEGER NOT NULL)")
+                db.execute("INSERT INTO sentinel VALUES(1)")
+        with self._db():
+            pass
+
+    @contextmanager
+    def _db(self, *, check_schema=True):
+        for path in (self.archive.root, self.marker, self.path):
+            verify_private(path)
+        if self.marker.read_bytes() != _MARKER:
+            raise VaultIntegrityError("Batch outbox marker is invalid")
+        db = sqlite3.connect(f"{self.path.as_uri()}?mode=rw", uri=True, timeout=1)
+        try:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("BEGIN IMMEDIATE")
+            if check_schema:
+                if db.execute("SELECT version FROM sentinel").fetchall() != [(1,)]:
+                    raise VaultIntegrityError("Batch outbox schema is unavailable")
+                db.execute("SELECT id,revision,state,sealed FROM batches LIMIT 0")
+            yield db
+            db.commit()
+        except sqlite3.Error as exc:
+            db.rollback()
+            raise VaultIntegrityError("Batch outbox storage is unavailable") from exc
+        finally:
+            db.close()
+
+    def _seal(self, record):
+        nonce = os.urandom(12)
+        aad = self._aad + record["id"].encode("ascii")
+        return nonce + AESGCM(self._key).encrypt(nonce, _json(record), aad)
+
+    def _read(self, row):
+        if row is None:
+            raise BatchError("batch_reference_missing")
+        ident, revision, state, sealed = row
+        if not _opaque(ident) or type(revision) is not int or revision < 0 or state not in _STATES:
+            raise VaultIntegrityError("Batch outbox identity is invalid")
+        try:
+            record = json.loads(AESGCM(self._key).decrypt(
+                sealed[:12], sealed[12:], self._aad + ident.encode("ascii")))
+        except (InvalidTag, ValueError, UnicodeError, TypeError) as exc:
+            raise VaultIntegrityError("Batch outbox authentication failed") from exc
+        if (not isinstance(record, dict) or record.get("id") != ident
+                or record.get("revision") != revision or record.get("state") != state):
+            raise VaultIntegrityError("Batch outbox state authentication failed")
+        return record
+
+    def prepare(self, items, *, consent_generation):
+        payload(items)
+        if type(consent_generation) is not int or consent_generation < 1:
+            raise BatchError("batch_consent_invalid")
+        ident = uuid.uuid4().hex
+        record = {"id": ident, "revision": 0, "state": "prepared",
+                  "retention": "temporary_nontraining", "consent_generation": consent_generation,
+                  "items": json.loads(_json(items)), "provider_id": None,
+                  "terminal": None, "deletion": None}
+        with self._db() as db:
+            db.execute("INSERT INTO batches VALUES(?,?,?,?)",
+                       (ident, 0, "prepared", self._seal(record)))
+        return ident
+
+    def read(self, ident):
+        with self._db() as db:
+            return self._read(db.execute("SELECT * FROM batches WHERE id=?", (ident,)).fetchone())
+
+    def prepare_repair(self, parent_id, items):
+        """Atomically retain a failed-only child and its authenticated parent link."""
+        payload(items)
+        with self._db() as db:
+            parent = self._read(db.execute("SELECT * FROM batches WHERE id=?", (parent_id,)).fetchone())
+            repairs = parent.get("repairs", [])
+            if parent["state"] != "terminal_saved" or parent.get("repair_parent") or len(repairs) >= 2:
+                raise BatchError("batch_repair_limit")
+            if repairs:
+                previous = self._read(db.execute("SELECT * FROM batches WHERE id=?", (repairs[-1],)).fetchone())
+                if previous["state"] != "terminal_saved":
+                    raise BatchError("batch_repair_pending")
+            originals = {i["job_id"]: i for i in parent["items"]}
+            used_ids = {i["custom_id"] for i in parent["items"]}
+            for previous_id in repairs:
+                previous = self._read(db.execute("SELECT * FROM batches WHERE id=?", (previous_id,)).fetchone())
+                used_ids.update(i["custom_id"] for i in previous["items"])
+            if any(i["custom_id"] in used_ids or i["job_id"] not in originals or any(i[k] != originals[i["job_id"]][k]
+                    for k in ("window", "body")) for i in items):
+                raise BatchError("batch_repair_binding_invalid")
+            ident = uuid.uuid4().hex
+            child = {"id": ident, "revision": 0, "state": "prepared",
+                     "retention": parent["retention"], "consent_generation": parent["consent_generation"],
+                     "items": json.loads(_json(items)), "provider_id": None, "terminal": None,
+                     "deletion": None, "repair_parent": parent_id, "repair_admission": None}
+            db.execute("INSERT INTO batches VALUES(?,?,?,?)", (ident, 0, "prepared", self._seal(child)))
+            parent.update(repairs=[*repairs, ident], revision=parent["revision"] + 1)
+            db.execute("UPDATE batches SET revision=?,sealed=? WHERE id=?",
+                       (parent["revision"], self._seal(parent), parent_id))
+        return ident
+
+    def bind_repair_admission(self, ident, revision, admission_id):
+        if not _opaque(admission_id):
+            raise BatchError("batch_repair_admission_invalid")
+        def change(record):
+            if not record.get("repair_parent") or record.get("repair_admission") is not None:
+                raise BatchError("batch_repair_admission_invalid")
+            record["repair_admission"] = admission_id
+        return self._transition(ident, revision, "prepared", "prepared", change)
+
+    def repair_records(self, parent):
+        ids = parent.get("repairs", [])
+        if (not isinstance(ids, list) or len(ids) > 2 or len(set(ids)) != len(ids)
+                or any(not _opaque(i) for i in ids)):
+            raise VaultIntegrityError("Batch repair linkage is invalid")
+        originals = {i["job_id"]: i for i in parent["items"]}
+        records = []
+        for ident in ids:
+            child = self.read(ident)
+            if (child.get("repair_parent") != parent["id"] or child.get("repairs")
+                    or child["consent_generation"] != parent["consent_generation"]
+                    or not (child.get("repair_admission") is None or _opaque(child["repair_admission"]))
+                    or any(i["job_id"] not in originals or any(i[k] != originals[i["job_id"]][k]
+                           for k in ("window", "body")) for i in child["items"])):
+                raise VaultIntegrityError("Batch repair binding differs")
+            records.append(child)
+        return records
+
+    def verify_all(self):
+        """Authenticate retained batches before accepting a portable backup."""
+        with self._db() as db:
+            if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise VaultIntegrityError("Batch outbox integrity failed")
+            count = 0
+            for row in db.execute("SELECT * FROM batches"):
+                record = self._read(row)
+                if (set(record) - {"recovery_candidate", "repairs", "repair_parent", "repair_admission"} != {
+                        "id", "revision", "state", "retention", "consent_generation",
+                        "items", "provider_id", "terminal", "deletion"}
+                        or record["retention"] != "temporary_nontraining"
+                        or type(record["consent_generation"]) is not int or record["consent_generation"] < 1):
+                    raise VaultIntegrityError("Batch outbox record is invalid")
+                if "recovery_candidate" in record and not _provider_id(record["recovery_candidate"]):
+                    raise VaultIntegrityError("Batch recovery candidate is invalid")
+                try:
+                    payload(record["items"])
+                except ValueError as exc:
+                    raise VaultIntegrityError("Batch outbox binding is invalid") from exc
+                if record["state"] in {"prepared", "submission_unknown"}:
+                    if (record["provider_id"] is not None or record["terminal"] is not None
+                            or record["deletion"] is not None):
+                        raise VaultIntegrityError("Batch outbox state is invalid")
+                elif not _provider_id(record["provider_id"]):
+                    raise VaultIntegrityError("Batch outbox provider identity is invalid")
+                if record["state"] in {"terminal_saved", "cleaned"}:
+                    terminal = record["terminal"]
+                    if (not isinstance(terminal, dict) or terminal.get("id") != record["provider_id"]
+                            or terminal.get("model") not in MODEL_IDENTITIES or terminal.get("status") not in TERMINAL
+                            or terminal.get("endpoint") != "/v1/chat/completions"):
+                        raise VaultIntegrityError("Batch outbox terminal is invalid")
+                elif record["terminal"] is not None or record["deletion"] is not None:
+                    raise VaultIntegrityError("Batch outbox terminal is premature")
+                if record["state"] == "cleaned":
+                    deletion = record["deletion"]
+                    if (not isinstance(deletion, dict) or deletion.get("id") != record["provider_id"]
+                            or not isinstance(deletion.get("deletion"), dict)
+                            or deletion["deletion"].get("openrouter") != "deleted"):
+                        raise VaultIntegrityError("Batch outbox historical cleanup receipt is invalid")
+                elif record["deletion"] is not None:
+                    raise VaultIntegrityError("Batch outbox historical cleanup is premature")
+                count += 1
+        # Traverse outside the outbox transaction; read() takes the same writer fence.
+        with self._db() as db:
+            records = [self._read(row) for row in db.execute("SELECT * FROM batches")]
+        for record in records:
+            self.repair_records(record)
+            if record.get("repair_parent"):
+                parent = self.read(record["repair_parent"])
+                if record["id"] not in parent.get("repairs", []):
+                    raise VaultIntegrityError("Batch repair parent is missing")
+        return {"batches": count}
+
+    def _transition(self, ident, expected_revision, before, after, change):
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise BatchError("batch_revision_invalid")
+        with self._db() as db:
+            record = self._read(db.execute("SELECT * FROM batches WHERE id=?", (ident,)).fetchone())
+            if record["revision"] != expected_revision or record["state"] != before:
+                raise BatchError("batch_state_conflict")
+            change(record)
+            record.update(state=after, revision=expected_revision + 1)
+            db.execute("UPDATE batches SET revision=?,state=?,sealed=? WHERE id=? AND revision=?",
+                       (record["revision"], after, self._seal(record), ident, expected_revision))
+        return record["revision"]
+
+    def begin_submission(self, ident, expected_revision):
+        # This must commit before HTTP. A second caller cannot pass the CAS.
+        return self._transition(ident, expected_revision, "prepared", "submission_unknown", lambda r: None)
+
+    def save_submission(self, ident, expected_revision, response):
+        def change(record):
+            if (not isinstance(response, dict) or not _provider_id(response.get("id"))
+                    or response.get("model") not in MODEL_IDENTITIES
+                    or response.get("endpoint") != "/v1/chat/completions"
+                    or response.get("completion_window") != "24h"
+                    or response.get("status") not in {"validating", "in_progress", "finalizing", *TERMINAL}
+                    or type((response.get("request_counts") or {}).get("total")) is not int
+                    or response["request_counts"]["total"] != len(payload(record["items"])["requests"])):
+                raise BatchError("batch_submission_identity_invalid")
+            record["provider_id"] = response["id"]
+        return self._transition(ident, expected_revision, "submission_unknown", "submitted", change)
+
+    def save_terminal(self, ident, expected_revision, response):
+        def change(record):
+            if (not isinstance(response, dict) or response.get("id") != record["provider_id"]
+                    or response.get("model") not in MODEL_IDENTITIES or response.get("status") not in TERMINAL
+                    or response.get("endpoint") != "/v1/chat/completions"):
+                raise BatchError("batch_terminal_identity_invalid")
+            # Save full evidence even if item mapping, billing or schema fails.
+            record["terminal"] = json.loads(_json(response))
+        revision = self._transition(ident, expected_revision, "submitted", "terminal_saved", change)
+        self.read(ident)  # Verify durable local ciphertext before any deletion.
+        return revision
+
+    def recover_submission(self, ident, expected_revision, response):
+        """Reconnect a lost receipt ONLY with complete exact opaque request IDs.
+
+        Matching model/count/time/list metadata alone is insufficient. This
+        does not POST, settle billing, publish, or remove any retained evidence.
+        """
+        record = self.read(ident)
+        if record["state"] != "submission_unknown" or record["revision"] != expected_revision:
+            raise BatchError("batch_state_conflict")
+        terminal_results(record["items"], response)
+        return self.save_submission(ident, expected_revision, response)
+
+    def set_recovery_candidate(self, ident, expected_revision, provider_id):
+        """Operator-selected GET target, NOT proof of ownership or resubmit consent."""
+        if not _provider_id(provider_id):
+            raise BatchError("batch_recovery_candidate_invalid")
+        def change(record):
+            if record.get("recovery_candidate", provider_id) != provider_id:
+                raise BatchError("batch_recovery_candidate_conflict")
+            record["recovery_candidate"] = provider_id
+        return self._transition(ident, expected_revision, "submission_unknown", "submission_unknown", change)
+
+    def save_cleanup(self, ident, expected_revision, response):
+        def change(record):
+            if (record["terminal"] is None or not isinstance(response, dict)
+                    or response.get("id") != record["provider_id"]
+                    or not isinstance(response.get("deletion"), dict)
+                    or response["deletion"].get("openrouter") != "deleted"):
+                raise BatchError("batch_deletion_unverified")
+            record["deletion"] = json.loads(_json(response))
+        return self._transition(ident, expected_revision, "terminal_saved", "cleaned", change)

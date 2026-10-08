@@ -277,7 +277,10 @@ class ConsolidationDaemon:
         next_cursor = records[-1].id if len(records) >= self._batch_size else ""
         if not self._dry_run:
             self.metadata.set_meta(key, next_cursor)
-        return [record for record in records if not is_transcript(record)]
+        # Advance using the original page before excluding protected records;
+        # otherwise a whole protected page could stall every later memory.
+        return [record for record in records if not is_transcript(record)
+                and not record._credential_projection]
 
     def _archive(
         self,
@@ -708,7 +711,7 @@ class ConsolidationDaemon:
 
         # Get high-importance live memories for replay (archived ones stay out of the index)
         records = self.metadata.get_for_consolidation(limit=100, archived=False)
-        high_importance = [r for r in records if r.importance > 0.7][:20]
+        high_importance = [r for r in records if not r._credential_projection and r.importance > 0.7][:20]
 
         for record in high_importance:
             if self._dry_run:
@@ -881,6 +884,7 @@ class ConsolidationDaemon:
         try:
             # Audit top-K important recent memories
             records = self.metadata.get_for_consolidation(limit=50)
+            records = [r for r in records if not r._credential_projection]
             if not records:
                 return {"audited": 0, "conflicts_resolved": 0, "elapsed": round(time.time() - t0, 2)}
 
@@ -928,7 +932,7 @@ class ConsolidationDaemon:
 
             # Batch fetch all candidate metadata
             candidate_records = self.metadata.get_by_ids(list(all_neighbor_ids))
-            cand_map = {c.id: c for c in candidate_records}
+            cand_map = {c.id: c for c in candidate_records if not c._credential_projection}
 
             # Final NLI Audit Loop
             for record in records:

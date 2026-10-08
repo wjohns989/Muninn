@@ -4,10 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Muninn Hub | Cyber-Norse Interface</title>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700;900&family=Rajdhani:wght@400;500;600;700&display=swap"
-        rel="stylesheet">
+    <title>Muninn Hub | Local control center</title>
     <link rel="stylesheet" href="/dashboard.css">
 </head>
 
@@ -16,16 +13,14 @@
     <div id="toast-container"></div>
 
     <!-- Onboarding Modal -->
-    <div class="modal-overlay" id="auth-modal">
+    <div class="modal-overlay" id="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-heading">
         <div class="modal-content">
-            <h2>Welcome to Huginn</h2>
-            <p>To securely access the Muninn memory core, please initialize your session. You can find your secure
-                <code>MUNINN_AUTH_TOKEN</code> inside the <code>.muninn_token</code> file located in your project
-                directory.
-            </p>
+            <h2 id="auth-heading">Unlock your local workspace</h2>
+            <p>Enter your locally configured Muninn API or authentication token. It is kept only in this browser tab's memory.</p>
             <div class="modal-form">
                 <input type="password" id="modal-token-input" class="input-base"
-                    placeholder="Paste your Auth Token here...">
+                    aria-label="Local Muninn authentication token" autocomplete="off"
+                    placeholder="Local authentication token">
                 <button class="btn-primary modal-btn" onclick="initializeAuth()">Authenticate & Enter</button>
             </div>
         </div>
@@ -47,7 +42,7 @@
         </div>
     </div>
 
-    <nav class="sidebar">
+    <nav class="sidebar" aria-label="Main navigation" inert>
         <div class="brand">
             <svg class="runic-logo" width="32" height="32" viewBox="0 0 100 100" fill="none" stroke="var(--neon-purple)"
                 stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
@@ -61,7 +56,7 @@
             <span>MUNINN</span>
         </div>
         <ul class="nav-list">
-            <li class="nav-item active" onclick="showTab('overview')">
+            <li class="nav-item active" data-tab="overview" tabindex="0" role="button" aria-label="Overview" aria-current="page">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="3" width="7" height="7"></rect>
@@ -72,7 +67,13 @@
                 <span class="nav-text">Overview</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('ingest')">
+            <li class="nav-item" data-tab="operations" tabindex="0" role="button" aria-label="Backlog &amp; costs">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M4 20V10M12 20V4M20 20v-7"></path>
+                </svg>
+                <span class="nav-text">Backlog &amp; costs</span>
+            </li>
+            <li class="nav-item" data-tab="ingest" tabindex="0" role="button" aria-label="Ingestion">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -83,16 +84,34 @@
                 <span id="ingest-badge" class="nav-badge hidden pulse-active">0</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('search')">
+            <li class="nav-item" data-tab="search" tabindex="0" role="button" aria-label="Ordinary Search">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="11" cy="11" r="8"></circle>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 </svg>
-                <span class="nav-text">Search</span>
+                <span class="nav-text">Ordinary Search</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="showTab('system')">
+            <li class="nav-item" data-tab="history" tabindex="0" role="button" aria-label="Encrypted History">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="4" y="3" width="16" height="18" rx="2"></rect>
+                    <path d="M8 8h8M8 12h8M8 16h5"></path>
+                </svg>
+                <span class="nav-text">Encrypted History</span>
+                <div class="tab-beam"></div>
+            </li>
+            <li class="nav-item" data-tab="credentials" tabindex="0" role="button" aria-label="Credential Metadata">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="8" cy="15" r="4"></circle>
+                    <path d="M11 12l9-9m-3 3 3 3m-6 0 3 3"></path>
+                </svg>
+                <span class="nav-text">Credential Metadata</span>
+                <div class="tab-beam"></div>
+            </li>
+            <li class="nav-item" data-tab="system" tabindex="0" role="button" aria-label="System">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
@@ -100,10 +119,10 @@
                         d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
                     </path>
                 </svg>
-                <span class="nav-text">System</span>
+                <span class="nav-text">Models &amp; controls</span>
                 <div class="tab-beam"></div>
             </li>
-            <li class="nav-item" onclick="openUserProfile()">
+            <li class="nav-item" data-action="profile" tabindex="0" role="button" aria-label="User Profile">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
@@ -115,7 +134,7 @@
         </ul>
     </nav>
 
-    <div class="main-content">
+    <div class="main-content" role="main" tabindex="-1" inert>
         <header>
             <div id="breadcrumb" class="breadcrumb">
                 MUNINN <span class="breadcrumb-separator">/</span> <span id="current-tab-name"
@@ -130,42 +149,68 @@
                     <div id="auth-dot" class="status-dot"></div>
                     <span>Auth</span>
                 </div>
+                <button id="lock-session" type="button" class="btn-secondary">Lock session</button>
             </div>
         </header>
 
         <div class="container">
+            <section id="triage-attention" class="triage-attention" role="alert" aria-live="assertive" hidden>
+                <h2 id="triage-attention-heading">Credential review needs attention</h2>
+                <p id="triage-attention-message"></p>
+                <button type="button" onclick="showTab('credentials')" class="btn-secondary">View review status</button>
+            </section>
             <!-- TAB: OVERVIEW -->
             <div id="tab-overview" class="tab-content active">
-                <canvas id="brain-pulse"></canvas>
-
-                <div class="help-box">
-                    <b>🧠 Muninn Semantic Engine</b>
-                    Welcome to the dashboard. The neural visualizer above reflects real-time Temporal Knowledge Graph
-                    (TKG) consolidation. Memories ingested here are intelligently evaluated, stored, and
-                    shadow-versioned using biological consolidation principles.
+                <div class="control-hero">
+                    <div><span class="eyebrow">Your local memory workspace</span>
+                        <h1>What is working. What needs attention.</h1>
+                        <p>Capture, interpretation and searchable evidence are separate steps.
+                            This view shows reported state, not a blanket readiness score.</p></div>
+                    <button type="button" onclick="checkHealth()" class="btn-secondary">Refresh local status</button>
                 </div>
-
+                <div class="control-row">
+                    <div class="card">
+                        <h3>Historical work</h3>
+                        <dl class="status-list">
+                            <div><dt>Current checkpoint</dt><dd id="overview-batch">Authenticate to inspect retained batch state.</dd></div>
+                            <div><dt>Interpretation</dt><dd id="overview-work">Pending source versions and recorded windows: unknown.</dd></div>
+                            <div><dt>Routing</dt><dd id="overview-route">Automatic routing: unknown.</dd></div>
+                        </dl>
+                        <div class="operator-actions"><button type="button" onclick="showTab('operations')" class="btn-primary">View backlog &amp; costs</button>
+                            <button type="button" onclick="showTab('history')" class="btn-secondary">Search transcripts</button></div>
+                    </div>
+                    <div class="card">
+                        <h3>Readiness still to verify</h3>
+                        <dl class="status-list">
+                            <div><dt>Ambiguity review</dt><dd id="overview-triage-status">Review queue: not reported. Authenticate to inspect the local review worker. An empty search is not a resolved queue.</dd></div>
+                            <div><dt>Backup and restore</dt><dd>Recovery readiness: not reported. A running service does not prove a current recoverable backup.</dd></div>
+                            <div><dt>Connected clients</dt><dd>Accepted hooks below are endpoint receipts. Natural client events and completed archival need separate evidence.</dd></div>
+                        </dl>
+                    </div>
+                </div>
+                <details class="control-details">
+                    <summary>Ordinary memory storage — separate from encrypted transcript coverage</summary>
                 <div class="stat-grid">
                     <div class="stat-card">
                         <div class="stat-header">
-                            <span class="stat-label">Memory Nodes</span>
+                            <span class="stat-label">Ordinary Memories</span>
                             <svg class="rune-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
                                 stroke="var(--neon-purple)" stroke-width="2">
                                 <path d="M12 2v20M5 7l7 5 7-5M5 17l7-5 7 5" />
                             </svg>
                         </div>
-                        <div class="stat-value" id="stat-total">0</div>
+                        <div class="stat-value" id="stat-total">Unknown</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-header">
-                            <span class="stat-label">Active Entities</span>
+                            <span class="stat-label">Graph Nodes</span>
                             <svg class="rune-icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
                                 stroke="var(--neon-blue)" stroke-width="2">
                                 <path d="M12 2L2 22h20L12 2zM12 8l4 8H8l4-8z" />
                                 <circle cx="12" cy="14" r="2" fill="var(--neon-blue)" />
                             </svg>
                         </div>
-                        <div class="stat-value" id="stat-entities">0</div>
+                        <div class="stat-value" id="stat-entities">Unknown</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-header">
@@ -176,8 +221,22 @@
                                 <circle cx="12" cy="12" r="1.5" fill="var(--emerald-400)" />
                             </svg>
                         </div>
-                        <div class="stat-value" id="stat-profile">Balanced</div>
+                        <div class="stat-value" id="stat-profile">Not reported</div>
                     </div>
+                </div>
+                </details>
+
+                <div class="card" id="overview-local-status">
+                    <h3>Local Service & Encrypted History</h3>
+                    <p class="card-description">Live service state and generation-bound encrypted coverage. Capture
+                        intents, archive snapshots, and indexed versions are different counts.</p>
+                    <p id="overview-service-status" class="overview-status-text">Authenticate to check service health.</p>
+                    <p id="overview-history-status" class="overview-status-text">Encrypted archive coverage: unknown.</p>
+                    <p id="overview-queue-status" class="overview-status-text">Capture queue: unknown.</p>
+                    <p id="overview-hooks-status" class="overview-status-text">Hook delivery: unknown.</p>
+                    <p id="overview-refreshed-status" class="card-description">Not refreshed in this browser session.</p>
+                    <p class="card-description">GPU and Ollama are sampled only when you request them in Encrypted
+                        History. Backup currency and running code revision are not yet reported by this service.</p>
                 </div>
 
                 <div class="card">
@@ -188,13 +247,71 @@
                 </div>
             </div>
 
+            <div id="tab-operations" class="tab-content">
+                <div class="control-hero">
+                    <div><span class="eyebrow">Catch-up and accounting</span><h1>Backlog &amp; costs</h1>
+                        <p>A window is up to 3,000 transcript characters. A batch holds at most 128 windows;
+                            packed requests may cover multiple adjacent windows. Source versions are a separate count.</p></div>
+                    <button type="button" onclick="loadOperatingStatus()" class="btn-secondary">Refresh work status</button>
+                </div>
+                <p id="operations-refreshed" class="card-description" role="status">Not sampled in this session.</p>
+                <div class="control-grid">
+                    <div class="stat-card"><span class="stat-label">Succeeded windows</span><div id="work-succeeded" class="stat-value">Unknown</div><p class="stat-note">Recorded capture-lane job state, not independent publication verification.</p></div>
+                    <div class="stat-card"><span class="stat-label">Reused windows</span><div id="work-reused" class="stat-value">Unknown</div><p class="stat-note">Reused results, not new model successes.</p></div>
+                    <div class="stat-card"><span class="stat-label">Runnable queued windows</span><div id="work-runnable" class="stat-value">Unknown</div><p class="stat-note">Pending plus retry, excluding privacy-parked windows; eligibility can still block dispatch.</p></div>
+                    <div class="stat-card"><span class="stat-label">Failed windows</span><div id="work-failed" class="stat-value">Unknown</div><p class="stat-note">Recorded failed state. Pending provider work is not failure.</p></div>
+                    <div class="stat-card"><span class="stat-label">Uncertain windows</span><div id="work-uncertain" class="stat-value">Unknown</div><p class="stat-note">Outcome unknown; no blind resend.</p></div>
+                    <div class="stat-card"><span class="stat-label">Privacy-parked windows</span><div id="work-parked" class="stat-value">Unknown</div><p class="stat-note">Separate from runnable work and successful interpretation.</p></div>
+                </div>
+                <div class="control-row">
+                    <div class="card"><h3>Checkpoint and coverage</h3><dl class="status-list">
+                        <div><dt>Retained batch</dt><dd id="work-batch">Batch state unknown.</dd></div>
+                        <div><dt>Catch-up cadence</dt><dd id="work-drain">Catch-up state unknown.</dd></div>
+                        <div><dt>Pending source versions</dt><dd id="work-versions">Unknown</dd></div>
+                        <div><dt>Window coverage</dt><dd id="work-coverage">Total remaining windows unknown; no overall completion percentage.</dd></div>
+                    </dl><p class="status-note">The next unrelated batch waits for identity, billing, citations and durable publication to pass.
+                        No batch is cancelled, deleted or resubmitted from this screen.</p></div>
+                    <div class="card"><h3>Enrollment is not interpretation</h3><dl class="status-list">
+                        <div><dt>Latest-version enrollment</dt><dd id="work-latest-enrollment">Not reported.</dd></div>
+                        <div><dt>All-version enrollment</dt><dd id="work-all-enrollment">Not reported.</dd></div>
+                        <div><dt>Automatic routing</dt><dd id="work-route">Not reported.</dd></div>
+                    </dl><p class="card-description">Queued and existing versions have been enrolled, not necessarily interpreted.
+                        Excluded sources are not model successes. Counts are sampled from all capture-lane jobs, not filtered to the current authorized run.</p></div>
+                </div>
+                <div class="card"><h3>Provider costs</h3>
+                    <p class="card-description">Inspect dedicated-key daily/monthly usage and the provider-enforced hard cap on demand.
+                        The app's thresholds are admission limits, not guaranteed hard spending caps.</p>
+                    <p id="operations-cost-status" role="status">Provider usage not checked in this session.</p>
+                    <button type="button" onclick="loadOperatingCosts()" class="btn-secondary">Check provider usage</button>
+                    <p class="status-note">Dedicated-key usage is not a run total. Use the separate interval ledger below.</p>
+                    <div class="operator-actions"><button type="button" onclick="showTab('history')" class="btn-secondary">View ZDR consent &amp; budget controls</button></div>
+                </div>
+                <div class="card"><h3>Run charges</h3>
+                    <p class="card-description">Read all managed charges for activity started at or after your chosen UTC time.
+                        This includes other managed work, not only the backlog. Failed calls and repairs count when their charges settle;
+                        each batch aggregate bill counts once. Pending billing is not free.</p>
+                    <label for="run-accounting-start">Run start (UTC)</label>
+                    <input id="run-accounting-start" type="text" placeholder="YYYY-MM-DDTHH:MM:SS.ffffffZ" autocomplete="off" spellcheck="false">
+                    <label for="run-accounting-baseline">Provider monthly usage at run start, in dollars (optional for local read)</label>
+                    <input id="run-accounting-baseline" type="number" min="0" step="any" autocomplete="off">
+                    <p class="status-note">For comparison, enter the usage baseline from the same dedicated key and UTC month as the run start.
+                        A reset monthly counter cannot cover an older run. These values stay in this session and clear on lock.</p>
+                    <div class="operator-actions">
+                        <button id="run-accounting-read" type="button" class="btn-secondary" disabled>Read local run ledger</button>
+                        <button id="run-accounting-compare" type="button" class="btn-secondary" disabled>Compare provider usage</button>
+                    </div>
+                    <p id="run-accounting-status" role="status">Run accounting not loaded.</p>
+                    <p id="run-accounting-ledger">Local settled charges: unknown.</p>
+                    <p id="run-accounting-comparison">Provider comparison not checked.</p>
+                </div>
+            </div>
+
             <!-- TAB: INGEST -->
             <div id="tab-ingest" class="tab-content">
                 <div class="help-box">
-                    <b>📥 Zero-Trust Ingestion</b>
-                    Information added here initiates as "Episodic Context." Subprocess isolation guarantees secure
-                    parsing, while our TKG infrastructure evaluates contradictions against existing semantic fact nodes
-                    automatically.
+                    <b>📥 Ordinary Memory Ingestion</b>
+                    Text entered here is stored in ordinary searchable memory. Do not enter credentials. Encrypted
+                    transcript capture and credential discovery use separate workflows.
                 </div>
 
                 <div class="card">
@@ -236,7 +353,13 @@
                         & Ingest</button>
                 </div>
 
-                <div class="card" id="legacy-section">
+                <div class="card" id="strict-history-note" style="display:none">
+                    <h3>Encrypted history is active</h3>
+                    <p class="card-description">Legacy plaintext transcript import is unavailable in strict mode.
+                        Encrypted history capture and search continue separately from ordinary memory.</p>
+                </div>
+
+                <div class="card" id="legacy-section" style="display:none">
                     <h3>Legacy Assistant Discovery</h3>
                     <p class="card-description">Scan local
                         environments (Claude, VS Code, Cursor) for fragmented chat context to integrate into the central
@@ -289,6 +412,123 @@
                 </div>
             </div>
 
+            <!-- TAB: ENCRYPTED HISTORY -->
+            <div id="tab-history" class="tab-content">
+                <div class="card">
+                    <h3>Encrypted capture status</h3>
+                    <p class="card-description">Archive and index counts come from the authenticated local service.
+                        Hook counts are accepted endpoint invocations, not proof of unique host events or completed archival.</p>
+                    <p id="history-coverage-status" role="status" aria-live="polite">Enter the main local token to inspect coverage.</p>
+                    <p id="history-capture-status" role="status" aria-live="polite">Capture queue not loaded.</p>
+                    <p id="history-interpretation-status" role="status" aria-live="polite">Interpretation status not loaded.</p>
+                    <p id="history-window-status" role="status" aria-live="polite">Window counts not loaded.</p>
+                    <p id="history-batch-status" role="status" aria-live="polite">Batch status not loaded.</p>
+                    <p id="history-hook-receipts" class="history-hook-receipts">Hook receipts not loaded.</p>
+                </div>
+                <div class="card">
+                    <h3>Local model resources</h3>
+                    <p class="card-description">Sample current GPU headroom and Ollama residency on demand. An empty Ollama
+                        residency list does not prove other applications are idle; no model is loaded by this check.</p>
+                    <button type="button" id="refresh-local-resources" class="btn-secondary">Check GPU and Ollama</button>
+                    <p id="local-resource-status" role="status" aria-live="polite">Not sampled in this tab.</p>
+                    <ul id="local-resource-models"></ul>
+                </div>
+                <div class="card" id="remote-policy-card">
+                    <h3>OpenRouter ZDR consent and budgets</h3>
+                    <p class="card-description">These controls govern the ZDR route. Automatic processing can use remote-only routing;
+                        inspect Backlog &amp; costs for its reported state. Temporary nontraining batch consent is separate and not changed here.
+                        These dollar values are admission thresholds,
+                        not hard spending caps; a separately provider-enforced key limit is still required.
+                        Changing consent affects new dispatches; a request already admitted may finish.</p>
+                    <label><input type="checkbox" id="remote-policy-enabled"> Allow ZDR OpenRouter fallback on this machine</label>
+                    <div class="discovery-grid">
+                        <div><label for="remote-daily-usd">Daily admission threshold (USD)</label>
+                            <input id="remote-daily-usd" class="input-base" type="number" min="0.01" step="0.01" placeholder="Not loaded"></div>
+                        <div><label for="remote-monthly-usd">Monthly admission threshold (USD)</label>
+                            <input id="remote-monthly-usd" class="input-base" type="number" min="0.01" step="0.01" placeholder="Not loaded"></div>
+                    </div>
+                    <label><input type="checkbox" id="remote-policy-override"> Explicitly override the default $10/day and $100/month app ceilings</label>
+                    <div class="m-t-8"><button type="button" id="remote-policy-save" class="btn-primary">Save local policy</button></div>
+                    <p id="remote-policy-status" role="status" aria-live="polite">Enter the main local token to inspect policy.</p>
+                    <p id="remote-key-status" role="status" aria-live="polite">Provider key limit not checked.</p>
+                </div>
+                <div class="card" id="batch-policy-card">
+                    <h3>Temporary nontraining batch permission</h3>
+                    <p class="card-description">This is separate from ZDR permission and dollar budgets. Screened noncredential
+                        excerpts may be retained temporarily by the provider; this route is not ZDR.
+                        Each enabled save starts a fresh permission generation and checkpoint quota, and may allow
+                        automatic processing to incur charges within the existing spending limits.</p>
+                    <label><input type="checkbox" id="batch-policy-enabled"> Allow screened historical batches</label>
+                    <label for="batch-policy-max">Checkpoint quota for the new permission generation (1–10,000)</label>
+                    <input id="batch-policy-max" class="input-base" type="number" min="1" max="10000" step="1" placeholder="Refresh first">
+                    <div class="operator-actions">
+                        <button type="button" id="batch-policy-refresh" class="btn-secondary">Refresh batch permission</button>
+                        <button type="button" id="batch-policy-save" class="btn-primary" disabled>Save batch permission</button>
+                    </div>
+                    <p id="batch-policy-status" role="status" aria-live="polite">Not loaded. Refresh before changing permission.</p>
+                    <p class="status-note">Uncheck and save to revoke new batch dispatches. Already-admitted batches may finish;
+                        their recovery, encrypted inputs and results are preserved. No batch is cancelled, deleted or resent here.</p>
+                </div>
+                <div class="card">
+                    <h3>Cited memories &amp; evidence</h3>
+                    <p class="card-description">Search interpreted memories, inspect their recorded status, then follow
+                        the cited source. Model interpretations and provisional records are not verified facts.
+                        Project and source references are opaque identifiers, not file paths. Text is bounded,
+                        best-effort redacted; exact originals and credential values are not available here.</p>
+                    <label for="cited-memory-query">Find a cited memory (up to eight search terms)</label>
+                    <input id="cited-memory-query" class="input-base" maxlength="240" placeholder="Search cited memories...">
+                    <div class="m-t-8">
+                        <button type="button" id="cited-memory-search" class="btn-primary">Search cited memories</button>
+                        <button type="button" id="cited-memory-reviews" class="btn-secondary">Browse eligible review items</button>
+                        <button type="button" id="cited-memory-next" class="btn-secondary" hidden>Next review page</button>
+                    </div>
+                    <p id="cited-memory-status" role="status" aria-live="polite">Not loaded. Reads happen only when requested.</p>
+                    <div id="cited-memory-results"></div>
+                    <div id="cited-memory-detail"></div>
+                </div>
+                <div class="help-box">
+                    <b>Encrypted History Search</b>
+                    This searches locally archived transcripts, separate from ordinary memories.
+                    Search enqueues a durable local encrypted-index job. Excerpts are bounded and sanitized with
+                    best-effort redaction; do not treat them as guaranteed free of sensitive information.
+                    Open a result to read one redacted transcript page at a time; non-conversational tool output is omitted.
+                </div>
+                <div class="search-container">
+                    <input type="text" id="history-query" aria-label="Search encrypted history"
+                        placeholder="Search archived transcripts..." maxlength="240">
+                    <button type="button" id="history-search-button" class="btn-primary search-btn-absolute">Search History</button>
+                </div>
+                <p id="history-search-status" role="status" aria-live="polite">Enter a query to search encrypted history.</p>
+                <div id="history-results"></div>
+                <div id="history-transcript-viewer" class="card" hidden>
+                    <h3 id="history-transcript-heading">Redacted transcript</h3>
+                    <p id="history-transcript-status" role="status" aria-live="polite"></p>
+                    <pre id="history-transcript-page" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
+                    <button type="button" id="history-transcript-next" class="btn-secondary" hidden>Next page</button>
+                </div>
+            </div>
+
+            <!-- TAB: CREDENTIAL METADATA -->
+            <div id="tab-credentials" class="tab-content">
+                <div class="card">
+                    <h3>Credential metadata</h3>
+                    <p class="card-description">Search the separate local vault by service, project, or source hint.
+                        Values are never returned here. Only previously scanned or recorded sources can match;
+                        discovered candidates remain unverified. Revealing or using a value requires separate local authorization.</p>
+                    <label for="credential-metadata-query">Metadata query</label>
+                    <div class="search-container">
+                        <input type="text" id="credential-metadata-query" class="input-base"
+                            placeholder="Service, project, or source hint..." maxlength="64">
+                        <button type="button" id="credential-metadata-search" class="btn-primary search-btn-absolute">Search metadata</button>
+                    </div>
+                    <p id="credential-triage-status" role="status" aria-live="polite">Authenticate to inspect the local review worker.</p>
+                    <button type="button" onclick="loadCredentialTriageStatus()" class="btn-secondary">Refresh review status</button>
+                    <p>Hidden password input stays in the existing local review window, never in this dashboard. Status refresh does not start or retry a worker.</p>
+                    <p id="credential-metadata-status" role="status" aria-live="polite">Enter the main local token, then search on demand.</p>
+                    <div id="credential-metadata-results"></div>
+                </div>
+            </div>
+
             <!-- TAB: SYSTEM -->
             <div id="tab-system" class="tab-content">
                 <div class="card">
@@ -330,9 +570,11 @@
                 </div>
 
                 <div class="card">
-                    <h3>System Mainteance</h3>
+                    <h3>System Maintenance</h3>
+                    <p class="card-description">TKG consolidation concerns ordinary memories only. It does not scan,
+                        index, or interpret encrypted history, and server policy may leave it in dry-run mode.</p>
                     <div class="maintenance-grid">
-                        <button onclick="forceConsolidation()" class="btn-secondary">Trigger TKG Consolidation</button>
+                        <button onclick="forceConsolidation()" class="btn-secondary">Request ordinary-memory TKG consolidation</button>
                         <button onclick="checkHealth()" class="btn-secondary">Ping Diagnostics</button>
                     </div>
                 </div>
@@ -344,16 +586,39 @@
         let API_BASE = window.location.protocol === 'file:' ? 'http://localhost:42069' : window.location.origin;
         let SECURITY_ENABLED = true;
 
-        // v3.18.3: Server-injected token takes priority to avoid stale localStorage issues
-        // The server will replace "{{MUNINN_TOKEN}}" with the actual token
-        let AUTH_TOKEN = "{{MUNINN_TOKEN}}";
-        if (AUTH_TOKEN.includes("{{") || !AUTH_TOKEN) {
-            AUTH_TOKEN = localStorage.getItem('muninn_token') || "";
-        } else {
-            // New valid token from server - persist it
-            localStorage.setItem('muninn_token', AUTH_TOKEN);
-        }
-        console.log(`[AUTH] Active Token Hash: ${AUTH_TOKEN.substring(0, 8)}...`);
+        let AUTH_TOKEN = "";
+        let HISTORY_SECURITY_MODE = "unknown";
+        let historySearchSequence = 0;
+        let citedReadSequence = 0;
+        let citedReviewCursor = null;
+        let citedReadBusy = false;
+        let historySearchJobId = null;
+        let historyTranscriptSequence = 0;
+        let historyTranscriptNextCursor = null;
+        let historyTranscriptPageNumber = 0;
+        let historyStatusSequence = 0;
+        let overviewStatusSequence = 0;
+        let remotePolicyLoadedEnabled = false;
+        let remotePolicyLoadSequence = 0;
+        let remotePolicySavePending = false;
+        let batchPolicySequence = 0;
+        let batchPolicyGeneration = null;
+        let batchPolicyBusy = false;
+        let resourceStatusSequence = 0;
+        let credentialSearchSequence = 0;
+        let triageStatusSequence = 0;
+        let healthPoll = null;
+        let scanPoll = null;
+        let sessionEpoch = 0;
+        let operatingStatusSequence = 0;
+        let operatingCostSequence = 0;
+        let runAccountingSequence = 0;
+        let runAccountingBusy = false;
+        let authAttemptSequence = 0;
+        let healthStatusSequence = 0;
+        let scanStatusSequence = 0;
+        // Retire credentials persisted by older dashboard releases.
+        try { localStorage.removeItem('muninn_token'); } catch (_) { /* storage may be disabled */ }
 
         // XSS prevention: escape HTML entities in user-influenced strings
         function esc(str) {
@@ -489,56 +754,218 @@
            ================================ */
 
         // Modal Logic
+        function lockSession() {
+            AUTH_TOKEN = '';
+            sessionEpoch++;
+            if (typeof clearBatchPolicyView === 'function') clearBatchPolicyView();
+            if (typeof clearRunAccounting === 'function') clearRunAccounting(true);
+            clearCitedMemoryView();
+            authAttemptSequence++;
+            historySearchSequence++;
+            historyTranscriptSequence++;
+            historyStatusSequence++;
+            overviewStatusSequence++;
+            operatingStatusSequence++;
+            operatingCostSequence++;
+            remotePolicyLoadSequence++;
+            resourceStatusSequence++;
+            credentialSearchSequence++;
+            triageStatusSequence++;
+            renderCredentialTriageStatus(null, true);
+            healthStatusSequence++;
+            scanStatusSequence++;
+            historySearchJobId = null;
+            historyTranscriptNextCursor = null;
+            historyTranscriptPageNumber = 0;
+            remotePolicyLoadedEnabled = false;
+            remotePolicySavePending = false;
+            HISTORY_SECURITY_MODE = 'unknown';
+            if (healthPoll !== null) clearInterval(healthPoll);
+            if (scanPoll !== null) clearInterval(scanPoll);
+            healthPoll = null;
+            scanPoll = null;
+            document.querySelectorAll('.sidebar, .main-content').forEach(node => { node.inert = true; });
+            document.querySelectorAll('.main-content input, .main-content textarea, .modal-overlay input, .modal-overlay textarea').forEach(node => {
+                node.value = '';
+                if ('checked' in node) node.checked = false;
+            });
+            for (const id of ['search-results', 'history-results', 'credential-metadata-results',
+                'legacy-results', 'local-resource-models', 'activity-log', 'toast-container', 'history-transcript-page'])
+                document.getElementById(id).replaceChildren();
+            for (const id of ['overview-service-status', 'overview-history-status', 'overview-queue-status',
+                'overview-hooks-status', 'overview-refreshed-status', 'history-coverage-status', 'history-capture-status',
+                'history-interpretation-status', 'history-window-status', 'history-batch-status', 'history-hook-receipts',
+                'remote-policy-status', 'remote-key-status', 'local-resource-status', 'credential-metadata-status',
+                'history-search-status', 'history-transcript-status', 'operations-refreshed', 'operations-cost-status'])
+                document.getElementById(id).textContent = 'Session locked. Authenticate to inspect current state.';
+            document.getElementById('history-transcript-heading').textContent = 'Redacted transcript';
+            document.getElementById('history-transcript-viewer').hidden = true;
+            document.getElementById('history-transcript-next').hidden = true;
+            document.getElementById('profile-textarea').value = '';
+            document.getElementById('modal-token-input').value = '';
+            document.getElementById('remote-policy-save').disabled = false;
+            document.getElementById('refresh-local-resources').disabled = false;
+            document.getElementById('legacy-section').style.display = 'none';
+            document.getElementById('strict-history-note').style.display = 'none';
+            document.getElementById('legacy-sync-status').textContent = 'Not loaded';
+            const badge = document.getElementById('ingest-badge');
+            badge.textContent = '';
+            badge.style.display = 'none';
+            badge.classList.remove('pulse-active');
+            document.getElementById('stat-total').textContent = 'Unknown';
+            document.getElementById('stat-entities').textContent = 'Unknown';
+            document.getElementById('stat-profile').textContent = 'Not reported';
+            document.getElementById('health-dot').className = 'status-dot offline';
+            document.getElementById('auth-dot').className = 'status-dot offline';
+            document.getElementById('profile-modal').classList.remove('active');
+            renderOperatingStatus(null);
+            document.getElementById('auth-modal').classList.add('active');
+            document.getElementById('modal-token-input').focus();
+        }
+
+        function startStatusPolling() {
+            if (healthPoll !== null) return;
+            updateScanBadge();
+            healthPoll = setInterval(checkHealth, 30000);
+            scanPoll = setInterval(updateScanBadge, 60000);
+        }
+
+        function renderCredentialTriageStatus(data, locked = false) {
+            const states = {
+                idle: 'No active credential-review worker. No password input is currently requested.',
+                awaiting_passphrase: 'Credential review is waiting for your hidden password input in the existing local review window. Do not enter it in chat or this dashboard.',
+                waiting_for_admission: 'Credential review is waiting for the existing managed request to release admission. No password input is requested yet.',
+                backup_validation: 'Credential review is validating a local backup. Unlock and backup success are not yet confirmed.',
+                reviewing: 'The credential-review worker is running. Review completion is not yet confirmed.',
+                finished: 'The last credential-review worker finished. Unresolved review items may remain.',
+                previous_run_failed: 'The previous credential-review run failed. No automatic retry or new password request has been started.',
+                worker_exited: 'The credential-review worker exited without a terminal progress record. No password input is currently requested.',
+                unknown: 'Credential-review status is unavailable or its worker identity could not be verified. No password request is confirmed.'
+            };
+            let state = data && Object.hasOwn(states, data.state) ? data.state : 'unknown';
+            // Input flags alone must never produce a prompt.
+            if (state === 'awaiting_passphrase' && (data.input_needed !== true || data.worker_count !== 1)) state = 'unknown';
+            let message = locked ? 'Session locked. Authenticate to inspect the local review worker.' : states[state];
+            if (!locked && data && data.counters && typeof data.counters === 'object') {
+                const counters = ['page', 'rows', 'groups_seen', 'model_calls', 'contexts_reused', 'left_pending'];
+                const text = counters.filter(key => Number.isSafeInteger(data.counters[key]) && data.counters[key] >= 0)
+                    .map(key => `${key.replaceAll('_', ' ')}: ${data.counters[key]}`).join(', ');
+                if (text) message += ` Last reported counters — ${text}.`;
+            }
+            for (const id of ['credential-triage-status', 'overview-triage-status']) {
+                const node = document.getElementById(id);
+                if (node.textContent !== message) node.textContent = message;
+            }
+            const attention = document.getElementById('triage-attention');
+            const urgent = !locked && ['awaiting_passphrase', 'previous_run_failed', 'worker_exited', 'unknown'].includes(state);
+            const heading = state === 'awaiting_passphrase' ? 'Local input needed: credential review is waiting' :
+                state === 'unknown' ? 'Credential-review status could not be verified' : 'Credential review stopped';
+            document.getElementById('triage-attention-heading').textContent = locked ? '' : heading;
+            const alertMessage = document.getElementById('triage-attention-message');
+            if (alertMessage.textContent !== message) alertMessage.textContent = locked ? '' : message;
+            attention.hidden = !urgent;
+        }
+
+        async function loadCredentialTriageStatus() {
+            if (!AUTH_TOKEN || !SECURITY_ENABLED) return;
+            const sequence = ++triageStatusSequence;
+            const token = AUTH_TOKEN;
+            const epoch = sessionEpoch;
+            const response = await api('/credentials/triage/status');
+            if (sequence !== triageStatusSequence || token !== AUTH_TOKEN || epoch !== sessionEpoch) return;
+            renderCredentialTriageStatus(response.error ? null : response.data);
+        }
+
         function checkAuthOnLoad() {
-            console.log("[AUTH] checkAuthOnLoad triggered");
             if (!SECURITY_ENABLED) {
+                document.querySelectorAll('.sidebar, .main-content').forEach(node => { node.inert = false; });
                 document.getElementById('auth-modal').classList.remove('active');
                 document.getElementById('auth-dot').className = 'status-dot online';
                 log("Authentication bypassed (development mode).");
                 checkHealth();
+                startStatusPolling();
                 return;
             }
-
-            if (AUTH_TOKEN && AUTH_TOKEN !== '""') {
-                console.log("[AUTH] Valid token found, dismissing modal");
-                document.getElementById('auth-modal').classList.remove('active');
-                const tokenInput = document.getElementById('server-token');
-                if (tokenInput) tokenInput.value = AUTH_TOKEN;
-                checkHealth();
-            } else {
-                console.log("[AUTH] No token found, showing modal");
-                document.getElementById('auth-modal').classList.add('active');
-            }
+            document.getElementById('auth-modal').classList.add('active');
+            document.getElementById('modal-token-input').focus();
         }
 
-        function initializeAuth() {
-            const token = document.getElementById('modal-token-input').value.trim();
-            if (token) {
-                AUTH_TOKEN = token;
-                localStorage.setItem('muninn_token', token);
-                document.getElementById('server-token').value = token;
-                document.getElementById('auth-modal').classList.remove('active');
-                log("Session authenticated.");
-                checkHealth();
+        async function acceptToken(token) {
+            if (!token) return false;
+            const attempt = ++authAttemptSequence;
+            const epoch = sessionEpoch;
+            try {
+                const response = await fetch(`${API_BASE}/auth/check`, {
+                    cache: 'no-store',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!response.ok || attempt !== authAttemptSequence || epoch !== sessionEpoch) return false;
+            } catch (_) {
+                return false;
             }
+            lockSession();
+            AUTH_TOKEN = token;
+            document.getElementById('batch-policy-refresh').disabled = false;
+            document.getElementById('run-accounting-read').disabled = false;
+            document.getElementById('run-accounting-compare').disabled = false;
+            document.querySelectorAll('.sidebar, .main-content').forEach(node => { node.inert = false; });
+            document.getElementById('auth-modal').classList.remove('active');
+            document.getElementById('auth-dot').className = 'status-dot online';
+            checkHealth();
+            if (document.getElementById('tab-history').classList.contains('active')) {
+                loadHistoryStatus();
+                loadRemotePolicy();
+            }
+            startStatusPolling();
+            if (document.getElementById('tab-operations').classList.contains('active')) loadOperatingStatus();
+            return true;
+        }
+
+        async function initializeAuth() {
+            const token = document.getElementById('modal-token-input').value.trim();
+            if (await acceptToken(token)) {
+                document.getElementById('modal-token-input').value = '';
+                log("Session authenticated.");
+            } else showToast('Authentication failed. Check your local token.', 'error');
         }
 
         function showTab(tabId) {
-            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
-
             const activeTab = document.getElementById('tab-' + tabId);
-            if (activeTab) activeTab.classList.add('active');
+            if (!activeTab) return;
+            const changedTab = !activeTab.classList.contains('active');
+            if (tabId !== 'overview') overviewStatusSequence++;
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(t => {
+                t.classList.remove('active');
+                t.removeAttribute('aria-current');
+            });
 
-            const activeNav = document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
-            if (activeNav) activeNav.classList.add('active');
+            activeTab.classList.add('active');
+            if (changedTab) {
+                const main = document.querySelector('.main-content');
+                if (main) main.scrollTop = 0;
+            }
+
+            const activeNav = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
+            if (activeNav) {
+                activeNav.classList.add('active');
+                activeNav.setAttribute('aria-current', 'page');
+            }
 
             document.getElementById('current-tab-name').innerText = tabId.charAt(0).toUpperCase() + tabId.slice(1);
+            if (tabId === 'operations') document.getElementById('current-tab-name').innerText = 'Backlog & costs';
+            if (tabId === 'system') document.getElementById('current-tab-name').innerText = 'Models & controls';
 
             // Auto-load legacy catalog if switching to ingest
-            if (tabId === 'ingest') {
+            if (tabId === 'ingest' && HISTORY_SECURITY_MODE === 'legacy') {
                 discoverLegacySources(true);
             }
+            if (tabId === 'history' && (AUTH_TOKEN || !SECURITY_ENABLED)) {
+                loadHistoryStatus();
+                loadRemotePolicy();
+            }
+            if (tabId === 'overview' && (AUTH_TOKEN || !SECURITY_ENABLED)) checkHealth();
+            if (tabId === 'operations' && (AUTH_TOKEN || !SECURITY_ENABLED)) loadOperatingStatus();
         }
 
         // Original log function (now `originalLog`)
@@ -551,23 +978,32 @@
         //     logDiv.prepend(line);
         // }
 
-        async function api(endpoint, method = 'GET', body = null) {
+        async function api(endpoint, method = 'GET', body = null, timeoutMs = 0) {
+            const token = AUTH_TOKEN;
+            const epoch = sessionEpoch;
+            const current = () => token === AUTH_TOKEN && epoch === sessionEpoch;
             const options = {
                 method,
+                cache: 'no-store',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${AUTH_TOKEN}`
+                    'Authorization': `Bearer ${token}`
                 }
             };
             if (body) options.body = JSON.stringify(body);
+            const controller = timeoutMs > 0 ? new AbortController() : null;
+            if (controller) options.signal = controller.signal;
+            const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
             try {
                 const res = await fetch(`${API_BASE}${endpoint}`, options);
+                if (!current()) return { error: 'Session changed; response discarded' };
                 if (res.status === 401) {
-                    document.getElementById('auth-dot').className = 'status-dot offline';
+                    lockSession();
                     return { error: 'Unauthorized' };
                 }
                 const payload = await res.json().catch(() => ({}));
+                if (!current()) return { error: 'Session changed; response discarded' };
                 if (!res.ok) {
                     // FastAPI reports failures as {detail}; surface them as {error} for every tab.
                     const detail = payload.detail;
@@ -575,11 +1011,53 @@
                 }
                 return payload;
             } catch (e) {
-                return { error: e.message };
+                return { error: current() ? e.message : 'Session changed; response discarded' };
+            } finally {
+                if (timer !== null) clearTimeout(timer);
             }
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('lock-session').addEventListener('click', lockSession);
+            document.querySelectorAll('.nav-item[data-tab], .nav-item[data-action="profile"]').forEach(nav => {
+                const activate = () => nav.dataset.action === 'profile'
+                    ? openUserProfile() : showTab(nav.dataset.tab);
+                nav.addEventListener('click', activate);
+                nav.addEventListener('keydown', event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        activate();
+                    }
+                });
+            });
+            document.getElementById('history-search-button').addEventListener('click', handleEncryptedHistorySearch);
+            document.getElementById('cited-memory-search').addEventListener('click', searchCitedMemories);
+            document.getElementById('cited-memory-reviews').addEventListener('click', () => browseCitedReviews(false));
+            document.getElementById('cited-memory-next').addEventListener('click', () => browseCitedReviews(true));
+            document.getElementById('cited-memory-query').addEventListener('keydown', event => {
+                if (event.key === 'Enter') { event.preventDefault(); void searchCitedMemories(); }
+            });
+            document.getElementById('history-transcript-next').addEventListener('click', () => {
+                const cursor = historyTranscriptNextCursor;
+                if (!cursor) return;
+                historyTranscriptNextCursor = null;
+                void loadHistoryTranscriptPage(cursor, historySearchSequence, historyTranscriptSequence);
+            });
+            document.getElementById('remote-policy-save').addEventListener('click', saveRemotePolicy);
+            document.getElementById('batch-policy-refresh').addEventListener('click', loadBatchPolicy);
+            document.getElementById('batch-policy-save').addEventListener('click', saveBatchPolicy);
+            document.getElementById('run-accounting-read').addEventListener('click', () => loadRunAccounting(false));
+            document.getElementById('run-accounting-compare').addEventListener('click', () => loadRunAccounting(true));
+            for (const id of ['run-accounting-start', 'run-accounting-baseline'])
+                document.getElementById(id).addEventListener('input', () => clearRunAccounting(false));
+            document.getElementById('refresh-local-resources').addEventListener('click', loadLocalResources);
+            document.getElementById('credential-metadata-search').addEventListener('click', searchCredentialMetadata);
+            document.getElementById('credential-metadata-query').addEventListener('keydown', event => {
+                if (event.key === 'Enter') searchCredentialMetadata();
+            });
+            document.getElementById('history-query').addEventListener('keydown', event => {
+                if (event.key === 'Enter') handleEncryptedHistorySearch();
+            });
             const huntToggle = document.getElementById('hunt-mode');
             if (huntToggle) {
                 huntToggle.addEventListener('change', () => {
@@ -594,10 +1072,1226 @@
         });
 
         function pulseNav(tabId, enable) {
-            const nav = document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
+            const nav = document.querySelector(`.nav-item[data-tab="${tabId}"]`) ||
+                document.querySelector(`.nav-item[onclick="showTab('${tabId}')"]`);
             if (!nav) return;
             if (enable) nav.classList.add('pulse-active');
             else nav.classList.remove('pulse-active');
+        }
+
+        function formatOverviewStatus(data) {
+            const count = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            const archive = data?.vault?.archive;
+            const index = data?.last_secure_index;
+            let coverage = 'Encrypted archive coverage: unknown.';
+            if (data?.history_security !== 'strict') {
+                coverage = 'Encrypted archive inactive or security mode unknown; no strict-history coverage claim.';
+            } else if (data?.vault?.ready === true && archive && typeof archive === 'object') {
+                coverage = `Archive generation ${count(archive.generation)}: ` +
+                    `${count(archive.snapshots)} encrypted snapshot versions across ${count(archive.sources)} sources. `;
+                const sameGeneration = Number.isSafeInteger(archive.generation) &&
+                    archive.generation >= 0 && index?.archive_generation === archive.generation;
+                if (sameGeneration && Number.isSafeInteger(index.ready) && index.ready >= 0 &&
+                    Number.isSafeInteger(index.total) && index.total >= 0 &&
+                    Number.isSafeInteger(index.missing) && index.missing >= 0 &&
+                    Number.isSafeInteger(index.unsearchable) && index.unsearchable >= 0 &&
+                    Number.isSafeInteger(archive.snapshots) && archive.snapshots >= 0) {
+                    const caughtUp = index.complete === true && index.ready === archive.snapshots &&
+                        index.total === archive.snapshots && index.missing === 0 && index.unsearchable === 0;
+                    coverage += `Current index: ${count(index.ready)}/${count(index.total)} ready, ` +
+                        `${count(index.missing)} missing, ${count(index.unsearchable)} unsearchable; ` +
+                        `current archive fully indexed: ${caughtUp ? 'yes' : 'no'}.`;
+                } else {
+                    coverage += `Current index coverage: unknown (index report generation ` +
+                        `${count(index?.archive_generation)} is absent, invalid, or does not match).`;
+                }
+            }
+
+            const queue = data?.capture_queue;
+            let capture = 'Capture queue unavailable; no archival conclusion can be drawn.';
+            if (queue && typeof queue === 'object' && !Array.isArray(queue)) {
+                const stateCount = state => Object.prototype.hasOwnProperty.call(queue, state) ?
+                    count(queue[state]) : '0';
+                capture = `Capture intents: ${stateCount('archived')} archived intents, ` +
+                    `${stateCount('pending')} pending, ${stateCount('running')} running, ` +
+                    `${stateCount('retry')} retry, ${stateCount('unavailable')} unavailable. ` +
+                    'Intent counts are not archive snapshot counts.';
+                const scan = data.last_capture_scan;
+                if (scan && Number.isSafeInteger(scan.generation) && scan.generation >= 0) {
+                    const scanComplete = (scan.complete === true || scan.complete === 1) &&
+                        scan.missing === 0 && scan.errors === 0;
+                    capture += ` Last source scan generation ${count(scan.generation)}: ` +
+                        `${scanComplete ? 'complete' : 'incomplete or status unknown'}.`;
+                } else {
+                    capture += ' Last source scan: unknown.';
+                }
+            }
+
+            let hooks = 'Hook receipt ledger unavailable; delivery is unknown.';
+            if (!data?.hook_receipts_error && Array.isArray(data?.hook_receipts)) {
+                const clients = ['claude_code', 'codex', 'gemini_cli'];
+                hooks = clients.map(client => {
+                    const latest = data.hook_receipts.filter(receipt => receipt?.provider === client &&
+                        typeof receipt.event === 'string' && receipt.event.length <= 64 &&
+                        Number.isSafeInteger(receipt.accepted_invocations) &&
+                        receipt.accepted_invocations >= 0 &&
+                        typeof receipt.last_accepted_at === 'number' &&
+                        Number.isFinite(receipt.last_accepted_at) && receipt.last_accepted_at >= 0
+                    ).reduce((best, receipt) => !best || receipt.last_accepted_at > best.last_accepted_at ?
+                        receipt : best, null);
+                    if (!latest) return `${client}: no accepted receipt recorded`;
+                    return `${client}: ${latest.event} accepted ` +
+                        `${count(latest.accepted_invocations)} time(s) as of ` +
+                        `${new Date(latest.last_accepted_at * 1000).toLocaleString()}`;
+                }).join('\n') +
+                    '\nThese are accepted endpoint invocations, not unique host events or archival proof.';
+            }
+            return {coverage, capture, hooks};
+        }
+
+        async function loadOverviewStatus() {
+            if ((!AUTH_TOKEN && SECURITY_ENABLED) ||
+                !document.getElementById('tab-overview').classList.contains('active')) return;
+            const sequence = ++overviewStatusSequence;
+            const token = AUTH_TOKEN;
+            const coverage = document.getElementById('overview-history-status');
+            const capture = document.getElementById('overview-queue-status');
+            const hooks = document.getElementById('overview-hooks-status');
+            const refreshed = document.getElementById('overview-refreshed-status');
+            coverage.textContent = 'Loading encrypted archive coverage...';
+            capture.textContent = 'Loading capture queue...';
+            hooks.textContent = 'Loading hook receipts...';
+            const response = await api('/history/status', 'GET', null, 15000);
+            if (sequence !== overviewStatusSequence || token !== AUTH_TOKEN ||
+                !document.getElementById('tab-overview').classList.contains('active')) return;
+            if (response.error || !response.data) {
+                coverage.textContent = 'Encrypted archive coverage unavailable; current state unknown.';
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+                hooks.textContent = 'Hook receipt ledger unavailable; delivery is unknown.';
+            } else {
+                const status = formatOverviewStatus(response.data);
+                coverage.textContent = status.coverage;
+                capture.textContent = status.capture;
+                hooks.textContent = status.hooks;
+            }
+            renderOperatingStatus(response.error ? null : response.data);
+            refreshed.textContent = `Local status checked at ${new Date().toLocaleTimeString()}.`;
+        }
+
+        function operatingView(data) {
+            const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+            const integer = value => Number.isSafeInteger(value) && value >= 0;
+            const count = value => integer(value) ? value.toLocaleString('en-US') : 'Unknown';
+            const enrichment = object(data?.capture_enrichment);
+            const jobs = object(enrichment.window_jobs);
+            const states = object(jobs.states);
+            const labels = ['succeeded', 'reused', 'no_context', 'pending', 'retry', 'failed', 'outcome_unknown',
+                'running', 'publishing', 'publication_pending', 'cancelled', 'not_queued', 'not_applicable'];
+            const known = jobs.basis === 'all_capture_lane_jobs' && integer(jobs.total) &&
+                Object.entries(states).every(([key, value]) => labels.includes(key) && integer(value)) &&
+                Object.values(states).reduce((sum, value) => sum + value, 0) === jobs.total &&
+                integer(enrichment.parked_private_windows) &&
+                enrichment.parked_private_windows <= (states.retry || 0);
+            const value = state => known ? count(states[state] || 0) : 'Unknown';
+            const parked = count(enrichment.parked_private_windows);
+            const enrollment = (record, name) => {
+                const row = object(record);
+                if (!Object.keys(row).length) return `${name}: enrollment not reported.`;
+                const valid = ['queued', 'existing', 'excluded'].every(key => integer(row[key]));
+                const state = valid && row.complete === true ? 'complete' :
+                    valid && row.complete === false ? 'incomplete' : 'status unknown';
+                return `${name}: enrollment ${state}; queued ${count(row.queued)}, ` +
+                    `existing ${count(row.existing)}, excluded ${count(row.excluded)}. Not interpretation completion.`;
+            };
+            const batch = object(enrichment.historical_batch);
+            const batchStates = {awaiting_provider: 'waiting for provider', submitted: 'submitted',
+                working: 'checking or publishing results', passed: 'checkpoint passed',
+                checkpoint_unresolved: 'checkpoint validation unresolved', recovery_deferred: 'recovery deferred',
+                submission_unknown: 'submission outcome unknown', awaiting_provider_identity: 'waiting for identity proof',
+                repair_admission_unresolved: 'repair accounting unresolved', repair_limit_reached: 'repair limit reached',
+                consent_required: 'consent required', remote_disabled: 'remote processing disabled',
+                pilot_complete: 'batch quota exhausted', gathering_batch: 'gathering screened windows',
+                awaiting_screened_windows: 'waiting for screened windows', idle: 'idle', inactive: 'inactive'};
+            let batchText = 'Batch state and request counts unknown.';
+            if (Object.keys(batch).length) {
+                const state = Object.prototype.hasOwnProperty.call(batchStates, batch.state) ? batchStates[batch.state] : 'state unknown';
+                const windowsKnown = integer(batch.items) && batch.items > 0 && batch.items <= 128 &&
+                    (batch.windows === undefined || batch.windows === batch.items);
+                const requestsKnown = windowsKnown && integer(batch.provider_requests) &&
+                    batch.provider_requests > 0 && batch.provider_requests <= batch.items;
+                batchText = `${windowsKnown ? count(batch.items) : 'Unknown'} windows / ` +
+                    `${requestsKnown ? count(batch.provider_requests) : 'Unknown'} provider requests; ${state}. `;
+                if (batch.repair_only === true && integer(batch.parent_items) &&
+                    batch.parent_items > 0 && batch.parent_items <= 128 && integer(batch.repair_round) &&
+                    batch.repair_round > 0 && batch.repair_round <= 2 && batch.parent_items >= batch.items) {
+                    batchText += `Repair inside a ${count(batch.parent_items)}-window checkpoint, round ${batch.repair_round}. Successful siblings are retained. `;
+                }
+                if (batch.state === 'awaiting_provider' || batch.state === 'submitted')
+                    batchText += 'Pending, not failed or complete. Provider completion allowance is up to 24 hours.';
+                const health = object(batch.health);
+                const healthLabels = {degraded_unknown: 'Delayed: no reported progress; internal activity unknown',
+                    polling_error: 'Provider polling error', polling_stale: 'Local polling overdue',
+                    deadline_overdue: '24-hour deadline overdue; provider still nonterminal',
+                    metrics_unknown: 'Provider progress metrics unavailable', awaiting_progress: 'Awaiting reported progress',
+                    progress_observed: 'Provider reports progress', provider_completed: 'Provider completed; local checks still required',
+                    provider_failed: 'Provider reports failure', provider_expired: 'Provider reports expiry',
+                    provider_cancelled: 'Provider reports cancellation'};
+                if (Object.prototype.hasOwnProperty.call(healthLabels, health.state)) {
+                    const age = typeof health.age_seconds === 'number' && Number.isFinite(health.age_seconds) && health.age_seconds >= 0 ?
+                        `${(health.age_seconds / 3600).toFixed(1)} hours` : 'unknown age';
+                    batchText += ` ${healthLabels[health.state]}; ${age}; ${count(health.completed_requests)} completed / ` +
+                        `${count(health.total_requests)} requests, ${count(health.failed_requests)} failed. No streaming results.`;
+                    const stamp = value => {
+                        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 'unknown';
+                        const date = new Date(value * 1000);
+                        return Number.isNaN(date.getTime()) ? 'unknown' : date.toISOString();
+                    };
+                    batchText += ` Last successful poll: ${stamp(health.last_successful_poll_at)}; deadline: ${stamp(health.deadline_at)}.`;
+                }
+            }
+            const drain = object(enrichment.backlog_drain);
+            let drainText = 'Catch-up state unknown; not evidence of completion.';
+            if (typeof drain.active === 'boolean') {
+                drainText = drain.active ? 'Catch-up active' : 'Catch-up inactive — this is not completion';
+                if (drain.active && typeof drain.remaining_seconds === 'number' &&
+                    Number.isFinite(drain.remaining_seconds) && drain.remaining_seconds >= 0)
+                    drainText += `; sampled allowance remaining ${Math.ceil(drain.remaining_seconds / 60)} minutes`;
+                const reasons = ['remote_cost_unresolved', 'remote_consent_revoked', 'remote_admission_threshold_reached',
+                    'daily_zdr_cap_unverified', 'remote_accounting_unavailable', 'remote_accounting_unconfigured'];
+                if (reasons.includes(drain.halted_reason)) drainText += `; halt: ${drain.halted_reason.replaceAll('_', ' ')}`;
+                drainText += '. Expiry can slow unfinished work; it does not finish the backlog.';
+            }
+            return {succeeded: value('succeeded'), reused: value('reused'), failed: value('failed'),
+                uncertain: value('outcome_unknown'), parked,
+                runnable: known ? count((states.pending || 0) + (states.retry || 0) - enrichment.parked_private_windows) : 'Unknown',
+                pendingVersions: count(enrichment.pending_sources), batch: batchText, drain: drainText,
+                latest: enrollment(enrichment.historical_enrollment, 'Latest versions'),
+                versions: enrollment(enrichment.historical_versions_enrollment, 'All versions'),
+                route: enrichment.automatic_remote_only === true ? 'Automatic remote-only processing reported; no local model fallback.' :
+                    enrichment.automatic_remote_only === false ? 'Remote-only mode not enabled; actual per-request routing is separate evidence.' : 'Automatic routing unknown.',
+                coverage: `${known ? count(jobs.total) : 'Unknown'} recorded windows across all capture-lane jobs. ` +
+                    (known ? `${value('no_context')} authenticated no-content windows (not model successes); ${value('running')} running, ${value('publishing')} publishing, ${value('publication_pending')} publication pending; ` : '') +
+                    'Remaining window total is unknown until every eligible source is planned; no overall completion percentage.'};
+        }
+
+        function renderOperatingStatus(data) {
+            const view = operatingView(data);
+            const fields = {'work-succeeded': 'succeeded', 'work-reused': 'reused', 'work-runnable': 'runnable',
+                'work-failed': 'failed', 'work-uncertain': 'uncertain', 'work-parked': 'parked',
+                'work-versions': 'pendingVersions', 'work-batch': 'batch', 'work-drain': 'drain',
+                'work-latest-enrollment': 'latest', 'work-all-enrollment': 'versions', 'work-route': 'route',
+                'work-coverage': 'coverage', 'overview-batch': 'batch', 'overview-route': 'route'};
+            for (const [id, field] of Object.entries(fields)) document.getElementById(id).textContent = view[field];
+            document.getElementById('overview-work').textContent = `${view.pendingVersions} pending source versions; ` +
+                `${view.succeeded} recorded succeeded windows, ${view.reused} reused; ${view.parked} privacy-parked windows. Units are separate.`;
+        }
+
+        async function loadOperatingStatus() {
+            if (!AUTH_TOKEN && SECURITY_ENABLED) return;
+            const sequence = ++operatingStatusSequence;
+            const token = AUTH_TOKEN;
+            const epoch = sessionEpoch;
+            const sampled = document.getElementById('operations-refreshed');
+            sampled.textContent = 'Checking authenticated local work status...';
+            const response = await api('/history/status', 'GET', null, 15000);
+            if (sequence !== operatingStatusSequence || token !== AUTH_TOKEN || epoch !== sessionEpoch) return;
+            renderOperatingStatus(response.error ? null : response.data);
+            sampled.textContent = response.error || !response.data ? 'Local work status unavailable; prior counts cleared.' :
+                `Sampled at ${new Date().toLocaleTimeString()}. Recorded job states are not independent publication verification.`;
+        }
+
+        async function loadOperatingCosts() {
+            if (!AUTH_TOKEN && SECURITY_ENABLED) return;
+            const sequence = ++operatingCostSequence;
+            const epoch = sessionEpoch;
+            const token = AUTH_TOKEN;
+            const status = document.getElementById('operations-cost-status');
+            status.textContent = 'Checking dedicated-key provider usage...';
+            const response = await api('/history/secure/remote-policy/key-status', 'GET', null, 25000);
+            if (sequence !== operatingCostSequence || epoch !== sessionEpoch || token !== AUTH_TOKEN) return;
+            if (response.error || !response.data) {
+                status.textContent = 'Provider usage unavailable; prior values cleared. This check is not a run total.';
+                return;
+            }
+            const key = response.data;
+            const money = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? `$${value.toFixed(6)}` : 'unknown';
+            const labels = {ready: 'Remote admission currently eligible', disabled: 'Remote use disabled',
+                key_missing: 'Provider key missing', key_disabled: 'Provider key disabled', key_exhausted: 'Provider key cap exhausted',
+                key_cap_exceeds_local_threshold: 'Provider hard cap exceeds local threshold',
+                local_threshold_reached: 'Local admission threshold reached', provider_unavailable: 'Provider status unavailable',
+                invalid_provider_data: 'Provider limit data invalid'};
+            status.textContent = `${labels[key.state] || 'Admission state unknown'}. Dedicated-key usage: ` +
+                `${money(key.usage_daily_usd)} today, ${money(key.usage_monthly_usd)} this month. ` +
+                `Provider hard cap: ${money(key.key_limit_usd)}${['daily', 'monthly'].includes(key.key_reset) ? '/' + key.key_reset : ' (reset unknown)'}; ` +
+                `${money(key.key_remaining_usd)} remaining. Provider-reported, not this run or app-ledger spend. ` +
+                `Checked at ${new Date().toLocaleTimeString()}; billing can be delayed.`;
+        }
+
+        function clearRunAccounting(clearInputs = false) {
+            runAccountingSequence++;
+            runAccountingBusy = false;
+            document.getElementById('run-accounting-ledger').textContent = 'Local settled charges: unknown.';
+            document.getElementById('run-accounting-comparison').textContent = 'Provider comparison not checked.';
+            document.getElementById('run-accounting-status').textContent = 'Run accounting not loaded; prior values cleared.';
+            for (const id of ['run-accounting-read', 'run-accounting-compare'])
+                document.getElementById(id).disabled = !AUTH_TOKEN;
+            if (clearInputs) for (const id of ['run-accounting-start', 'run-accounting-baseline'])
+                document.getElementById(id).value = '';
+        }
+
+        function runAccountingCutoff(value) {
+            if (typeof value !== 'string') return null;
+            const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{1,6})?Z$/.exec(value);
+            if (!match) return null;
+            const millis = Date.parse(match[1] + 'Z');
+            if (!Number.isFinite(millis) || millis < 0 || new Date(millis).toISOString().slice(0, 19) !== match[1]) return null;
+            // Date.parse discards sub-millisecond precision; retain the supplied fraction separately.
+            return millis / 1000 + Number(match[2] || 0);
+        }
+
+        function validRunAccounting(data, cutoff) {
+            const count = value => Number.isSafeInteger(value) && value >= 0;
+            const money = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+            if (!data || data.state !== 'observed' || data.scope !== 'all_managed_admissions_since_start' ||
+                data.rounding !== 'up_per_admission_micro_usd' || data.since !== cutoff ||
+                !money(data.sampled_at) || data.sampled_at < cutoff || !money(data.settled_cost_usd) ||
+                !count(data.global_unresolved)) return false;
+            const states = data.admission_states, resolutions = data.settled_resolutions, batch = data.batch_owned;
+            if (!states || !resolutions || !batch || !['settled', 'released', 'reserved', 'unknown'].every(k => count(states[k])) ||
+                !['response', 'operator'].every(k => count(resolutions[k])) ||
+                resolutions.response + resolutions.operator !== states.settled ||
+                data.global_unresolved < states.reserved + states.unknown) return false;
+            if (batch.state === 'known') return count(batch.settled_admissions) &&
+                batch.settled_admissions <= states.settled && money(batch.settled_cost_usd) &&
+                batch.settled_cost_usd <= data.settled_cost_usd;
+            return batch.state === 'unknown_legacy_schema' && batch.settled_admissions === null && batch.settled_cost_usd === null;
+        }
+
+        async function loadRunAccounting(compareProvider = false) {
+            if (!AUTH_TOKEN || runAccountingBusy) return;
+            clearRunAccounting(false);
+            const startText = document.getElementById('run-accounting-start').value;
+            const baselineText = document.getElementById('run-accounting-baseline').value;
+            const cutoff = runAccountingCutoff(startText);
+            const status = document.getElementById('run-accounting-status');
+            const ledger = document.getElementById('run-accounting-ledger');
+            const comparison = document.getElementById('run-accounting-comparison');
+            if (cutoff === null) {
+                status.textContent = 'Enter a valid UTC run start, including Z and at most six fractional digits.';
+                return;
+            }
+            const baseline = baselineText.trim() === '' ? null : Number(baselineText);
+            if (compareProvider && (baseline === null || !Number.isFinite(baseline) || baseline < 0)) {
+                status.textContent = 'Enter an explicit nonnegative provider monthly baseline from run start; blank is not zero.';
+                return;
+            }
+            const sequence = runAccountingSequence, epoch = sessionEpoch, token = AUTH_TOKEN;
+            const current = () => sequence === runAccountingSequence && epoch === sessionEpoch && token === AUTH_TOKEN &&
+                startText === document.getElementById('run-accounting-start').value &&
+                baselineText === document.getElementById('run-accounting-baseline').value;
+            runAccountingBusy = true;
+            for (const id of ['run-accounting-read', 'run-accounting-compare']) document.getElementById(id).disabled = true;
+            status.textContent = 'Reading the local run ledger...';
+            let localValid = false;
+            try {
+                const response = await api(`/history/secure/remote-policy/accounting/run?since=${cutoff}`, 'GET', null, 30000);
+                if (!current()) return;
+                if (response.error || !validRunAccounting(response.data, cutoff)) {
+                    status.textContent = 'Local run accounting unavailable or incomplete. Charges remain unknown.';
+                    return;
+                }
+                const data = response.data, states = data.admission_states, resolutions = data.settled_resolutions;
+                localValid = true;
+                ledger.textContent = `Local settled charges: $${data.settled_cost_usd.toFixed(6)} across ${states.settled} settled admissions ` +
+                    `(${resolutions.response} provider-response, ${resolutions.operator} operator-settled). ` +
+                    `Released unsent: ${states.released}; reserved: ${states.reserved}; unknown: ${states.unknown}. ` +
+                    `Unresolved across the entire ledger: ${data.global_unresolved}. ` +
+                    (data.batch_owned.state === 'known' ? `Batch-owned aggregate admissions: ${data.batch_owned.settled_admissions}, ` +
+                        `$${data.batch_owned.settled_cost_usd.toFixed(6)} (already included once). ` : 'Legacy batch attribution unknown. ') +
+                    `All managed activity started since ${startText}, not exclusively backlog work. ` +
+                    `Rounded up per admission to a microdollar; unresolved costs are not included. ` +
+                    `Ledger sampled ${new Date(data.sampled_at * 1000).toISOString()}.`;
+                status.textContent = 'Local ledger read complete; settled charges are not proof that work succeeded or billing is complete.';
+                if (!compareProvider) return;
+                comparison.textContent = 'Checking provider comparison...';
+                const provider = await api('/history/secure/remote-policy/key-status', 'GET', null, 30000);
+                if (!current()) return;
+                const usage = provider.data && provider.data.usage_monthly_usd;
+                const first = provider.sample_started_at, last = provider.sample_finished_at;
+                const timestamp = value => typeof value === 'number' && Number.isFinite(value) && value >= cutoff && value <= 253402300799;
+                if (provider.error || typeof usage !== 'number' || !Number.isFinite(usage) || usage < 0 ||
+                    !timestamp(first) || !timestamp(last) || last < first) {
+                    comparison.textContent = 'Provider comparison unavailable; provider run cost is unknown.';
+                    return;
+                }
+                const month = seconds => new Date(seconds * 1000).toISOString().slice(0, 7);
+                if (month(first) !== month(cutoff) || month(last) !== month(cutoff)) {
+                    comparison.textContent = 'Provider monthly counter cannot cover this run across a month reset; full-run provider cost is unknown.';
+                    return;
+                }
+                if (baseline > usage) {
+                    comparison.textContent = 'Provider baseline exceeds current monthly usage; key identity, timing or counter reset needs checking. Run cost is unknown.';
+                    return;
+                }
+                const delta = usage - baseline;
+                comparison.textContent = `Provider monthly usage minus your baseline: $${delta.toFixed(6)}. ` +
+                    `Difference from the local settled total: $${(delta - data.settled_cost_usd).toFixed(6)}. ` +
+                    `Comparison only, not invoice-reconciled even when amounts agree. Baseline timing and same-key identity are user-supplied, ` +
+                    `not independently verified. Earlier activity may bill later; billing may be delayed, and the samples are not simultaneous. ` +
+                    `Provider sampled ${new Date(last * 1000).toISOString()}.`;
+            } catch (_) {
+                if (!current()) return;
+                status.textContent = 'Run accounting check unavailable; no automatic retry was made.';
+                if (!localValid) ledger.textContent = 'Local settled charges: unknown.';
+                comparison.textContent = 'Provider comparison unavailable; provider run cost is unknown.';
+            } finally {
+                if (current()) {
+                    runAccountingBusy = false;
+                    for (const id of ['run-accounting-read', 'run-accounting-compare']) document.getElementById(id).disabled = !AUTH_TOKEN;
+                }
+            }
+        }
+
+        function historyMessage(message) {
+            document.getElementById('history-search-status').textContent = message;
+        }
+
+        async function loadHistoryStatus() {
+            const sequence = ++historyStatusSequence;
+            const token = AUTH_TOKEN;
+            const coverage = document.getElementById('history-coverage-status');
+            const capture = document.getElementById('history-capture-status');
+            const hooks = document.getElementById('history-hook-receipts');
+            coverage.textContent = 'Loading encrypted archive and index coverage...';
+            capture.textContent = 'Loading capture queue and source scan...';
+            hooks.textContent = 'Loading hook receipts...';
+            const response = await api('/history/status', 'GET', null, 15000);
+            if (sequence !== historyStatusSequence || token !== AUTH_TOKEN) return;
+            if (response.error || !response.data) {
+                coverage.textContent = `Coverage unavailable: ${response.error || 'unexpected response'}`;
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+                document.getElementById('history-interpretation-status').textContent =
+                    'Interpretation status unavailable; pending and parked counts are unknown.';
+                document.getElementById('history-window-status').textContent = 'Window counts unavailable.';
+                document.getElementById('history-batch-status').textContent = 'Batch status unavailable.';
+                hooks.textContent = 'Hook receipts unavailable; no delivery conclusion can be drawn.';
+                return;
+            }
+            const data = response.data;
+            const archive = data.vault?.archive || {};
+            const index = data.last_secure_index || {};
+            const count = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            const matchingGeneration = data.vault?.ready === true &&
+                Number.isSafeInteger(archive.generation) &&
+                index.archive_generation === archive.generation;
+            const caughtUp = matchingGeneration && Number.isSafeInteger(archive.snapshots) &&
+                Number.isSafeInteger(index.ready) && Number.isSafeInteger(index.total) ?
+                (index.complete === true && index.ready === archive.snapshots &&
+                    index.total === archive.snapshots ? 'yes' : 'no') : 'unknown';
+            coverage.textContent = `Archive generation ${count(archive.generation)} · ` +
+                `${count(archive.snapshots)} encrypted snapshot versions across ${count(archive.sources)} sources. ` +
+                `Index generation ${count(index.archive_generation)}: ` +
+                `${count(index.ready)}/${count(index.total)} ready, ${count(index.missing)} missing; ` +
+                `current archive fully indexed: ${caughtUp}.`;
+            const queue = data.capture_queue;
+            const interpretation = document.getElementById('history-interpretation-status');
+            const enrichment = data.capture_enrichment;
+            const countStatus = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'unknown';
+            const windowStatus = document.getElementById('history-window-status');
+            const batchStatus = document.getElementById('history-batch-status');
+            windowStatus.textContent = 'Recorded window counts unknown; remaining window total unknown.';
+            batchStatus.textContent = 'Batch status unknown.';
+            if (!enrichment || typeof enrichment !== 'object' || Array.isArray(enrichment)) {
+                interpretation.textContent = 'Interpretation status unavailable; pending and parked counts are unknown.';
+            } else {
+                const pending = countStatus(enrichment.pending_sources);
+                const parked = countStatus(enrichment.parked_private_windows);
+                const drain = enrichment.backlog_drain;
+                let drainText = 'catch-up status unknown';
+                if (drain && typeof drain === 'object' && !Array.isArray(drain) &&
+                    typeof drain.active === 'boolean') {
+                    drainText = drain.active ? 'catch-up active' : 'catch-up inactive';
+                    const haltReasons = new Set(['remote_cost_unresolved', 'remote_consent_revoked',
+                        'remote_admission_threshold_reached', 'daily_zdr_cap_unverified',
+                        'remote_accounting_unavailable', 'remote_accounting_unconfigured']);
+                    if (haltReasons.has(drain.halted_reason))
+                        drainText += ` (halt: ${drain.halted_reason.replaceAll('_', ' ')})`;
+                }
+                const enrollment = enrichment.historical_enrollment;
+                let enrollmentText = 'historical enrollment not reported';
+                if (enrollment && typeof enrollment === 'object' && !Array.isArray(enrollment)) {
+                    enrollmentText = `enrollment ${enrollment.complete === true ? 'complete' :
+                        enrollment.complete === false ? 'incomplete' : 'status unknown'}; ` +
+                        `queued ${countStatus(enrollment.queued)}, existing ${countStatus(enrollment.existing)}, ` +
+                        `excluded ${countStatus(enrollment.excluded)}`;
+                }
+                interpretation.textContent = `Interpretation: ${pending} pending source versions; ` +
+                    `${parked} parked private windows; ${drainText}. ${enrollmentText}. ` +
+                    'Enrollment is not interpretation completion.';
+                const versions = enrichment.historical_versions_enrollment;
+                if (versions && typeof versions === 'object' && !Array.isArray(versions)) {
+                    interpretation.textContent += ` All-version enrollment ${versions.complete === true ? 'complete' :
+                        versions.complete === false ? 'incomplete' : 'status unknown'}; queued ${countStatus(versions.queued)}, ` +
+                        `existing ${countStatus(versions.existing)}, excluded ${countStatus(versions.excluded)}. ` +
+                        'This includes historical snapshot versions, not just latest files.';
+                }
+                const windows = enrichment.window_jobs;
+                const labels = ['succeeded', 'reused', 'no_context', 'pending', 'retry', 'failed',
+                    'outcome_unknown', 'running', 'publishing', 'publication_pending',
+                    'cancelled', 'not_queued', 'not_applicable'];
+                const states = windows?.states;
+                if (windows?.basis === 'all_capture_lane_jobs' &&
+                    Number.isSafeInteger(windows.total) && windows.total >= 0 &&
+                    states && typeof states === 'object' && !Array.isArray(states) &&
+                    Object.entries(states).every(([key, value]) => labels.includes(key) &&
+                        Number.isSafeInteger(value) && value >= 0) &&
+                    Object.values(states).reduce((total, value) => total + value, 0) === windows.total &&
+                    Number.isSafeInteger(enrichment.parked_private_windows) &&
+                    enrichment.parked_private_windows >= 0 &&
+                    enrichment.parked_private_windows <= (states.retry || 0)) {
+                    windowStatus.textContent = `Recorded windows (all capture jobs): ${windows.total} total; ` +
+                        labels.map(key => `${states[key] || 0} ${key.replaceAll('_', ' ')}`).join(', ') +
+                        `. Retry includes ${parked} privacy-parked windows, not runnable work. ` +
+                        'These are recorded job states, not independent publication verification. ' +
+                        'Because some sources are unplanned, the remaining window total unknown; no overall completion percentage.';
+                }
+                const batch = enrichment.historical_batch;
+                const batchLabels = {awaiting_provider: 'waiting for provider', submitted: 'submitted',
+                    working: 'checking or publishing results', passed: 'checkpoint passed',
+                    checkpoint_unresolved: 'checkpoint validation unresolved',
+                    recovery_deferred: 'recovery deferred', submission_unknown: 'submission outcome unknown',
+                    awaiting_provider_identity: 'waiting for identity proof',
+                    repair_admission_unresolved: 'retry accounting unresolved',
+                    repair_limit_reached: 'retry limit reached', consent_required: 'consent required',
+                    remote_disabled: 'remote processing disabled', pilot_complete: 'batch quota exhausted',
+                    gathering_batch: 'gathering screened windows',
+                    awaiting_screened_windows: 'waiting for screened windows', idle: 'idle', inactive: 'inactive'};
+                if (batch && typeof batch === 'object' && !Array.isArray(batch)) {
+                    const state = Object.prototype.hasOwnProperty.call(batchLabels, batch.state) ?
+                        batchLabels[batch.state] : 'unknown';
+                    const items = Number.isSafeInteger(batch.items) && batch.items >= 1 && batch.items <= 128 ?
+                        String(batch.items) : 'unknown';
+                    batchStatus.textContent = `Current batch: ${items} windows; ${state}. `;
+                    const requests = Number.isSafeInteger(batch.provider_requests) && batch.provider_requests >= 1 &&
+                        Number.isSafeInteger(batch.items) && batch.provider_requests <= batch.items ? String(batch.provider_requests) : 'unknown';
+                    batchStatus.textContent += `${requests} provider requests (packing can combine adjacent windows). `;
+                    if (batch.repair_only === true && Number.isSafeInteger(batch.parent_items) &&
+                        batch.parent_items >= 1 && batch.parent_items <= 128 &&
+                        Number.isSafeInteger(batch.repair_round) && batch.repair_round >= 1 && batch.repair_round <= 2) {
+                        batchStatus.textContent += `Retry within a ${batch.parent_items}-window checkpoint; ` +
+                            `round ${batch.repair_round}. Successful siblings are not resent. `;
+                    }
+                    batchStatus.textContent += 'Up to 128 windows per batch, each up to 3,000 characters. ' +
+                        'The next unrelated batch waits for checkpoint validation and publication.';
+                    const health = batch.health && typeof batch.health === 'object' && !Array.isArray(batch.health) ? batch.health : {};
+                    const healthLabels = {degraded_unknown: 'Delayed: no reported progress; internal activity unknown',
+                        polling_error: 'Provider polling error', polling_stale: 'Local polling overdue',
+                        deadline_overdue: '24-hour deadline overdue; provider still nonterminal',
+                        metrics_unknown: 'Provider progress metrics unavailable', awaiting_progress: 'Awaiting reported progress',
+                        progress_observed: 'Provider reports progress', provider_completed: 'Provider completed; local checks still required',
+                        provider_failed: 'Provider reports failure', provider_expired: 'Provider reports expiry',
+                        provider_cancelled: 'Provider reports cancellation'};
+                    if (Object.prototype.hasOwnProperty.call(healthLabels, health.state)) {
+                        const age = typeof health.age_seconds === 'number' && Number.isFinite(health.age_seconds) && health.age_seconds >= 0 ?
+                            `${(health.age_seconds / 3600).toFixed(1)} hours` : 'unknown age';
+                        batchStatus.textContent += ` ${healthLabels[health.state]}; ${age}; ${count(health.completed_requests)} completed / ` +
+                            `${count(health.total_requests)} requests, ${count(health.failed_requests)} failed. No streaming results.`;
+                        const stamp = value => {
+                            if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 'unknown';
+                            const date = new Date(value * 1000);
+                            return Number.isNaN(date.getTime()) ? 'unknown' : date.toISOString();
+                        };
+                        batchStatus.textContent += ` Last successful poll: ${stamp(health.last_successful_poll_at)}; deadline: ${stamp(health.deadline_at)}.`;
+                    }
+                }
+            }
+            if (queue && typeof queue === 'object' && !Array.isArray(queue)) {
+                const queued = state => Object.prototype.hasOwnProperty.call(queue, state) ?
+                    count(queue[state]) : '0';
+                const scan = data.last_capture_scan;
+                const scanKnown = scan && Number.isSafeInteger(scan.generation) &&
+                    Number.isSafeInteger(scan.missing) && Number.isSafeInteger(scan.errors) &&
+                    (scan.complete === true || scan.complete === 1 ||
+                        scan.complete === false || scan.complete === 0);
+                const scanLabel = scan && typeof scan === 'object' &&
+                    Number.isSafeInteger(scan.generation) ?
+                    `scan generation ${count(scan.generation)} ` +
+                    (scanKnown ? ((scan.complete === true || scan.complete === 1) &&
+                        scan.missing === 0 && scan.errors === 0 ? 'complete' : 'incomplete') : 'status unknown') +
+                    ` (${count(scan.missing)} missing, ${count(scan.errors)} errors)` :
+                    'source scan not yet reported';
+                capture.textContent = `Capture intents: ${queued('archived')} archived intents, ` +
+                    `${queued('pending')} pending, ${queued('running')} running, ` +
+                    `${queued('retry')} retry, ${queued('unavailable')} unavailable; ${scanLabel}. ` +
+                    'Intent counts are not archive snapshot counts.';
+            } else {
+                capture.textContent = 'Capture queue unavailable; no archival conclusion can be drawn.';
+            }
+            if (data.hook_receipts_error) {
+                hooks.textContent = 'Hook receipt ledger unavailable; no delivery conclusion can be drawn.';
+                return;
+            }
+            const receipts = Array.isArray(data.hook_receipts) ? data.hook_receipts : null;
+            if (!receipts) {
+                hooks.textContent = 'Hook receipt ledger not reported; delivery is unknown.';
+                return;
+            }
+            const clients = ['claude_code', 'codex', 'gemini_cli'];
+            const lines = clients.map(client => {
+                const observed = receipts.filter(receipt => receipt.provider === client);
+                if (!observed.length) return `${client}: no accepted receipt recorded`;
+                return `${client}: ` + observed.map(receipt =>
+                    `${receipt.event}: ${count(receipt.accepted_invocations)} accepted ` +
+                    `(${receipt.last_outcome || 'outcome unknown'})`).join('; ');
+            });
+            hooks.textContent = lines.join('\n') +
+                '\nCounts are accepted endpoint invocations, not unique host events or archival proof.';
+        }
+
+        async function loadLocalResources() {
+            const sequence = ++resourceStatusSequence;
+            const token = AUTH_TOKEN;
+            const status = document.getElementById('local-resource-status');
+            const models = document.getElementById('local-resource-models');
+            const button = document.getElementById('refresh-local-resources');
+            button.disabled = true;
+            status.textContent = 'Sampling local GPU and Ollama without loading a model...';
+            models.replaceChildren();
+            try {
+                const response = await api('/history/secure/resources');
+                if (sequence !== resourceStatusSequence || token !== AUTH_TOKEN) return;
+                if (response.error || !response.data) {
+                    status.textContent = 'Local resource status unavailable; no idle or headroom conclusion can be drawn.';
+                    return;
+                }
+                const gpu = response.data.gpu || {};
+                const ollama = response.data.ollama || {};
+                const stamped = value => Number.isFinite(value) && value > 0 ?
+                    new Date(value * 1000).toLocaleString() : 'time unknown';
+                const gpuText = gpu.state === 'ready' && Number.isSafeInteger(gpu.free_mib) &&
+                    Number.isSafeInteger(gpu.total_mib) && Number.isSafeInteger(gpu.utilization_percent) ?
+                    `GPU ${gpu.free_mib} MiB free of ${gpu.total_mib} MiB; ${gpu.utilization_percent}% utilization ` +
+                    `(sampled ${stamped(gpu.sampled_at)})` : 'GPU telemetry unavailable';
+                const resident = Array.isArray(ollama.resident_models) ? ollama.resident_models : null;
+                const ollamaText = ollama.state === 'ready' && resident ?
+                    (resident.length ? `Ollama resident models: ${resident.join(', ')}` :
+                        'no Ollama models resident') + ` (sampled ${stamped(ollama.sampled_at)})` :
+                    'Ollama status unavailable';
+                status.textContent = `${gpuText}. ${ollamaText}.`;
+                if (ollama.state !== 'ready' || !Array.isArray(ollama.installed)) return;
+                for (const item of ollama.installed) {
+                    if (typeof item.name !== 'string' || !Number.isSafeInteger(item.size_bytes)) continue;
+                    const row = document.createElement('li');
+                    row.textContent = `${item.name} · ${(item.size_bytes / (1024 ** 3)).toFixed(2)} GiB on disk`;
+                    models.appendChild(row);
+                }
+            } finally {
+                if (sequence === resourceStatusSequence) button.disabled = false;
+            }
+        }
+
+        async function searchCredentialMetadata() {
+            const query = document.getElementById('credential-metadata-query').value.trim();
+            const status = document.getElementById('credential-metadata-status');
+            const results = document.getElementById('credential-metadata-results');
+            const sequence = ++credentialSearchSequence;
+            const token = AUTH_TOKEN;
+            results.replaceChildren();
+            if (!query || query.length > 64) {
+                status.textContent = 'Enter 1–64 characters to search metadata.';
+                return;
+            }
+            status.textContent = 'Searching allowlisted local credential metadata...';
+            const response = await api('/credentials/agent-search', 'POST', { query, limit: 10 });
+            if (sequence !== credentialSearchSequence || token !== AUTH_TOKEN) return;
+            if (response.error || !Array.isArray(response.data)) {
+                status.textContent = 'Credential metadata search unavailable or disabled; no coverage conclusion can be drawn.';
+                return;
+            }
+            if (!response.data.length) {
+                status.textContent = 'No metadata matches among scanned sources; this does not prove the credential does not exist.';
+                return;
+            }
+            status.textContent = `${response.data.length} metadata match(es) among scanned sources (maximum 10). Values remain in the local vault.`;
+            const label = value => typeof value === 'string' && value ? value : 'unknown';
+            for (const item of response.data) {
+                const card = document.createElement('div');
+                card.className = 'result-item';
+                const heading = document.createElement('strong');
+                heading.textContent = `Service ${label(item.service)} · project ${label(item.project)}`;
+                const location = document.createElement('p');
+                location.textContent = `Source ${label(item.source_hint)} · ` +
+                    `${item.origin === 'project' || item.origin === 'transcript' ? item.origin : 'origin not reported'} · ` +
+                    `${item.candidate_status === 'unverified' ? 'unverified candidate' : 'status not reported'}`;
+                const reference = document.createElement('p');
+                reference.textContent = `Record ${label(item.id)} · source hash ${label(item.source_hash)}`;
+                card.appendChild(heading);
+                card.appendChild(location);
+                card.appendChild(reference);
+                results.appendChild(card);
+            }
+        }
+
+        function clearBatchPolicyView() {
+            batchPolicySequence++;
+            batchPolicyGeneration = null;
+            batchPolicyBusy = false;
+            document.getElementById('batch-policy-enabled').checked = false;
+            document.getElementById('batch-policy-max').value = '';
+            document.getElementById('batch-policy-save').disabled = true;
+            document.getElementById('batch-policy-refresh').disabled = !AUTH_TOKEN;
+            document.getElementById('batch-policy-status').textContent = 'Not loaded. Refresh before changing permission.';
+        }
+
+        function batchPolicyView(data) {
+            if (!data || typeof data.enabled !== 'boolean' || !Number.isSafeInteger(data.generation) ||
+                data.generation < 0 || !Number.isSafeInteger(data.max_batches) ||
+                !Number.isSafeInteger(data.remaining_batches) || data.remaining_batches < 0 ||
+                data.remaining_batches > data.max_batches || data.max_batches > 10000 ||
+                (data.generation === 0 ? data.enabled || data.max_batches !== 0 : data.max_batches < 1)) return null;
+            return {enabled: data.enabled, generation: data.generation,
+                max_batches: data.max_batches, remaining_batches: data.remaining_batches};
+        }
+
+        function renderBatchPolicy(data) {
+            batchPolicyGeneration = data.generation;
+            document.getElementById('batch-policy-enabled').checked = data.enabled;
+            document.getElementById('batch-policy-max').value = String(data.max_batches || 1);
+            document.getElementById('batch-policy-status').textContent =
+                `${data.enabled ? 'Enabled' : 'Disabled'} · generation ${data.generation}; ` +
+                `${data.remaining_batches.toLocaleString()} of ${data.max_batches.toLocaleString()} checkpoints remaining. ` +
+                'Quota is not a dollar cap. Already-admitted recovery is preserved.';
+        }
+
+        function setBatchPolicyBusy(value) {
+            batchPolicyBusy = value;
+            document.getElementById('batch-policy-save').disabled = value || batchPolicyGeneration === null;
+            document.getElementById('batch-policy-refresh').disabled = value || !AUTH_TOKEN;
+            document.getElementById('batch-policy-enabled').disabled = value;
+            document.getElementById('batch-policy-max').disabled = value;
+        }
+
+        async function loadBatchPolicy() {
+            if (!AUTH_TOKEN || batchPolicyBusy) return;
+            const sequence = ++batchPolicySequence, epoch = sessionEpoch, token = AUTH_TOKEN;
+            const current = () => sequence === batchPolicySequence && epoch === sessionEpoch && token === AUTH_TOKEN;
+            batchPolicyGeneration = null;
+            setBatchPolicyBusy(true);
+            const status = document.getElementById('batch-policy-status');
+            status.textContent = 'Reading local batch permission...';
+            try {
+                const response = await api('/history/secure/batch-policy', 'GET', null, 30000);
+                if (!current()) return;
+                const data = response.error ? null : batchPolicyView(response.data);
+                if (data) renderBatchPolicy(data);
+                else status.textContent = 'Batch permission unavailable. Refresh before making changes.';
+            } catch (_) {
+                if (current()) status.textContent = 'Batch permission unavailable. Refresh before making changes.';
+            } finally {
+                if (current()) setBatchPolicyBusy(false);
+            }
+        }
+
+        async function saveBatchPolicy() {
+            if (!AUTH_TOKEN || batchPolicyBusy || batchPolicyGeneration === null) return;
+            const enabled = document.getElementById('batch-policy-enabled').checked;
+            const max_batches = Number(document.getElementById('batch-policy-max').value);
+            const status = document.getElementById('batch-policy-status');
+            if (!Number.isSafeInteger(max_batches) || max_batches < 1 || max_batches > 10000) {
+                status.textContent = 'Enter a whole-number checkpoint quota from 1 to 10,000.'; return;
+            }
+            if (enabled && !window.confirm('Allow temporary nontraining provider retention of screened noncredential excerpts? ' +
+                'This is not ZDR. Saving starts a fresh permission generation and quota, and may allow charged ' +
+                'automatic processing within existing spending limits.')) return;
+            const expected_generation = batchPolicyGeneration;
+            const sequence = ++batchPolicySequence, epoch = sessionEpoch, token = AUTH_TOKEN;
+            const current = () => sequence === batchPolicySequence && epoch === sessionEpoch && token === AUTH_TOKEN;
+            batchPolicyGeneration = null;
+            setBatchPolicyBusy(true);
+            status.textContent = 'Saving permission after a verified local policy preimage...';
+            try {
+                const response = await api('/history/secure/batch-policy', 'POST',
+                    {enabled, max_batches, expected_generation}, 30000);
+                if (!current()) return;
+                const data = response.error ? null : batchPolicyView(response.data);
+                if (data && data.generation === expected_generation + 1 && data.enabled === enabled && data.max_batches === max_batches) {
+                    renderBatchPolicy(data);
+                    status.textContent = 'Saved. ' + status.textContent;
+                } else status.textContent = 'Save outcome unknown or policy changed. Explicitly refresh before another change; no automatic retry.';
+            } catch (_) {
+                if (current()) status.textContent = 'Save outcome unknown. Explicitly refresh before another change; no automatic retry.';
+            } finally {
+                if (current()) setBatchPolicyBusy(false);
+            }
+        }
+
+        async function loadRemotePolicy() {
+            if (remotePolicySavePending) return;
+            const sequence = ++remotePolicyLoadSequence;
+            const status = document.getElementById('remote-policy-status');
+            status.textContent = 'Loading local remote policy...';
+            const response = await api('/history/secure/remote-policy');
+            if (sequence !== remotePolicyLoadSequence) return;
+            if (response.error || !response.data) {
+                status.textContent = `Policy unavailable: ${response.error || 'unexpected response'}`;
+                return;
+            }
+            const policy = response.data;
+            remotePolicyLoadedEnabled = policy.enabled === true;
+            document.getElementById('remote-policy-enabled').checked = remotePolicyLoadedEnabled;
+            document.getElementById('remote-daily-usd').value = policy.daily_usd;
+            document.getElementById('remote-monthly-usd').value = policy.monthly_usd;
+            document.getElementById('remote-policy-override').checked = policy.override_ceiling === true;
+            status.textContent = `${policy.enabled ? 'Enabled' : 'Disabled'} · ${policy.source} policy · generation ${policy.generation}. ` +
+                'The OpenRouter key must have its own finite provider-enforced cap.';
+            await loadRemoteKeyStatus(policy.enabled === true);
+        }
+
+        async function loadRemoteKeyStatus(enabled) {
+            const status = document.getElementById('remote-key-status');
+            if (!enabled) {
+                status.textContent = 'Provider key not checked while remote use is disabled.';
+                return;
+            }
+            status.textContent = 'Checking provider-enforced key limit...';
+            const response = await api('/history/secure/remote-policy/key-status');
+            if (response.error || !response.data) {
+                status.textContent = 'Provider key status unavailable; remote admission is unverified.';
+                return;
+            }
+            const key = response.data;
+            const money = value => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'unknown';
+            const states = {
+                ready: 'Remote admission currently eligible',
+                disabled: 'Remote use disabled',
+                key_missing: 'OpenRouter key missing',
+                key_disabled: 'OpenRouter key disabled',
+                key_exhausted: 'OpenRouter key cap exhausted',
+                key_cap_exceeds_local_threshold: 'Remote route blocked: key hard cap exceeds local threshold',
+                local_threshold_reached: 'Local admission threshold reached',
+                provider_unavailable: 'Provider status unavailable; remote admission unverified',
+                invalid_provider_data: 'Provider limit data invalid; remote admission unverified'
+            };
+            const label = states[key.state] || 'Provider status unknown; remote admission unverified';
+            const limit = key.key_limit_usd;
+            const reset = key.key_reset;
+            const detail = Number.isFinite(limit) && (reset === 'daily' || reset === 'monthly')
+                ? ` Provider hard cap ${money(limit)}/${reset}; ${money(key.key_remaining_usd)} currently remaining.`
+                : '';
+            const spend = ` Dedicated-key usage: $${Number.isFinite(key.usage_daily_usd) ?
+                key.usage_daily_usd.toFixed(6) : 'unknown'} today, $${Number.isFinite(key.usage_monthly_usd) ?
+                key.usage_monthly_usd.toFixed(6) : 'unknown'} this month (provider-reported; not this run or app-ledger spend).`;
+            status.textContent = label + '.' + detail + spend +
+                ' Local daily/monthly values above are admission thresholds, not hard caps.';
+        }
+
+        async function saveRemotePolicy() {
+            if (remotePolicySavePending) return;
+            ++remotePolicyLoadSequence;
+            const button = document.getElementById('remote-policy-save');
+            const status = document.getElementById('remote-policy-status');
+            const enabled = document.getElementById('remote-policy-enabled').checked;
+            const daily_usd = Number(document.getElementById('remote-daily-usd').value);
+            const monthly_usd = Number(document.getElementById('remote-monthly-usd').value);
+            const override_ceiling = document.getElementById('remote-policy-override').checked;
+            if (!Number.isFinite(daily_usd) || daily_usd <= 0 ||
+                !Number.isFinite(monthly_usd) || monthly_usd <= 0) {
+                status.textContent = 'Enter positive finite daily and monthly thresholds.';
+                return;
+            }
+            if (enabled && !remotePolicyLoadedEnabled && !window.confirm(
+                'Allow ZDR OpenRouter to receive bounded raw transcript excerpts when local capacity is unavailable? ' +
+                'The provider-enforced key limit remains a separate requirement.')) return;
+            remotePolicySavePending = true;
+            button.disabled = true;
+            status.textContent = 'Saving audited local policy...';
+            try {
+                const response = await api('/history/secure/remote-policy', 'POST',
+                    { enabled, daily_usd, monthly_usd, override_ceiling });
+                if (response.error) {
+                    status.textContent = `Policy was not saved: ${response.error}`;
+                } else {
+                    remotePolicyLoadedEnabled = response.data.enabled === true;
+                    status.textContent = `Saved · ${remotePolicyLoadedEnabled ? 'enabled' : 'disabled'} · generation ${response.data.generation}. ` +
+                        'Already-admitted remote requests may finish.';
+                    await loadRemoteKeyStatus(remotePolicyLoadedEnabled);
+                }
+            } finally {
+                button.disabled = false;
+                remotePolicySavePending = false;
+            }
+        }
+
+        function clearCitedMemoryView() {
+            citedReadSequence++;
+            citedReviewCursor = null;
+            citedReadBusy = false;
+            document.getElementById('cited-memory-results').replaceChildren();
+            document.getElementById('cited-memory-detail').replaceChildren();
+            document.getElementById('cited-memory-status').textContent = 'Not loaded. Reads happen only when requested.';
+            document.getElementById('cited-memory-next').hidden = true;
+            setCitedReadBusy(false);
+            historySearchSequence++;
+            clearHistoryTranscript();
+        }
+
+        function setCitedReadBusy(busy) {
+            citedReadBusy = busy;
+            for (const id of ['cited-memory-search', 'cited-memory-reviews', 'cited-memory-next'])
+                document.getElementById(id).disabled = busy;
+        }
+
+        function citedMemoryView(value) {
+            if (!value || typeof value.id !== 'string' || !/^[a-f0-9]{64}$/.test(value.id)) return null;
+            const bounded = (text, limit) => typeof text === 'string' && [...text].length <= limit ? text : null;
+            const ref = text => typeof text === 'string' && /^[a-f0-9]{64}$/.test(text) ? text : 'unknown';
+            const tag = text => typeof text === 'string' && /^[a-z_][a-z0-9_-]{0,63}$/.test(text) ? text : 'unknown';
+            return {id: value.id, source_ref: ref(value.source_ref), project_ref: ref(value.project_ref),
+                state: tag(value.state), type: tag(value.type), truth_status: tag(value.truth_status),
+                epistemic_kind: tag(value.epistemic_kind), proposal_origin: tag(value.proposal_origin),
+                time_basis: tag(value.time_basis), project_basis: tag(value.project_basis),
+                event_at: bounded(value.event_at, 80) || 'unknown',
+                text: bounded(value.text, 2048), quote: bounded(value.quote, 2048)};
+        }
+
+        function citedText(parent, tag, text) {
+            const node = document.createElement(tag);
+            node.textContent = text;
+            if (tag === 'pre') node.className = 'cited-source-text';
+            parent.appendChild(node);
+            return node;
+        }
+
+        function renderCitedMemory(memory, current, withActions = true) {
+            const card = document.createElement('div');
+            card.className = 'result-item';
+            citedText(card, 'strong', `${memory.type} · ${memory.state} · ${memory.truth_status}`);
+            citedText(card, 'p', `Evidence: ${memory.epistemic_kind} · proposal origin: ${memory.proposal_origin}. ` +
+                'An interpretation or assertion is not independently verified truth.');
+            citedText(card, 'p', `Recorded event time: ${memory.event_at} · time basis: ${memory.time_basis}. ` +
+                `Project basis: ${memory.project_basis}. File and archive timestamps are not substituted for event time.`);
+            citedText(card, 'p', `Memory ref: ${memory.id}\nSource ref: ${memory.source_ref}\nProject ref: ${memory.project_ref}`);
+            citedText(card, 'pre', memory.text === null ? 'Memory text withheld or unavailable.' : memory.text);
+            if (memory.quote !== null) citedText(card, 'pre', `Recorded quote:\n${memory.quote}`);
+            if (withActions) {
+                for (const [label, source] of [['Look up record', false], ['Follow cited source', true]]) {
+                    const button = citedText(card, 'button', label);
+                    button.type = 'button'; button.className = 'btn-secondary';
+                    button.addEventListener('click', () => {
+                        if (current() && !citedReadBusy) void loadCitedMemory(memory.id, source, citedReadSequence);
+                    });
+                }
+            }
+            return card;
+        }
+
+        async function readCitedMemories(mode, body) {
+            if (!AUTH_TOKEN || citedReadBusy) return;
+            const priorCursor = citedReviewCursor;
+            clearCitedMemoryView();
+            const sequence = citedReadSequence, token = AUTH_TOKEN, epoch = sessionEpoch;
+            const current = () => token === AUTH_TOKEN && epoch === sessionEpoch && sequence === citedReadSequence;
+            setCitedReadBusy(true);
+            const status = document.getElementById('cited-memory-status');
+            status.textContent = 'Reading bounded local evidence...';
+            try {
+                const reply = await api(`/history/secure/memories/${mode}`, 'POST', body, 30000);
+                if (!current()) return;
+                const data = reply.data;
+                const limit = mode === 'search' ? 10 : 6;
+                if (reply.error || !data || !Array.isArray(data.matches) || data.matches.length > limit ||
+                        data.matches.some(row => citedMemoryView(row) === null)) {
+                    status.textContent = 'Read unavailable. A timed-out local read may still be running; no automatic retry was made.';
+                    return;
+                }
+                if (mode === 'review-queue') {
+                    const cursor = data.next_cursor;
+                    if (data.credential_or_withheld_excluded !== true || typeof data.has_more !== 'boolean' ||
+                            !(cursor === null || (typeof cursor === 'string' && cursor.length > 0 && cursor.length <= 2048)) ||
+                            data.has_more !== (cursor !== null) || cursor === priorCursor && cursor !== null) {
+                        status.textContent = 'Review page unavailable: invalid bounded page.'; return;
+                    }
+                    citedReviewCursor = cursor;
+                    document.getElementById('cited-memory-next').hidden = !cursor;
+                    status.textContent = `${data.matches.length} eligible noncredential review items on this page. ` +
+                        'This is a safe provisional/needs-user subset, not the total ambiguity queue. ' +
+                        (cursor ? 'More eligible items available.' : 'End of this eligible view; this does not mean all ambiguity is resolved.');
+                } else {
+                    status.textContent = `${data.matches.length} results shown · newest publication first, not source-event order. ` +
+                        (data.truncated === true ? 'Narrow the query for other matches.' :
+                            data.truncated === false ? 'No further matches reported for this query.' : 'Further matches unknown.');
+                }
+                for (const row of data.matches)
+                    document.getElementById('cited-memory-results').appendChild(renderCitedMemory(citedMemoryView(row), current));
+            } finally { if (current()) setCitedReadBusy(false); }
+        }
+
+        async function searchCitedMemories() {
+            if (citedReadBusy || !AUTH_TOKEN) return;
+            const query = document.getElementById('cited-memory-query').value.trim();
+            if (!query || new TextEncoder().encode(query).length > 512) {
+                document.getElementById('cited-memory-status').textContent = 'Enter a query of at most 512 UTF-8 bytes (up to eight terms).';
+                return;
+            }
+            await readCitedMemories('search', {query, limit: 10});
+        }
+
+        async function browseCitedReviews(next) {
+            if (citedReadBusy || !AUTH_TOKEN || next && !citedReviewCursor) return;
+            const body = {limit: 6};
+            if (next) body.cursor = citedReviewCursor;
+            await readCitedMemories('review-queue', body);
+        }
+
+        async function loadCitedMemory(ident, source, sequence) {
+            if (!AUTH_TOKEN || citedReadBusy || sequence !== citedReadSequence || !/^[a-f0-9]{64}$/.test(ident)) return;
+            const token = AUTH_TOKEN, epoch = sessionEpoch;
+            const current = () => token === AUTH_TOKEN && epoch === sessionEpoch && sequence === citedReadSequence;
+            const detail = document.getElementById('cited-memory-detail');
+            detail.replaceChildren();
+            historySearchSequence++;
+            clearHistoryTranscript();
+            const transcriptSequence = historySearchSequence;
+            setCitedReadBusy(true);
+            const status = document.getElementById('cited-memory-status');
+            status.textContent = 'Reading the authenticated record and source...';
+            try {
+                const reply = await api(`/history/secure/memories/${source ? 'source' : 'get'}`, 'POST',
+                    source ? {memory_ref: ident, max_chars: 3000} : {memory_ref: ident}, 30000);
+                if (!current()) return;
+                const data = reply.data;
+                const memory = citedMemoryView(source ? data?.memory : data);
+                if (reply.error || !memory || memory.id !== ident) {
+                    status.textContent = 'Record/source unavailable. A timed-out local read may still be running; no automatic retry was made.';
+                    return;
+                }
+                detail.appendChild(renderCitedMemory(memory, current, false));
+                if (source) {
+                    const available = data.context_state === 'available' && typeof data.context === 'string' && [...data.context].length <= 3000;
+                    citedText(detail, 'h4', 'Cited source context · best-effort redacted');
+                    citedText(detail, 'pre', available ? data.context : 'Source context withheld or unavailable.');
+                    citedText(detail, 'p', available ? 'Bounded excerpt; this is not the entire transcript.' :
+                        'The recorded quote is not a substitute for withheld source context.');
+                    const capability = data.transcript_capability;
+                    if (typeof capability === 'string' && capability.length > 0 && capability.length <= 4096) {
+                        const button = citedText(detail, 'button', 'Read redacted transcript');
+                        button.type = 'button'; button.className = 'btn-secondary';
+                        button.addEventListener('click', () => {
+                            if (!current() || transcriptSequence !== historySearchSequence || button.disabled) return;
+                            button.disabled = true;
+                            void openHistoryTranscript(capability, transcriptSequence, `memory ${ident.slice(0, 12)}`)
+                                .finally(() => { if (current()) button.disabled = false; });
+                        });
+                    }
+                }
+                status.textContent = 'Record/source loaded. Status and provenance are evidence, not a certification of truth.';
+            } finally { if (current()) setCitedReadBusy(false); }
+        }
+
+        function clearHistoryTranscript() {
+            historyTranscriptSequence++;
+            historyTranscriptNextCursor = null;
+            historyTranscriptPageNumber = 0;
+            document.getElementById('history-transcript-viewer').hidden = true;
+            document.getElementById('history-transcript-page').textContent = '';
+            document.getElementById('history-transcript-status').textContent = '';
+            const next = document.getElementById('history-transcript-next');
+            next.hidden = true;
+            next.disabled = true;
+        }
+
+        function currentHistoryTranscript(searchSequence, viewerSequence) {
+            return searchSequence === historySearchSequence &&
+                viewerSequence === historyTranscriptSequence;
+        }
+
+        async function loadHistoryTranscriptPage(cursor, searchSequence, viewerSequence) {
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            const status = document.getElementById('history-transcript-status');
+            const next = document.getElementById('history-transcript-next');
+            next.hidden = true;
+            next.disabled = true;
+            status.textContent = 'Authenticating and loading one redacted page...';
+            const response = await api('/history/secure/transcript/page', 'POST', { cursor }, 30000);
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            const page = response.data;
+            if (response.error || !page || typeof page.redacted_text !== 'string' ||
+                    [...page.redacted_text].length > 4000 ||
+                    !(page.next_cursor == null || (typeof page.next_cursor === 'string' &&
+                        page.next_cursor.length > 0 && page.next_cursor.length <= 4096))) {
+                historyTranscriptNextCursor = null;
+                status.textContent = `Transcript page unavailable: ${response.error || 'invalid response'}. Search again to restart.`;
+                return;
+            }
+            historyTranscriptPageNumber++;
+            document.getElementById('history-transcript-page').textContent = page.redacted_text;
+            historyTranscriptNextCursor = page.next_cursor || null;
+            status.textContent = `Redacted transcript · page ${historyTranscriptPageNumber}` +
+                (historyTranscriptNextCursor ? ' · more available.' : ' · end of transcript.');
+            next.hidden = !historyTranscriptNextCursor;
+            next.disabled = !historyTranscriptNextCursor;
+        }
+
+        async function openHistoryTranscript(capability, searchSequence, label) {
+            clearHistoryTranscript();
+            const viewerSequence = historyTranscriptSequence;
+            const viewer = document.getElementById('history-transcript-viewer');
+            viewer.hidden = false;
+            document.getElementById('history-transcript-heading').textContent = `Redacted transcript · ${label}`;
+            const status = document.getElementById('history-transcript-status');
+            if (!capability) {
+                status.textContent = 'Transcript capability unavailable; search again.';
+                return;
+            }
+            status.textContent = 'Preparing authenticated transcript pages...';
+            const deadline = Date.now() + 180000;
+            let response = await api('/history/secure/transcript/start', 'POST', { capability }, 30000);
+            while (currentHistoryTranscript(searchSequence, viewerSequence) &&
+                    !response.error && response.data?.state === 'pending' && Date.now() < deadline) {
+                status.textContent = 'Preparing transcript in the background; this may take longer for large sources...';
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) break;
+                response = await api('/history/secure/transcript/poll', 'POST', { capability },
+                    Math.min(30000, remaining));
+            }
+            if (!currentHistoryTranscript(searchSequence, viewerSequence)) return;
+            if (!response.error && response.data?.state === 'pending') {
+                historyTranscriptNextCursor = null;
+                status.textContent = 'Transcript preparation is still running. Search again later to resume.';
+                return;
+            }
+            if (response.error || response.data?.state !== 'ready' ||
+                    typeof response.data.cursor !== 'string' || !response.data.cursor) {
+                status.textContent = `Transcript unavailable: ${response.error || response.data?.state || 'invalid response'}. ` +
+                    'Search again to retry.';
+                return;
+            }
+            await loadHistoryTranscriptPage(response.data.cursor, searchSequence, viewerSequence);
+        }
+
+        function renderHistoryMatches(result, sequence) {
+            const container = document.getElementById('history-results');
+            container.replaceChildren();
+            const matches = Array.isArray(result.matches) ? result.matches : [];
+            const coverage = `${result.ready ?? '?'} of ${result.total ?? '?'} current snapshots indexed; ` +
+                `${result.missing ?? '?'} missing, ${result.overflow ?? '?'} overflow.`;
+            historyMessage(`${matches.length} matching sources. ${coverage} ` +
+                (result.complete === true ? 'Search complete.' : 'Partial search; some matches may be absent.'));
+            if (!matches.length) return;
+            for (const match of matches) {
+                const card = document.createElement('div');
+                card.className = 'result-item';
+                const heading = document.createElement('strong');
+                heading.textContent = `${match.provider || 'unknown'} · ${match.kind || 'source'} · ` +
+                    `${match.captured_day_utc || 'date unknown'}`;
+                card.appendChild(heading);
+                const provenance = document.createElement('p');
+                provenance.textContent = `Source ref ${match.ref || 'unknown'} · ` +
+                    `${match.size_bucket_kib ?? '?'} KiB bucket · ${match.versions ?? '?'} version(s)`;
+                card.appendChild(provenance);
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'btn-secondary';
+                button.textContent = 'Load sanitized excerpt';
+                const excerpt = document.createElement('pre');
+                excerpt.style.whiteSpace = 'pre-wrap';
+                excerpt.style.overflowWrap = 'anywhere';
+                const capability = match.fetch_capability;
+                button.addEventListener('click', async () => {
+                    if (sequence !== historySearchSequence) return;
+                    if (!capability) {
+                        excerpt.textContent = 'Excerpt capability unavailable; search again.';
+                        return;
+                    }
+                    button.disabled = true;
+                    excerpt.textContent = 'Authenticating and fetching bounded excerpt...';
+                    const fetched = await api('/history/secure/fetch', 'POST',
+                        { capability, max_chars: 3000 });
+                    if (sequence !== historySearchSequence) return;
+                    if (fetched.error) {
+                        excerpt.textContent = `Fetch unavailable: ${fetched.error}`;
+                        button.disabled = false;
+                        return;
+                    }
+                    const span = fetched.data || {};
+                    excerpt.textContent = `Sanitized excerpt — best-effort redaction${span.truncated ? ' (truncated)' : ''}:\n\n` +
+                        (typeof span.redacted_text === 'string' ? span.redacted_text : 'No text returned.');
+                });
+                card.appendChild(button);
+                const transcriptButton = document.createElement('button');
+                transcriptButton.type = 'button';
+                transcriptButton.className = 'btn-secondary';
+                transcriptButton.textContent = 'Open redacted transcript';
+                transcriptButton.addEventListener('click', () => {
+                    if (sequence !== historySearchSequence) return;
+                    transcriptButton.disabled = true;
+                    void openHistoryTranscript(capability, sequence, heading.textContent)
+                        .finally(() => { transcriptButton.disabled = false; });
+                });
+                card.appendChild(transcriptButton);
+                card.appendChild(excerpt);
+                container.appendChild(card);
+            }
+        }
+
+        async function handleEncryptedHistorySearch() {
+            const query = document.getElementById('history-query').value.trim();
+            if (!query) {
+                historyMessage('Enter a query first.');
+                return;
+            }
+            if (HISTORY_SECURITY_MODE !== 'strict') {
+                historyMessage('Encrypted history search is available only when strict history mode is active.');
+                return;
+            }
+            clearCitedMemoryView();
+            const sequence = ++historySearchSequence;
+            clearHistoryTranscript();
+            const previous = historySearchJobId;
+            historySearchJobId = null;
+            document.getElementById('history-results').replaceChildren();
+            historyMessage('Enqueuing local encrypted-index search...');
+            if (previous) await api(`/history/secure/search/jobs/${previous}`, 'DELETE');
+            if (sequence !== historySearchSequence) return;
+            const queued = await api('/history/secure/search/jobs', 'POST', { query, limit: 10 });
+            if (sequence !== historySearchSequence) {
+                if (queued.data?.job_id) {
+                    await api(`/history/secure/search/jobs/${queued.data.job_id}`, 'DELETE');
+                }
+                return;
+            }
+            if (queued.error || !queued.data?.job_id) {
+                historyMessage(`Search was not queued: ${queued.error || 'unexpected response'}`);
+                return;
+            }
+            const jobId = queued.data.job_id;
+            historySearchJobId = jobId;
+            for (let attempt = 0; attempt < 60; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (sequence !== historySearchSequence) return;
+                const polled = await api(`/history/secure/search/jobs/${jobId}`);
+                if (sequence !== historySearchSequence) return;
+                if (polled.error) {
+                    historyMessage(`Search status unavailable: ${polled.error}`);
+                    return;
+                }
+                const state = polled.data?.state || 'unknown';
+                if (state === 'succeeded') {
+                    historySearchJobId = null;
+                    renderHistoryMatches(polled.data.result || {}, sequence);
+                    return;
+                }
+                if (!['pending', 'running', 'retry'].includes(state)) {
+                    historySearchJobId = null;
+                    historyMessage(`Search ${state}; code ${polled.data?.error_code || 'not reported'}.`);
+                    return;
+                }
+                historyMessage(`Local search ${state}...`);
+            }
+            if (sequence !== historySearchSequence) return;
+            historyMessage('UI polling timed out after two minutes. The durable search job may still be running; search again later.');
         }
 
         async function handleSearch() {
@@ -706,7 +2400,7 @@
 
                 const content = document.createElement('div');
                 content.className = 'result-content';
-                content.innerHTML = r.content;
+                content.textContent = typeof r.content === 'string' ? r.content : '';
                 item.appendChild(content);
 
                 // --- Result Actions (Feedback) ---
@@ -784,6 +2478,7 @@
         }
 
         async function discoverLegacySources(useCache = true) {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             const btn = useCache ? document.getElementById('catalog-btn') : document.getElementById('scan-btn');
             const resDiv = document.getElementById('legacy-results');
             const originalText = btn.textContent;
@@ -875,6 +2570,7 @@
         }
 
         async function importAllLegacy() {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             const btn = document.getElementById('import-all-btn');
             if (!confirm(`This will discover and import ALL legacy sources into Muninn\'s memory. This may take several minutes. Proceed?`)) return;
 
@@ -918,6 +2614,7 @@
         }
 
         async function importLegacy(sourceId) {
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
             log(`Initiating parse for target ID: ${sourceId}`);
             const data = await api('/ingest/legacy/import', 'POST', { selected_source_ids: [sourceId] });
             const added = data.data ? data.data.added_memories : 0;
@@ -941,9 +2638,13 @@
             }
         }
 
-        function applyToken() {
-            AUTH_TOKEN = document.getElementById('server-token').value;
-            localStorage.setItem('muninn_token', AUTH_TOKEN);
+        async function applyToken() {
+            const candidate = document.getElementById('server-token').value.trim();
+            if (!(await acceptToken(candidate))) {
+                showToast('Authentication failed. Current session was not changed.', 'error');
+                return;
+            }
+            document.getElementById('server-token').value = '';
             log("Session authentication token updated.");
 
             // Clear prior error visuals
@@ -980,26 +2681,53 @@
         }
 
         async function checkHealth() {
-            if (!AUTH_TOKEN) return;
+            if (!AUTH_TOKEN && SECURITY_ENABLED) return;
+            if (document.visibilityState === 'hidden') return;
+            const sequence = ++healthStatusSequence;
+            const token = AUTH_TOKEN;
+            const epoch = sessionEpoch;
             const data = await api('/health');
+            if (sequence !== healthStatusSequence || token !== AUTH_TOKEN || epoch !== sessionEpoch) return;
             const healthDot = document.getElementById('health-dot');
             const authDot = document.getElementById('auth-dot');
+            const service = document.getElementById('overview-service-status');
 
-            if (data.error) {
+            if (data.error || data.status !== 'ok') {
+                updateStats(null);
                 healthDot.className = 'status-dot offline';
                 authDot.className = 'status-dot offline';
+                service.textContent = data.error ? 'Service health unavailable; readiness unknown.' :
+                    `Service state: ${String(data.status || 'unknown')}; readiness not confirmed.`;
+                document.getElementById('legacy-section').style.display = 'none';
+                document.getElementById('strict-history-note').style.display = 'none';
             } else {
                 healthDot.className = 'status-dot online';
                 authDot.className = 'status-dot online';
+                HISTORY_SECURITY_MODE = data.history_security_mode || 'unknown';
+                service.textContent = `Service: ${String(data.backend || 'unknown')} reports ok; ` +
+                    `history security: ${HISTORY_SECURITY_MODE}. Running code revision: not reported.`;
+                document.getElementById('legacy-section').style.display =
+                    HISTORY_SECURITY_MODE === 'legacy' ? '' : 'none';
+                document.getElementById('strict-history-note').style.display =
+                    HISTORY_SECURITY_MODE === 'strict' ? '' : 'none';
                 updateStats(data);
             }
+            if (document.getElementById('tab-overview').classList.contains('active')) loadOverviewStatus();
+            if (document.getElementById('tab-operations').classList.contains('active')) loadOperatingStatus();
+            if (document.getElementById('tab-history').classList.contains('active')) loadHistoryStatus();
+            if (AUTH_TOKEN) loadCredentialTriageStatus();
         }
 
         async function updateScanBadge() {
-            if (!AUTH_TOKEN) return;
+            if (!AUTH_TOKEN && SECURITY_ENABLED) return;
+            if (HISTORY_SECURITY_MODE !== 'legacy') return;
+            const sequence = ++scanStatusSequence;
+            const token = AUTH_TOKEN;
+            const epoch = sessionEpoch;
             const data = await api('/ingest/legacy/status');
+            if (sequence !== scanStatusSequence || token !== AUTH_TOKEN || epoch !== sessionEpoch) return;
             const badge = document.getElementById('ingest-badge');
-            if (data && data.active_scans > 0) {
+            if (data && Number.isSafeInteger(data.active_scans) && data.active_scans > 0) {
                 badge.innerText = data.active_scans;
                 badge.style.display = 'block';
                 badge.classList.add('pulse-active');
@@ -1012,81 +2740,18 @@
         }
 
         function updateStats(data) {
-            if (!data) return;
-            document.getElementById('stat-total').innerText = data.memory_count || 0;
-            document.getElementById('stat-entities').innerText = data.graph_nodes || 0;
-            // Get profile from health or just use the UI defaults
-            const profileDisplay = (data.active_profile || 'Balanced').charAt(0).toUpperCase() + (data.active_profile || 'Balanced').slice(1);
+            const count = value => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'Unknown';
+            document.getElementById('stat-total').textContent = count(data?.memory_count);
+            document.getElementById('stat-entities').textContent = count(data?.graph_nodes);
+            const reportedProfile = typeof data?.active_profile === 'string' ? data.active_profile : 'Not reported';
+            const profileDisplay = reportedProfile.charAt(0).toUpperCase() + reportedProfile.slice(1);
             document.getElementById('stat-profile').innerText = profileDisplay;
         }
 
-        // --- Visual Graph Animation ---
-        const canvas = document.getElementById('brain-pulse');
-        const ctx = canvas.getContext('2d');
-        let particles = [];
-
-        function initParticles() {
-            canvas.width = canvas.offsetWidth;
-            canvas.height = canvas.offsetHeight;
-            particles = [];
-            for (let i = 0; i < 40; i++) {
-                particles.push({
-                    x: Math.random() * canvas.width,
-                    y: Math.random() * canvas.height,
-                    vx: (Math.random() - 0.5) * 0.8,
-                    vy: (Math.random() - 0.5) * 0.8,
-                    r: Math.random() * 2.5 + 1
-                });
-            }
-        }
-
-        function animate() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.strokeStyle = 'rgba(188, 19, 254, 0.15)'; // neon-purple slightly transparent
-            ctx.fillStyle = 'rgba(123, 47, 247, 0.6)'; // blue-violet
-
-            particles.forEach((p, i) => {
-                p.x += p.vx; p.y += p.vy;
-                if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
-                if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
-
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-                ctx.fill();
-
-                for (let j = i + 1; j < particles.length; j++) {
-                    const p2 = particles[j];
-                    const dist = Math.hypot(p.x - p2.x, p.y - p2.y);
-                    if (dist < 100) {
-                        ctx.lineWidth = (1 - dist / 100) * 1.5;
-                        ctx.beginPath();
-                        ctx.moveTo(p.x, p.y);
-                        ctx.lineTo(p2.x, p2.y);
-                        ctx.stroke();
-                    }
-                }
-            });
-            requestAnimationFrame(animate);
-        }
-
         window.onload = () => {
-            initParticles();
-            animate();
-
-            // Auto-login logic if token was pre-filled or found in storage
+            // A bearer is never injected into or persisted by this page.
             checkAuthOnLoad();
-
-            if (AUTH_TOKEN || !SECURITY_ENABLED) {
-                updateScanBadge();
-                setInterval(checkHealth, 30000);
-                setInterval(updateScanBadge, 60000);
-            }
         };
-
-        // Handle window resize for canvas
-        window.addEventListener('resize', () => {
-            initParticles();
-        });
 
         /* ================================
            V3.18.2 Profile & Feedback Logic

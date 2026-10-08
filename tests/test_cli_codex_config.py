@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import muninn.cli as cli
 from muninn.cli import _collect_codex_muninn_entries, _patch_codex_toml
 
@@ -151,3 +153,38 @@ def test_rotate_token_preserves_existing_custom_http_url(
     assert 'url = "https://memory.example.test/custom/mcp"' in updated
     assert "http://127.0.0.1:42069/mcp" not in updated
     assert "rotated-token" not in updated
+
+
+@pytest.mark.parametrize("key", [
+    "bearer_token_env_var", '"bearer_token_env_var"', "'bearer_token_env_var'",
+    r'"\u0062earer_token_env_var"',
+])
+def test_rotate_token_preserves_custom_codex_bearer_reference(tmp_path: Path, monkeypatch, key) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[mcp_servers.muninn]\nurl = "http://127.0.0.1:42069/mcp"\n'
+        f'{key} = "CUSTOM_MUNINN_TOKEN"\n',
+        encoding="utf-8",
+    )
+    before = config_path.read_bytes()
+    monkeypatch.setattr(cli, "_CODEX_CONFIG_PATH", config_path)
+    monkeypatch.setattr(cli, "_MCP_CONFIG_PATHS", [])
+    args = cli.build_parser().parse_args(
+        ["rotate-token", "--token-file", str(tmp_path / "new.token")]
+    )
+    with patch("muninn.cli.secrets.token_urlsafe", return_value="rotated-token"):
+        assert cli.cmd_rotate_token(args) == 0
+    assert config_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("key", ['"url"', "'url'"])
+def test_rotation_skips_quoted_codex_http_url_key(tmp_path: Path, key) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'[mcp_servers.muninn]\n{key} = "http://127.0.0.1:42069/mcp"\n',
+        encoding="utf-8",
+    )
+    before = config_path.read_bytes()
+    assert not _patch_codex_toml(config_path, new_token="replacement-token",
+                                 new_server_url="http://127.0.0.1:42069")
+    assert config_path.read_bytes() == before

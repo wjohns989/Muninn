@@ -30,6 +30,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 import asyncio
+import sqlite3
+from collections import deque
 from typing import TYPE_CHECKING, Optional, Dict, Any, List
 from pathlib import Path
 
@@ -37,9 +39,10 @@ import uvicorn
 import requests
 from fastapi import FastAPI, HTTPException, Depends, Request, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from contextlib import asynccontextmanager
 import secrets
+import ipaddress
 import portalocker
 
 from muninn.core.env_loader import load_project_env
@@ -47,10 +50,11 @@ from muninn.core.env_loader import load_project_env
 load_project_env(Path(__file__).parent)
 
 from muninn.core.memory import MuninnMemory
+from muninn.core.credential_boundary import CredentialMemoryError, project_credentials, require_credential_free
 from muninn.core import handoffs
 from muninn.core.config import MuninnConfig, SUPPORTED_MODEL_PROFILES
 from muninn.core.feature_flags import FeatureDisabledError
-from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, get_token, is_security_enabled
+from muninn.core.security import SecurityContext, verify_token as core_verify_token, initialize_security, is_security_enabled, verify_main_token
 from muninn.version import __version__
 from muninn.ingestion.pipeline import (
     MAX_CHUNK_OVERLAP_CHARS,
@@ -75,6 +79,10 @@ from muninn.retrieval.synthesis import synthesize_hunt_results
 from muninn.mimir.api import init_mimir, mimir_router
 from muninn.mimir.relay import MimirRelay
 from muninn.mimir.store import MimirStore
+from muninn.history.credential_api import (
+    NO_STORE, RevealLimiter, authenticate_local, read_passphrase, require_loopback_peer,
+)
+from muninn.history.credential_crypto import VaultIntegrityError
 
 # Configure detailed logging to file with a robust, absolute path
 server_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'muninn_server.log'))
@@ -106,6 +114,14 @@ if TYPE_CHECKING:
     from muninn.history.service import HistoryService
 _SERVER_INSTANCE_LOCK_HANDLE: Optional[portalocker.Lock] = None
 _SERVER_INSTANCE_LOCK_PATH: Optional[Path] = None
+_credential_reveal_limiter = RevealLimiter()
+_credential_agent_search_times: deque[float] = deque()
+_secure_history_fetch_slots = asyncio.Semaphore(1)
+_secure_history_fetch_times: deque[float] = deque()
+_secure_history_page_times: deque[float] = deque()
+_secure_history_analyze_slots = asyncio.Semaphore(1)
+_secure_history_analyze_times: deque[float] = deque()
+_secure_history_job_poll_times: deque[float] = deque()
 
 
 # --- Pydantic Models (API compatibility) ---
@@ -318,6 +334,18 @@ async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Sec
     return credentials
 
 
+async def verify_main_local_token(request: Request):
+    """Private history/credential metadata never accepts the generic API key."""
+    require_loopback_peer(request)
+    expected = os.environ.get("MUNINN_AUTH_TOKEN") or os.environ.get("MUNINN_SERVER_AUTH_TOKEN")
+    if not is_security_enabled() or not expected or len(expected) < 32:
+        raise HTTPException(status_code=404, detail="Unavailable", headers=NO_STORE)
+    supplied = request.headers.get("authorization", "")
+    scheme, _, token = supplied.partition(" ")
+    if scheme.lower() != "bearer" or not verify_main_token(token):
+        raise HTTPException(status_code=401, detail="Authentication required", headers=NO_STORE)
+
+
 def _server_instance_lock_timeout_seconds() -> float:
     raw = os.environ.get("MUNINN_SERVER_INSTANCE_LOCK_TIMEOUT_SEC", "0.25").strip()
     try:
@@ -426,11 +454,13 @@ async def lifespan(app: FastAPI):
         logger.info("Mimir relay initialised (db=%s)", memory._metadata.db_path)
 
         periodic_settings = PeriodicIngestionSettings.from_env()
+        from muninn.history.vault import strict_history_mode
+
         _periodic_ingestion = PeriodicIngestionScheduler(
             memory=memory,
             settings=periodic_settings,
         )
-        if periodic_settings.enabled_on_startup:
+        if periodic_settings.enabled_on_startup and not strict_history_mode():
             started = await _periodic_ingestion.start()
             if started:
                 logger.info(
@@ -442,7 +472,7 @@ async def lifespan(app: FastAPI):
                     "Periodic ingestion requested on startup but scheduler did not start"
                 )
 
-        if config.legacy_discovery.enabled:
+        if config.legacy_discovery.enabled and not strict_history_mode():
             _legacy_discovery = LegacyDiscoveryScheduler(
                 memory=memory,
                 interval_seconds=config.legacy_discovery.interval_hours * 3600.0,
@@ -460,7 +490,14 @@ async def lifespan(app: FastAPI):
 
             _history = HistoryService(memory, Path(config.data_dir) / "history_vault")
             await _history.start()
-            logger.info("History vault enabled (sync every %.0f min)", _history.interval / 60)
+            if strict_history_mode():
+                archive_health = _history.status()["vault"]
+                if archive_health["ready"]:
+                    logger.info("Strict encrypted history archive ready; automatic plaintext import disabled")
+                else:
+                    logger.warning("Strict history enabled but encrypted archive unavailable; history capture is paused")
+            else:
+                logger.warning("Legacy plaintext history vault enabled by explicit opt-in")
 
         yield
     finally:
@@ -553,29 +590,20 @@ def _load_dashboard_html() -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_root():
-    """Serve the browser UI for memory operations."""
+    """Serve the browser UI without disclosing an API bearer to anonymous readers."""
     content = _load_dashboard_html()
-    
-    # Automate Auth Token handling for the local dashboard (v3.18.2)
-    # We inject the current token so the user doesn't have to enter it manually.
-    try:
-        active_token = get_token()
-        no_auth = not is_security_enabled()
-        
-        # Inject active token using robust placeholder
-        content = content.replace("{{MUNINN_TOKEN}}", active_token)
-        
-        # Inject security status for absolute bypass in UI
-        if no_auth:
-            content = content.replace(
-                'let SECURITY_ENABLED = true;',
-                'let SECURITY_ENABLED = false;'
-            )
-            
-    except Exception as e:
-        logger.warning("Failed to inject auth token into dashboard: %s", e)
-        
+    if not is_security_enabled():
+        content = content.replace(
+            'let SECURITY_ENABLED = true;',
+            'let SECURITY_ENABLED = false;'
+        )
     return HTMLResponse(content=content)
+
+
+@app.get("/auth/check", dependencies=[Depends(verify_token)])
+async def dashboard_auth_check():
+    """Check a manually supplied dashboard bearer without returning it."""
+    return {"authenticated": True}
 
 @app.get("/dashboard.css")
 async def dashboard_css():
@@ -595,6 +623,8 @@ async def health_check():
 
     try:
         health = await memory.health()
+        from muninn.history.vault import strict_history_mode
+        health["history_security_mode"] = "strict" if strict_history_mode() else "legacy"
         from muninn.mcp.http import http_transport_status
         from muninn.mcp.sse import sse_transport_status
         health["mcp_transports"] = {
@@ -635,6 +665,8 @@ async def add_memory_endpoint(req: AddMemoryRequest):
 
         if not content.strip():
             raise HTTPException(status_code=400, detail="Content cannot be empty")
+        # Screen before splitting: a value must not become an unlabeled chunk.
+        require_credential_free(content, req.metadata, req.user_id, req.agent_id, req.namespace)
 
         # Determine provenance
         provenance = Provenance.AUTO_EXTRACTED
@@ -692,6 +724,8 @@ async def add_memory_endpoint(req: AddMemoryRequest):
         logger.info("Added memory for user %s", req.user_id)
         return {"success": True, "data": result}
 
+    except CredentialMemoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except HTTPException:
         raise
     except Exception as e:
@@ -1126,9 +1160,17 @@ async def retrieval_feedback_endpoint(req: RetrievalFeedbackRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _require_legacy_file_ingestion() -> None:
+    from muninn.history.vault import strict_history_mode
+
+    if strict_history_mode():
+        raise HTTPException(status_code=409, detail="File ingestion is paused until vault-first projection is ready")
+
+
 @app.post("/ingest", dependencies=[Depends(verify_token)])
 async def ingest_sources_endpoint(req: IngestSourcesRequest):
     """Ingest multiple local sources with fail-open behavior per source/chunk."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1161,6 +1203,7 @@ async def ingest_sources_endpoint(req: IngestSourcesRequest):
 @app.post("/ingest/legacy/discover", dependencies=[Depends(verify_token)])
 async def discover_legacy_sources_endpoint(req: DiscoverLegacySourcesRequest):
     """Discover local legacy assistant/MCP memory artifacts available for import."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1185,6 +1228,7 @@ async def legacy_catalog_endpoint(
     providers: Optional[str] = None,
 ):
     """Retrieve the cached catalog of discovered legacy sources."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1204,6 +1248,7 @@ async def legacy_catalog_endpoint(
 @app.post("/ingest/legacy/import", dependencies=[Depends(verify_token)])
 async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
     """Ingest user-selected legacy assistant/MCP sources with contextual metadata."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1236,6 +1281,7 @@ async def ingest_legacy_sources_endpoint(req: IngestLegacySourcesRequest):
 @app.post("/ingest/legacy/import-all", dependencies=[Depends(verify_token)])
 async def ingest_all_legacy_sources_endpoint():
     """Discover and import ALL legacy sources in one shot."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1303,6 +1349,7 @@ async def ingest_all_legacy_sources_endpoint():
 @app.get("/ingest/legacy/status", dependencies=[Depends(verify_token)])
 async def legacy_discovery_status_endpoint():
     """Get runtime status for the background legacy scan scheduler."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1323,6 +1370,7 @@ async def legacy_discovery_status_endpoint():
 @app.post("/ingest/legacy/run", dependencies=[Depends(verify_token)])
 async def legacy_discovery_run_endpoint():
     """Manually trigger a background legacy discovery scan."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
     if _legacy_discovery is None:
@@ -1335,6 +1383,7 @@ async def legacy_discovery_run_endpoint():
 @app.get("/ingest/periodic/status", dependencies=[Depends(verify_token)])
 async def periodic_ingestion_status_endpoint():
     """Get runtime status for the periodic ingestion scheduler."""
+    _require_legacy_file_ingestion()
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
@@ -1353,6 +1402,7 @@ async def periodic_ingestion_status_endpoint():
 
 @app.post("/ingest/periodic/run", dependencies=[Depends(verify_token)])
 async def periodic_ingestion_run_endpoint():
+    _require_legacy_file_ingestion()
     """Manually trigger one periodic-ingestion cycle."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
@@ -1365,6 +1415,7 @@ async def periodic_ingestion_run_endpoint():
 
 @app.post("/ingest/periodic/start", dependencies=[Depends(verify_token)])
 async def periodic_ingestion_start_endpoint():
+    _require_legacy_file_ingestion()
     """Start periodic ingestion loop without restarting server."""
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory not initialized")
@@ -1431,6 +1482,8 @@ async def update_memory_endpoint(req: UpdateMemoryRequest):
         # Phase 5C.3: Removed global lock
         result = await memory.update(req.memory_id, req.data)
         return {"success": True, "data": result}
+    except CredentialMemoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as e:
         logger.error("Error updating memory: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1477,6 +1530,123 @@ async def import_memories_endpoint(req: ImportMemoriesRequest):
     )}
 
 
+# --- Explicit local credential reveal (separate from memory and MCP) ---------
+
+
+@app.middleware("http")
+async def credential_no_store_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/credentials/"):
+        response.headers.update(NO_STORE)
+    return response
+
+
+def _credential_store_for_api():
+    from muninn.history.credential_store import CredentialStore
+
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Unavailable")
+    root = Path(memory.config.data_dir) / "credential_vault"
+    try:
+        return CredentialStore(root)
+    except Exception:
+        # Do not disclose whether the vault is missing, damaged, or inaccessible.
+        raise HTTPException(status_code=404, detail="Unavailable") from None
+
+
+@app.get("/credentials/triage/status", dependencies=[Depends(verify_main_local_token)])
+async def credential_triage_status_endpoint():
+    """Process/private-progress evidence only. Never construct or unlock a vault."""
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Unavailable", headers=NO_STORE)
+    from muninn.history.triage_status import operational_status
+    runtime = Path(memory.config.data_dir)
+    archive = Path(os.environ.get('MUNINN_HISTORY_ARCHIVE_DIR') or runtime / 'history_secure_archive')
+    data = await asyncio.to_thread(operational_status, runtime,
+        repo=Path(__file__).resolve().parent, interpreter=Path(sys.executable), archive_root=archive)
+    return JSONResponse({'data': data}, headers=NO_STORE)
+
+
+@app.get("/credentials/search")
+async def credential_metadata_search_endpoint(request: Request):
+    authenticate_local(request)
+    query = request.query_params.get("query", "")
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid credential request") from None
+    if not 1 <= len(query) <= 64 or not 1 <= limit <= 100:
+        raise HTTPException(status_code=400, detail="Invalid credential request")
+    store = _credential_store_for_api()
+    try:
+        matches = await asyncio.to_thread(store.search, query, limit=limit)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid credential request") from None
+    return JSONResponse({"data": matches}, headers=NO_STORE)
+
+
+class CredentialAgentSearchRequest(BaseModel):
+    query: str
+    limit: int = 10
+
+
+@app.post("/credentials/agent-search", dependencies=[Depends(verify_main_local_token)])
+async def credential_agent_search_endpoint(req: CredentialAgentSearchRequest):
+    """Opt-in agent search of allowlisted credential metadata; never reveal values."""
+    if os.environ.get("MUNINN_CREDENTIAL_AGENT_SEARCH", "").strip() != "1":
+        raise HTTPException(status_code=404, detail="Unavailable")
+    if not 1 <= len(req.query) <= 64 or not 1 <= req.limit <= 20:
+        raise HTTPException(status_code=400, detail="Invalid credential request")
+    now = time.monotonic()
+    while _credential_agent_search_times and now - _credential_agent_search_times[0] > 60:
+        _credential_agent_search_times.popleft()
+    if len(_credential_agent_search_times) >= 30:
+        raise HTTPException(status_code=429, detail="Credential metadata rate limit reached")
+    _credential_agent_search_times.append(now)
+    try:
+        matches = await asyncio.to_thread(_credential_store_for_api().search, req.query, limit=req.limit)
+        safe = [
+            {**{key: item[key] for key in ("id", "service", "project", "source_hash", "source_hint")},
+             **({"origin": item["origin"], "candidate_status": "needs_review",
+                 "review_status": item["review_status"], "vault_record_type": "ambiguity"}
+                if item.get("vault_record_type") == "ambiguity" else
+                {"origin": item["origin"], "candidate_status": "unverified"}
+                if item.get("origin") in {"project", "transcript"} else {})}
+            for item in matches
+        ]
+    except Exception:
+        raise HTTPException(status_code=404, detail="Unavailable") from None
+    return JSONResponse({"success": True, "data": safe}, headers=NO_STORE)
+
+
+@app.post("/credentials/reveal/{record_id}")
+async def credential_reveal_endpoint(record_id: str, request: Request):
+    principal, peer = authenticate_local(request)
+    passphrase = await read_passphrase(request)
+    store = _credential_store_for_api()
+    key = (principal, peer, str(store.root), record_id)
+    if not _credential_reveal_limiter.begin(key):
+        raise HTTPException(status_code=429, detail="Credential reveal temporarily limited")
+    task = asyncio.create_task(asyncio.to_thread(store.reveal, record_id, passphrase=passphrase))
+
+    def _release_reveal_slot(done: asyncio.Task) -> None:
+        try:
+            done.result()
+        except BaseException:
+            _credential_reveal_limiter.finish(key, success=False)
+        else:
+            _credential_reveal_limiter.finish(key, success=True)
+
+    task.add_done_callback(_release_reveal_slot)
+    try:
+        # A disconnected client does not cancel the worker or leak its slot:
+        # the done callback releases it only after the KDF/reveal actually ends.
+        value = await asyncio.shield(task)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Credential unavailable") from None
+    return JSONResponse({"value": value}, headers=NO_STORE)
+
+
 # --- Local AI conversation history ------------------------------------------
 
 class HistoryImportRequest(BaseModel):
@@ -1491,6 +1661,14 @@ def _require_history():
     if _history is None:
         raise HTTPException(status_code=409, detail="History vault is disabled (MUNINN_HISTORY_VAULT=0)")
     return _history
+
+
+def _require_legacy_history():
+    from muninn.history.vault import strict_history_mode
+
+    if strict_history_mode():
+        raise HTTPException(status_code=409, detail="Legacy history endpoints are disabled in strict history mode")
+    return _require_history()
 
 
 def _parse_since(value: Optional[str]) -> Optional[float]:
@@ -1510,16 +1688,499 @@ async def history_status_endpoint():
     return {"success": True, "data": _require_history().status()}
 
 
+@app.get("/history/secure/catalog", dependencies=[Depends(verify_token)])
+async def secure_history_catalog_endpoint(provider: Optional[str] = None, offset: int = 0, limit: int = 100):
+    """Search only allowlisted encrypted-archive metadata; never return transcript text or paths."""
+    try:
+        data = _require_history().secure_catalog(provider=provider, offset=offset, limit=limit)
+    except VaultIntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Encrypted history catalog unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail="Encrypted history catalog unavailable") from exc
+    return {"success": True, "data": data}
+
+
+class SecureHistorySearchRequest(BaseModel):
+    query: str
+    limit: int = 20
+
+
+class SecureHistoryFetchRequest(BaseModel):
+    capability: str
+    max_chars: int = 3000
+
+
+class SecureProjectionStartRequest(BaseModel):
+    capability: str
+
+
+class SecureProjectionPageRequest(BaseModel):
+    cursor: str
+
+
+class SecureHistoryAnalyzeRequest(BaseModel):
+    capability: str
+    allow_remote: bool = False
+    prefer_remote: bool = False
+
+
+class CitedMemoryRequest(BaseModel):
+    memory_ref: str
+    max_chars: int = 3000
+
+
+class CitedMemoryReviewQueueRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    limit: int = Field(default=20, strict=True, ge=1, le=20)
+    cursor: Optional[str] = Field(default=None, strict=True, max_length=2048)
+
+
+_cited_memory_read_times: deque = deque()
+
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+
+
+@app.exception_handler(RequestValidationError)
+async def _private_cited_validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path == "/history/secure/remote-policy/accounting/run":
+        return JSONResponse({"detail": "Invalid run interval"}, status_code=422, headers=NO_STORE)
+    if request.url.path.startswith("/history/secure/memories/"):
+        # Pydantic's normal error includes the submitted input, which might
+        # itself contain a credential. Do not echo private request fields.
+        return JSONResponse({"detail": "Invalid cited memory request"}, status_code=422, headers=NO_STORE)
+    return await request_validation_exception_handler(request, exc)
+
+
+async def _cited_memory_read(operation):
+    """Share one bounded CPU reader with transcript fetches; never infer."""
+    now = time.monotonic()
+    while _cited_memory_read_times and now - _cited_memory_read_times[0] > 60:
+        _cited_memory_read_times.popleft()
+    if len(_cited_memory_read_times) >= 60:
+        raise HTTPException(status_code=429, detail="Cited memory read limit reached", headers=NO_STORE)
+    try:
+        await asyncio.wait_for(_secure_history_fetch_slots.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=429, detail="Private source reader busy", headers=NO_STORE) from None
+    # Admission check must be repeated after the await: another reader may
+    # have consumed the last allowance while this request waited for its slot.
+    now = time.monotonic()
+    while _cited_memory_read_times and now - _cited_memory_read_times[0] > 60:
+        _cited_memory_read_times.popleft()
+    if len(_cited_memory_read_times) >= 60:
+        _secure_history_fetch_slots.release()
+        raise HTTPException(status_code=429, detail="Cited memory read limit reached", headers=NO_STORE)
+    _cited_memory_read_times.append(now)
+    # A disconnected client must not release the slot while its thread still
+    # reads. Completion owns release, including error/cancellation paths.
+    work = asyncio.create_task(asyncio.to_thread(operation))
+    work.add_done_callback(lambda future: (_secure_history_fetch_slots.release(),
+                                          future.exception() if not future.cancelled() else None))
+    try:
+        data = await asyncio.shield(work)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cited memory request", headers=NO_STORE) from None
+    except (RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Cited memory unavailable", headers=NO_STORE) from None
+    if data is None:
+        raise HTTPException(status_code=404, detail="Cited memory unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+
+
+@app.post("/history/secure/memories/search", dependencies=[Depends(verify_main_local_token)])
+async def search_cited_memories_endpoint(req: SecureHistorySearchRequest):
+    return await _cited_memory_read(lambda: _require_history().search_cited_memories(req.query, limit=req.limit))
+
+
+@app.post("/history/secure/memories/get", dependencies=[Depends(verify_main_local_token)])
+async def get_cited_memory_endpoint(req: CitedMemoryRequest):
+    return await _cited_memory_read(lambda: _require_history().get_cited_memory(req.memory_ref))
+
+
+@app.post("/history/secure/memories/review-queue", dependencies=[Depends(verify_main_local_token)])
+async def cited_memory_review_queue_endpoint(req: CitedMemoryReviewQueueRequest):
+    return await _cited_memory_read(lambda: _require_history().list_cited_memory_reviews(
+        limit=req.limit, cursor=req.cursor))
+
+
+@app.post("/history/secure/memories/source", dependencies=[Depends(verify_main_local_token)])
+async def get_cited_memory_source_endpoint(req: CitedMemoryRequest):
+    return await _cited_memory_read(lambda: _require_history().get_cited_memory_source(req.memory_ref, max_chars=req.max_chars))
+
+
+@app.post("/history/secure/search", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_search_endpoint(req: SecureHistorySearchRequest):
+    """Local encrypted-index lookup; return metadata and expiring fetch capability."""
+    try:
+        data = await asyncio.to_thread(_require_history().secure_search, req.query, limit=req.limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (VaultIntegrityError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail="Encrypted history search unavailable") from exc
+    return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+
+
+@app.post("/history/secure/search/jobs", dependencies=[Depends(verify_main_local_token)])
+async def queue_secure_history_search_endpoint(req: SecureHistorySearchRequest):
+    """Acknowledge only after the sealed search intent is durably committed."""
+    from muninn.history.capture_journal import SearchJobError
+
+    try:
+        job_id = _require_history().queue_secure_search(req.query, limit=req.limit)
+    except SearchJobError as exc:
+        full = str(exc) == "Search queue is full"
+        raise HTTPException(status_code=429 if full else 400,
+                            detail="Search queue is full" if full else "Invalid search request",
+                            headers=NO_STORE) from None
+    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": {"job_id": job_id, "state": "pending"}},
+                        status_code=202, headers=NO_STORE)
+
+
+def _check_search_job_poll(job_id: str) -> None:
+    if len(job_id) != 32 or any(char not in "0123456789abcdef" for char in job_id):
+        raise HTTPException(status_code=404, detail="Search job unavailable", headers=NO_STORE)
+    now = time.monotonic()
+    while _secure_history_job_poll_times and now - _secure_history_job_poll_times[0] > 60:
+        _secure_history_job_poll_times.popleft()
+    if len(_secure_history_job_poll_times) >= 120:
+        raise HTTPException(status_code=429, detail="Search job poll limit reached", headers=NO_STORE)
+    _secure_history_job_poll_times.append(now)
+
+
+@app.get("/history/secure/search/jobs/{job_id}", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_search_job_endpoint(job_id: str):
+    _check_search_job_poll(job_id)
+    try:
+        status = _require_history().secure_search_job_status(job_id)
+    except sqlite3.OperationalError as exc:
+        code = getattr(exc, "sqlite_errorcode", None)
+        if code is not None and code & 0xff == sqlite3.SQLITE_BUSY:
+            raise HTTPException(status_code=503, detail="Encrypted history search busy; retry polling",
+                                headers={**NO_STORE, "Retry-After": "1"}) from None
+        raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
+                            headers=NO_STORE) from None
+    except (VaultIntegrityError, RuntimeError, OSError):
+        raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
+                            headers=NO_STORE) from None
+    if status is None:
+        raise HTTPException(status_code=404, detail="Search job unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
+
+
+@app.delete("/history/secure/search/jobs/{job_id}", dependencies=[Depends(verify_main_local_token)])
+async def cancel_secure_history_search_job_endpoint(job_id: str):
+    _check_search_job_poll(job_id)
+    try:
+        cancelled = _require_history().cancel_secure_search_job(job_id)
+    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Encrypted history search unavailable",
+                            headers=NO_STORE) from None
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Search job unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": {"job_id": job_id, "state": "cancelled"}},
+                        headers=NO_STORE)
+
+
+@app.get("/history/secure/analysis/jobs/{job_id}", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_analysis_job_endpoint(job_id: str):
+    _check_search_job_poll(job_id)
+    try:
+        status = _require_history().secure_analysis_job_status(job_id)
+    except sqlite3.OperationalError as exc:
+        code = getattr(exc, "sqlite_errorcode", None)
+        if code is not None and code & 0xff == sqlite3.SQLITE_BUSY:
+            raise HTTPException(status_code=503, detail="Encrypted history analysis busy; retry polling",
+                                headers={**NO_STORE, "Retry-After": "1"}) from None
+        raise HTTPException(status_code=503, detail="Encrypted history analysis unavailable",
+                            headers=NO_STORE) from None
+    except (VaultIntegrityError, RuntimeError, OSError):
+        raise HTTPException(status_code=503, detail="Encrypted history analysis unavailable",
+                            headers=NO_STORE) from None
+    if status is None:
+        raise HTTPException(status_code=404, detail="Analysis job unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
+
+
+@app.delete("/history/secure/analysis/jobs/{job_id}", dependencies=[Depends(verify_main_local_token)])
+async def cancel_secure_history_analysis_job_endpoint(job_id: str):
+    _check_search_job_poll(job_id)
+    try:
+        cancelled = _require_history().cancel_secure_analysis_job(job_id)
+    except (VaultIntegrityError, RuntimeError, OSError, sqlite3.OperationalError):
+        raise HTTPException(status_code=503, detail="Encrypted history analysis unavailable",
+                            headers=NO_STORE) from None
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Analysis job unavailable", headers=NO_STORE)
+    return JSONResponse({"success": True, "data": {"job_id": job_id, "state": "cancelled"}},
+                        headers=NO_STORE)
+
+
+@app.post("/history/secure/fetch", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_fetch_endpoint(req: SecureHistoryFetchRequest):
+    """Authenticate a selected snapshot and release only a bounded redacted span."""
+    now = time.monotonic()
+    while _secure_history_fetch_times and now - _secure_history_fetch_times[0] > 60:
+        _secure_history_fetch_times.popleft()
+    if len(_secure_history_fetch_times) >= 10:
+        raise HTTPException(status_code=429, detail="History fetch rate limit reached")
+    try:
+        await asyncio.wait_for(_secure_history_fetch_slots.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=429, detail="History fetch already running") from None
+    _secure_history_fetch_times.append(now)
+    try:
+        try:
+            data = await asyncio.to_thread(
+                _require_history().secure_fetch_span, req.capability, max_chars=req.max_chars,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (VaultIntegrityError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail="Encrypted history fetch unavailable") from exc
+        return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+    finally:
+        _secure_history_fetch_slots.release()
+
+
+def _check_secure_page_rate() -> None:
+    now = time.monotonic()
+    while _secure_history_page_times and now - _secure_history_page_times[0] > 60:
+        _secure_history_page_times.popleft()
+    if len(_secure_history_page_times) >= 120:
+        raise HTTPException(status_code=429, detail="Transcript page rate limit reached", headers=NO_STORE)
+    _secure_history_page_times.append(now)
+
+
+@app.post("/history/secure/transcript/start", dependencies=[Depends(verify_main_local_token)])
+async def secure_transcript_start_endpoint(req: SecureProjectionStartRequest):
+    """Queue CPU-only, encrypted transcript projection without blocking on its size."""
+    _check_secure_page_rate()
+    try:
+        data = await asyncio.to_thread(_require_history().secure_projection_start, req.capability)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid transcript capability", headers=NO_STORE) from exc
+    except (VaultIntegrityError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Transcript projection unavailable", headers=NO_STORE) from exc
+    return JSONResponse({"success": True, "data": data},
+                        status_code=202 if data.get("state") == "pending" else 200, headers=NO_STORE)
+
+
+@app.post("/history/secure/transcript/poll", dependencies=[Depends(verify_main_local_token)])
+async def secure_transcript_poll_endpoint(req: SecureProjectionStartRequest):
+    _check_secure_page_rate()
+    try:
+        data = await asyncio.to_thread(_require_history().secure_projection_poll, req.capability)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid transcript capability", headers=NO_STORE) from exc
+    except (VaultIntegrityError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Transcript projection unavailable", headers=NO_STORE) from exc
+    return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+
+
+@app.post("/history/secure/transcript/page", dependencies=[Depends(verify_main_local_token)])
+async def secure_transcript_page_endpoint(req: SecureProjectionPageRequest):
+    _check_secure_page_rate()
+    try:
+        data = await asyncio.to_thread(_require_history().secure_projection_page, req.cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid transcript cursor", headers=NO_STORE) from exc
+    except (VaultIntegrityError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Transcript page unavailable", headers=NO_STORE) from exc
+    return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+
+
+@app.post("/history/secure/analyze", dependencies=[Depends(verify_main_local_token)])
+async def secure_history_analyze_endpoint(req: SecureHistoryAnalyzeRequest):
+    """Interpret one authenticated history hit without storing its text or answer."""
+    from muninn.history.secure_analysis import analyze_secure_hit
+
+    now = time.monotonic()
+    while _secure_history_analyze_times and now - _secure_history_analyze_times[0] > 60:
+        _secure_history_analyze_times.popleft()
+    if len(_secure_history_analyze_times) >= 3:
+        raise HTTPException(status_code=429, detail="History analysis rate limit reached")
+    try:
+        await asyncio.wait_for(_secure_history_analyze_slots.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=429, detail="History analysis already running") from None
+    _secure_history_analyze_times.append(now)
+    try:
+        try:
+            data = await analyze_secure_hit(_require_history(), req.capability,
+                                            allow_remote=req.allow_remote,
+                                            prefer_remote=req.prefer_remote)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid secure history analysis") from exc
+        except (VaultIntegrityError, RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=409, detail="Secure history analysis unavailable") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Secure history model unavailable") from exc
+        return JSONResponse({"success": True, "data": data}, headers=NO_STORE)
+    finally:
+        _secure_history_analyze_slots.release()
+
+
+class RemotePolicyUpdateRequest(BaseModel):
+    enabled: bool
+    daily_usd: float
+    monthly_usd: float
+    override_ceiling: bool = False
+
+
+class BatchPolicyUpdateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    enabled: bool = Field(strict=True)
+    max_batches: int = Field(strict=True, ge=1, le=10000)
+    expected_generation: int = Field(strict=True, ge=0, lt=2**63)
+
+
+def _remote_policy_root() -> Path:
+    return _require_history().data_dir
+
+
+def _remote_policy_data(policy) -> dict:
+    return {
+        "enabled": policy.enabled,
+        "daily_usd": policy.daily_usd,
+        "monthly_usd": policy.monthly_usd,
+        "override_ceiling": policy.override_ceiling,
+        "generation": policy.generation,
+        "source": policy.source,
+        "budget_kind": "admission_threshold_not_hard_cap",
+    }
+
+
+@app.get("/history/secure/batch-policy", dependencies=[Depends(verify_main_local_token)])
+async def secure_batch_policy_endpoint():
+    from muninn.history.batch_activation import read_batch_policy
+    try:
+        result = await asyncio.to_thread(read_batch_policy, _remote_policy_root())
+    except Exception:
+        raise HTTPException(status_code=503, detail="Batch policy unavailable", headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
+
+
+@app.post("/history/secure/batch-policy", dependencies=[Depends(verify_main_local_token)])
+async def update_secure_batch_policy_endpoint(req: BatchPolicyUpdateRequest, request: Request):
+    from muninn.history.batch_activation import BatchPolicyConflict, configure_batch
+    origin = request.headers.get("origin")
+    own_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if origin is not None and (origin != own_origin or request.url.hostname not in
+                               {"localhost", "127.0.0.1", "::1"}):
+        raise HTTPException(status_code=403, detail="Same-origin dashboard required", headers=NO_STORE)
+    try:
+        result = await asyncio.to_thread(configure_batch, _remote_policy_root(), enabled=req.enabled,
+            max_batches=req.max_batches, expected_generation=req.expected_generation, backup_before=True)
+    except BatchPolicyConflict:
+        raise HTTPException(status_code=409, detail="Batch policy changed; refresh before saving", headers=NO_STORE) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="Batch policy save unconfirmed; refresh current state",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
+
+
+@app.get("/history/secure/remote-policy", dependencies=[Depends(verify_main_local_token)])
+async def secure_remote_policy_endpoint():
+    from muninn.history.auto_routing import _legacy_remote_policy
+    from muninn.history.remote_policy import PolicyError, read_policy
+
+    try:
+        policy = await asyncio.to_thread(read_policy, _remote_policy_root(), _legacy_remote_policy)
+    except PolicyError:
+        raise HTTPException(status_code=503, detail="Managed remote policy unavailable",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": _remote_policy_data(policy)}, headers=NO_STORE)
+
+
+@app.get("/history/secure/remote-policy/key-status", dependencies=[Depends(verify_main_local_token)])
+async def secure_remote_key_status_endpoint():
+    """Show provider-enforced spending state without returning key material."""
+    from muninn.history.auto_routing import openrouter_key_status
+
+    sample_started_at = time.time()
+    status = await asyncio.to_thread(openrouter_key_status, policy_root=_remote_policy_root())
+    return JSONResponse({"success": True, "data": status, "sample_started_at": sample_started_at,
+                         "sample_finished_at": time.time()}, headers=NO_STORE)
+
+
+@app.get("/history/secure/resources", dependencies=[Depends(verify_main_local_token)])
+async def secure_local_resource_status_endpoint():
+    """Sample local GPU and Ollama residency only when explicitly requested."""
+    from muninn.history.auto_routing import local_resource_status
+
+    status = await asyncio.to_thread(local_resource_status)
+    return JSONResponse({"success": True, "data": status}, headers=NO_STORE)
+
+
+@app.get("/history/secure/remote-policy/accounting", dependencies=[Depends(verify_main_local_token)])
+async def secure_remote_accounting_endpoint():
+    """Local authenticated cost floors/counts; never credential or request values."""
+    from muninn.history.remote_accounting import AdmissionError, status
+    try:
+        result = await asyncio.to_thread(status, _remote_policy_root())
+    except AdmissionError:
+        raise HTTPException(status_code=503, detail="Remote accounting unavailable",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
+
+
+@app.get("/history/secure/remote-policy/accounting/run", dependencies=[Depends(verify_main_local_token)])
+async def secure_run_accounting_endpoint(since: float):
+    from muninn.history.remote_accounting import AdmissionError
+    from muninn.history.run_accounting import run_status
+    try:
+        result = await asyncio.to_thread(run_status, _remote_policy_root(), since=since)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid run interval", headers=NO_STORE) from None
+    except AdmissionError:
+        raise HTTPException(status_code=503, detail="Run accounting unavailable", headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": result}, headers=NO_STORE)
+
+
+@app.post("/history/secure/remote-policy", dependencies=[Depends(verify_main_local_token)])
+async def update_secure_remote_policy_endpoint(req: RemotePolicyUpdateRequest, request: Request):
+    from muninn.history.auto_routing import _legacy_remote_policy
+    from muninn.history.remote_policy import PolicyError, write_policy
+
+    # The global CORS middleware may be configured with extra origins or '*'.
+    # A browser must still originate from this exact loopback dashboard origin.
+    origin = request.headers.get("origin")
+    own_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if origin is not None and (origin != own_origin or request.url.hostname not in
+                               {"localhost", "127.0.0.1", "::1"}):
+        raise HTTPException(status_code=403, detail="Same-origin dashboard required",
+                            headers=NO_STORE)
+    try:
+        policy = await asyncio.to_thread(
+            write_policy, _remote_policy_root(), enabled=req.enabled,
+            daily_usd=req.daily_usd, monthly_usd=req.monthly_usd,
+            override_ceiling=req.override_ceiling, fallback=_legacy_remote_policy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc), headers=NO_STORE) from None
+    except PolicyError:
+        raise HTTPException(status_code=503, detail="Managed remote policy unavailable",
+                            headers=NO_STORE) from None
+    return JSONResponse({"success": True, "data": _remote_policy_data(policy)}, headers=NO_STORE)
+
+
 @app.post("/history/sync", dependencies=[Depends(verify_token)])
 async def history_sync_endpoint(paths: Optional[List[str]] = None):
     """Copy new and changed conversation files into the vault now."""
-    return {"success": True, "data": await _require_history().sync(paths)}
+    return {"success": True, "data": await _require_legacy_history().sync(paths)}
 
 
 @app.post("/history/import", dependencies=[Depends(verify_token)])
 async def history_import_endpoint(req: HistoryImportRequest):
     """Dry run (default) reports what would become memories; apply imports in the background."""
-    service = _require_history()
+    service = _require_legacy_history()
     since = _parse_since(req.since)
     if req.paths:
         await service.sync(req.paths)
@@ -1545,7 +2206,7 @@ class HistoryAnalyzeRequest(BaseModel):
 @app.post("/history/analyze", dependencies=[Depends(verify_token)])
 async def history_analyze_endpoint(req: HistoryAnalyzeRequest):
     """Extract decisions, preferences, conventions, fixes and open items from imported threads (opt-in LLM)."""
-    service = _require_history()
+    service = _require_legacy_history()
     options = {"provider": req.provider, "model": req.model, "project": req.project,
                "limit": max(1, min(req.limit, 1000)), "create_handoffs": req.create_handoffs,
                "retry_refused": req.retry_refused}
@@ -1568,6 +2229,7 @@ async def history_threads_endpoint(
     topic: Optional[str] = None, q: Optional[str] = None, since: Optional[str] = None, limit: int = 20,
 ):
     """The catalog of imported conversation threads, most recent first."""
+    _require_legacy_history()
     _require_memory()
     data = await asyncio.to_thread(
         lambda: memory._metadata.list_history_threads(
@@ -1581,6 +2243,7 @@ async def history_timeline_endpoint(
     project: str, since: Optional[str] = None, until: Optional[str] = None, offset: int = 0, limit: int = 100,
 ):
     """A project's conversations from every app in one time-ordered stream, with handoffs and agent switches."""
+    _require_legacy_history()
     _require_memory()
     from muninn.history.importer import read_project_timeline
 
@@ -1592,6 +2255,7 @@ async def history_timeline_endpoint(
 @app.get("/history/threads/{thread_key:path}", dependencies=[Depends(verify_token)])
 async def history_thread_endpoint(thread_key: str, offset: int = 0, limit: int = 50):
     """Re-read one conversation thread in order, including turns compaction removed."""
+    _require_legacy_history()
     _require_memory()
     from muninn.history.importer import read_thread
 
@@ -1611,7 +2275,13 @@ async def agent_hook_endpoint(agent: str, request: Request):
         payload = {}
     from muninn.history.hooks import handle_hook
 
-    return await handle_hook(agent, payload if isinstance(payload, dict) else {}, memory, _history)
+    try:
+        return await handle_hook(agent, payload if isinstance(payload, dict) else {}, memory, _history)
+    except Exception as exc:
+        # Hook failures must not include a private source path or exception
+        # message in the HTTP response or routine server logs.
+        logger.error("Agent hook was not durably accepted (%s)", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Muninn hook was not durably accepted") from None
 
 
 # --- Agent handoffs and session briefing ------------------------------------
@@ -1778,17 +2448,17 @@ async def get_graph_endpoint(user_id: Optional[str] = "global_user"):
         raise HTTPException(status_code=503, detail="Memory not initialized")
 
     try:
-        entities = memory._graph.get_all_entities()
-        return {
+        entities = project_credentials(memory._graph.get_all_entities(user_id=user_id))
+        return JSONResponse({
             "success": True,
             "data": {
                 "entities": entities,
                 "entity_count": len(entities),
             },
-        }
+        }, headers=NO_STORE)
     except Exception as e:
-        logger.error("Error getting graph: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error getting graph (%s)", type(e).__name__)
+        raise HTTPException(status_code=500, detail="Graph unavailable", headers=NO_STORE)
 
 
 @app.post("/handover", dependencies=[Depends(verify_token)])
@@ -2091,6 +2761,21 @@ def _existing_server_healthy(host: str, port: int) -> bool:
         return False
 
 
+def _assert_startup_auth(host: str, allow_no_auth: bool = False) -> None:
+    """Refuse an accidental unauthenticated service startup."""
+    if is_security_enabled():
+        return
+    try:
+        loopback = host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    if not allow_no_auth or not loopback:
+        raise RuntimeError(
+            "Authentication is disabled by MUNINN_NO_AUTH or MUNINN_DEV_MODE. "
+            "Unset that setting, or explicitly use --allow-no-auth on a loopback host for development."
+        )
+
+
 def main():
     config = MuninnConfig.from_env()
 
@@ -2098,7 +2783,10 @@ def main():
     parser.add_argument("--host", default=config.server.host, help="Host to bind to")
     parser.add_argument("--port", type=int, default=config.server.port, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable hot reload")
+    parser.add_argument("--allow-no-auth", action="store_true", help="Allow unauthenticated loopback development only")
     args = parser.parse_args()
+
+    _assert_startup_auth(args.host, args.allow_no_auth)
 
     logger.info("Starting Muninn Memory Server on %s:%d", args.host, args.port)
 

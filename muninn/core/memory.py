@@ -29,6 +29,7 @@ import inspect
 from collections import OrderedDict
 from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
+from muninn.core.credential_boundary import CredentialMemoryError, require_credential_free
 
 from muninn.core.types import (
     MemoryRecord, MemoryType, Provenance, SearchResult,
@@ -123,6 +124,9 @@ class MuninnMemory:
 
         # Locking
         self._write_lock = asyncio.Lock()
+        # Embedded Qdrant collection reads during ingestion cannot overlap
+        # another add's upsert, even though persistence already has a lock.
+        self._add_lock = asyncio.Lock()
 
         # Embedding
         self._embed_model = None
@@ -169,6 +173,8 @@ class MuninnMemory:
             ollama_model=self.config.extraction.ollama_model,
             ollama_balanced_model=self.config.extraction.ollama_balanced_model,
             ollama_high_reasoning_model=self.config.extraction.ollama_high_reasoning_model,
+            ollama_keep_alive=self.config.extraction.ollama_keep_alive,
+            ollama_timeout_seconds=self.config.extraction.ollama_timeout_seconds,
             model_profile=self.config.extraction.model_profile,
             instructor_base_url=(
                 self.config.extraction.instructor_base_url
@@ -177,6 +183,7 @@ class MuninnMemory:
             ),
             instructor_model=self.config.extraction.instructor_model,
             instructor_api_key=self.config.extraction.instructor_api_key,
+            instructor_provider=self.config.extraction.instructor_provider,
         )
 
         # Read feature flags once; used for all gated subsystem initialization below.
@@ -487,7 +494,39 @@ class MuninnMemory:
             logger.warning("Memory-chain linking failed (non-fatal): %s", e)
             return 0
 
+    @staticmethod
+    def _raw_history_without_graph(record: MemoryRecord) -> bool:
+        """Raw transcript records use searchable stores, not the live entity graph."""
+        meta = record.metadata or {}
+        return (
+            record.provenance == Provenance.INGESTED
+            and meta.get("import_source") == "agent_history"
+            and meta.get("kind") in {
+                "conversation_turn", "compaction_summary", "thread_summary", "recovered_prompt",
+            }
+        )
+
     async def add(
+        self,
+        content: str,
+        user_id: str = "global_user",
+        agent_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        namespace: str = "global",
+        memory_type: MemoryType = MemoryType.EPISODIC,
+        provenance: Provenance = Provenance.AUTO_EXTRACTED,
+        scope: str = "project",
+        media_type: str = "text",
+    ) -> Dict[str, Any]:
+        """Serialize a complete add, including pre-persistence vector reads."""
+        async with self._add_lock:
+            return await self._add_unlocked(
+                content=content, user_id=user_id, agent_id=agent_id,
+                metadata=metadata, namespace=namespace, memory_type=memory_type,
+                provenance=provenance, scope=scope, media_type=media_type,
+            )
+
+    async def _add_unlocked(
         self,
         content: str,
         user_id: str = "global_user",
@@ -508,6 +547,7 @@ class MuninnMemory:
                    projects (e.g. user preferences, universal rules).
         """
         self._check_initialized()
+        require_credential_free(content, metadata, user_id, agent_id, namespace)
         with self._otel.span(
             "muninn.memory.add",
             {
@@ -551,7 +591,8 @@ class MuninnMemory:
                 merged_successfully = False
                 async with self._write_lock:
                     existing = await asyncio.to_thread(self._metadata.get, dedup_result.existing_memory_id)
-                    if existing and self._record_matches_scope(existing, namespace, user_id):
+                    if (existing and not existing._credential_projection
+                            and self._record_matches_scope(existing, namespace, user_id)):
                         merged_content = self._dedup.merge_content(content, existing.content)
                         await asyncio.gather(
                             asyncio.to_thread(self._metadata.update, dedup_result.existing_memory_id, content=merged_content),
@@ -590,6 +631,7 @@ class MuninnMemory:
             embedding = processed["embedding"]
             entity_names = processed["entity_names"]
             conflict_info = processed["conflict_info"]
+            raw_history_without_graph = self._raw_history_without_graph(record)
 
             # Acquire write lock only for the persistence phase
             async with self._write_lock:
@@ -602,6 +644,7 @@ class MuninnMemory:
                         embedding=embedding,
                         metadata={
                             "content": content[:500],
+                            "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                             "memory_type": memory_type.value,
                             "namespace": namespace,
                             "importance": record.importance,
@@ -614,6 +657,8 @@ class MuninnMemory:
                     )
 
                 def _write_graph():
+                    if raw_history_without_graph:
+                        return
                     uid = record.metadata.get("user_id", "global")
                     ns = record.namespace
                     self._graph.add_memory_node(
@@ -652,7 +697,7 @@ class MuninnMemory:
                     asyncio.to_thread(_write_colbert),
                 )
 
-                chain_links_created = await asyncio.to_thread(
+                chain_links_created = 0 if raw_history_without_graph else await asyncio.to_thread(
                     self._upsert_memory_chain_links,
                     successor_record=record,
                     successor_content=content,
@@ -727,6 +772,7 @@ class MuninnMemory:
             List of memory dicts with scores.
         """
         self._check_initialized()
+        require_credential_free(query, filters, user_id, agent_id, namespaces)
 
         with self._otel.span(
             "muninn.memory.search",
@@ -1049,6 +1095,7 @@ class MuninnMemory:
     ) -> Dict[str, Any]:
         """Set/update editable user profile and global context data."""
         self._check_initialized()
+        require_credential_free(profile, user_id, source)
         if not isinstance(profile, dict):
             raise ValueError("profile must be a JSON object")
 
@@ -1115,6 +1162,7 @@ class MuninnMemory:
     ) -> Dict[str, Any]:
         """Set/update a scoped project goal and cache its embedding."""
         self._check_initialized()
+        require_credential_free(goal_statement, constraints, user_id, namespace, project)
         if self._goal_compass is None:
             raise RuntimeError("Goal compass is disabled by feature flag")
         if not goal_statement.strip():
@@ -1472,6 +1520,9 @@ class MuninnMemory:
         Each source is parsed independently. Parser/source failures are recorded
         and ingestion continues for remaining sources.
         """
+        from muninn.history.vault import require_legacy_history_disabled
+
+        require_legacy_history_disabled()
         self._check_initialized()
         if not sources:
             raise ValueError("sources must be a non-empty list")
@@ -1514,6 +1565,9 @@ class MuninnMemory:
         max_results_per_provider: int = 100,
         use_cache: bool = True,
     ) -> Dict[str, Any]:
+        from muninn.history.vault import require_legacy_history_disabled
+
+        require_legacy_history_disabled()
         self._check_initialized()
 
         # v3.25.0: Cache-first discovery for performance and reliability.
@@ -1593,6 +1647,9 @@ class MuninnMemory:
         chunk_overlap_chars: Optional[int] = None,
         min_chunk_chars: Optional[int] = None,
     ) -> Dict[str, Any]:
+        from muninn.history.vault import require_legacy_history_disabled
+
+        require_legacy_history_disabled()
         self._check_initialized()
         ingestion = self._require_ingestion_pipeline()
         normalized_roots = self._normalize_discovery_roots(
@@ -1798,10 +1855,13 @@ class MuninnMemory:
             Updated memory dict.
         """
         self._check_initialized()
+        require_credential_free(data, kwargs)
 
         record = await asyncio.to_thread(self._metadata.get, memory_id)
         if not record:
             return {"error": f"Memory {memory_id} not found"}
+        if record._credential_projection:
+            raise CredentialMemoryError()
 
         old_content = record.content
         entity_names = list((record.metadata or {}).get("entity_names", []))
@@ -1819,12 +1879,21 @@ class MuninnMemory:
                 new_meta.update(value)
                 record.metadata = new_meta
 
+        require_credential_free(record.model_dump())
+
         # If content changed, re-extract and re-embed
         if data is not None:
-            extraction = await self._extract_with_profile(
-                data,
-                model_profile=self.config.extraction.runtime_model_profile,
-            )
+            if self.config.extraction.defer_llm_on_add and not record.metadata.get(
+                "muninn_force_llm_extraction", False
+            ):
+                from muninn.extraction.rules import rule_based_extract
+                extraction = rule_based_extract(data)
+            else:
+                extraction = await self._extract_with_profile(
+                    data,
+                    model_profile=self.config.extraction.runtime_model_profile,
+                )
+            require_credential_free(extraction.model_dump())
             entity_names = self._extract_entity_names(extraction)
             updated_metadata = dict(record.metadata or {})
             if entity_names:
@@ -1854,6 +1923,7 @@ class MuninnMemory:
                         embedding=embedding,
                         metadata={
                             "content": record.content[:500],
+                            "content_sha256": hashlib.sha256(record.content.encode("utf-8")).hexdigest(),
                             "memory_type": record.memory_type.value,
                             "namespace": record.namespace,
                             "importance": record.importance,
@@ -1872,7 +1942,7 @@ class MuninnMemory:
                     })
 
             def _update_graph():
-                if data is not None:
+                if data is not None and not self._raw_history_without_graph(record):
                     uid = record.metadata.get("user_id", "global")
                     ns = record.namespace
                     self._graph.delete_memory_references(record.id)
@@ -1915,7 +1985,7 @@ class MuninnMemory:
                 asyncio.to_thread(_update_colbert),
             )
 
-            if data is not None:
+            if data is not None and not self._raw_history_without_graph(record):
                 chain_links_created = await asyncio.to_thread(
                     self._upsert_memory_chain_links,
                     successor_record=record,
@@ -2414,6 +2484,7 @@ class MuninnMemory:
 
     async def _embed(self, text: str) -> List[float]:
         """Generate embedding for text."""
+        require_credential_free(text)
         if self._embed_model is not None:
             # fastembed is CPU-bound, run in thread
             def _run_fastembed():
@@ -2421,31 +2492,38 @@ class MuninnMemory:
                 return embeddings[0].tolist()
             return await asyncio.to_thread(_run_fastembed)
         else:
-            # Ollama fallback (already using httpx but wrapped in sync func, let's offload it or make it async if possible)
-            # _ollama_embed uses httpx.post synchronously.
+            # Keep the emergency fallback CPU-only; chat capture must never
+            # acquire VRAM merely because FastEmbed is unavailable.
             return await asyncio.to_thread(self._ollama_embed, text)
 
     def _ollama_embed(self, text: str) -> List[float]:
         """Generate embedding via Ollama API."""
         import httpx
+        from muninn.extraction.ollama_slot import ollama_slot
         try:
-            response = httpx.post(
-                f"{self.config.embedding.ollama_url}/api/embeddings",
-                json={
-                    "model": self.config.embedding.model,
-                    "prompt": text,
-                },
-                timeout=30.0,
-            )
+            with ollama_slot():
+                response = httpx.post(
+                    f"{self.config.embedding.ollama_url}/api/embeddings",
+                    json={
+                        "model": self.config.embedding.model,
+                        "prompt": text,
+                        "keep_alive": "0",
+                        "options": {"num_gpu": 0},
+                    },
+                    timeout=30.0,
+                )
             response.raise_for_status()
-            return response.json()["embedding"]
+            embedding = response.json()["embedding"]
+            if not embedding or not any(embedding):
+                raise ValueError("CPU embedding returned an empty or zero vector")
+            return embedding
         except Exception as e:
-            logger.error("Ollama embedding failed: %s", e)
-            # Return zero vector as absolute fallback
-            return [0.0] * self.config.embedding.dimensions
+            logger.error("CPU embedding fallback failed: %s", e)
+            raise RuntimeError("CPU embedding unavailable; memory was not indexed") from e
 
     async def _extract(self, content: str, model_profile: Optional[str] = None) -> ExtractionResult:
         """Run extraction pipeline on content."""
+        require_credential_free(content)
         if self._extraction:
             return await self._extraction.extract(
                 content,

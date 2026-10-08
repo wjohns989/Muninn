@@ -58,7 +58,7 @@ def test_update_uses_runtime_model_profile_for_extraction():
         memory_type=MemoryType.EPISODIC,
         provenance=Provenance.AUTO_EXTRACTED,
         namespace="project-a",
-        metadata={"user_id": "user-1"},
+        metadata={"user_id": "user-1", "muninn_force_llm_extraction": True},
     )
 
     captured = {"profile": None}

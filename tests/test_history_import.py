@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,9 +15,15 @@ import pytest
 
 from muninn.core.types import MemoryRecord
 from muninn.history import parsers
-from muninn.history.importer import PART_CHARS, collect, import_history, read_thread, redact
+from muninn.history.importer import PART_CHARS, Thread, collect, import_history, read_thread, redact, turn_memories
+from muninn.history.insights import render_turns
 from muninn.history.locations import history_sources
 from muninn.history.vault import HistoryVault, read_text, version_path
+
+
+@pytest.fixture(autouse=True)
+def _legacy_history_test_mode(monkeypatch):
+    monkeypatch.setenv("MUNINN_HISTORY_SECURITY", "legacy")
 from muninn.store.sqlite_metadata import SQLiteMetadataStore
 
 T0 = 1_780_000_000.0  # 2026-05-28
@@ -83,6 +90,145 @@ def codex_rows(cwd: str):
             "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Tax fixed."}]}},
         {"timestamp": iso(1100), "type": "compacted", "payload": {"message": "Earlier: tax uses banker's rounding."}},
     ]
+
+
+def test_claude_tool_results_are_correlated_bounded_and_not_raw():
+    rows = [
+        {"type": "user", "sessionId": "c-tool", "timestamp": iso(0),
+         "message": {"content": "Fix login"}},
+        {"type": "assistant", "sessionId": "c-tool", "timestamp": iso(1),
+         "message": {"content": [
+             {"type": "tool_use", "id": "edit-1", "name": "Edit",
+              "input": {"file_path": "login.py"}},
+             {"type": "tool_use", "id": "test-1", "name": "Bash",
+              "input": {"command": "pytest -q"}},
+         ]}},
+        {"type": "user", "sessionId": "c-tool", "timestamp": iso(2),
+         "message": {"content": [
+             {"type": "tool_result", "tool_use_id": "edit-1", "content": "Edit applied",
+              "is_error": False},
+             {"type": "tool_result", "tool_use_id": "test-1",
+              "content": "Exit code 0\n12 passed\nAPI_KEY=supersecretvalue12345678",
+              "is_error": False},
+             {"type": "tool_result", "tool_use_id": "other", "content": "99 passed",
+              "is_error": False},
+         ]}},
+    ]
+    session = parsers.parse_claude_code("\n".join(json.dumps(row) for row in rows))
+    events = session.turns[0].tool_events
+    assert [(event.name, event.outcome, event.exit_code) for event in events] == [
+        ("Edit", "success", None), ("Bash", "success", None),
+    ]
+    assert events[1].tests_passed == 12
+    assert "12 passed" in events[1].summary()
+    assert "supersecret" not in repr(events)
+    assert session.unmatched_tool_results == 1
+    thread = Thread(session=session, project="sample", source="local")
+    rendered = render_turns(thread)[0]
+    stored_turn = turn_memories(thread, 0, session.turns[0])[0]["content"]
+    assert "Tool results: Edit (edit): success" in rendered
+    assert "12 passed" in rendered and "12 passed" in stored_turn
+    assert "supersecret" not in rendered and "supersecret" not in stored_turn
+
+
+def test_codex_and_gemini_tool_results_need_matching_ids():
+    codex = [
+        {"type": "session_meta", "payload": {"id": "codex-results"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Run tests"}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command",
+                                               "call_id": "run-1", "arguments": '{"cmd":"pytest -q"}'}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "run-1",
+                                               "output": '{"exit_code":1,"output":"2 failed"}'}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command",
+                                               "call_id": "run-2", "arguments": '{"cmd":"pytest -q"}'}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "run-2",
+                                               "output": '{"exit_code":0,"output":"99 passed"}'}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command",
+                                               "call_id": "run-3", "arguments": '{"cmd":"pytest -q"}'}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "run-3",
+                                               "output": {"exit_code": 1,
+                                                          "output": "2 failed API_KEY=supersecretvalue12345678"}}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "missing", "output": "0 passed"}},
+    ]
+    parsed = parsers.parse_codex("\n".join(json.dumps(row) for row in codex))
+    assert parsed.turns[0].tool_events[0].outcome == "unknown"
+    assert parsed.turns[0].tool_events[0].exit_code is None
+    assert parsed.turns[0].tool_events[1].outcome == "unknown"  # content cannot self-certify success
+    assert parsed.turns[0].tool_events[2].outcome == "error"
+    assert parsed.turns[0].tool_events[2].exit_code == 1
+    assert parsed.unmatched_tool_results == 1
+    codex_thread = Thread(session=parsed, project="sample", source="local")
+    assert "supersecret" not in repr(parsed.turns[0].tool_events)
+    assert "supersecret" not in render_turns(codex_thread)[0]
+    assert "supersecret" not in turn_memories(codex_thread, 0, parsed.turns[0])[0]["content"]
+
+    gemini = {"sessionId": "g-results", "messages": [
+        {"type": "user", "content": "Run tests"},
+        {"type": "gemini", "content": "Checking.", "toolCalls": [
+            {"id": "g-1", "name": "run_shell_command", "args": {"command": "pytest -q"},
+             "status": "success", "result": [{"text": "3 passed API_KEY=supersecretvalue12345678"}]},
+            {"id": "g-2", "name": "replace", "args": {"file_path": "login.py"},
+             "status": "error", "result": [{"text": "failed"}]},
+        ]},
+    ]}
+    parsed = parsers.parse_gemini(json.dumps(gemini))
+    assert [(event.outcome, event.tests_passed) for event in parsed.turns[0].tool_events] == [
+        ("success", 3), ("error", None),
+    ]
+    gemini_thread = Thread(session=parsed, project="sample", source="local")
+    assert "supersecret" not in repr(parsed.turns[0].tool_events)
+    assert "supersecret" not in render_turns(gemini_thread)[0]
+    assert "supersecret" not in turn_memories(gemini_thread, 0, parsed.turns[0])[0]["content"]
+
+
+def test_duplicate_tool_call_id_never_confirms_an_edit():
+    rows = [
+        {"type": "user", "sessionId": "duplicate", "message": {"content": "Edit"}},
+        {"type": "assistant", "sessionId": "duplicate", "message": {"content": [
+            {"type": "tool_use", "id": "same", "name": "Edit", "input": {"file_path": "a.py"}},
+            {"type": "tool_use", "id": "same", "name": "Edit", "input": {"file_path": "b.py"}},
+        ]}},
+        {"type": "user", "sessionId": "duplicate", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "same", "is_error": False, "content": "OK"},
+        ]}},
+    ]
+    session = parsers.parse_claude_code("\n".join(json.dumps(row) for row in rows))
+    assert [event.outcome for event in session.turns[0].tool_events] == ["unknown", "unknown"]
+    assert session.unmatched_tool_results == 1
+
+
+def test_gemini_duplicate_tool_call_id_never_confirms_an_edit():
+    session = parsers.parse_gemini(json.dumps({"sessionId": "g-duplicate", "messages": [
+        {"type": "user", "content": "Edit"},
+        {"type": "gemini", "toolCalls": [
+            {"id": "same", "name": "replace", "args": {"file_path": "a.py"},
+             "status": "success", "result": "Edit applied"},
+            {"id": "same", "name": "replace", "args": {"file_path": "b.py"},
+             "status": "success", "result": "Edit applied"},
+        ]},
+    ]}))
+    assert [event.outcome for event in session.turns[0].tool_events] == ["unknown", "unknown"]
+    assert session.unmatched_tool_results == 1
+
+
+def test_codex_duplicate_tool_call_id_never_confirms_an_edit():
+    rows = [
+        {"type": "session_meta", "payload": {"id": "codex-duplicate"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Edit"}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "apply_patch",
+                                               "call_id": "same", "arguments": "{}"}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "apply_patch",
+                                               "call_id": "same", "arguments": "{}"}},
+        {"type": "response_item", "payload": {"type": "function_call_output",
+                                               "call_id": "same", "output": "Edit applied"}},
+    ]
+    session = parsers.parse_codex("\n".join(json.dumps(row) for row in rows))
+    assert [event.outcome for event in session.turns[0].tool_events] == ["unknown", "unknown"]
+    assert session.unmatched_tool_results == 1
 
 
 @pytest.fixture
@@ -158,6 +304,8 @@ class FakeMemory:
 
     def __init__(self, store):
         self._metadata = store
+        self._vectors = SimpleNamespace(points={}, get_integrity=lambda memory_id: self._vectors.points.get(memory_id))
+        self._bm25 = SimpleNamespace(digests={}, content_digest=lambda memory_id: self._bm25.digests.get(memory_id))
 
     async def add(self, content, user_id, agent_id=None, metadata=None, memory_type=None, provenance=None,
                   scope="project", **_):
@@ -165,6 +313,9 @@ class FakeMemory:
         record = MemoryRecord(content=content, project=metadata.get("project", "global"), scope=scope,
                               source_agent=agent_id or "unknown", branch=metadata.get("branch"), metadata=metadata)
         self._metadata.add(record)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        self._vectors.points[record.id] = {"memory_id": record.id, "content_sha256": digest, "dimension": 1}
+        self._bm25.digests[record.id] = digest
         return {"id": record.id, "event": "ADD"}
 
     async def update(self, memory_id, data=None, metadata_patch=None, archived=None, **_):
@@ -174,16 +325,22 @@ class FakeMemory:
         if archived is not None:
             fields["archived"] = int(archived)
         self._metadata.update(memory_id, **fields)
+        if data is not None:
+            digest = hashlib.sha256(data.encode("utf-8")).hexdigest()
+            self._vectors.points[memory_id]["content_sha256"] = digest
+            self._bm25.digests[memory_id] = digest
         return {"id": memory_id}
 
     async def delete(self, memory_id):
         self._metadata.delete(memory_id)
+        self._vectors.points.pop(memory_id, None)
+        self._bm25.digests.pop(memory_id, None)
         return {"id": memory_id, "event": "DELETE"}
 
 
 @pytest.fixture
 def env(home, tmp_path):
-    vault = HistoryVault(tmp_path / "vault", home=home)
+    vault = HistoryVault(tmp_path / "vault", home=home, allow_plaintext=True)
     store = SQLiteMetadataStore(tmp_path / "metadata.db")
     yield SimpleNamespace(home=home, vault=vault, store=store, memory=FakeMemory(store))
     vault.close()
@@ -289,6 +446,108 @@ def test_collect_files_threads_under_their_projects(env):
     assert by_key["gemini_cli:g-1"].project == "webapp"               # sha256 project folder matched
     assert by_key["chatgpt:gpt-1"].project is None and by_key["claude_ai:cl-1"].session.turns
     assert [t.session.started_at for t in collected.threads] == sorted(t.session.started_at for t in collected.threads)
+
+
+def test_history_import_serializes_writes_for_local_vector_store(env):
+    """Qdrant local count/upsert cannot safely overlap within an import."""
+    env.vault.sync()
+    original_add = env.memory.add
+    active = 0
+    peak = 0
+
+    async def tracked_add(*args, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0)
+            return await original_add(*args, **kwargs)
+        finally:
+            active -= 1
+
+    env.memory.add = tracked_add
+    run(import_history(env.memory, env.vault, apply=True, providers=["claude_code"]))
+    assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_long_import_allows_live_vault_capture(env, tmp_path, monkeypatch):
+    """A backfill may wait on one thread, but it must not block vault capture."""
+    from muninn.history.service import HistoryService
+
+    service = HistoryService(env.memory, tmp_path / "live-vault", home=env.home)
+    await service.sync()
+    first_add = asyncio.Event()
+    release_add = asyncio.Event()
+    captured = asyncio.Event()
+    original_add = env.memory.add
+    original_capture = service.vault.capture
+    first = True
+
+    async def slow_add(*args, **kwargs):
+        nonlocal first
+        if first:
+            first = False
+            first_add.set()
+            await release_add.wait()
+        return await original_add(*args, **kwargs)
+
+    # The sync capture runs in a worker thread, so keep the main loop reference.
+    loop = asyncio.get_running_loop()
+
+    def tracked_capture(*args, **kwargs):
+        result = original_capture(*args, **kwargs)
+        loop.call_soon_threadsafe(captured.set)
+        return result
+
+    monkeypatch.setattr(env.memory, "add", slow_add)
+    monkeypatch.setattr(service.vault, "capture", tracked_capture)
+    transcript = env.home / ".claude" / "projects" / "-home-code-webapp" / "c-111.jsonl"
+    backfill = asyncio.create_task(service.run_import(apply=True, providers=["claude_code"]))
+    capture = None
+    try:
+        await asyncio.wait_for(first_add.wait(), timeout=5)
+        capture = asyncio.create_task(service.capture(str(transcript), "claude_code"))
+        await asyncio.wait_for(captured.wait(), timeout=2)
+        assert not capture.done()  # Import waits for the current thread checkpoint.
+    finally:
+        release_add.set()
+        await asyncio.wait_for(backfill, timeout=15)
+        if capture is not None:
+            await asyncio.wait_for(capture, timeout=15)
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_imports_recheck_recovered_prompt_under_unit_lock(env, monkeypatch):
+    env.vault.sync()
+    snapshot = env.vault.files()
+    unit_lock = asyncio.Lock()
+    original_seen = env.store.history_prompt_seen
+    prechecks = threading.Barrier(2)
+    guard = threading.Lock()
+    count = 0
+
+    def paired_precheck(digest):
+        nonlocal count
+        with guard:
+            count += 1
+            first_pair = count <= 2
+        seen = original_seen(digest)
+        if first_pair:
+            prechecks.wait(timeout=5)
+        return seen
+
+    monkeypatch.setattr(env.store, "history_prompt_seen", paired_precheck)
+    reports = await asyncio.gather(*(
+        import_history(env.memory, env.vault, apply=True, vault_files=snapshot,
+                       unit_lock=unit_lock) for _ in range(2)
+    ))
+    recovered = [r for r in env.store.get_all(limit=500)
+                 if (r.metadata or {}).get("kind") == "recovered_prompt"]
+    assert count >= 2
+    assert len(recovered) == 1
+    assert sum(report["recovered_prompts"] for report in reports) == 1
 
 
 def test_import_is_ordered_complete_and_incremental(env):
@@ -423,7 +682,7 @@ def relay(tmp_path, monkeypatch):
     # `claude --resume`: a new session file that starts with a copy of cc-1, then new work.
     jsonl(home / ".claude" / "projects" / "-relay" / "cc-2.jsonl",
           _claude("cc-2", str(repo), claude_first + [(600, "claude step 7", "done 7")]))
-    vault = HistoryVault(tmp_path / "vault", home=home)
+    vault = HistoryVault(tmp_path / "vault", home=home, allow_plaintext=True)
     memory = FakeMemory(SQLiteMetadataStore(tmp_path / "metadata.db"))
     yield SimpleNamespace(home=home, repo=repo, codex_file=codex_file, vault=vault, memory=memory,
                           store=memory._metadata)
@@ -442,6 +701,78 @@ def test_resumed_sessions_do_not_duplicate_turns(relay):
     assert len(texts) == 1 and "claude step 7" in texts[0]
     again = run(import_history(relay.memory, relay.vault, apply=True))
     assert again["turn_memories"] == 0 and again["duplicate_turns"] == 0
+
+
+def test_partial_turn_write_is_reused_after_checkpoint_interruption(env):
+    env.vault.sync()
+    thread = next(t for t in collect(env.vault, providers=["claude_code"]).threads
+                  if t.session.session_id == "c-111")
+    part = turn_memories(thread, 0, thread.session.turns[0])[0]
+    run(env.memory.add(part["content"], user_id="global_user", metadata=part["metadata"]))
+    assert env.store.get_history_thread(thread.key) is None
+
+    run(import_history(env.memory, env.vault, providers=["claude_code"], apply=True))
+    records = env.store.get_thread_memories(thread.key, limit=100)
+    matches = [record for record in records if (record.metadata or {}).get("kind") == "conversation_turn"
+               and (record.metadata or {}).get("turn_index") == 0
+               and (record.metadata or {}).get("part") == 1]
+    assert len(matches) == 1
+    assert env.store.get_history_thread(thread.key)["turns_imported"] == len(thread.session.turns)
+    again = run(import_history(env.memory, env.vault, providers=["claude_code"], apply=True))
+    assert again["turn_memories"] == 0
+
+
+def test_partial_turn_missing_vector_fails_closed(env):
+    env.vault.sync()
+    thread = next(t for t in collect(env.vault, providers=["claude_code"]).threads
+                  if t.session.session_id == "c-111")
+    part = turn_memories(thread, 0, thread.session.turns[0])[0]
+    added = run(env.memory.add(part["content"], user_id="global_user", metadata=part["metadata"]))
+    del env.memory._vectors.points[added["id"]]
+
+    with pytest.raises(RuntimeError, match="vector"):
+        run(import_history(env.memory, env.vault, providers=["claude_code"], apply=True))
+    records = env.store.get_thread_memories(thread.key, limit=100)
+    assert len([r for r in records if (r.metadata or {}).get("kind") == "conversation_turn"]) == 1
+
+
+@pytest.mark.parametrize("store_kind", ["vector", "bm25"])
+def test_partial_turn_stale_search_content_fails_closed(env, store_kind):
+    env.vault.sync()
+    thread = next(t for t in collect(env.vault, providers=["claude_code"]).threads
+                  if t.session.session_id == "c-111")
+    part = turn_memories(thread, 0, thread.session.turns[0])[0]
+    added = run(env.memory.add(part["content"], user_id="global_user", metadata=part["metadata"]))
+    if store_kind == "vector":
+        env.memory._vectors.points[added["id"]]["content_sha256"] = "0" * 64
+    else:
+        env.memory._bm25.digests[added["id"]] = "0" * 64
+    with pytest.raises(RuntimeError, match="(?i)" + store_kind):
+        run(import_history(env.memory, env.vault, providers=["claude_code"], apply=True))
+    assert env.store.get_history_thread(thread.key) is None
+
+
+def test_recovered_prompt_write_before_marker_is_idempotent(env, monkeypatch):
+    env.vault.sync()
+    original = env.store.mark_history_prompts
+    interrupted = False
+
+    def interrupt_once(digests):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise RuntimeError("interrupted checkpoint")
+        return original(digests)
+
+    monkeypatch.setattr(env.store, "mark_history_prompts", interrupt_once)
+    with pytest.raises(RuntimeError, match="interrupted checkpoint"):
+        run(import_history(env.memory, env.vault, apply=True))
+    before = [r for r in env.store.get_all(limit=500) if (r.metadata or {}).get("kind") == "recovered_prompt"]
+    assert len(before) == 1
+
+    run(import_history(env.memory, env.vault, apply=True))
+    after = [r for r in env.store.get_all(limit=500) if (r.metadata or {}).get("kind") == "recovered_prompt"]
+    assert len(after) == 1 and after[0].id == before[0].id
 
 
 def test_project_timeline_interleaves_apps_in_time_order(relay):

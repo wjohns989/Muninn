@@ -22,6 +22,7 @@ Key advantages over raw prompt → JSON parse:
 """
 
 import logging
+import time
 from typing import Optional
 
 from muninn.core.types import ExtractionResult, Entity, Relation
@@ -48,6 +49,7 @@ class InstructorExtractor:
         api_key: str = "not-needed",
         max_retries: int = 2,
         timeout: float = 30.0,
+        ollama_keep_alive: Optional[str] = None,
     ):
         """
         Initialize the Instructor extractor.
@@ -65,8 +67,21 @@ class InstructorExtractor:
         self.base_url = base_url
         self.model = model
         self.max_retries = max_retries
+        self.timeout = timeout
+        self.ollama_keep_alive = ollama_keep_alive
         self._client = None
         self._available = False
+
+        if ollama_keep_alive is not None:
+            # Ollama's OpenAI-compatible endpoint does not honor keep_alive.
+            # Its native structured-output endpoint does, so local extraction
+            # can release VRAM as soon as each request finishes.
+            try:
+                import requests  # noqa: F401
+                self._available = True
+            except ImportError:
+                logger.warning("requests unavailable for native Ollama extraction")
+            return
 
         try:
             import instructor
@@ -118,6 +133,9 @@ class InstructorExtractor:
         if not self._available:
             return ExtractionResult()
 
+        if self.ollama_keep_alive is not None:
+            return self._extract_ollama(text)
+
         try:
             # Truncate to avoid context length issues with small models
             truncated = text[:3000]
@@ -140,6 +158,47 @@ class InstructorExtractor:
         except Exception as e:
             logger.warning("Instructor extraction failed: %s", e)
             return ExtractionResult()
+
+    def _extract_ollama(self, text: str) -> ExtractionResult:
+        """Use Ollama's native JSON-schema API with request-scoped model lifetime."""
+        import requests
+        from muninn.extraction.ollama_slot import ollama_slot
+
+        base = self.base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        messages = [
+            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": "Extract structured facts from the following text delimited by triple backticks:\n\n"
+                f"```\n{text[:3000]}\n```",
+            },
+        ]
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "format": ExtractedMemoryFacts.model_json_schema(),
+            "stream": False,
+            "keep_alive": self.ollama_keep_alive,
+            "options": {"temperature": 0},
+        }
+        for attempt in range(self.max_retries + 1):
+            try:
+                with ollama_slot():
+                    response = requests.post(
+                        f"{base}/api/chat", json=payload, timeout=self.timeout
+                    )
+                response.raise_for_status()
+                content = response.json()["message"]["content"]
+                facts = ExtractedMemoryFacts.model_validate_json(content)
+                return self._convert_to_extraction_result(facts)
+            except Exception as exc:
+                if attempt == self.max_retries:
+                    logger.warning("Native Ollama extraction failed: %s", exc)
+                else:
+                    time.sleep(min(2 ** attempt, 4))
+        return ExtractionResult()
 
     def _convert_to_extraction_result(
         self, facts: ExtractedMemoryFacts
@@ -185,6 +244,10 @@ class InstructorExtractor:
         Returns:
             True if endpoint responded successfully.
         """
+        if self.ollama_keep_alive is not None:
+            result = self._extract_ollama("Python is a programming language.")
+            self._available = bool(result.entities or result.relations or result.summary)
+            return self._available
         if not self._client:
             return False
 
