@@ -27,6 +27,26 @@ from muninn.history.remote_accounting import (
 CEILING = Decimal("0.01")
 
 
+def _parent_fence(db, parent, generation, kind, *, diagnostic_schema, exclude=None):
+    normal = " AND diagnostic_parent IS NULL" if diagnostic_schema else ""
+    owners = db.execute("SELECT batch_owner,generation,state FROM remote_admissions "
+        "WHERE state IN ('reserved','unknown')" + normal).fetchall()
+    if owners == [(parent, generation, "unknown")]:
+        return
+    # The original batch may finish while its separate tiny diagnostic waits.
+    # Only this explicit streaming probe may follow that settled parent; its
+    # already accepted same-parent batch diagnostic must still be the sole hold.
+    if (kind == "streaming" and diagnostic_schema and not owners
+            and db.execute("SELECT generation,state FROM remote_admissions WHERE batch_owner=? AND diagnostic_parent IS NULL",
+                (parent,)).fetchall() == [(generation, "settled")]
+            and db.execute("SELECT diagnostic_parent,generation,state FROM remote_admissions "
+                "WHERE diagnostic_parent IS NOT NULL AND state IN ('reserved','unknown')" +
+                (" AND id<>?" if exclude else ""), (exclude,) if exclude else ()).fetchall()
+                == [(parent, generation, "unknown")]):
+        return
+    raise AdmissionError("diagnostic_parent_not_sole_unknown")
+
+
 def request_body():
     from muninn.history.secure_analysis import _CITED_SCHEMA, _cited_prompt
     text = "The synthetic project requires keeping source citations."
@@ -44,11 +64,15 @@ def request_body():
 
 
 def verify_price(body, catalog):
-    # Use the highest published OpenAI price (including long-context overrides),
+    # Use the highest published selected-host price (including context overrides),
     # without assuming a batch discount. UTF-8 bytes overestimate input tokens.
     prices = []
+    selected = {"openai": "OpenAI", "azure": "Azure"}.get(
+        (body.get("provider", {}).get("only") or [None])[0])
+    if selected is None:
+        raise BatchError("diagnostic_price_unknown")
     for endpoint in catalog.get("data", {}).get("endpoints", []):
-        if endpoint.get("provider_name") == "OpenAI":
+        if endpoint.get("provider_name") == selected:
             pricing = endpoint.get("pricing", {})
             prices.extend([pricing, *pricing.get("overrides", [])])
     if not prices:
@@ -84,6 +108,12 @@ class DiagnosticStore:
                                                        self.aad + ident.encode("ascii")))
             if record["id"] != ident:
                 raise ValueError
+            columns = {r[1] for r in db.execute("PRAGMA table_info(remote_admissions)")}
+            binding = db.execute("SELECT generation,diagnostic_parent,batch_owner," +
+                ("diagnostic_kind" if "diagnostic_kind" in columns else "'batch'") +
+                " FROM remote_admissions WHERE id=?", (ident,)).fetchone()
+            if binding != (record["generation"], record["parent"], record["owner"], record.get("kind", "batch")):
+                raise ValueError
             return record
         except Exception as exc:
             raise BatchError("diagnostic_evidence_invalid") from exc
@@ -96,7 +126,7 @@ class DiagnosticStore:
         db.execute("INSERT INTO batch_diagnostics VALUES(?,?) ON CONFLICT(id) DO UPDATE SET sealed=excluded.sealed",
                    (record["id"], self._seal(record)))
 
-    def prepare(self, parent, generation, retention_generation, provider_status, body):
+    def prepare(self, parent, generation, retention_generation, provider_status, body, *, kind="batch"):
         """Private preimage first, then additive schema plus one atomic reserve.
 
         Caller already authenticated a known submitted parent from BatchOutbox.
@@ -104,15 +134,19 @@ class DiagnosticStore:
         No released/unknown diagnostic ever grants a second attempt for a parent.
         """
         _check_id(parent)
-        expected = request_body()
+        if kind not in {"batch", "streaming"}:
+            raise BatchError("diagnostic_kind_invalid")
+        from muninn.history.streaming_diagnostic import request_body as stream_body
+        expected = request_body() if kind == "batch" else stream_body()
         try:
-            ids = [request["custom_id"] for request in body["requests"]]
-            for ident in ids:
-                _check_id(ident)
-            if len(set(ids)) != 2:
-                raise ValueError
-            for request, ident in zip(expected["requests"], ids):
-                request["custom_id"] = ident
+            if kind == "batch":
+                ids = [request["custom_id"] for request in body["requests"]]
+                for ident in ids:
+                    _check_id(ident)
+                if len(set(ids)) != 2:
+                    raise ValueError
+                for request, ident in zip(expected["requests"], ids):
+                    request["custom_id"] = ident
             if body != expected or list(body) != list(expected):
                 raise ValueError
         except (ValueError, KeyError, TypeError) as exc:
@@ -122,15 +156,23 @@ class DiagnosticStore:
         day, month = _periods(now)
         with _db(self.root, initialize=True, generation=generation) as (db, _):
             caps = _policy(db, generation)
-            owners = db.execute("SELECT batch_owner,generation,state FROM remote_admissions "
-                                "WHERE state IN ('reserved','unknown')").fetchall()
-            if owners != [(parent, generation, "unknown")]:
-                raise AdmissionError("diagnostic_parent_not_sole_unknown")
+            columns = {r[1] for r in db.execute("PRAGMA table_info(remote_admissions)")}
+            _parent_fence(db, parent, generation, kind, diagnostic_schema="diagnostic_parent" in columns)
+            if "diagnostic_parent" in columns:
+                for other_id, other_parent, other_kind, other_generation, other_state in db.execute("SELECT id,diagnostic_parent," +
+                        ("diagnostic_kind" if "diagnostic_kind" in columns else "'batch'") +
+                        ",generation,state FROM remote_admissions WHERE diagnostic_parent IS NOT NULL AND state IN ('reserved','unknown')"):
+                    if (kind != "streaming" or other_parent != parent or other_kind != "batch"
+                            or other_generation != generation or other_state != "unknown"):
+                        raise AdmissionError("diagnostic_unrelated_hold")
+                    other = self._read(db, other_id)
+                    if other["state"] != "submitted":
+                        raise AdmissionError("diagnostic_unrelated_hold")
+                    self._identity(other, other["response"])
             if db.execute("SELECT enabled,generation FROM batch_policy WHERE id=1").fetchone() != (1, retention_generation):
                 raise AdmissionError("remote_consent_revoked")
             _require_headroom(db, caps, reported, day, month, 10000)
             from muninn.history.batch_activation import _backup_batch_policy, _database
-            columns = {r[1] for r in db.execute("PRAGMA table_info(remote_admissions)")}
             if "diagnostic_parent" not in columns:
                 _backup_batch_policy(self.root, _database(self.root))
                 db.execute("ALTER TABLE remote_admissions ADD COLUMN diagnostic_parent TEXT")
@@ -142,43 +184,75 @@ class DiagnosticStore:
                     "WHERE state IN ('reserved','unknown') AND diagnostic_parent IS NOT NULL")
                 db.execute("CREATE UNIQUE INDEX one_diagnostic_per_parent ON remote_admissions(diagnostic_parent) "
                     "WHERE diagnostic_parent IS NOT NULL")
-            if db.execute("SELECT 1 FROM remote_admissions WHERE diagnostic_parent=?", (parent,)).fetchone():
+            if "diagnostic_kind" not in columns:
+                from muninn.history.portable_accounting import _validate
+                _validate(db)  # Validate the old fences before extending them.
+                if "diagnostic_parent" in columns:
+                    _backup_batch_policy(self.root, _database(self.root))
+                prior_records = [self._read(db, row[0]) for row in db.execute(
+                    "SELECT id FROM remote_admissions WHERE diagnostic_parent IS NOT NULL")]
+                db.execute("ALTER TABLE remote_admissions ADD COLUMN diagnostic_kind TEXT")
+                db.execute("UPDATE remote_admissions SET diagnostic_kind='batch' WHERE diagnostic_parent IS NOT NULL")
+                for prior in prior_records:
+                    prior["kind"] = "batch"
+                    self._save(db, prior)
+                db.execute("DROP INDEX one_diagnostic_admission")
+                db.execute("DROP INDEX one_diagnostic_per_parent")
+                db.execute("CREATE UNIQUE INDEX one_diagnostic_admission ON remote_admissions(diagnostic_kind) "
+                    "WHERE state IN ('reserved','unknown') AND diagnostic_parent IS NOT NULL")
+                db.execute("CREATE UNIQUE INDEX one_diagnostic_per_parent ON remote_admissions(diagnostic_parent,diagnostic_kind) "
+                    "WHERE diagnostic_parent IS NOT NULL")
+            if db.execute("SELECT 1 FROM remote_admissions WHERE diagnostic_parent=? AND diagnostic_kind=?", (parent, kind)).fetchone():
                 raise AdmissionError("diagnostic_already_attempted")
             from muninn.history.portable_accounting import _validate
             _validate(db)
             ident, owner = uuid.uuid4().hex, uuid.uuid4().hex
             db.execute("INSERT INTO remote_admissions(id,generation,state,started,start_day,start_month,"
-                "batch_owner,diagnostic_parent) VALUES(?,?,'reserved',?,?,?,?,?)",
-                (ident, generation, now, day, month, owner, parent))
+                "batch_owner,diagnostic_parent,diagnostic_kind) VALUES(?,?,'reserved',?,?,?,?,?,?)",
+                (ident, generation, now, day, month, owner, parent, kind))
             record = {"id": ident, "parent": parent, "owner": owner, "generation": generation,
                 "retention_generation": retention_generation, "state": "prepared", "body": body,
-                "provider_id": None, "response": None, "created_at": now, "ceiling_usd": str(CEILING)}
+                "provider_id": None, "response": None, "created_at": now, "ceiling_usd": str(CEILING), "kind": kind}
             self._save(db, record)
         return ident
 
-    async def submit(self, ident, send, *, provider_status):
+    async def begin_submission(self, ident, *, provider_status, kind):
         # Admission + encrypted uncertainty phase must commit together before HTTP.
         reported = _reported_usage(await asyncio.to_thread(provider_status))
         with _db(self.root) as (db, _):
             db.rollback()
             db.execute("BEGIN IMMEDIATE")
             record = self._read(db, ident)
-            if record["state"] != "prepared":
+            if record["state"] != "prepared" or record.get("kind", "batch") != kind:
                 raise BatchError("diagnostic_never_resubmit")
             caps = _policy(db, record["generation"])
             day, month = _periods(time.time())
             _require_headroom(db, caps, reported, day, month, 10000)
             if db.execute("SELECT enabled,generation FROM batch_policy WHERE id=1").fetchone() != (1, record["retention_generation"]):
                 raise AdmissionError("remote_consent_revoked")
-            if db.execute("SELECT batch_owner,generation,state FROM remote_admissions "
-                    "WHERE diagnostic_parent IS NULL AND state IN ('reserved','unknown')").fetchall() != [
-                    (record["parent"], record["generation"], "unknown")]:
-                raise AdmissionError("diagnostic_parent_not_sole_unknown")
+            _parent_fence(db, record["parent"], record["generation"], kind,
+                diagnostic_schema=True, exclude=ident)
+            from muninn.history.portable_accounting import _validate
+            _validate(db)
+            for other_id, other_parent, other_kind, other_generation, other_state in db.execute("SELECT id,diagnostic_parent,diagnostic_kind,generation,state "
+                    "FROM remote_admissions WHERE diagnostic_parent IS NOT NULL AND state IN ('reserved','unknown')"):
+                if other_id != ident:
+                    if (kind != "streaming" or other_parent != record["parent"] or other_kind != "batch"
+                            or other_generation != record["generation"] or other_state != "unknown"):
+                        raise AdmissionError("diagnostic_unrelated_hold")
+                    other = self._read(db, other_id)
+                    if other["state"] != "submitted":
+                        raise AdmissionError("diagnostic_unrelated_hold")
+                    self._identity(other, other["response"])
             if db.execute("UPDATE remote_admissions SET state='unknown' WHERE id=? AND state='reserved'",
                           (ident,)).rowcount != 1:
                 raise AdmissionError("remote_accounting_conflict")
             record["state"] = "submission_unknown"
             self._save(db, record)
+        return record
+
+    async def submit(self, ident, send, *, provider_status):
+        record = await self.begin_submission(ident, provider_status=provider_status, kind="batch")
         response = await send("POST", body=record["body"])
         # Preserve every bounded received receipt BEFORE identity validation.
         # A received ID with mismatched metadata is an untrusted GET candidate,
@@ -218,6 +292,8 @@ class DiagnosticStore:
 
     async def poll(self, ident, send):
         record = self.read(ident)
+        if record.get("kind", "batch") != "batch":
+            raise BatchError("diagnostic_kind_invalid")
         if record["state"] not in {"submitted", "terminal_saved"}:
             raise BatchError("diagnostic_provider_identity_unknown")
         response = record["response"] if record["state"] == "terminal_saved" else await send(

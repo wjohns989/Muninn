@@ -29,7 +29,7 @@ _COLUMNS = {
     "audit": {"generation", "changed_at", "enabled", "daily_usd", "monthly_usd", "override_ceiling"},
     "remote_admissions": {"id", "generation", "state", "started", "start_day", "start_month",
                           "finished", "end_day", "end_month", "cost_micro", "resolution", "batch_owner",
-                          "classification_job", "classification_input", "diagnostic_parent"},
+                          "classification_job", "classification_input", "diagnostic_parent", "diagnostic_kind"},
     "batch_diagnostics": {"id", "sealed"},
     "batch_policy": {"id", "enabled", "generation", "max_batches"},
     "batch_policy_audit": {"generation", "changed_at", "enabled", "max_batches"},
@@ -78,6 +78,17 @@ def _validate(db):
                 "one_diagnostic_per_parent": "CREATE UNIQUE INDEX one_diagnostic_per_parent ON remote_admissions(diagnostic_parent) "
                     "WHERE diagnostic_parent IS NOT NULL",
             }
+            if "diagnostic_kind" in fields:
+                if db.execute("SELECT 1 FROM remote_admissions WHERE "
+                        "(diagnostic_parent IS NULL AND diagnostic_kind IS NOT NULL) OR "
+                        "(diagnostic_parent IS NOT NULL AND (diagnostic_kind IS NULL OR diagnostic_kind NOT IN ('batch','streaming'))) LIMIT 1").fetchone():
+                    raise VaultIntegrityError("Recovery diagnostic kind is invalid")
+                expected_indexes["one_diagnostic_admission"] = (
+                    "CREATE UNIQUE INDEX one_diagnostic_admission ON remote_admissions(diagnostic_kind) "
+                    "WHERE state IN ('reserved','unknown') AND diagnostic_parent IS NOT NULL")
+                expected_indexes["one_diagnostic_per_parent"] = (
+                    "CREATE UNIQUE INDEX one_diagnostic_per_parent ON remote_admissions(diagnostic_parent,diagnostic_kind) "
+                    "WHERE diagnostic_parent IS NOT NULL")
             normalize = lambda value: re.sub(r"\s+", "", value or "").lower()
             for name, definition in expected_indexes.items():
                 actual = db.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)).fetchone()

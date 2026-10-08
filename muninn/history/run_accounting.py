@@ -91,4 +91,15 @@ def run_status(root, *, since, now=None):
             result["diagnostics"] = {"admission_states": diagnostic_counts,
                 "settled_cost_usd": diagnostic_cost / 1_000_000,
                 "included_in_total": True, "backlog_publications": 0}
+            if "diagnostic_kind" in columns:
+                by_kind = {}
+                for kind, state, count, cost in db.execute("SELECT diagnostic_kind,state,COUNT(*),COALESCE(SUM(cost_micro),0) "
+                        "FROM remote_admissions WHERE diagnostic_parent IS NOT NULL AND started>=? GROUP BY diagnostic_kind,state", (since,)):
+                    if kind not in {"batch", "streaming"}:
+                        raise AdmissionError()
+                    entry = by_kind.setdefault(kind, {"admission_states": {}, "settled_cost_usd": 0})
+                    entry["admission_states"][state] = count
+                    if state == "settled":
+                        entry["settled_cost_usd"] += cost / 1_000_000
+                result["diagnostics"]["by_kind"] = by_kind
     return result
