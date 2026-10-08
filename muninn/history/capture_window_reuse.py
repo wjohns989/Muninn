@@ -11,12 +11,15 @@ class CaptureWindowReuseMixin:
         target = self._validated_analysis_target(row)
         return "capture-reuse-v1:" + hashlib.sha256(self._stage_json(target)).hexdigest()
 
-    def _capture_reuse_parent(self, row):
+    def _capture_reuse_parent(self, row, *, plans=None):
         target = self._validated_analysis_target(row)
         if row["lane"] != 1:
             return None
         from muninn.history.cited_windows import CitedWindowPlanStore
-        plans = CitedWindowPlanStore(self.archive)
+        if plans is None:
+            plans = CitedWindowPlanStore(self.archive)
+        elif plans.archive is not self.archive:
+            raise VaultIntegrityError("Reuse verification archive differs")
         entry = plans.source.ledger._entries.get((target["blob"], target["version"]))
         if entry is None:
             raise VaultIntegrityError("Reuse source is unavailable")
@@ -37,8 +40,8 @@ class CaptureWindowReuseMixin:
             parent_target = self._validated_analysis_target(parent, db)
         return plans, parent_window, parent, parent_target
 
-    def _capture_reuse_material(self, row, *, provider="ollama"):
-        found = self._capture_reuse_parent(row)
+    def _capture_reuse_material(self, row, *, provider="ollama", plans=None):
+        found = self._capture_reuse_parent(row, plans=plans)
         if found is None:
             return None
         plans, parent_window, parent, parent_target = found
@@ -153,11 +156,14 @@ class CaptureWindowReuseMixin:
                 self._seal_search(proof, job_id, self._capture_reuse_purpose(row)), provider, model, time.time(), job_id))
         return True
 
-    def _verify_reuse_refs(self, window, stage, ack):
+    def _verify_reuse_refs(self, window, stage, ack, *, plans=None, contains=None):
         from muninn.history.cited_analysis_source import CitedAnalysisSource
-        source = CitedAnalysisSource(self.archive)
+        if plans is not None and plans.archive is not self.archive:
+            raise VaultIntegrityError("Reuse verification archive differs")
+        source = plans.source if plans is not None else CitedAnalysisSource(self.archive)
         expected = source.expected_refs(window, stage["proposals"], model_identity=stage["model_identity"])
-        if expected != ack["refs"] or not source.ledger.verify_refs(ack["refs"]):
+        verify = source.ledger.verify_refs if contains is None else contains
+        if expected != ack["refs"] or not verify(ack["refs"]):
             raise VaultIntegrityError("Reuse has no matching durable original memories")
 
     def _capture_reuse_state(self, row):
@@ -171,7 +177,7 @@ class CaptureWindowReuseMixin:
             raise VaultIntegrityError("Reused coverage has no valid receipt")
         return True
 
-    def _read_capture_reuse(self, row):
+    def _read_capture_reuse(self, row, *, plans=None, contains=None):
         if not self._capture_reuse_state(row):
             return None
         proof = self._open_search(row["sealed_reuse"], row["job_id"], self._capture_reuse_purpose(row))
@@ -189,7 +195,7 @@ class CaptureWindowReuseMixin:
                 or proof["target"] != self._validated_analysis_target(row)
                 or proof["window"] != self._read_analysis_window(row)):
             raise VaultIntegrityError("Reuse receipt binding is invalid")
-        found = self._capture_reuse_material(row, provider=provider)
+        found = self._capture_reuse_material(row, provider=provider, plans=plans)
         if found is None:
             raise VaultIntegrityError("Reuse original analysis is unavailable")
         plans, parent_window, parent, parent_target, stage, ack = found
@@ -201,5 +207,5 @@ class CaptureWindowReuseMixin:
             raise VaultIntegrityError("Reuse original publication binding is invalid")
         # Historical coverage records the admitted contract. Do not compare it
         # with today's installed model/options or dispatch a model during restore.
-        self._verify_reuse_refs(parent_window, stage, ack)
+        self._verify_reuse_refs(parent_window, stage, ack, plans=plans, contains=contains)
         return proof

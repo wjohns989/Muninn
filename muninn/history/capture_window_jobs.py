@@ -10,6 +10,7 @@ import math
 import os
 import re
 import time
+from contextlib import ExitStack
 
 from muninn.history.capture_window_reuse import CaptureWindowReuseMixin
 from muninn.history.credential_crypto import VaultIntegrityError
@@ -213,9 +214,12 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                     return receipt
             return None
 
-    def _capture_plan_source(self, receipt):
+    def _capture_plan_source(self, receipt, *, plans=None):
         from muninn.history.cited_windows import CitedWindowPlanStore
-        plans = CitedWindowPlanStore(self.archive)
+        if plans is None:
+            plans = CitedWindowPlanStore(self.archive)
+        elif plans.archive is not self.archive:
+            raise VaultIntegrityError("Capture verification archive differs")
         entry = plans.source.ledger._entries.get((receipt["blob"], receipt["version"]))
         if entry is None or self.archive._snapshot_receipt(entry, receipt["version"]) != receipt:
             raise VaultIntegrityError("Capture window source commit is unavailable")
@@ -554,7 +558,14 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                 "acknowledged": state["acknowledged"], "jobs": counts, **details}
 
     def _verify_capture_window_jobs(self, db):
+        # Offline verification only: no cached proof survives this invocation.
+        # Construct read-only stores before entering the pinned ledger reader.
+        with ExitStack() as readers:
+            self._verify_capture_window_jobs_snapshot(db, readers)
+
+    def _verify_capture_window_jobs_snapshot(self, db, readers):
         self._capture_schedule(db)
+        plans = contains = None
         for row in db.execute("SELECT * FROM capture_enrichment_sources"):
             receipt = self._read_enrichment_receipt(row[:2], self._enrichment_baseline(db), db=db)
             state = self._capture_plan_state(row)
@@ -565,7 +576,10 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                 if mappings:
                     raise VaultIntegrityError("Capture window mapping has no sealed plan")
                 continue
-            plans, entry = self._capture_plan_source(receipt)
+            if plans is None:
+                from muninn.history.cited_windows import CitedWindowPlanStore
+                plans = CitedWindowPlanStore(self.archive, read_only=True)
+            plans, entry = self._capture_plan_source(receipt, plans=plans)
             if plans.count_pages(entry, receipt["version"], state["attempt"]) != state["count"]:
                 raise VaultIntegrityError("Capture window count differs from sealed EOF")
             if len(mappings) != state["next_ordinal"]:
@@ -583,7 +597,9 @@ class CaptureWindowJobsMixin(CaptureWindowReuseMixin):
                     if self._read_publication_receipt(job) is None:
                         raise VaultIntegrityError("Capture window completion lacks publication ACK")
                     acknowledged += 1
-                reuse = self._read_capture_reuse(job)
+                if job["state"] == "reused" and contains is None:
+                    contains, _report = readers.enter_context(plans.source.ledger.verified_reference_reader())
+                reuse = self._read_capture_reuse(job, plans=plans, contains=contains)
                 if reuse is not None:
                     acknowledged += 1
                 if self._read_capture_no_context(job, source=plans.source) is not None:
